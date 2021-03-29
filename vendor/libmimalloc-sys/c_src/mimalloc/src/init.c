@@ -201,7 +201,7 @@ static bool _mi_heap_init(void) {
     tld->segments.stats = &tld->stats;
     tld->segments.os = &tld->os;
     tld->os.stats = &tld->stats;
-    _mi_heap_set_default_direct(heap);
+    _mi_heap_set_default_direct(heap);    
   }
   return false;
 }
@@ -235,9 +235,8 @@ static bool _mi_heap_done(mi_heap_t* heap) {
     _mi_heap_collect_abandon(heap);
   }
   
-
   // merge stats
-  _mi_stats_done(&heap->tld->stats);
+  _mi_stats_done(&heap->tld->stats);  
 
   // free if not the main thread
   if (heap != &_mi_heap_main) {
@@ -285,7 +284,7 @@ static void _mi_thread_done(mi_heap_t* default_heap);
   // nothing to do as it is done in DllMain
 #elif defined(_WIN32) && !defined(MI_SHARED_LIB)
   // use thread local storage keys to detect thread ending
-  #include <windows.h>
+  #include <Windows.h>
   #include <fibersapi.h>
   #if (_WIN32_WINNT < 0x600)  // before Windows Vista 
   WINBASEAPI DWORD WINAPI FlsAlloc( _In_opt_ PFLS_CALLBACK_FUNCTION lpCallback );
@@ -337,18 +336,13 @@ void mi_thread_init(void) mi_attr_noexcept
 {
   // ensure our process has started already
   mi_process_init();
-
+  
   // initialize the thread local default heap
   // (this will call `_mi_heap_set_default_direct` and thus set the
   //  fiber/pthread key to a non-zero value, ensuring `_mi_thread_done` is called)
   if (_mi_heap_init()) return;  // returns true if already initialized
 
-  // don't further initialize for the main thread
-  if (_mi_is_main_thread()) return;
-
-  mi_heap_t* const heap = mi_get_default_heap();
-  if (mi_heap_is_initialized(heap)) { _mi_stat_increase(&heap->tld->stats.threads, 1); }
-
+  _mi_stat_increase(&_mi_stats_main.threads, 1);
   //_mi_verbose_message("thread init: 0x%zx\n", _mi_thread_id());
 }
 
@@ -357,14 +351,11 @@ void mi_thread_done(void) mi_attr_noexcept {
 }
 
 static void _mi_thread_done(mi_heap_t* heap) {
+  _mi_stat_decrease(&_mi_stats_main.threads, 1);
+
   // check thread-id as on Windows shutdown with FLS the main (exit) thread may call this on thread-local heaps...
   if (heap->thread_id != _mi_thread_id()) return;
-
-  // stats
-  if (!_mi_is_main_thread() && mi_heap_is_initialized(heap))  {
-    _mi_stat_decrease(&heap->tld->stats.threads, 1);
-  }
-
+  
   // abandon the thread local heap
   if (_mi_heap_done(heap)) return;  // returns true if already ran
 }
@@ -405,11 +396,11 @@ static bool os_preloading = true;    // true until this module is initialized
 static bool mi_redirected = false;   // true if malloc redirects to mi_malloc
 
 // Returns true if this module has not been initialized; Don't use C runtime routines until it returns false.
-bool _mi_preloading() {
+bool _mi_preloading(void) {
   return os_preloading;
 }
 
-bool mi_is_redirected() mi_attr_noexcept {
+bool mi_is_redirected(void) mi_attr_noexcept {
   return mi_redirected;
 }
 
@@ -431,7 +422,7 @@ mi_decl_export void _mi_redirect_entry(DWORD reason) {
   }
 }
 __declspec(dllimport) bool mi_allocator_init(const char** message);
-__declspec(dllimport) void mi_allocator_done();
+__declspec(dllimport) void mi_allocator_done(void);
 #ifdef __cplusplus
 }
 #endif
@@ -440,7 +431,7 @@ static bool mi_allocator_init(const char** message) {
   if (message != NULL) *message = NULL;
   return true;
 }
-static void mi_allocator_done() {
+static void mi_allocator_done(void) {
   // nothing to do
 }
 #endif

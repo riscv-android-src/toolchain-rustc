@@ -391,11 +391,21 @@ foo!(ok_shadow);
 mod m4;
 bar!(OkMacroUse);
 
+mod m5;
+baz!(OkMacroUseInner);
+
 //- /m3/m4.rs
 foo!(ok_shadow_deep);
 macro_rules! bar {
     ($x:ident) => { struct $x; }
 }
+//- /m3/m5.rs
+#![macro_use]
+macro_rules! baz {
+    ($x:ident) => { struct $x; }
+}
+
+
 "#,
         expect![[r#"
             crate
@@ -423,11 +433,15 @@ macro_rules! bar {
             crate::m3
             OkAfterInside: t v
             OkMacroUse: t v
+            OkMacroUseInner: t v
             m4: t
+            m5: t
             ok_shadow: v
 
             crate::m3::m4
             ok_shadow_deep: v
+
+            crate::m3::m5
         "#]],
     );
 }
@@ -632,13 +646,42 @@ pub struct bar;
 #[test]
 fn expand_derive() {
     let map = compute_crate_def_map(
-        "
-        //- /main.rs
-        #[derive(Copy, Clone)]
+        r#"
+        //- /main.rs crate:main deps:core
+        use core::Copy;
+
+        #[derive(Copy, core::Clone)]
         struct Foo;
-        ",
+
+        //- /core.rs crate:core
+        #[rustc_builtin_macro]
+        pub macro Copy {}
+
+        #[rustc_builtin_macro]
+        pub macro Clone {}
+        "#,
     );
     assert_eq!(map.modules[map.root].scope.impls().len(), 2);
+}
+
+#[test]
+fn resolve_builtin_derive() {
+    check(
+        r#"
+//- /main.rs crate:main deps:core
+use core::*;
+
+//- /core.rs crate:core
+#[rustc_builtin_macro]
+pub macro Clone {}
+
+pub trait Clone {}
+"#,
+        expect![[r#"
+            crate
+            Clone: t m
+        "#]],
+    );
 }
 
 #[test]
@@ -648,7 +691,7 @@ fn macro_expansion_overflow() {
         r#"
 macro_rules! a {
     ($e:expr; $($t:tt)*) => {
-        b!($($t)*);
+        b!(static = (); $($t)*);
     };
     () => {};
 }
@@ -660,10 +703,90 @@ macro_rules! b {
     () => {};
 }
 
-b! { static = #[] (); }
+b! { static = #[] ();}
 "#,
         expect![[r#"
             crate
+        "#]],
+    );
+}
+
+#[test]
+fn resolves_proc_macros() {
+    check(
+        r"
+        struct TokenStream;
+
+        #[proc_macro]
+        pub fn function_like_macro(args: TokenStream) -> TokenStream {
+            args
+        }
+
+        #[proc_macro_attribute]
+        pub fn attribute_macro(_args: TokenStream, item: TokenStream) -> TokenStream {
+            item
+        }
+
+        #[proc_macro_derive(DummyTrait)]
+        pub fn derive_macro(_item: TokenStream) -> TokenStream {
+            TokenStream
+        }
+
+        #[proc_macro_derive(AnotherTrait, attributes(helper_attr))]
+        pub fn derive_macro_2(_item: TokenStream) -> TokenStream {
+            TokenStream
+        }
+        ",
+        expect![[r#"
+            crate
+            AnotherTrait: m
+            DummyTrait: m
+            TokenStream: t v
+            attribute_macro: v m
+            derive_macro: v
+            derive_macro_2: v
+            function_like_macro: v m
+        "#]],
+    );
+}
+
+#[test]
+fn proc_macro_censoring() {
+    // Make sure that only proc macros are publicly exported from proc-macro crates.
+
+    check(
+        r"
+        //- /main.rs crate:main deps:macros
+        pub use macros::*;
+
+        //- /macros.rs crate:macros
+        pub struct TokenStream;
+
+        #[proc_macro]
+        pub fn function_like_macro(args: TokenStream) -> TokenStream {
+            args
+        }
+
+        #[proc_macro_attribute]
+        pub fn attribute_macro(_args: TokenStream, item: TokenStream) -> TokenStream {
+            item
+        }
+
+        #[proc_macro_derive(DummyTrait)]
+        pub fn derive_macro(_item: TokenStream) -> TokenStream {
+            TokenStream
+        }
+
+        #[macro_export]
+        macro_rules! mbe {
+            () => {};
+        }
+        ",
+        expect![[r#"
+            crate
+            DummyTrait: m
+            attribute_macro: m
+            function_like_macro: m
         "#]],
     );
 }

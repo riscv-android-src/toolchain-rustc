@@ -2,10 +2,22 @@
 
 use crate::infer::InferenceTable;
 use chalk_ir::interner::Interner;
-use chalk_ir::visit::{SuperVisit, Visit, Visitor};
+use chalk_ir::visit::{ControlFlow, SuperVisit, Visit, Visitor};
 use chalk_ir::*;
 use std::cmp::max;
 
+/// "Truncation" (called "abstraction" in the papers referenced below)
+/// refers to the act of modifying a goal or answer that has become
+/// too large in order to guarantee termination.
+///
+/// Currently we don't perform truncation (but it might me readded later).
+///
+/// Citations:
+///
+/// - Terminating Evaluation of Logic Programs with Finite Three-Valued Models
+///   - Riguzzi and Swift; ACM Transactions on Computational Logic 2013
+/// - Radial Restraint
+///   - Grosof and Swift; 2013
 pub fn needs_truncation<I: Interner>(
     interner: &I,
     infer: &mut InferenceTable<I>,
@@ -39,16 +51,16 @@ impl<'infer, 'i, I: Interner> TySizeVisitor<'infer, 'i, I> {
 }
 
 impl<'infer, 'i, I: Interner> Visitor<'i, I> for TySizeVisitor<'infer, 'i, I> {
-    type Result = ();
+    type BreakTy = ();
 
-    fn as_dyn(&mut self) -> &mut dyn Visitor<'i, I, Result = Self::Result> {
+    fn as_dyn(&mut self) -> &mut dyn Visitor<'i, I, BreakTy = Self::BreakTy> {
         self
     }
 
-    fn visit_ty(&mut self, ty: &Ty<I>, outer_binder: DebruijnIndex) {
+    fn visit_ty(&mut self, ty: &Ty<I>, outer_binder: DebruijnIndex) -> ControlFlow<()> {
         if let Some(normalized_ty) = self.infer.normalize_ty_shallow(self.interner, ty) {
             normalized_ty.visit_with(self, outer_binder);
-            return;
+            return ControlFlow::CONTINUE;
         }
 
         self.size += 1;
@@ -63,6 +75,7 @@ impl<'infer, 'i, I: Interner> Visitor<'i, I> for TySizeVisitor<'infer, 'i, I> {
         if self.depth == 0 {
             self.size = 0;
         }
+        ControlFlow::CONTINUE
     }
 
     fn interner(&self) -> &'i I {

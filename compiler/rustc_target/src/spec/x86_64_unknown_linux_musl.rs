@@ -1,11 +1,13 @@
-use crate::spec::{LinkerFlavor, Target};
+use crate::spec::{LinkerFlavor, StackProbeType, Target};
 
 pub fn target() -> Target {
     let mut base = super::linux_musl_base::opts();
     base.cpu = "x86-64".to_string();
     base.max_atomic_width = Some(64);
     base.pre_link_args.get_mut(&LinkerFlavor::Gcc).unwrap().push("-m64".to_string());
-    base.stack_probes = true;
+    // don't use probe-stack=inline-asm until rust-lang/rust#83139 is resolved.
+    base.stack_probes = StackProbeType::Call;
+
     base.static_position_independent_executables = true;
 
     Target {

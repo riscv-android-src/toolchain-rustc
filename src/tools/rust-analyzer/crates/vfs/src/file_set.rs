@@ -7,8 +7,9 @@ use std::fmt;
 use fst::{IntoStreamer, Streamer};
 use rustc_hash::FxHashMap;
 
-use crate::{FileId, Vfs, VfsPath};
+use crate::{AnchoredPath, FileId, Vfs, VfsPath};
 
+/// A set of [`VfsPath`]s identified by [`FileId`]s.
 #[derive(Default, Clone, Eq, PartialEq)]
 pub struct FileSet {
     files: FxHashMap<VfsPath, FileId>,
@@ -16,29 +17,42 @@ pub struct FileSet {
 }
 
 impl FileSet {
+    /// Returns the number of stored paths.
     pub fn len(&self) -> usize {
         self.files.len()
     }
-    pub fn resolve_path(&self, anchor: FileId, path: &str) -> Option<FileId> {
-        let mut base = self.paths[&anchor].clone();
+
+    /// Get the id of the file corresponding to `path`.
+    ///
+    /// If either `path`'s [`anchor`](AnchoredPath::anchor) or the resolved path is not in
+    /// the set, returns [`None`].
+    pub fn resolve_path(&self, path: AnchoredPath<'_>) -> Option<FileId> {
+        let mut base = self.paths[&path.anchor].clone();
         base.pop();
-        let path = base.join(path)?;
+        let path = base.join(path.path)?;
         self.files.get(&path).copied()
     }
 
+    /// Get the id corresponding to `path` if it exists in the set.
     pub fn file_for_path(&self, path: &VfsPath) -> Option<&FileId> {
         self.files.get(path)
     }
 
+    /// Get the path corresponding to `file` if it exists in the set.
     pub fn path_for_file(&self, file: &FileId) -> Option<&VfsPath> {
         self.paths.get(file)
     }
 
+    /// Insert the `file_id, path` pair into the set.
+    ///
+    /// # Note
+    /// Multiple [`FileId`] can be mapped to the same [`VfsPath`], and vice-versa.
     pub fn insert(&mut self, file_id: FileId, path: VfsPath) {
         self.files.insert(path.clone(), file_id);
         self.paths.insert(file_id, path);
     }
 
+    /// Iterate over this set's ids.
     pub fn iter(&self) -> impl Iterator<Item = FileId> + '_ {
         self.paths.keys().copied()
     }
@@ -50,9 +64,31 @@ impl fmt::Debug for FileSet {
     }
 }
 
+/// This contains path prefixes to partition a [`Vfs`] into [`FileSet`]s.
+///
+/// # Example
+/// ```rust
+/// # use vfs::{file_set::FileSetConfigBuilder, VfsPath, Vfs};
+/// let mut builder = FileSetConfigBuilder::default();
+/// builder.add_file_set(vec![VfsPath::new_virtual_path("/src".to_string())]);
+/// let config = builder.build();
+/// let mut file_system = Vfs::default();
+/// file_system.set_file_contents(VfsPath::new_virtual_path("/src/main.rs".to_string()), Some(vec![]));
+/// file_system.set_file_contents(VfsPath::new_virtual_path("/src/lib.rs".to_string()), Some(vec![]));
+/// file_system.set_file_contents(VfsPath::new_virtual_path("/build.rs".to_string()), Some(vec![]));
+/// // contains the sets :
+/// // { "/src/main.rs", "/src/lib.rs" }
+/// // { "build.rs" }
+/// let sets = config.partition(&file_system);
+/// ```
 #[derive(Debug)]
 pub struct FileSetConfig {
+    /// Number of sets that `self` can partition a [`Vfs`] into.
+    ///
+    /// This should be the number of sets in `self.map` + 1 for files that don't fit in any
+    /// defined set.
     n_file_sets: usize,
+    /// Map from encoded paths to the set they belong to.
     map: fst::Map<Vec<u8>>,
 }
 
@@ -63,9 +99,14 @@ impl Default for FileSetConfig {
 }
 
 impl FileSetConfig {
+    /// Returns a builder for `FileSetConfig`.
     pub fn builder() -> FileSetConfigBuilder {
         FileSetConfigBuilder::default()
     }
+
+    /// Partition `vfs` into `FileSet`s.
+    ///
+    /// Creates a new [`FileSet`] for every set of prefixes in `self`.
     pub fn partition(&self, vfs: &Vfs) -> Vec<FileSet> {
         let mut scratch_space = Vec::new();
         let mut res = vec![FileSet::default(); self.len()];
@@ -75,9 +116,15 @@ impl FileSetConfig {
         }
         res
     }
+
+    /// Number of sets that `self` can partition a [`Vfs`] into.
     fn len(&self) -> usize {
         self.n_file_sets
     }
+
+    /// Returns the set index for the given `path`.
+    ///
+    /// `scratch_space` is used as a buffer and will be entirely replaced.
     fn classify(&self, path: &VfsPath, scratch_space: &mut Vec<u8>) -> usize {
         scratch_space.clear();
         path.encode(scratch_space);
@@ -91,6 +138,7 @@ impl FileSetConfig {
     }
 }
 
+/// Builder for [`FileSetConfig`].
 pub struct FileSetConfigBuilder {
     roots: Vec<Vec<VfsPath>>,
 }
@@ -102,12 +150,17 @@ impl Default for FileSetConfigBuilder {
 }
 
 impl FileSetConfigBuilder {
+    /// Returns the number of sets currently held.
     pub fn len(&self) -> usize {
         self.roots.len()
     }
+
+    /// Add a new set of paths prefixes.
     pub fn add_file_set(&mut self, roots: Vec<VfsPath>) {
         self.roots.push(roots)
     }
+
+    /// Build the `FileSetConfig`.
     pub fn build(self) -> FileSetConfig {
         let n_file_sets = self.roots.len() + 1;
         let map = {
@@ -127,11 +180,15 @@ impl FileSetConfigBuilder {
     }
 }
 
+/// Implements [`fst::Automaton`]
+///
+/// It will match if `prefix_of` is a prefix of the given data.
 struct PrefixOf<'a> {
     prefix_of: &'a [u8],
 }
 
 impl<'a> PrefixOf<'a> {
+    /// Creates a new `PrefixOf` from the given slice.
     fn new(prefix_of: &'a [u8]) -> Self {
         Self { prefix_of }
     }
@@ -158,53 +215,4 @@ impl fst::Automaton for PrefixOf<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn path_prefix() {
-        let mut file_set = FileSetConfig::builder();
-        file_set.add_file_set(vec![VfsPath::new_virtual_path("/foo".into())]);
-        file_set.add_file_set(vec![VfsPath::new_virtual_path("/foo/bar/baz".into())]);
-        let file_set = file_set.build();
-
-        let mut vfs = Vfs::default();
-        vfs.set_file_contents(
-            VfsPath::new_virtual_path("/foo/src/lib.rs".into()),
-            Some(Vec::new()),
-        );
-        vfs.set_file_contents(
-            VfsPath::new_virtual_path("/foo/src/bar/baz/lib.rs".into()),
-            Some(Vec::new()),
-        );
-        vfs.set_file_contents(
-            VfsPath::new_virtual_path("/foo/bar/baz/lib.rs".into()),
-            Some(Vec::new()),
-        );
-        vfs.set_file_contents(VfsPath::new_virtual_path("/quux/lib.rs".into()), Some(Vec::new()));
-
-        let partition = file_set.partition(&vfs).into_iter().map(|it| it.len()).collect::<Vec<_>>();
-        assert_eq!(partition, vec![2, 1, 1]);
-    }
-
-    #[test]
-    fn name_prefix() {
-        let mut file_set = FileSetConfig::builder();
-        file_set.add_file_set(vec![VfsPath::new_virtual_path("/foo".into())]);
-        file_set.add_file_set(vec![VfsPath::new_virtual_path("/foo-things".into())]);
-        let file_set = file_set.build();
-
-        let mut vfs = Vfs::default();
-        vfs.set_file_contents(
-            VfsPath::new_virtual_path("/foo/src/lib.rs".into()),
-            Some(Vec::new()),
-        );
-        vfs.set_file_contents(
-            VfsPath::new_virtual_path("/foo-things/src/lib.rs".into()),
-            Some(Vec::new()),
-        );
-
-        let partition = file_set.partition(&vfs).into_iter().map(|it| it.len()).collect::<Vec<_>>();
-        assert_eq!(partition, vec![1, 1, 0]);
-    }
-}
+mod tests;

@@ -7,20 +7,20 @@
 //! This usually involves resolving names, collecting generic arguments etc.
 use std::{iter, sync::Arc};
 
-use arena::map::ArenaMap;
 use base_db::CrateId;
 use hir_def::{
     adt::StructKind,
     builtin_type::BuiltinType,
-    generics::{TypeParamProvenance, WherePredicate, WherePredicateTarget},
+    generics::{TypeParamProvenance, WherePredicate, WherePredicateTypeTarget},
     path::{GenericArg, Path, PathSegment, PathSegments},
     resolver::{HasResolver, Resolver, TypeNs},
     type_ref::{TypeBound, TypeRef},
-    AdtId, AssocContainerId, AssocItemId, ConstId, EnumId, EnumVariantId, FunctionId, GenericDefId,
-    HasModule, ImplId, LocalFieldId, Lookup, StaticId, StructId, TraitId, TypeAliasId, TypeParamId,
-    UnionId, VariantId,
+    AdtId, AssocContainerId, AssocItemId, ConstId, ConstParamId, EnumId, EnumVariantId, FunctionId,
+    GenericDefId, HasModule, ImplId, LocalFieldId, Lookup, StaticId, StructId, TraitId,
+    TypeAliasId, TypeParamId, UnionId, VariantId,
 };
 use hir_expand::name::Name;
+use la_arena::ArenaMap;
 use smallvec::SmallVec;
 use stdx::impl_from;
 use test_utils::mark;
@@ -171,7 +171,7 @@ impl Ty {
                 let inner_ty = Ty::from_hir(ctx, inner);
                 Ty::apply_one(TypeCtor::Slice, inner_ty)
             }
-            TypeRef::Reference(inner, mutability) => {
+            TypeRef::Reference(inner, _, mutability) => {
                 let inner_ty = Ty::from_hir(ctx, inner);
                 Ty::apply_one(TypeCtor::Ref(*mutability), inner_ty)
             }
@@ -491,16 +491,16 @@ impl Ty {
     fn from_hir_path_inner(
         ctx: &TyLoweringContext<'_>,
         segment: PathSegment<'_>,
-        typable: TyDefId,
+        typeable: TyDefId,
         infer_args: bool,
     ) -> Ty {
-        let generic_def = match typable {
+        let generic_def = match typeable {
             TyDefId::BuiltinType(_) => None,
             TyDefId::AdtId(it) => Some(it.into()),
             TyDefId::TypeAliasId(it) => Some(it.into()),
         };
         let substs = substs_from_path_segment(ctx, segment, generic_def, infer_args);
-        ctx.db.ty(typable).subst(&substs)
+        ctx.db.ty(typeable).subst(&substs)
     }
 
     /// Collect generic arguments from a path into a `Substs`. See also
@@ -555,7 +555,7 @@ fn substs_from_path_segment(
 
     substs.extend(iter::repeat(Ty::Unknown).take(parent_params));
 
-    let mut had_explicit_args = false;
+    let mut had_explicit_type_args = false;
 
     if let Some(generic_args) = &segment.args_and_bindings {
         if !generic_args.has_self_type {
@@ -565,13 +565,20 @@ fn substs_from_path_segment(
             if generic_args.has_self_type { self_params + type_params } else { type_params };
         let skip = if generic_args.has_self_type && self_params == 0 { 1 } else { 0 };
         // if args are provided, it should be all of them, but we can't rely on that
-        for arg in generic_args.args.iter().skip(skip).take(expected_num) {
+        for arg in generic_args
+            .args
+            .iter()
+            .filter(|arg| matches!(arg, GenericArg::Type(_)))
+            .skip(skip)
+            .take(expected_num)
+        {
             match arg {
                 GenericArg::Type(type_ref) => {
-                    had_explicit_args = true;
+                    had_explicit_type_args = true;
                     let ty = Ty::from_hir(ctx, type_ref);
                     substs.push(ty);
                 }
+                GenericArg::Lifetime(_) => {}
             }
         }
     }
@@ -579,7 +586,7 @@ fn substs_from_path_segment(
     // handle defaults. In expression or pattern path segments without
     // explicitly specified type arguments, missing type arguments are inferred
     // (i.e. defaults aren't used).
-    if !infer_args || had_explicit_args {
+    if !infer_args || had_explicit_type_args {
         if let Some(def_generic) = def_generic {
             let defaults = ctx.db.generic_defaults(def_generic);
             assert_eq!(total_len, defaults.len());
@@ -657,7 +664,7 @@ impl TraitRef {
     ) -> Option<TraitRef> {
         match bound {
             TypeBound::Path(path) => TraitRef::from_path(ctx, path, Some(self_ty)),
-            TypeBound::Error => None,
+            TypeBound::Lifetime(_) | TypeBound::Error => None,
         }
     }
 }
@@ -667,22 +674,31 @@ impl GenericPredicate {
         ctx: &'a TyLoweringContext<'a>,
         where_predicate: &'a WherePredicate,
     ) -> impl Iterator<Item = GenericPredicate> + 'a {
-        let self_ty = match &where_predicate.target {
-            WherePredicateTarget::TypeRef(type_ref) => Ty::from_hir(ctx, type_ref),
-            WherePredicateTarget::TypeParam(param_id) => {
-                let generic_def = ctx.resolver.generic_def().expect("generics in scope");
-                let generics = generics(ctx.db.upcast(), generic_def);
-                let param_id = hir_def::TypeParamId { parent: generic_def, local_id: *param_id };
-                match ctx.type_param_mode {
-                    TypeParamLoweringMode::Placeholder => Ty::Placeholder(param_id),
-                    TypeParamLoweringMode::Variable => {
-                        let idx = generics.param_idx(param_id).expect("matching generics");
-                        Ty::Bound(BoundVar::new(DebruijnIndex::INNERMOST, idx))
+        match where_predicate {
+            WherePredicate::ForLifetime { target, bound, .. }
+            | WherePredicate::TypeBound { target, bound } => {
+                let self_ty = match target {
+                    WherePredicateTypeTarget::TypeRef(type_ref) => Ty::from_hir(ctx, type_ref),
+                    WherePredicateTypeTarget::TypeParam(param_id) => {
+                        let generic_def = ctx.resolver.generic_def().expect("generics in scope");
+                        let generics = generics(ctx.db.upcast(), generic_def);
+                        let param_id =
+                            hir_def::TypeParamId { parent: generic_def, local_id: *param_id };
+                        match ctx.type_param_mode {
+                            TypeParamLoweringMode::Placeholder => Ty::Placeholder(param_id),
+                            TypeParamLoweringMode::Variable => {
+                                let idx = generics.param_idx(param_id).expect("matching generics");
+                                Ty::Bound(BoundVar::new(DebruijnIndex::INNERMOST, idx))
+                            }
+                        }
                     }
-                }
+                };
+                GenericPredicate::from_type_bound(ctx, bound, self_ty)
+                    .collect::<Vec<_>>()
+                    .into_iter()
             }
-        };
-        GenericPredicate::from_type_bound(ctx, &where_predicate.bound, self_ty)
+            WherePredicate::Lifetime { .. } => vec![].into_iter(),
+        }
     }
 
     pub(crate) fn from_type_bound<'a>(
@@ -707,7 +723,7 @@ fn assoc_type_bindings_from_type_bound<'a>(
 ) -> impl Iterator<Item = GenericPredicate> + 'a {
     let last_segment = match bound {
         TypeBound::Path(path) => path.segments().last(),
-        TypeBound::Error => None,
+        TypeBound::Error | TypeBound::Lifetime(_) => None,
     };
     last_segment
         .into_iter()
@@ -872,11 +888,15 @@ pub(crate) fn generic_predicates_for_param_query(
     resolver
         .where_predicates_in_scope()
         // we have to filter out all other predicates *first*, before attempting to lower them
-        .filter(|pred| match &pred.target {
-            WherePredicateTarget::TypeRef(type_ref) => {
-                Ty::from_hir_only_param(&ctx, type_ref) == Some(param_id)
-            }
-            WherePredicateTarget::TypeParam(local_id) => *local_id == param_id.local_id,
+        .filter(|pred| match pred {
+            WherePredicate::ForLifetime { target, .. }
+            | WherePredicate::TypeBound { target, .. } => match target {
+                WherePredicateTypeTarget::TypeRef(type_ref) => {
+                    Ty::from_hir_only_param(&ctx, type_ref) == Some(param_id)
+                }
+                WherePredicateTypeTarget::TypeParam(local_id) => *local_id == param_id.local_id,
+            },
+            WherePredicate::Lifetime { .. } => false,
         })
         .flat_map(|pred| {
             GenericPredicate::from_where_predicate(&ctx, pred)
@@ -1101,10 +1121,14 @@ fn type_for_type_alias(db: &dyn HirDatabase, t: TypeAliasId) -> Binders<Ty> {
     let resolver = t.resolver(db.upcast());
     let ctx =
         TyLoweringContext::new(db, &resolver).with_type_param_mode(TypeParamLoweringMode::Variable);
-    let type_ref = &db.type_alias_data(t).type_ref;
     let substs = Substs::bound_vars(&generics, DebruijnIndex::INNERMOST);
-    let inner = Ty::from_hir(&ctx, type_ref.as_ref().unwrap_or(&TypeRef::Error));
-    Binders::new(substs.len(), inner)
+    if db.type_alias_data(t).is_extern {
+        Binders::new(substs.len(), Ty::apply(TypeCtor::ForeignType(t), substs))
+    } else {
+        let type_ref = &db.type_alias_data(t).type_ref;
+        let inner = Ty::from_hir(&ctx, type_ref.as_ref().unwrap_or(&TypeRef::Error));
+        Binders::new(substs.len(), inner)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1123,7 +1147,7 @@ impl CallableDefId {
             CallableDefId::StructId(s) => s.lookup(db).container.module(db),
             CallableDefId::EnumVariantId(e) => e.parent.lookup(db).container.module(db),
         }
-        .krate
+        .krate()
     }
 }
 
@@ -1195,6 +1219,15 @@ pub(crate) fn impl_self_ty_query(db: &dyn HirDatabase, impl_id: ImplId) -> Binde
     let ctx =
         TyLoweringContext::new(db, &resolver).with_type_param_mode(TypeParamLoweringMode::Variable);
     Binders::new(generics.len(), Ty::from_hir(&ctx, &impl_data.target_type))
+}
+
+pub(crate) fn const_param_ty_query(db: &dyn HirDatabase, def: ConstParamId) -> Ty {
+    let parent_data = db.generic_params(def.parent);
+    let data = &parent_data.consts[def.local_id];
+    let resolver = def.parent.resolver(db.upcast());
+    let ctx = TyLoweringContext::new(db, &resolver);
+
+    Ty::from_hir(&ctx, &data.ty)
 }
 
 pub(crate) fn impl_self_ty_recover(

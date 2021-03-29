@@ -195,9 +195,15 @@ up the sysroot.  If you are using `miri` (the Miri driver) directly, see the
 Miri adds its own set of `-Z` flags, which are usually set via the `MIRIFLAGS`
 environment variable:
 
+* `-Zmiri-compare-exchange-weak-failure-rate=<rate>` changes the failure rate of
+  `compare_exchange_weak` operations. The default is `0.8` (so 4 out of 5 weak ops will fail).
+  You can change it to any value between `0.0` and `1.0`, where `1.0` means it
+  will always fail and `0.0` means it will never fail.
 * `-Zmiri-disable-alignment-check` disables checking pointer alignment, so you
   can focus on other failures, but it means Miri can miss bugs in your program.
   Using this flag is **unsound**.
+* `-Zmiri-disable-data-race-detector` disables checking for data races.  Using
+  this flag is **unsound**.
 * `-Zmiri-disable-stacked-borrows` disables checking the experimental
   [Stacked Borrows] aliasing rules.  This can make Miri run faster, but it also
   means no aliasing violations will be detected.  Using this flag is **unsound**
@@ -286,6 +292,8 @@ different Miri binaries, and as such worth documenting:
   directory after loading all the source files, but before commencing
   interpretation. This is useful if the interpreted program wants a different
   working directory at run-time than at build-time.
+* `MIRI_VERBOSE` when set to any value tells the various `cargo-miri` phases to
+  perform verbose logging.
   
 [testing-miri]: CONTRIBUTING.md#testing-the-miri-driver
 
@@ -350,9 +358,9 @@ If you want to contribute to Miri, great!  Please check out our
 [contribution guide](CONTRIBUTING.md).
 
 For help with running Miri, you can open an issue here on
-GitHub or contact us (`oli-obk` and `RalfJ`) on the [Rust Zulip].
+GitHub or use the [Miri stream on the Rust Zulip][zulip].
 
-[Rust Zulip]: https://rust-lang.zulipchat.com
+[zulip]: https://rust-lang.zulipchat.com/#narrow/stream/269128-miri
 
 ## History
 

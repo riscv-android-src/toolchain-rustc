@@ -11,6 +11,9 @@ terms of the MIT license. A copy of the license can be found in the file
 
 #include <string.h>  // memset, memcpy
 
+#if defined(_MSC_VER) && (_MSC_VER < 1920)
+#pragma warning(disable:4204)  // non-constant aggregate initializer
+#endif
 
 /* -----------------------------------------------------------
   Helpers
@@ -142,7 +145,7 @@ static void mi_heap_collect_ex(mi_heap_t* heap, mi_collect_t collect)
 
   // collect all pages owned by this thread
   mi_heap_visit_pages(heap, &mi_heap_page_collect, &collect, NULL);
-  mi_assert_internal( collect != MI_ABANDON || mi_atomic_read_ptr(mi_block_t,&heap->thread_delayed_free) == NULL );
+  mi_assert_internal( collect != MI_ABANDON || mi_atomic_load_ptr_acquire(mi_block_t,&heap->thread_delayed_free) == NULL );
 
   // collect segment caches
   if (collect >= MI_FORCE) {

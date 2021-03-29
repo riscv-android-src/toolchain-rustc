@@ -40,7 +40,7 @@
 //!
 //! `expect!` returns an instance of `Expect` struct, which holds position
 //! information and a string literal. Use `Expect::assert_eq` for string
-//! comparison. Use `Expect::assert_eq` for verbose debug comparison. Note that
+//! comparison. Use `Expect::assert_debug_eq` for verbose debug comparison. Note that
 //! leading indentation is automatically removed.
 //!
 //! ```
@@ -60,13 +60,13 @@
 //! expected.assert_debug_eq(&actual);
 //! ```
 //!
-//! Be careful with `assert_debug_eq` -- in general, stability of the debug
+//! Be careful with `assert_debug_eq` - in general, stability of the debug
 //! representation is not guaranteed. However, even if it changes, you can
 //! quickly update all the tests by running the test suite with `UPDATE_EXPECT`
 //! environmental variable set.
 //!
-//! If the expected data is to verbose for inline test, you can store it in the
-//! external file using `expect_file!` macro:
+//! If the expected data is too verbose to include inline, you can store it in an
+//! external file using the `expect_file!` macro:
 //!
 //! ```no_run
 //! use expect_test::expect_file;
@@ -80,7 +80,7 @@
 //!
 //! # Suggested Workflows
 //!
-//! I like to use data-driven test with `expect_test`. I usually define a single
+//! I like to use data-driven tests with `expect_test`. I usually define a single
 //! driver function `check` and then call it from individual tests:
 //!
 //! ```
@@ -123,9 +123,9 @@
 //!
 //! # Alternatives
 //!
-//! * [insta](https://crates.io/crates/insta) -- a more feature full snapshot
+//! * [insta](https://crates.io/crates/insta) - a more feature full snapshot
 //!   testing library.
-//! * [k9](https://crates.io/crates/k9) -- testing library which includes
+//! * [k9](https://crates.io/crates/k9) - a testing library which includes
 //!   support for snapshot testing among other things.
 //!
 //! # Maintenance status
@@ -144,7 +144,6 @@ use std::{
     sync::Mutex,
 };
 
-use difference::Changeset;
 use once_cell::sync::Lazy;
 
 const HELP: &str = "
@@ -334,7 +333,7 @@ impl Runtime {
         let print_help = !mem::replace(&mut self.help_printed, true);
         let help = if print_help { HELP } else { "" };
 
-        let diff = Changeset::new(actual, expected, "\n");
+        let diff = dissimilar::diff(expected, actual);
 
         println!(
             "\n
@@ -356,7 +355,11 @@ impl Runtime {
 {}
 ----
 ",
-            position, help, expected, actual, diff
+            position,
+            help,
+            expected,
+            actual,
+            format_chunks(diff)
         );
         // Use resume_unwind instead of panic!() to prevent a backtrace, which is unnecessary noise.
         panic::resume_unwind(Box::new(()));
@@ -513,6 +516,19 @@ impl<'a> Iterator for LinesWithEnds<'a> {
         self.text = next;
         Some(res)
     }
+}
+
+fn format_chunks(chunks: Vec<dissimilar::Chunk>) -> String {
+    let mut buf = String::new();
+    for chunk in chunks {
+        let formatted = match chunk {
+            dissimilar::Chunk::Equal(text) => text.into(),
+            dissimilar::Chunk::Delete(text) => format!("\x1b[41m{}\x1b[0m", text),
+            dissimilar::Chunk::Insert(text) => format!("\x1b[42m{}\x1b[0m", text),
+        };
+        buf.push_str(&formatted);
+    }
+    buf
 }
 
 #[cfg(test)]

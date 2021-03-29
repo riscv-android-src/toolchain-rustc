@@ -8,36 +8,36 @@ use std::{
 
 use crossbeam_channel::{after, select, Receiver};
 use lsp_server::{Connection, Message, Notification, Request};
-use lsp_types::{
-    notification::Exit, request::Shutdown, TextDocumentIdentifier, Url, WorkDoneProgress,
-};
-use lsp_types::{ProgressParams, ProgressParamsValue};
+use lsp_types::{notification::Exit, request::Shutdown, TextDocumentIdentifier, Url};
 use project_model::ProjectManifest;
-use rust_analyzer::{
-    config::{ClientCapsConfig, Config, FilesConfig, FilesWatcher, LinkedProject},
-    main_loop,
-};
+use rust_analyzer::{config::Config, lsp_ext, main_loop};
 use serde::Serialize;
-use serde_json::{to_string_pretty, Value};
+use serde_json::{json, to_string_pretty, Value};
 use test_utils::{find_mismatch, Fixture};
 use vfs::AbsPathBuf;
 
 use crate::testdir::TestDir;
 
-pub struct Project<'a> {
+pub(crate) struct Project<'a> {
     fixture: &'a str,
     with_sysroot: bool,
     tmp_dir: Option<TestDir>,
     roots: Vec<PathBuf>,
-    config: Option<Box<dyn Fn(&mut Config)>>,
+    config: serde_json::Value,
 }
 
 impl<'a> Project<'a> {
-    pub fn with_fixture(fixture: &str) -> Project {
-        Project { fixture, tmp_dir: None, roots: vec![], with_sysroot: false, config: None }
+    pub(crate) fn with_fixture(fixture: &str) -> Project {
+        Project {
+            fixture,
+            tmp_dir: None,
+            roots: vec![],
+            with_sysroot: false,
+            config: serde_json::Value::Null,
+        }
     }
 
-    pub fn tmp_dir(mut self, tmp_dir: TestDir) -> Project<'a> {
+    pub(crate) fn tmp_dir(mut self, tmp_dir: TestDir) -> Project<'a> {
         self.tmp_dir = Some(tmp_dir);
         self
     }
@@ -47,21 +47,21 @@ impl<'a> Project<'a> {
         self
     }
 
-    pub fn with_sysroot(mut self, sysroot: bool) -> Project<'a> {
-        self.with_sysroot = sysroot;
+    pub(crate) fn with_sysroot(mut self, yes: bool) -> Project<'a> {
+        self.with_sysroot = yes;
         self
     }
 
-    pub fn with_config(mut self, config: impl Fn(&mut Config) + 'static) -> Project<'a> {
-        self.config = Some(Box::new(config));
+    pub(crate) fn with_config(mut self, config: serde_json::Value) -> Project<'a> {
+        self.config = config;
         self
     }
 
-    pub fn server(self) -> Server {
+    pub(crate) fn server(self) -> Server {
         let tmp_dir = self.tmp_dir.unwrap_or_else(|| TestDir::new());
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            env_logger::builder().is_test(true).try_init().unwrap();
+            env_logger::builder().is_test(true).parse_env("RA_LOG").try_init().unwrap();
             profile::init_from(crate::PROFILE);
         });
 
@@ -77,38 +77,54 @@ impl<'a> Project<'a> {
         if roots.is_empty() {
             roots.push(tmp_dir_path.clone());
         }
-        let linked_projects = roots
+        let discovered_projects = roots
             .into_iter()
             .map(|it| ProjectManifest::discover_single(&it).unwrap())
-            .map(LinkedProject::from)
             .collect::<Vec<_>>();
 
-        let mut config = Config {
-            client_caps: ClientCapsConfig {
-                location_link: true,
-                code_action_literals: true,
-                work_done_progress: true,
+        let mut config = Config::new(
+            tmp_dir_path,
+            lsp_types::ClientCapabilities {
+                text_document: Some(lsp_types::TextDocumentClientCapabilities {
+                    definition: Some(lsp_types::GotoCapability {
+                        link_support: Some(true),
+                        ..Default::default()
+                    }),
+                    code_action: Some(lsp_types::CodeActionClientCapabilities {
+                        code_action_literal_support: Some(
+                            lsp_types::CodeActionLiteralSupport::default(),
+                        ),
+                        ..Default::default()
+                    }),
+                    hover: Some(lsp_types::HoverClientCapabilities {
+                        content_format: Some(vec![lsp_types::MarkupKind::Markdown]),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                window: Some(lsp_types::WindowClientCapabilities {
+                    work_done_progress: Some(false),
+                    ..Default::default()
+                }),
+                experimental: Some(json!({
+                    "statusNotification": true,
+                })),
                 ..Default::default()
             },
-            with_sysroot: self.with_sysroot,
-            linked_projects,
-            files: FilesConfig { watcher: FilesWatcher::Client, exclude: Vec::new() },
-            ..Config::new(tmp_dir_path)
-        };
-        if let Some(f) = &self.config {
-            f(&mut config)
-        }
+        );
+        config.discovered_projects = Some(discovered_projects);
+        config.update(self.config);
 
         Server::new(tmp_dir, config)
     }
 }
 
-pub fn project(fixture: &str) -> Server {
+pub(crate) fn project(fixture: &str) -> Server {
     Project::with_fixture(fixture).server()
 }
 
-pub struct Server {
-    req_id: Cell<u64>,
+pub(crate) struct Server {
+    req_id: Cell<i32>,
     messages: RefCell<Vec<Message>>,
     _thread: jod_thread::JoinHandle<()>,
     client: Connection,
@@ -128,12 +144,12 @@ impl Server {
         Server { req_id: Cell::new(1), dir, messages: Default::default(), client, _thread }
     }
 
-    pub fn doc_id(&self, rel_path: &str) -> TextDocumentIdentifier {
+    pub(crate) fn doc_id(&self, rel_path: &str) -> TextDocumentIdentifier {
         let path = self.dir.path().join(rel_path);
         TextDocumentIdentifier { uri: Url::from_file_path(path).unwrap() }
     }
 
-    pub fn notification<N>(&self, params: N::Params)
+    pub(crate) fn notification<N>(&self, params: N::Params)
     where
         N: lsp_types::notification::Notification,
         N::Params: Serialize,
@@ -142,7 +158,7 @@ impl Server {
         self.send_notification(r)
     }
 
-    pub fn request<R>(&self, params: R::Params, expected_resp: Value)
+    pub(crate) fn request<R>(&self, params: R::Params, expected_resp: Value)
     where
         R: lsp_types::request::Request,
         R::Params: Serialize,
@@ -159,26 +175,23 @@ impl Server {
         }
     }
 
-    pub fn send_request<R>(&self, params: R::Params) -> Value
+    pub(crate) fn send_request<R>(&self, params: R::Params) -> Value
     where
         R: lsp_types::request::Request,
         R::Params: Serialize,
     {
         let id = self.req_id.get();
-        self.req_id.set(id + 1);
+        self.req_id.set(id.wrapping_add(1));
 
         let r = Request::new(id.into(), R::METHOD.to_string(), params);
         self.send_request_(r)
     }
     fn send_request_(&self, r: Request) -> Value {
         let id = r.id.clone();
-        self.client.sender.send(r.into()).unwrap();
-        while let Some(msg) = self.recv() {
+        self.client.sender.send(r.clone().into()).unwrap();
+        while let Some(msg) = self.recv().unwrap_or_else(|Timeout| panic!("timeout: {:?}", r)) {
             match msg {
                 Message::Request(req) => {
-                    if req.method == "window/workDoneProgress/create" {
-                        continue;
-                    }
                     if req.method == "client/registerCapability" {
                         let params = req.params.to_string();
                         if ["workspace/didChangeWatchedFiles", "textDocument/didSave"]
@@ -200,24 +213,28 @@ impl Server {
                 }
             }
         }
-        panic!("no response");
+        panic!("no response for {:?}", r);
     }
-    pub fn wait_until_workspace_is_loaded(self) -> Server {
+    pub(crate) fn wait_until_workspace_is_loaded(self) -> Server {
         self.wait_for_message_cond(1, &|msg: &Message| match msg {
-            Message::Notification(n) if n.method == "$/progress" => {
-                match n.clone().extract::<ProgressParams>("$/progress").unwrap() {
-                    ProgressParams {
-                        token: lsp_types::ProgressToken::String(ref token),
-                        value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(_)),
-                    } if token == "rustAnalyzer/roots scanned" => true,
-                    _ => false,
-                }
+            Message::Notification(n) if n.method == "rust-analyzer/status" => {
+                let status = n
+                    .clone()
+                    .extract::<lsp_ext::StatusParams>("rust-analyzer/status")
+                    .unwrap()
+                    .status;
+                matches!(status, lsp_ext::Status::Ready)
             }
             _ => false,
-        });
+        })
+        .unwrap_or_else(|Timeout| panic!("timeout while waiting for ws to load"));
         self
     }
-    fn wait_for_message_cond(&self, n: usize, cond: &dyn Fn(&Message) -> bool) {
+    fn wait_for_message_cond(
+        &self,
+        n: usize,
+        cond: &dyn Fn(&Message) -> bool,
+    ) -> Result<(), Timeout> {
         let mut total = 0;
         for msg in self.messages.borrow().iter() {
             if cond(msg) {
@@ -225,23 +242,26 @@ impl Server {
             }
         }
         while total < n {
-            let msg = self.recv().expect("no response");
+            let msg = self.recv()?.expect("no response");
             if cond(&msg) {
                 total += 1;
             }
         }
+        Ok(())
     }
-    fn recv(&self) -> Option<Message> {
-        recv_timeout(&self.client.receiver).map(|msg| {
+    fn recv(&self) -> Result<Option<Message>, Timeout> {
+        let msg = recv_timeout(&self.client.receiver)?;
+        let msg = msg.map(|msg| {
             self.messages.borrow_mut().push(msg.clone());
             msg
-        })
+        });
+        Ok(msg)
     }
     fn send_notification(&self, not: Notification) {
         self.client.sender.send(Message::Notification(not)).unwrap();
     }
 
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         self.dir.path()
     }
 }
@@ -253,11 +273,13 @@ impl Drop for Server {
     }
 }
 
-fn recv_timeout(receiver: &Receiver<Message>) -> Option<Message> {
+struct Timeout;
+
+fn recv_timeout(receiver: &Receiver<Message>) -> Result<Option<Message>, Timeout> {
     let timeout =
         if cfg!(target_os = "macos") { Duration::from_secs(300) } else { Duration::from_secs(120) };
     select! {
-        recv(receiver) -> msg => msg.ok(),
-        recv(after(timeout)) -> _ => panic!("timed out"),
+        recv(receiver) -> msg => Ok(msg.ok()),
+        recv(after(timeout)) -> _ => Err(Timeout),
     }
 }

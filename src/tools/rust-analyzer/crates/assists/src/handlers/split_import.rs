@@ -9,14 +9,14 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 // Wraps the tail of import into braces.
 //
 // ```
-// use std::<|>collections::HashMap;
+// use std::$0collections::HashMap;
 // ```
 // ->
 // ```
 // use std::{collections::HashMap};
 // ```
 pub(crate) fn split_import(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    let colon_colon = ctx.find_token_at_offset(T![::])?;
+    let colon_colon = ctx.find_token_syntax_at_offset(T![::])?;
     let path = ast::Path::cast(colon_colon.parent())?.qualifier()?;
     let top_path = successors(Some(path.clone()), |it| it.parent_path()).last()?;
 
@@ -43,7 +43,7 @@ mod tests {
     fn test_split_import() {
         check_assist(
             split_import,
-            "use crate::<|>db::RootDatabase;",
+            "use crate::$0db::RootDatabase;",
             "use crate::{db::RootDatabase};",
         )
     }
@@ -52,19 +52,19 @@ mod tests {
     fn split_import_works_with_trees() {
         check_assist(
             split_import,
-            "use crate:<|>:db::{RootDatabase, FileSymbol}",
+            "use crate:$0:db::{RootDatabase, FileSymbol}",
             "use crate::{db::{RootDatabase, FileSymbol}}",
         )
     }
 
     #[test]
     fn split_import_target() {
-        check_assist_target(split_import, "use crate::<|>db::{RootDatabase, FileSymbol}", "::");
+        check_assist_target(split_import, "use crate::$0db::{RootDatabase, FileSymbol}", "::");
     }
 
     #[test]
     fn issue4044() {
-        check_assist_not_applicable(split_import, "use crate::<|>:::self;")
+        check_assist_not_applicable(split_import, "use crate::$0:::self;")
     }
 
     #[test]
@@ -72,7 +72,7 @@ mod tests {
         check_assist_not_applicable(
             split_import,
             r"
-use std::<|>
+use std::$0
 fn main() {}",
         );
     }

@@ -10,14 +10,15 @@
 
 use std::env;
 
+use anyhow::bail;
 use codegen::CodegenCmd;
 use pico_args::Arguments;
+use xshell::{cmd, cp, pushd};
 use xtask::{
     codegen::{self, Mode},
     dist::DistCmd,
-    install::{ClientOpt, InstallCmd, Malloc, ServerOpt},
+    install::{InstallCmd, Malloc, ServerOpt},
     metrics::MetricsCmd,
-    not_bash::pushd,
     pre_cache::PreCacheCmd,
     pre_commit, project_root,
     release::{PromoteCmd, ReleaseCmd},
@@ -29,7 +30,7 @@ fn main() -> Result<()> {
         return pre_commit::run_hook();
     }
 
-    let _d = pushd(project_root());
+    let _d = pushd(project_root())?;
 
     let mut args = Arguments::from_env();
     let subcommand = args.subcommand()?.unwrap_or_default();
@@ -46,80 +47,96 @@ USAGE:
     cargo xtask install [FLAGS]
 
 FLAGS:
-        --client-code    Install only VS Code plugin
-        --server         Install only the language server
-        --mimalloc       Use mimalloc for server
-    -h, --help           Prints help information
+        --client[=CLIENT] Install only VS Code plugin.
+                          CLIENT is one of 'code', 'code-exploration', 'code-insiders', 'codium', or 'code-oss'
+        --server          Install only the language server
+        --mimalloc        Use mimalloc allocator for server
+        --jemalloc        Use jemalloc allocator for server
+    -h, --help            Prints help information
         "
                 );
                 return Ok(());
             }
             let server = args.contains("--server");
-            let client_code = args.contains("--client-code");
+            let client_code = args.contains("--client");
             if server && client_code {
                 eprintln!(
-                    "error: The argument `--server` cannot be used with `--client-code`\n\n\
+                    "error: The argument `--server` cannot be used with `--client`\n\n\
                      For more information try --help"
                 );
                 return Ok(());
             }
 
-            let malloc =
-                if args.contains("--mimalloc") { Malloc::Mimalloc } else { Malloc::System };
+            let malloc = if args.contains("--mimalloc") {
+                Malloc::Mimalloc
+            } else if args.contains("--jemalloc") {
+                Malloc::Jemalloc
+            } else {
+                Malloc::System
+            };
 
-            args.finish()?;
+            let client_opt = args.opt_value_from_str("--client")?;
+
+            finish_args(args)?;
 
             InstallCmd {
-                client: if server { None } else { Some(ClientOpt::VsCode) },
+                client: if server { None } else { Some(client_opt.unwrap_or_default()) },
                 server: if client_code { None } else { Some(ServerOpt { malloc }) },
             }
             .run()
         }
         "codegen" => {
             let features = args.contains("--features");
-            args.finish()?;
+            finish_args(args)?;
             CodegenCmd { features }.run()
         }
         "format" => {
-            args.finish()?;
+            finish_args(args)?;
             run_rustfmt(Mode::Overwrite)
         }
         "install-pre-commit-hook" => {
-            args.finish()?;
+            finish_args(args)?;
             pre_commit::install_hook()
         }
         "lint" => {
-            args.finish()?;
+            finish_args(args)?;
             run_clippy()
         }
         "fuzz-tests" => {
-            args.finish()?;
+            finish_args(args)?;
             run_fuzzer()
         }
         "pre-cache" => {
-            args.finish()?;
+            finish_args(args)?;
             PreCacheCmd.run()
         }
         "release" => {
             let dry_run = args.contains("--dry-run");
-            args.finish()?;
+            finish_args(args)?;
             ReleaseCmd { dry_run }.run()
         }
         "promote" => {
             let dry_run = args.contains("--dry-run");
-            args.finish()?;
+            finish_args(args)?;
             PromoteCmd { dry_run }.run()
         }
         "dist" => {
             let nightly = args.contains("--nightly");
             let client_version: Option<String> = args.opt_value_from_str("--client")?;
-            args.finish()?;
+            finish_args(args)?;
             DistCmd { nightly, client_version }.run()
         }
         "metrics" => {
             let dry_run = args.contains("--dry-run");
-            args.finish()?;
+            finish_args(args)?;
             MetricsCmd { dry_run }.run()
+        }
+        "bb" => {
+            let suffix: String = args.free_from_str()?;
+            finish_args(args)?;
+            cmd!("cargo build --release").run()?;
+            cp("./target/release/rust-analyzer", format!("./target/rust-analyzer-{}", suffix))?;
+            Ok(())
         }
         _ => {
             eprintln!(
@@ -138,9 +155,17 @@ SUBCOMMANDS:
     install
     lint
     dist
-    promote"
+    promote
+    bb"
             );
             Ok(())
         }
     }
+}
+
+fn finish_args(args: Arguments) -> Result<()> {
+    if !args.finish().is_empty() {
+        bail!("Unused arguments.");
+    }
+    Ok(())
 }

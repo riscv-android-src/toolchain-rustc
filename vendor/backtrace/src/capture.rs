@@ -58,6 +58,7 @@ enum Frame {
     Deserialized {
         ip: usize,
         symbol_address: usize,
+        module_base_address: Option<usize>,
     },
 }
 
@@ -73,6 +74,16 @@ impl Frame {
         match *self {
             Frame::Raw(ref f) => f.symbol_address(),
             Frame::Deserialized { symbol_address, .. } => symbol_address as *mut c_void,
+        }
+    }
+
+    fn module_base_address(&self) -> Option<*mut c_void> {
+        match *self {
+            Frame::Raw(ref f) => f.module_base_address(),
+            Frame::Deserialized {
+                module_base_address,
+                ..
+            } => module_base_address.map(|addr| addr as *mut c_void),
         }
     }
 }
@@ -94,6 +105,7 @@ pub struct BacktraceSymbol {
     addr: Option<usize>,
     filename: Option<PathBuf>,
     lineno: Option<u32>,
+    colno: Option<u32>,
 }
 
 impl Backtrace {
@@ -213,6 +225,7 @@ impl Backtrace {
                         addr: symbol.addr().map(|a| a as usize),
                         filename: symbol.filename().map(|m| m.to_owned()),
                         lineno: symbol.lineno(),
+                        colno: symbol.colno(),
                     });
                 };
                 match frame.frame {
@@ -261,6 +274,18 @@ impl BacktraceFrame {
     /// enabled, and the `std` feature is enabled by default.
     pub fn symbol_address(&self) -> *mut c_void {
         self.frame.symbol_address() as *mut c_void
+    }
+
+    /// Same as `Frame::module_base_address`
+    ///
+    /// # Required features
+    ///
+    /// This function requires the `std` feature of the `backtrace` crate to be
+    /// enabled, and the `std` feature is enabled by default.
+    pub fn module_base_address(&self) -> Option<*mut c_void> {
+        self.frame
+            .module_base_address()
+            .map(|addr| addr as *mut c_void)
     }
 
     /// Returns the list of symbols that this frame corresponds to.
@@ -321,6 +346,16 @@ impl BacktraceSymbol {
     /// enabled, and the `std` feature is enabled by default.
     pub fn lineno(&self) -> Option<u32> {
         self.lineno
+    }
+
+    /// Same as `Symbol::colno`
+    ///
+    /// # Required features
+    ///
+    /// This function requires the `std` feature of the `backtrace` crate to be
+    /// enabled, and the `std` feature is enabled by default.
+    pub fn colno(&self) -> Option<u32> {
+        self.colno
     }
 }
 
@@ -383,6 +418,7 @@ impl fmt::Debug for BacktraceSymbol {
             .field("addr", &self.addr())
             .field("filename", &self.filename())
             .field("lineno", &self.lineno())
+            .field("colno", &self.colno())
             .finish()
     }
 }
@@ -396,6 +432,7 @@ mod rustc_serialize_impls {
     struct SerializedFrame {
         ip: usize,
         symbol_address: usize,
+        module_base_address: Option<usize>,
         symbols: Option<Vec<BacktraceSymbol>>,
     }
 
@@ -409,6 +446,7 @@ mod rustc_serialize_impls {
                 frame: Frame::Deserialized {
                     ip: frame.ip,
                     symbol_address: frame.symbol_address,
+                    module_base_address: frame.module_base_address,
                 },
                 symbols: frame.symbols,
             })
@@ -424,6 +462,7 @@ mod rustc_serialize_impls {
             SerializedFrame {
                 ip: frame.ip() as usize,
                 symbol_address: frame.symbol_address() as usize,
+                module_base_address: frame.module_base_address().map(|addr| addr as usize),
                 symbols: symbols.clone(),
             }
             .encode(e)
@@ -433,17 +472,16 @@ mod rustc_serialize_impls {
 
 #[cfg(feature = "serde")]
 mod serde_impls {
-    extern crate serde;
-
-    use self::serde::de::Deserializer;
-    use self::serde::ser::Serializer;
-    use self::serde::{Deserialize, Serialize};
     use super::*;
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize)]
     struct SerializedFrame {
         ip: usize,
         symbol_address: usize,
+        module_base_address: Option<usize>,
         symbols: Option<Vec<BacktraceSymbol>>,
     }
 
@@ -456,6 +494,7 @@ mod serde_impls {
             SerializedFrame {
                 ip: frame.ip() as usize,
                 symbol_address: frame.symbol_address() as usize,
+                module_base_address: frame.module_base_address().map(|addr| addr as usize),
                 symbols: symbols.clone(),
             }
             .serialize(s)
@@ -472,6 +511,7 @@ mod serde_impls {
                 frame: Frame::Deserialized {
                     ip: frame.ip,
                     symbol_address: frame.symbol_address,
+                    module_base_address: frame.module_base_address,
                 },
                 symbols: frame.symbols,
             })

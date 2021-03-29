@@ -14,7 +14,7 @@
 //! The algorithm implemented here is a modified version of the one described in
 //! <http://moscova.inria.fr/~maranget/papers/warn/index.html>.
 //! However, to save future implementors from reading the original paper, we
-//! summarise the algorithm here to hopefully save time and be a little clearer
+//! summarize the algorithm here to hopefully save time and be a little clearer
 //! (without being so rigorous).
 //!
 //! The core of the algorithm revolves about a "usefulness" check. In particular, we
@@ -132,7 +132,7 @@
 //! The algorithm is inductive (on the number of columns: i.e., components of tuple patterns).
 //! That means we're going to check the components from left-to-right, so the algorithm
 //! operates principally on the first component of the matrix and new pattern-stack `p`.
-//! This algorithm is realised in the `is_useful` function.
+//! This algorithm is realized in the `is_useful` function.
 //!
 //! Base case (`n = 0`, i.e., an empty tuple pattern):
 //! - If `P` already contains an empty pattern (i.e., if the number of patterns `m > 0`), then
@@ -216,15 +216,15 @@
 //!   U(P, p) := U(P, (r_1, p_2, .., p_n))
 //!            || U(P, (r_2, p_2, .., p_n))
 //!   ```
-use std::sync::Arc;
+use std::{iter, sync::Arc};
 
-use arena::Idx;
 use hir_def::{
     adt::VariantData,
     body::Body,
     expr::{Expr, Literal, Pat, PatId},
-    AdtId, EnumVariantId, VariantId,
+    AdtId, EnumVariantId, StructId, VariantId,
 };
+use la_arena::Idx;
 use smallvec::{smallvec, SmallVec};
 
 use crate::{db::HirDatabase, ApplicationTy, InferenceResult, Ty, TypeCtor};
@@ -366,16 +366,17 @@ impl PatStack {
 
         let head_pat = head.as_pat(cx);
         let result = match (head_pat, constructor) {
-            (Pat::Tuple { args: ref pat_ids, ellipsis }, Constructor::Tuple { arity: _ }) => {
-                if ellipsis.is_some() {
-                    // If there are ellipsis here, we should add the correct number of
-                    // Pat::Wild patterns to `pat_ids`. We should be able to use the
-                    // constructors arity for this, but at the time of writing we aren't
-                    // correctly calculating this arity when ellipsis are present.
-                    return Err(MatchCheckErr::NotImplemented);
+            (Pat::Tuple { args: pat_ids, ellipsis }, &Constructor::Tuple { arity }) => {
+                if let Some(ellipsis) = ellipsis {
+                    let (pre, post) = pat_ids.split_at(ellipsis);
+                    let n_wild_pats = arity.saturating_sub(pat_ids.len());
+                    let pre_iter = pre.iter().map(Into::into);
+                    let wildcards = iter::repeat(PatIdOrWild::Wild).take(n_wild_pats);
+                    let post_iter = post.iter().map(Into::into);
+                    Some(self.replace_head_with(pre_iter.chain(wildcards).chain(post_iter)))
+                } else {
+                    Some(self.replace_head_with(pat_ids.iter()))
                 }
-
-                Some(self.replace_head_with(pat_ids.iter()))
             }
             (Pat::Lit(lit_expr), Constructor::Bool(constructor_val)) => {
                 match cx.body.exprs[lit_expr] {
@@ -390,21 +391,28 @@ impl PatStack {
                 }
             }
             (Pat::Wild, constructor) => Some(self.expand_wildcard(cx, constructor)?),
-            (Pat::Path(_), Constructor::Enum(constructor)) => {
+            (Pat::Path(_), constructor) => {
                 // unit enum variants become `Pat::Path`
                 let pat_id = head.as_id().expect("we know this isn't a wild");
-                if !enum_variant_matches(cx, pat_id, *constructor) {
+                let variant_id: VariantId = match constructor {
+                    &Constructor::Enum(e) => e.into(),
+                    &Constructor::Struct(s) => s.into(),
+                    _ => return Err(MatchCheckErr::NotImplemented),
+                };
+                if Some(variant_id) != cx.infer.variant_resolution_for_pat(pat_id) {
                     None
                 } else {
                     Some(self.to_tail())
                 }
             }
-            (
-                Pat::TupleStruct { args: ref pat_ids, ellipsis, .. },
-                Constructor::Enum(enum_constructor),
-            ) => {
+            (Pat::TupleStruct { args: ref pat_ids, ellipsis, .. }, constructor) => {
                 let pat_id = head.as_id().expect("we know this isn't a wild");
-                if !enum_variant_matches(cx, pat_id, *enum_constructor) {
+                let variant_id: VariantId = match constructor {
+                    &Constructor::Enum(e) => e.into(),
+                    &Constructor::Struct(s) => s.into(),
+                    _ => return Err(MatchCheckErr::MalformedMatchArm),
+                };
+                if Some(variant_id) != cx.infer.variant_resolution_for_pat(pat_id) {
                     None
                 } else {
                     let constructor_arity = constructor.arity(cx)?;
@@ -442,12 +450,22 @@ impl PatStack {
                     }
                 }
             }
-            (Pat::Record { args: ref arg_patterns, .. }, Constructor::Enum(e)) => {
+            (Pat::Record { args: ref arg_patterns, .. }, constructor) => {
                 let pat_id = head.as_id().expect("we know this isn't a wild");
-                if !enum_variant_matches(cx, pat_id, *e) {
+                let (variant_id, variant_data) = match constructor {
+                    &Constructor::Enum(e) => (
+                        e.into(),
+                        cx.db.enum_data(e.parent).variants[e.local_id].variant_data.clone(),
+                    ),
+                    &Constructor::Struct(s) => {
+                        (s.into(), cx.db.struct_data(s).variant_data.clone())
+                    }
+                    _ => return Err(MatchCheckErr::MalformedMatchArm),
+                };
+                if Some(variant_id) != cx.infer.variant_resolution_for_pat(pat_id) {
                     None
                 } else {
-                    match cx.db.enum_data(e.parent).variants[e.local_id].variant_data.as_ref() {
+                    match variant_data.as_ref() {
                         VariantData::Record(struct_field_arena) => {
                             // Here we treat any missing fields in the record as the wild pattern, as
                             // if the record has ellipsis. We want to do this here even if the
@@ -726,6 +744,7 @@ enum Constructor {
     Bool(bool),
     Tuple { arity: usize },
     Enum(EnumVariantId),
+    Struct(StructId),
 }
 
 impl Constructor {
@@ -740,6 +759,11 @@ impl Constructor {
                     VariantData::Unit => 0,
                 }
             }
+            &Constructor::Struct(s) => match cx.db.struct_data(s).variant_data.as_ref() {
+                VariantData::Tuple(struct_field_data) => struct_field_data.len(),
+                VariantData::Record(struct_field_data) => struct_field_data.len(),
+                VariantData::Unit => 0,
+            },
         };
 
         Ok(arity)
@@ -748,7 +772,7 @@ impl Constructor {
     fn all_constructors(&self, cx: &MatchCheckCtx) -> Vec<Constructor> {
         match self {
             Constructor::Bool(_) => vec![Constructor::Bool(true), Constructor::Bool(false)],
-            Constructor::Tuple { .. } => vec![*self],
+            Constructor::Tuple { .. } | Constructor::Struct(_) => vec![*self],
             Constructor::Enum(e) => cx
                 .db
                 .enum_data(e.parent)
@@ -767,10 +791,11 @@ impl Constructor {
 fn pat_constructor(cx: &MatchCheckCtx, pat: PatIdOrWild) -> MatchCheckResult<Option<Constructor>> {
     let res = match pat.as_pat(cx) {
         Pat::Wild => None,
-        // FIXME somehow create the Tuple constructor with the proper arity. If there are
-        // ellipsis, the arity is not equal to the number of patterns.
-        Pat::Tuple { args: pats, ellipsis } if ellipsis.is_none() => {
-            Some(Constructor::Tuple { arity: pats.len() })
+        Pat::Tuple { .. } => {
+            let pat_id = pat.as_id().expect("we already know this pattern is not a wild");
+            Some(Constructor::Tuple {
+                arity: cx.infer.type_of_pat[pat_id].as_tuple().ok_or(MatchCheckErr::Unknown)?.len(),
+            })
         }
         Pat::Lit(lit_expr) => match cx.body.exprs[lit_expr] {
             Expr::Literal(Literal::Bool(val)) => Some(Constructor::Bool(val)),
@@ -784,6 +809,7 @@ fn pat_constructor(cx: &MatchCheckCtx, pat: PatIdOrWild) -> MatchCheckResult<Opt
                 VariantId::EnumVariantId(enum_variant_id) => {
                     Some(Constructor::Enum(enum_variant_id))
                 }
+                VariantId::StructId(struct_id) => Some(Constructor::Struct(struct_id)),
                 _ => return Err(MatchCheckErr::NotImplemented),
             }
         }
@@ -828,11 +854,11 @@ fn all_constructors_covered(
 
             false
         }),
+        &Constructor::Struct(s) => used_constructors.iter().any(|constructor| match constructor {
+            &Constructor::Struct(sid) => sid == s,
+            _ => false,
+        }),
     }
-}
-
-fn enum_variant_matches(cx: &MatchCheckCtx, pat_id: PatId, enum_variant_id: EnumVariantId) -> bool {
-    Some(enum_variant_id.into()) == cx.infer.variant_resolution_for_pat(pat_id)
 }
 
 #[cfg(test)]
@@ -846,8 +872,8 @@ mod tests {
 fn main() {
     match () { }
         //^^ Missing match arm
-   match (()) { }
-       //^^^^ Missing match arm
+    match (()) { }
+        //^^^^ Missing match arm
 
     match () { _ => (), }
     match () { () => (), }
@@ -1352,6 +1378,123 @@ fn main() {
         );
     }
 
+    #[test]
+    fn tuple_of_bools_with_ellipsis_at_end_missing_arm() {
+        check_diagnostics(
+            r#"
+fn main() {
+    match (false, true, false) {
+        //^^^^^^^^^^^^^^^^^^^^ Missing match arm
+        (false, ..) => (),
+    }
+}"#,
+        );
+    }
+
+    #[test]
+    fn tuple_of_bools_with_ellipsis_at_beginning_missing_arm() {
+        check_diagnostics(
+            r#"
+fn main() {
+    match (false, true, false) {
+        //^^^^^^^^^^^^^^^^^^^^ Missing match arm
+        (.., false) => (),
+    }
+}"#,
+        );
+    }
+
+    #[test]
+    fn tuple_of_bools_with_ellipsis_in_middle_missing_arm() {
+        check_diagnostics(
+            r#"
+fn main() {
+    match (false, true, false) {
+        //^^^^^^^^^^^^^^^^^^^^ Missing match arm
+        (true, .., false) => (),
+    }
+}"#,
+        );
+    }
+
+    #[test]
+    fn record_struct() {
+        check_diagnostics(
+            r#"struct Foo { a: bool }
+fn main(f: Foo) {
+    match f {}
+        //^ Missing match arm
+    match f { Foo { a: true } => () }
+        //^ Missing match arm
+    match &f { Foo { a: true } => () }
+        //^^ Missing match arm
+    match f { Foo { a: _ } => () }
+    match f {
+        Foo { a: true } => (),
+        Foo { a: false } => (),
+    }
+    match &f {
+        Foo { a: true } => (),
+        Foo { a: false } => (),
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn tuple_struct() {
+        check_diagnostics(
+            r#"struct Foo(bool);
+fn main(f: Foo) {
+    match f {}
+        //^ Missing match arm
+    match f { Foo(true) => () }
+        //^ Missing match arm
+    match f {
+        Foo(true) => (),
+        Foo(false) => (),
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn unit_struct() {
+        check_diagnostics(
+            r#"struct Foo;
+fn main(f: Foo) {
+    match f {}
+        //^ Missing match arm
+    match f { Foo => () }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn record_struct_ellipsis() {
+        check_diagnostics(
+            r#"struct Foo { foo: bool, bar: bool }
+fn main(f: Foo) {
+    match f { Foo { foo: true, .. } => () }
+        //^ Missing match arm
+    match f {
+        //^ Missing match arm
+        Foo { foo: true, .. } => (),
+        Foo { bar: false, .. } => ()
+    }
+    match f { Foo { .. } => () }
+    match f {
+        Foo { foo: true, .. } => (),
+        Foo { foo: false, .. } => ()
+    }
+}
+"#,
+        );
+    }
+
     mod false_negatives {
         //! The implementation of match checking here is a work in progress. As we roll this out, we
         //! prefer false negatives to false positives (ideally there would be no false positives). This
@@ -1389,47 +1532,6 @@ fn main() {
     match Either::B {
         Either::A(true | false) => (),
     }
-}
-"#,
-            );
-        }
-
-        #[test]
-        fn tuple_of_bools_with_ellipsis_at_end_missing_arm() {
-            // We don't currently handle tuple patterns with ellipsis.
-            check_diagnostics(
-                r#"
-fn main() {
-    match (false, true, false) {
-        (false, ..) => (),
-    }
-}
-"#,
-            );
-        }
-
-        #[test]
-        fn tuple_of_bools_with_ellipsis_at_beginning_missing_arm() {
-            // We don't currently handle tuple patterns with ellipsis.
-            check_diagnostics(
-                r#"
-fn main() {
-    match (false, true, false) {
-        (.., false) => (),
-    }
-}
-"#,
-            );
-        }
-
-        #[test]
-        fn struct_missing_arm() {
-            // We don't currently handle structs.
-            check_diagnostics(
-                r#"
-struct Foo { a: bool }
-fn main(f: Foo) {
-    match f { Foo { a: true } => () }
 }
 "#,
             );

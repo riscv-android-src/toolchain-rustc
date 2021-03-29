@@ -314,7 +314,7 @@ fn missing_option_value_02() {
     let value: Result<Option<u32>, Error> = args.opt_value_from_str("--value");
     assert!(value.is_err()); // ignore error
     // the `--value` flag should not be removed by the previous command
-    assert!(args.finish().is_err());
+    assert_eq!(args.finish(), vec![OsString::from("--value")]);
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn missing_option_value_03() {
     let value: Result<Option<u32>, Error> = args.opt_value_from_str("--value");
     assert!(value.is_err()); // ignore error
     // the `--value` flag should not be removed by the previous command
-    assert!(args.finish().is_err());
+    assert_eq!(args.finish(), vec![OsString::from("--value"), OsString::from("q")]);
 }
 
 #[test]
@@ -350,95 +350,55 @@ fn multiple_options_03() {
 }
 
 #[test]
-fn free_01() {
-    let args = Arguments::from_vec(to_vec(&[]));
-    assert_eq!(args.free_os().unwrap(), to_vec(&[]));
-}
-
-#[test]
-fn free_02() {
-    let args = Arguments::from_vec(to_vec(&["text.txt"]));
-    assert_eq!(args.free_os().unwrap(), to_vec(&["text.txt"]));
-}
-
-#[test]
-fn free_03() {
-    let args = Arguments::from_vec(to_vec(&["text.txt", "text2.txt"]));
-    assert_eq!(args.free_os().unwrap(), to_vec(&["text.txt", "text2.txt"]));
-}
-
-#[test]
-fn free_04() {
-    let mut args = Arguments::from_vec(to_vec(&["-h", "text.txt", "text2.txt"]));
-    assert!(args.contains("-h"));
-    assert_eq!(args.free_os().unwrap(), to_vec(&["text.txt", "text2.txt"]));
-}
-
-#[test]
-fn free_05() {
-    let mut args = Arguments::from_vec(to_vec(&["text.txt", "-h", "text2.txt"]));
-    assert!(args.contains("-h"));
-    assert_eq!(args.free_os().unwrap(), to_vec(&["text.txt", "text2.txt"]));
-}
-
-#[test]
-fn free_06() {
-    let mut args = Arguments::from_vec(to_vec(&["text.txt", "text2.txt", "-h"]));
-    assert!(args.contains("-h"));
-    assert_eq!(args.free_os().unwrap(), to_vec(&["text.txt", "text2.txt"]));
-}
-
-#[test]
-fn free_from_fn_01() {
+fn free_from_str_01() {
     let mut args = Arguments::from_vec(to_vec(&["5"]));
-    assert_eq!(args.free_from_fn(u32::from_str).unwrap(), Some(5));
+    let value: u32 = args.free_from_str().unwrap();
+    assert_eq!(value, 5);
 }
 
 #[test]
-fn free_from_fn_02() {
+fn opt_free_from_fn_01() {
+    let mut args = Arguments::from_vec(to_vec(&["5"]));
+    assert_eq!(args.opt_free_from_fn(u32::from_str).unwrap(), Some(5));
+}
+
+#[test]
+fn opt_free_from_fn_02() {
     let mut args = Arguments::from_vec(to_vec(&[]));
-    assert_eq!(args.free_from_fn(u32::from_str).unwrap(), None);
+    assert_eq!(args.opt_free_from_fn(u32::from_str).unwrap(), None);
 }
 
 #[test]
-fn free_from_fn_03() {
+fn opt_free_from_fn_03() {
     let mut args = Arguments::from_vec(to_vec(&["-h"]));
-    assert_eq!(args.free_from_fn(u32::from_str).unwrap_err().to_string(),
-               "unused arguments left: -h");
+    assert_eq!(args.opt_free_from_fn(u32::from_str).unwrap_err().to_string(),
+               "failed to parse '-h' cause invalid digit found in string");
 }
 
 #[test]
-fn free_from_fn_04() {
+fn opt_free_from_fn_04() {
     let mut args = Arguments::from_vec(to_vec(&["a"]));
-    assert_eq!(args.free_from_fn(u32::from_str).unwrap_err().to_string(),
+    assert_eq!(args.opt_free_from_fn(u32::from_str).unwrap_err().to_string(),
                "failed to parse 'a' cause invalid digit found in string");
 }
 
 #[test]
-fn free_from_str_01() {
+fn opt_free_from_fn_05() {
+    let mut args = Arguments::from_vec(to_vec(&["-5"]));
+    assert_eq!(args.opt_free_from_fn(i32::from_str).unwrap(), Some(-5));
+}
+
+#[test]
+fn opt_free_from_fn_06() {
+    let mut args = Arguments::from_vec(to_vec(&["-3.14"]));
+    assert_eq!(args.opt_free_from_fn(f32::from_str).unwrap(), Some(-3.14f32));
+}
+
+#[test]
+fn opt_free_from_str_01() {
     let mut args = Arguments::from_vec(to_vec(&["5"]));
-    let value: Result<Option<u32>, Error> = args.free_from_str();
+    let value: Result<Option<u32>, Error> = args.opt_free_from_str();
     assert_eq!(value.unwrap(), Some(5));
-}
-
-#[test]
-fn unused_args_01() {
-    let args = Arguments::from_vec(to_vec(&["-h", "text.txt"]));
-    assert_eq!(args.finish().unwrap_err().to_string(),
-               "unused arguments left: -h, text.txt");
-}
-
-#[test]
-fn unused_args_02() {
-    let args = Arguments::from_vec(to_vec(&["-h", "text.txt"]));
-    assert_eq!(args.free().unwrap_err().to_string(),
-               "unused arguments left: -h");
-}
-
-#[test]
-fn stdin() {
-    let args = Arguments::from_vec(to_vec(&["-"]));
-    assert_eq!(args.free_os().unwrap(), to_vec(&["-"]));
 }
 
 #[test]

@@ -7,12 +7,9 @@ use std::{
     sync::Arc,
 };
 
-use crate::body::LowerCtx;
+use crate::{body::LowerCtx, type_ref::LifetimeRef};
 use base_db::CrateId;
-use hir_expand::{
-    hygiene::Hygiene,
-    name::{AsName, Name},
-};
+use hir_expand::{hygiene::Hygiene, name::Name};
 use syntax::ast;
 
 use crate::{
@@ -56,15 +53,6 @@ impl ModPath {
         ModPath { kind, segments }
     }
 
-    pub(crate) fn from_name_ref(name_ref: &ast::NameRef) -> ModPath {
-        name_ref.as_name().into()
-    }
-
-    /// Converts an `tt::Ident` into a single-identifier `Path`.
-    pub(crate) fn from_tt_ident(ident: &tt::Ident) -> ModPath {
-        ident.as_name().into()
-    }
-
     /// Calls `cb` with all paths, represented by this use item.
     pub(crate) fn expand_use_item(
         item_src: InFile<ast::Use>,
@@ -99,7 +87,7 @@ impl ModPath {
 
     /// If this path is a single identifier, like `foo`, return its name.
     pub fn as_ident(&self) -> Option<&Name> {
-        if self.kind != PathKind::Plain || self.segments.len() > 1 {
+        if !self.is_ident() {
             return None;
         }
         self.segments.first()
@@ -149,7 +137,7 @@ pub struct AssociatedTypeBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GenericArg {
     Type(TypeRef),
-    // or lifetime...
+    Lifetime(LifetimeRef),
 }
 
 impl Path {
@@ -290,10 +278,8 @@ impl Display for ModPath {
         };
         match self.kind {
             PathKind::Plain => {}
+            PathKind::Super(0) => add_segment("self")?,
             PathKind::Super(n) => {
-                if n == 0 {
-                    add_segment("self")?;
-                }
                 for _ in 0..n {
                     add_segment("super")?;
                 }
@@ -318,7 +304,9 @@ pub use hir_expand::name as __name;
 #[macro_export]
 macro_rules! __known_path {
     (core::iter::IntoIterator) => {};
+    (core::iter::Iterator) => {};
     (core::result::Result) => {};
+    (core::option::Option) => {};
     (core::ops::Range) => {};
     (core::ops::RangeFrom) => {};
     (core::ops::RangeFull) => {};

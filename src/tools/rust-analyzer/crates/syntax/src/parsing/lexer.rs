@@ -1,9 +1,9 @@
 //! Lexer analyzes raw input string and produces lexemes (tokens).
 //! It is just a bridge to `rustc_lexer`.
 
-use rustc_lexer::{LiteralKind as LK, RawStrError};
-
 use std::convert::TryInto;
+
+use rustc_lexer::RawStrError;
 
 use crate::{
     SyntaxError,
@@ -24,7 +24,7 @@ pub struct Token {
 /// Beware that it checks for shebang first and its length contributes to resulting
 /// tokens offsets.
 pub fn tokenize(text: &str) -> (Vec<Token>, Vec<SyntaxError>) {
-    // non-empty string is a precondtion of `rustc_lexer::strip_shebang()`.
+    // non-empty string is a precondition of `rustc_lexer::strip_shebang()`.
     if text.is_empty() {
         return Default::default();
     }
@@ -61,27 +61,30 @@ pub fn tokenize(text: &str) -> (Vec<Token>, Vec<SyntaxError>) {
     (tokens, errors)
 }
 
-/// Returns `SyntaxKind` and `Option<SyntaxError>` of the first token
-/// encountered at the beginning of the string.
+/// Returns `SyntaxKind` and `Option<SyntaxError>` if `text` parses as a single token.
 ///
 /// Returns `None` if the string contains zero *or two or more* tokens.
 /// The token is malformed if the returned error is not `None`.
 ///
 /// Beware that unescape errors are not checked at tokenization time.
 pub fn lex_single_syntax_kind(text: &str) -> Option<(SyntaxKind, Option<SyntaxError>)> {
-    lex_first_token(text)
-        .filter(|(token, _)| token.len == TextSize::of(text))
-        .map(|(token, error)| (token.kind, error))
+    let (first_token, err) = lex_first_token(text)?;
+    if first_token.len != TextSize::of(text) {
+        return None;
+    }
+    Some((first_token.kind, err))
 }
 
 /// The same as `lex_single_syntax_kind()` but returns only `SyntaxKind` and
-/// returns `None` if any tokenization error occured.
+/// returns `None` if any tokenization error occurred.
 ///
 /// Beware that unescape errors are not checked at tokenization time.
 pub fn lex_single_valid_syntax_kind(text: &str) -> Option<SyntaxKind> {
-    lex_first_token(text)
-        .filter(|(token, error)| !error.is_some() && token.len == TextSize::of(text))
-        .map(|(token, _error)| token.kind)
+    let (single_token, err) = lex_single_syntax_kind(text)?;
+    if err.is_some() {
+        return None;
+    }
+    Some(single_token)
 }
 
 /// Returns `SyntaxKind` and `Option<SyntaxError>` of the first token
@@ -93,7 +96,7 @@ pub fn lex_single_valid_syntax_kind(text: &str) -> Option<SyntaxKind> {
 ///
 /// Beware that unescape errors are not checked at tokenization time.
 fn lex_first_token(text: &str) -> Option<(Token, Option<SyntaxError>)> {
-    // non-empty string is a precondtion of `rustc_lexer::first_token()`.
+    // non-empty string is a precondition of `rustc_lexer::first_token()`.
     if text.is_empty() {
         return None;
     }
@@ -114,16 +117,16 @@ fn rustc_token_kind_to_syntax_kind(
     token_text: &str,
 ) -> (SyntaxKind, Option<&'static str>) {
     // A note on an intended tradeoff:
-    // We drop some useful infromation here (see patterns with double dots `..`)
+    // We drop some useful information here (see patterns with double dots `..`)
     // Storing that info in `SyntaxKind` is not possible due to its layout requirements of
     // being `u16` that come from `rowan::SyntaxKind`.
 
     let syntax_kind = {
         match rustc_token_kind {
-            rustc_lexer::TokenKind::LineComment => COMMENT,
+            rustc_lexer::TokenKind::LineComment { doc_style: _ } => COMMENT,
 
-            rustc_lexer::TokenKind::BlockComment { terminated: true } => COMMENT,
-            rustc_lexer::TokenKind::BlockComment { terminated: false } => {
+            rustc_lexer::TokenKind::BlockComment { doc_style: _, terminated: true } => COMMENT,
+            rustc_lexer::TokenKind::BlockComment { doc_style: _, terminated: false } => {
                 return (
                     COMMENT,
                     Some("Missing trailing `*/` symbols to terminate the block comment"),
@@ -143,9 +146,9 @@ fn rustc_token_kind_to_syntax_kind(
             rustc_lexer::TokenKind::RawIdent => IDENT,
             rustc_lexer::TokenKind::Literal { kind, .. } => return match_literal_kind(&kind),
 
-            rustc_lexer::TokenKind::Lifetime { starts_with_number: false } => LIFETIME,
+            rustc_lexer::TokenKind::Lifetime { starts_with_number: false } => LIFETIME_IDENT,
             rustc_lexer::TokenKind::Lifetime { starts_with_number: true } => {
-                return (LIFETIME, Some("Lifetime name cannot start with a number"))
+                return (LIFETIME_IDENT, Some("Lifetime name cannot start with a number"))
             }
 
             rustc_lexer::TokenKind::Semi => T![;],
@@ -164,7 +167,7 @@ fn rustc_token_kind_to_syntax_kind(
             rustc_lexer::TokenKind::Colon => T![:],
             rustc_lexer::TokenKind::Dollar => T![$],
             rustc_lexer::TokenKind::Eq => T![=],
-            rustc_lexer::TokenKind::Not => T![!],
+            rustc_lexer::TokenKind::Bang => T![!],
             rustc_lexer::TokenKind::Lt => T![<],
             rustc_lexer::TokenKind::Gt => T![>],
             rustc_lexer::TokenKind::Minus => T![-],
@@ -182,63 +185,77 @@ fn rustc_token_kind_to_syntax_kind(
     return (syntax_kind, None);
 
     fn match_literal_kind(kind: &rustc_lexer::LiteralKind) -> (SyntaxKind, Option<&'static str>) {
-        #[rustfmt::skip]
+        let mut err = "";
         let syntax_kind = match *kind {
-            LK::Int { empty_int: false, .. } => INT_NUMBER,
-            LK::Int { empty_int: true, .. } => {
-                return (INT_NUMBER, Some("Missing digits after the integer base prefix"))
+            rustc_lexer::LiteralKind::Int { empty_int, base: _ } => {
+                if empty_int {
+                    err = "Missing digits after the integer base prefix";
+                }
+                INT_NUMBER
             }
-
-            LK::Float { empty_exponent: false, .. } => FLOAT_NUMBER,
-            LK::Float { empty_exponent: true, .. } => {
-                return (FLOAT_NUMBER, Some("Missing digits after the exponent symbol"))
+            rustc_lexer::LiteralKind::Float { empty_exponent, base: _ } => {
+                if empty_exponent {
+                    err = "Missing digits after the exponent symbol";
+                }
+                FLOAT_NUMBER
             }
-
-            LK::Char { terminated: true } => CHAR,
-            LK::Char { terminated: false } => {
-                return (CHAR, Some("Missing trailing `'` symbol to terminate the character literal"))
+            rustc_lexer::LiteralKind::Char { terminated } => {
+                if !terminated {
+                    err = "Missing trailing `'` symbol to terminate the character literal";
+                }
+                CHAR
             }
-
-            LK::Byte { terminated: true } => BYTE,
-            LK::Byte { terminated: false } => {
-                return (BYTE, Some("Missing trailing `'` symbol to terminate the byte literal"))
+            rustc_lexer::LiteralKind::Byte { terminated } => {
+                if !terminated {
+                    err = "Missing trailing `'` symbol to terminate the byte literal";
+                }
+                BYTE
             }
-
-            LK::Str { terminated: true } => STRING,
-            LK::Str { terminated: false } => {
-                return (STRING, Some("Missing trailing `\"` symbol to terminate the string literal"))
+            rustc_lexer::LiteralKind::Str { terminated } => {
+                if !terminated {
+                    err = "Missing trailing `\"` symbol to terminate the string literal";
+                }
+                STRING
             }
-
-
-            LK::ByteStr { terminated: true } => BYTE_STRING,
-            LK::ByteStr { terminated: false } => {
-                return (BYTE_STRING, Some("Missing trailing `\"` symbol to terminate the byte string literal"))
+            rustc_lexer::LiteralKind::ByteStr { terminated } => {
+                if !terminated {
+                    err = "Missing trailing `\"` symbol to terminate the byte string literal";
+                }
+                BYTE_STRING
             }
+            rustc_lexer::LiteralKind::RawStr { err: raw_str_err, .. } => {
+                if let Some(raw_str_err) = raw_str_err {
+                    err = match raw_str_err {
+                        RawStrError::InvalidStarter { .. } => "Missing `\"` symbol after `#` symbols to begin the raw string literal",
+                        RawStrError::NoTerminator { expected, found, .. } => if expected == found {
+                            "Missing trailing `\"` to terminate the raw string literal"
+                        } else {
+                            "Missing trailing `\"` with `#` symbols to terminate the raw string literal"
+                        },
+                        RawStrError::TooManyDelimiters { .. } => "Too many `#` symbols: raw strings may be delimited by up to 65535 `#` symbols",
+                    };
+                };
+                STRING
+            }
+            rustc_lexer::LiteralKind::RawByteStr { err: raw_str_err, .. } => {
+                if let Some(raw_str_err) = raw_str_err {
+                    err = match raw_str_err {
+                        RawStrError::InvalidStarter { .. } => "Missing `\"` symbol after `#` symbols to begin the raw byte string literal",
+                        RawStrError::NoTerminator { expected, found, .. } => if expected == found {
+                            "Missing trailing `\"` to terminate the raw byte string literal"
+                        } else {
+                            "Missing trailing `\"` with `#` symbols to terminate the raw byte string literal"
+                        },
+                        RawStrError::TooManyDelimiters { .. } => "Too many `#` symbols: raw byte strings may be delimited by up to 65535 `#` symbols",
+                    };
+                };
 
-            LK::RawStr { err, .. } => match err {
-                None => RAW_STRING,
-                Some(RawStrError::InvalidStarter { .. }) => return (RAW_STRING, Some("Missing `\"` symbol after `#` symbols to begin the raw string literal")),
-                Some(RawStrError::NoTerminator { expected, found, .. }) => if expected == found {
-                    return (RAW_STRING, Some("Missing trailing `\"` to terminate the raw string literal"))
-                } else {
-                    return (RAW_STRING, Some("Missing trailing `\"` with `#` symbols to terminate the raw string literal"))
-
-                },
-                Some(RawStrError::TooManyDelimiters { .. }) => return (RAW_STRING, Some("Too many `#` symbols: raw strings may be delimited by up to 65535 `#` symbols")),
-            },
-            LK::RawByteStr { err, .. } => match err {
-                None => RAW_BYTE_STRING,
-                Some(RawStrError::InvalidStarter { .. }) => return (RAW_BYTE_STRING, Some("Missing `\"` symbol after `#` symbols to begin the raw byte string literal")),
-                Some(RawStrError::NoTerminator { expected, found, .. }) => if expected == found {
-                    return (RAW_BYTE_STRING, Some("Missing trailing `\"` to terminate the raw byte string literal"))
-                } else {
-                    return (RAW_BYTE_STRING, Some("Missing trailing `\"` with `#` symbols to terminate the raw byte string literal"))
-
-                },
-                Some(RawStrError::TooManyDelimiters { .. }) => return (RAW_BYTE_STRING, Some("Too many `#` symbols: raw byte strings may be delimited by up to 65535 `#` symbols")),
-            },
+                BYTE_STRING
+            }
         };
 
-        (syntax_kind, None)
+        let err = if err.is_empty() { None } else { Some(err) };
+
+        (syntax_kind, err)
     }
 }

@@ -13,15 +13,18 @@
 [package]
 edition = "2018"
 name = "chalk-ir"
-version = "0.36.0"
+version = "0.55.0"
 authors = ["Rust Compiler Team", "Chalk developers"]
 description = "Chalk's internal representation of types, goals, and clauses"
 readme = "README.md"
 keywords = ["compiler", "traits", "prolog"]
 license = "Apache-2.0/MIT"
 repository = "https://github.com/rust-lang/chalk"
+[dependencies.bitflags]
+version = "1.2.1"
+
 [dependencies.chalk-derive]
-version = "=0.36.0"
+version = "=0.55.0"
 
 [dependencies.lazy_static]
 version = "1.4.0"

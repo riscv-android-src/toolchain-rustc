@@ -1,7 +1,4 @@
-// Replace with `import fetch from "node-fetch"` once this is fixed in rollup:
-// https://github.com/rollup/plugins/issues/491
-const fetch = require("node-fetch") as typeof import("node-fetch")["default"];
-
+import fetch from "node-fetch";
 import * as vscode from "vscode";
 import * as stream from "stream";
 import * as crypto from "crypto";
@@ -18,7 +15,8 @@ const OWNER = "rust-analyzer";
 const REPO = "rust-analyzer";
 
 export async function fetchRelease(
-    releaseTag: string
+    releaseTag: string,
+    githubToken: string | null | undefined,
 ): Promise<GithubRelease> {
 
     const apiEndpointPath = `/repos/${OWNER}/${REPO}/releases/tags/${releaseTag}`;
@@ -27,7 +25,12 @@ export async function fetchRelease(
 
     log.debug("Issuing request for released artifacts metadata to", requestUrl);
 
-    const response = await fetch(requestUrl, { headers: { Accept: "application/vnd.github.v3+json" } });
+    const headers: Record<string, string> = { Accept: "application/vnd.github.v3+json" };
+    if (githubToken != null) {
+        headers.Authorization = "token " + githubToken;
+    }
+
+    const response = await fetch(requestUrl, { headers: headers });
 
     if (!response.ok) {
         log.error("Error fetching artifact release info", {
@@ -75,6 +78,7 @@ interface DownloadOpts {
 export async function download(opts: DownloadOpts) {
     // Put artifact into a temporary file (in the same dir for simplicity)
     // to prevent partially downloaded files when user kills vscode
+    // This also avoids overwriting running executables
     const dest = path.parse(opts.dest);
     const randomHex = crypto.randomBytes(5).toString("hex");
     const tempFile = path.join(dest.dir, `${dest.name}${randomHex}`);
@@ -88,13 +92,15 @@ export async function download(opts: DownloadOpts) {
         async (progress, _cancellationToken) => {
             let lastPercentage = 0;
             await downloadFile(opts.url, tempFile, opts.mode, !!opts.gunzip, (readBytes, totalBytes) => {
-                const newPercentage = (readBytes / totalBytes) * 100;
-                progress.report({
-                    message: newPercentage.toFixed(0) + "%",
-                    increment: newPercentage - lastPercentage
-                });
+                const newPercentage = Math.round((readBytes / totalBytes) * 100);
+                if (newPercentage !== lastPercentage) {
+                    progress.report({
+                        message: `${newPercentage.toFixed(0)}%`,
+                        increment: newPercentage - lastPercentage
+                    });
 
-                lastPercentage = newPercentage;
+                    lastPercentage = newPercentage;
+                }
             });
         }
     );

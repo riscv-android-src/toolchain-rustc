@@ -25,14 +25,17 @@ pub struct FunctionData {
     /// True if the first param is `self`. This is relevant to decide whether this
     /// can be called as a method.
     pub has_self_param: bool,
+    pub has_body: bool,
     pub is_unsafe: bool,
     pub is_varargs: bool,
+    pub is_extern: bool,
     pub visibility: RawVisibility,
 }
 
 impl FunctionData {
     pub(crate) fn fn_data_query(db: &dyn DefDatabase, func: FunctionId) -> Arc<FunctionData> {
         let loc = func.lookup(db);
+        let krate = loc.container.module(db).krate;
         let item_tree = db.item_tree(loc.id.file_id);
         let func = &item_tree[loc.id.value];
 
@@ -40,10 +43,12 @@ impl FunctionData {
             name: func.name.clone(),
             params: func.params.to_vec(),
             ret_type: func.ret_type.clone(),
-            attrs: item_tree.attrs(ModItem::from(loc.id.value).into()).clone(),
+            attrs: item_tree.attrs(db, krate, ModItem::from(loc.id.value).into()).clone(),
             has_self_param: func.has_self_param,
+            has_body: func.has_body,
             is_unsafe: func.is_unsafe,
             is_varargs: func.is_varargs,
+            is_extern: func.is_extern,
             visibility: item_tree[func.visibility].clone(),
         })
     }
@@ -54,6 +59,7 @@ pub struct TypeAliasData {
     pub name: Name,
     pub type_ref: Option<TypeRef>,
     pub visibility: RawVisibility,
+    pub is_extern: bool,
     /// Bounds restricting the type alias itself (eg. `type Ty: Bound;` in a trait or impl).
     pub bounds: Vec<TypeBound>,
 }
@@ -71,6 +77,7 @@ impl TypeAliasData {
             name: typ.name.clone(),
             type_ref: typ.type_ref.clone(),
             visibility: item_tree[typ.visibility].clone(),
+            is_extern: typ.is_extern,
             bounds: typ.bounds.to_vec(),
         })
     }
@@ -187,6 +194,7 @@ pub struct StaticData {
     pub type_ref: TypeRef,
     pub visibility: RawVisibility,
     pub mutable: bool,
+    pub is_extern: bool,
 }
 
 impl StaticData {
@@ -200,6 +208,7 @@ impl StaticData {
             type_ref: statik.type_ref.clone(),
             visibility: item_tree[statik.visibility].clone(),
             mutable: statik.mutable,
+            is_extern: statik.is_extern,
         })
     }
 }
@@ -225,7 +234,7 @@ fn collect_items(
         match item {
             AssocItem::Function(id) => {
                 let item = &item_tree[id];
-                let attrs = item_tree.attrs(ModItem::from(id).into());
+                let attrs = item_tree.attrs(db, module.krate, ModItem::from(id).into());
                 if !attrs.is_cfg_enabled(&cfg_options) {
                     continue;
                 }
@@ -253,7 +262,7 @@ fn collect_items(
                 let root = db.parse_or_expand(file_id).unwrap();
                 let call = ast_id_map.get(call.ast_id).to_node(&root);
 
-                if let Some((mark, mac)) = expander.enter_expand(db, None, call) {
+                if let Some((mark, mac)) = expander.enter_expand(db, None, call).value {
                     let src: InFile<ast::MacroItems> = expander.to_source(mac);
                     let item_tree = db.item_tree(src.file_id);
                     let iter =

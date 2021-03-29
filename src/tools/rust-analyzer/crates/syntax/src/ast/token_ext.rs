@@ -8,22 +8,51 @@ use std::{
 use rustc_lexer::unescape::{unescape_literal, Mode};
 
 use crate::{
-    ast::{AstToken, Comment, RawString, String, Whitespace},
+    ast::{self, AstToken},
     TextRange, TextSize,
 };
 
-impl Comment {
+impl ast::Comment {
     pub fn kind(&self) -> CommentKind {
-        kind_by_prefix(self.text())
+        CommentKind::from_text(self.text())
+    }
+
+    pub fn is_inner(&self) -> bool {
+        self.kind().doc == Some(CommentPlacement::Inner)
+    }
+
+    pub fn is_outer(&self) -> bool {
+        self.kind().doc == Some(CommentPlacement::Outer)
     }
 
     pub fn prefix(&self) -> &'static str {
-        for (prefix, k) in COMMENT_PREFIX_TO_KIND.iter() {
-            if *k == self.kind() && self.text().starts_with(prefix) {
-                return prefix;
+        let &(prefix, _kind) = CommentKind::BY_PREFIX
+            .iter()
+            .find(|&(prefix, kind)| self.kind() == *kind && self.text().starts_with(prefix))
+            .unwrap();
+        prefix
+    }
+
+    /// Returns the textual content of a doc comment block as a single string.
+    /// That is, strips leading `///` (+ optional 1 character of whitespace),
+    /// trailing `*/`, trailing whitespace and then joins the lines.
+    pub fn doc_comment(&self) -> Option<&str> {
+        let kind = self.kind();
+        match kind {
+            CommentKind { shape, doc: Some(_) } => {
+                let prefix = kind.prefix();
+                let text = &self.text()[prefix.len()..];
+                let ws = text.chars().next().filter(|c| c.is_whitespace());
+                let text = ws.map_or(text, |ws| &text[ws.len_utf8()..]);
+                match shape {
+                    CommentShape::Block if text.ends_with("*/") => {
+                        Some(&text[..text.len() - "*/".len()])
+                    }
+                    _ => Some(text),
+                }
             }
+            _ => None,
         }
-        unreachable!()
     }
 }
 
@@ -55,32 +84,33 @@ pub enum CommentPlacement {
     Outer,
 }
 
-const COMMENT_PREFIX_TO_KIND: &[(&str, CommentKind)] = {
-    use {CommentPlacement::*, CommentShape::*};
-    &[
-        ("////", CommentKind { shape: Line, doc: None }),
-        ("///", CommentKind { shape: Line, doc: Some(Outer) }),
-        ("//!", CommentKind { shape: Line, doc: Some(Inner) }),
-        ("/**", CommentKind { shape: Block, doc: Some(Outer) }),
-        ("/*!", CommentKind { shape: Block, doc: Some(Inner) }),
-        ("//", CommentKind { shape: Line, doc: None }),
-        ("/*", CommentKind { shape: Block, doc: None }),
-    ]
-};
+impl CommentKind {
+    const BY_PREFIX: [(&'static str, CommentKind); 8] = [
+        ("/**/", CommentKind { shape: CommentShape::Block, doc: None }),
+        ("////", CommentKind { shape: CommentShape::Line, doc: None }),
+        ("///", CommentKind { shape: CommentShape::Line, doc: Some(CommentPlacement::Outer) }),
+        ("//!", CommentKind { shape: CommentShape::Line, doc: Some(CommentPlacement::Inner) }),
+        ("/**", CommentKind { shape: CommentShape::Block, doc: Some(CommentPlacement::Outer) }),
+        ("/*!", CommentKind { shape: CommentShape::Block, doc: Some(CommentPlacement::Inner) }),
+        ("//", CommentKind { shape: CommentShape::Line, doc: None }),
+        ("/*", CommentKind { shape: CommentShape::Block, doc: None }),
+    ];
 
-fn kind_by_prefix(text: &str) -> CommentKind {
-    if text == "/**/" {
-        return CommentKind { shape: CommentShape::Block, doc: None };
+    pub(crate) fn from_text(text: &str) -> CommentKind {
+        let &(_prefix, kind) = CommentKind::BY_PREFIX
+            .iter()
+            .find(|&(prefix, _kind)| text.starts_with(prefix))
+            .unwrap();
+        kind
     }
-    for (prefix, kind) in COMMENT_PREFIX_TO_KIND.iter() {
-        if text.starts_with(prefix) {
-            return *kind;
-        }
+
+    fn prefix(&self) -> &'static str {
+        let &(prefix, _) = CommentKind::BY_PREFIX.iter().find(|(_, kind)| kind == self).unwrap();
+        prefix
     }
-    panic!("bad comment text: {:?}", text)
 }
 
-impl Whitespace {
+impl ast::Whitespace {
     pub fn spans_multiple_lines(&self) -> bool {
         let text = self.text();
         text.find('\n').map_or(false, |idx| text[idx + 1..].contains('\n'))
@@ -114,9 +144,53 @@ impl QuoteOffsets {
     }
 }
 
-pub trait HasQuotes: AstToken {
-    fn quote_offsets(&self) -> Option<QuoteOffsets> {
-        let text = self.text().as_str();
+impl ast::String {
+    pub fn is_raw(&self) -> bool {
+        self.text().starts_with('r')
+    }
+    pub fn map_range_up(&self, range: TextRange) -> Option<TextRange> {
+        let contents_range = self.text_range_between_quotes()?;
+        assert!(TextRange::up_to(contents_range.len()).contains_range(range));
+        Some(range + contents_range.start())
+    }
+
+    pub fn value(&self) -> Option<Cow<'_, str>> {
+        if self.is_raw() {
+            let text = self.text();
+            let text =
+                &text[self.text_range_between_quotes()? - self.syntax().text_range().start()];
+            return Some(Cow::Borrowed(text));
+        }
+
+        let text = self.text();
+        let text = &text[self.text_range_between_quotes()? - self.syntax().text_range().start()];
+
+        let mut buf = String::new();
+        let mut text_iter = text.chars();
+        let mut has_error = false;
+        unescape_literal(text, Mode::Str, &mut |char_range, unescaped_char| match (
+            unescaped_char,
+            buf.capacity() == 0,
+        ) {
+            (Ok(c), false) => buf.push(c),
+            (Ok(c), true) if char_range.len() == 1 && Some(c) == text_iter.next() => (),
+            (Ok(c), true) => {
+                buf.reserve_exact(text.len());
+                buf.push_str(&text[..char_range.start]);
+                buf.push(c);
+            }
+            (Err(_), _) => has_error = true,
+        });
+
+        match (has_error, buf.capacity() == 0) {
+            (true, _) => None,
+            (false, true) => Some(Cow::Borrowed(text)),
+            (false, false) => Some(Cow::Owned(buf)),
+        }
+    }
+
+    pub fn quote_offsets(&self) -> Option<QuoteOffsets> {
+        let text = self.text();
         let offsets = QuoteOffsets::new(text)?;
         let o = self.syntax().text_range().start();
         let offsets = QuoteOffsets {
@@ -125,60 +199,20 @@ pub trait HasQuotes: AstToken {
         };
         Some(offsets)
     }
-    fn open_quote_text_range(&self) -> Option<TextRange> {
-        self.quote_offsets().map(|it| it.quotes.0)
-    }
-
-    fn close_quote_text_range(&self) -> Option<TextRange> {
-        self.quote_offsets().map(|it| it.quotes.1)
-    }
-
-    fn text_range_between_quotes(&self) -> Option<TextRange> {
+    pub fn text_range_between_quotes(&self) -> Option<TextRange> {
         self.quote_offsets().map(|it| it.contents)
     }
-}
-
-impl HasQuotes for String {}
-impl HasQuotes for RawString {}
-
-pub trait HasStringValue: HasQuotes {
-    fn value(&self) -> Option<Cow<'_, str>>;
-}
-
-impl HasStringValue for String {
-    fn value(&self) -> Option<Cow<'_, str>> {
-        let text = self.text().as_str();
-        let text = &text[self.text_range_between_quotes()? - self.syntax().text_range().start()];
-
-        let mut buf = std::string::String::with_capacity(text.len());
-        let mut has_error = false;
-        unescape_literal(text, Mode::Str, &mut |_, unescaped_char| match unescaped_char {
-            Ok(c) => buf.push(c),
-            Err(_) => has_error = true,
-        });
-
-        if has_error {
-            return None;
-        }
-        // FIXME: don't actually allocate for borrowed case
-        let res = if buf == text { Cow::Borrowed(text) } else { Cow::Owned(buf) };
-        Some(res)
+    pub fn open_quote_text_range(&self) -> Option<TextRange> {
+        self.quote_offsets().map(|it| it.quotes.0)
+    }
+    pub fn close_quote_text_range(&self) -> Option<TextRange> {
+        self.quote_offsets().map(|it| it.quotes.1)
     }
 }
 
-impl HasStringValue for RawString {
-    fn value(&self) -> Option<Cow<'_, str>> {
-        let text = self.text().as_str();
-        let text = &text[self.text_range_between_quotes()? - self.syntax().text_range().start()];
-        Some(Cow::Borrowed(text))
-    }
-}
-
-impl RawString {
-    pub fn map_range_up(&self, range: TextRange) -> Option<TextRange> {
-        let contents_range = self.text_range_between_quotes()?;
-        assert!(TextRange::up_to(contents_range.len()).contains_range(range));
-        Some(range + contents_range.start())
+impl ast::ByteString {
+    pub fn is_raw(&self) -> bool {
+        self.text().starts_with("br")
     }
 }
 
@@ -341,10 +375,22 @@ pub trait HasFormatSpecifier: AstToken {
                             }
                             c if c == '_' || c.is_alphabetic() => {
                                 read_identifier(&mut chars, &mut callback);
+
+                                if chars.peek().and_then(|next| next.1.as_ref().ok()).copied()
+                                    == Some('?')
+                                {
+                                    skip_char_and_emit(
+                                        &mut chars,
+                                        FormatSpecifier::QuestionMark,
+                                        &mut callback,
+                                    );
+                                }
+
                                 // can be either width (indicated by dollar sign, or type in which case
                                 // the next sign has to be `}`)
                                 let next =
                                     chars.peek().and_then(|next| next.1.as_ref().ok()).copied();
+
                                 match next {
                                     Some('$') => skip_char_and_emit(
                                         &mut chars,
@@ -427,6 +473,16 @@ pub trait HasFormatSpecifier: AstToken {
                             }
                             c if c == '_' || c.is_alphabetic() => {
                                 read_identifier(&mut chars, &mut callback);
+
+                                if chars.peek().and_then(|next| next.1.as_ref().ok()).copied()
+                                    == Some('?')
+                                {
+                                    skip_char_and_emit(
+                                        &mut chars,
+                                        FormatSpecifier::QuestionMark,
+                                        &mut callback,
+                                    );
+                                }
                             }
                             _ => {}
                         }
@@ -500,11 +556,11 @@ pub trait HasFormatSpecifier: AstToken {
     }
 }
 
-impl HasFormatSpecifier for String {
+impl HasFormatSpecifier for ast::String {
     fn char_ranges(
         &self,
     ) -> Option<Vec<(TextRange, Result<char, rustc_lexer::unescape::EscapeError>)>> {
-        let text = self.text().as_str();
+        let text = self.text();
         let text = &text[self.text_range_between_quotes()? - self.syntax().text_range().start()];
         let offset = self.text_range_between_quotes()?.start() - self.syntax().text_range().start();
 
@@ -521,18 +577,136 @@ impl HasFormatSpecifier for String {
     }
 }
 
-impl HasFormatSpecifier for RawString {
-    fn char_ranges(
-        &self,
-    ) -> Option<Vec<(TextRange, Result<char, rustc_lexer::unescape::EscapeError>)>> {
-        let text = self.text().as_str();
-        let text = &text[self.text_range_between_quotes()? - self.syntax().text_range().start()];
-        let offset = self.text_range_between_quotes()?.start() - self.syntax().text_range().start();
-
-        let mut res = Vec::with_capacity(text.len());
-        for (idx, c) in text.char_indices() {
-            res.push((TextRange::at(idx.try_into().unwrap(), TextSize::of(c)) + offset, Ok(c)));
+impl ast::IntNumber {
+    pub fn radix(&self) -> Radix {
+        match self.text().get(..2).unwrap_or_default() {
+            "0b" => Radix::Binary,
+            "0o" => Radix::Octal,
+            "0x" => Radix::Hexadecimal,
+            _ => Radix::Decimal,
         }
-        Some(res)
+    }
+
+    pub fn value(&self) -> Option<u128> {
+        let token = self.syntax();
+
+        let mut text = token.text();
+        if let Some(suffix) = self.suffix() {
+            text = &text[..text.len() - suffix.len()]
+        }
+
+        let radix = self.radix();
+        text = &text[radix.prefix_len()..];
+
+        let buf;
+        if text.contains('_') {
+            buf = text.replace('_', "");
+            text = buf.as_str();
+        };
+
+        let value = u128::from_str_radix(text, radix as u32).ok()?;
+        Some(value)
+    }
+
+    pub fn suffix(&self) -> Option<&str> {
+        let text = self.text();
+        let radix = self.radix();
+        let mut indices = text.char_indices();
+        if radix != Radix::Decimal {
+            indices.next()?;
+            indices.next()?;
+        }
+        let is_suffix_start: fn(&(usize, char)) -> bool = match radix {
+            Radix::Hexadecimal => |(_, c)| matches!(c, 'g'..='z' | 'G'..='Z'),
+            _ => |(_, c)| c.is_ascii_alphabetic(),
+        };
+        let (suffix_start, _) = indices.find(is_suffix_start)?;
+        Some(&text[suffix_start..])
+    }
+}
+
+impl ast::FloatNumber {
+    pub fn suffix(&self) -> Option<&str> {
+        let text = self.text();
+        let mut indices = text.char_indices();
+        let (mut suffix_start, c) = indices.by_ref().find(|(_, c)| c.is_ascii_alphabetic())?;
+        if c == 'e' || c == 'E' {
+            suffix_start = indices.find(|(_, c)| c.is_ascii_alphabetic())?.0;
+        }
+        Some(&text[suffix_start..])
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum Radix {
+    Binary = 2,
+    Octal = 8,
+    Decimal = 10,
+    Hexadecimal = 16,
+}
+
+impl Radix {
+    pub const ALL: &'static [Radix] =
+        &[Radix::Binary, Radix::Octal, Radix::Decimal, Radix::Hexadecimal];
+
+    const fn prefix_len(&self) -> usize {
+        match self {
+            Self::Decimal => 0,
+            _ => 2,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ast::{self, make, FloatNumber, IntNumber};
+
+    fn check_float_suffix<'a>(lit: &str, expected: impl Into<Option<&'a str>>) {
+        assert_eq!(FloatNumber { syntax: make::tokens::literal(lit) }.suffix(), expected.into());
+    }
+
+    fn check_int_suffix<'a>(lit: &str, expected: impl Into<Option<&'a str>>) {
+        assert_eq!(IntNumber { syntax: make::tokens::literal(lit) }.suffix(), expected.into());
+    }
+
+    #[test]
+    fn test_float_number_suffix() {
+        check_float_suffix("123.0", None);
+        check_float_suffix("123f32", "f32");
+        check_float_suffix("123.0e", None);
+        check_float_suffix("123.0e4", None);
+        check_float_suffix("123.0ef32", "f32");
+        check_float_suffix("123.0E4f32", "f32");
+        check_float_suffix("1_2_3.0_f32", "f32");
+    }
+
+    #[test]
+    fn test_int_number_suffix() {
+        check_int_suffix("123", None);
+        check_int_suffix("123i32", "i32");
+        check_int_suffix("1_0_1_l_o_l", "l_o_l");
+        check_int_suffix("0b11", None);
+        check_int_suffix("0o11", None);
+        check_int_suffix("0xff", None);
+        check_int_suffix("0b11u32", "u32");
+        check_int_suffix("0o11u32", "u32");
+        check_int_suffix("0xffu32", "u32");
+    }
+
+    fn check_string_value<'a>(lit: &str, expected: impl Into<Option<&'a str>>) {
+        assert_eq!(
+            ast::String { syntax: make::tokens::literal(&format!("\"{}\"", lit)) }
+                .value()
+                .as_deref(),
+            expected.into()
+        );
+    }
+
+    #[test]
+    fn test_string_escape() {
+        check_string_value(r"foobar", "foobar");
+        check_string_value(r"\foobar", None);
+        check_string_value(r"\nfoobar", "\nfoobar");
+        check_string_value(r"C:\\Windows\\System32\\", "C:\\Windows\\System32\\");
     }
 }

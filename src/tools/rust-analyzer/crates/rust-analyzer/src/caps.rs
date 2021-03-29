@@ -4,20 +4,20 @@ use std::env;
 use lsp_types::{
     CallHierarchyServerCapability, ClientCapabilities, CodeActionKind, CodeActionOptions,
     CodeActionProviderCapability, CodeLensOptions, CompletionOptions,
-    DocumentOnTypeFormattingOptions, FoldingRangeProviderCapability, HoverProviderCapability,
-    ImplementationProviderCapability, RenameOptions, RenameProviderCapability, SaveOptions,
+    DocumentOnTypeFormattingOptions, FileOperationFilter, FileOperationPattern,
+    FileOperationPatternKind, FileOperationRegistrationOptions, FoldingRangeProviderCapability,
+    HoverProviderCapability, ImplementationProviderCapability, OneOf, RenameOptions, SaveOptions,
     SelectionRangeProviderCapability, SemanticTokensFullOptions, SemanticTokensLegend,
     SemanticTokensOptions, ServerCapabilities, SignatureHelpOptions, TextDocumentSyncCapability,
     TextDocumentSyncKind, TextDocumentSyncOptions, TypeDefinitionProviderCapability,
-    WorkDoneProgressOptions,
+    WorkDoneProgressOptions, WorkspaceFileOperationsServerCapabilities,
+    WorkspaceServerCapabilities,
 };
 use serde_json::json;
 
 use crate::semantic_tokens;
 
 pub fn server_capabilities(client_caps: &ClientCapabilities) -> ServerCapabilities {
-    let code_action_provider = code_action_capabilities(client_caps);
-
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
             open_close: Some(true),
@@ -32,7 +32,7 @@ pub fn server_capabilities(client_caps: &ClientCapabilities) -> ServerCapabiliti
         })),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
-            resolve_provider: None,
+            resolve_provider: completions_resolve_provider(client_caps),
             trigger_characters: Some(vec![":".to_string(), ".".to_string()]),
             work_done_progress_options: WorkDoneProgressOptions { work_done_progress: None },
         }),
@@ -42,16 +42,16 @@ pub fn server_capabilities(client_caps: &ClientCapabilities) -> ServerCapabiliti
             work_done_progress_options: WorkDoneProgressOptions { work_done_progress: None },
         }),
         declaration_provider: None,
-        definition_provider: Some(true),
+        definition_provider: Some(OneOf::Left(true)),
         type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
         implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
-        references_provider: Some(true),
-        document_highlight_provider: Some(true),
-        document_symbol_provider: Some(true),
-        workspace_symbol_provider: Some(true),
-        code_action_provider: Some(code_action_provider),
+        references_provider: Some(OneOf::Left(true)),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        code_action_provider: Some(code_action_capabilities(client_caps)),
         code_lens_provider: Some(CodeLensOptions { resolve_provider: Some(true) }),
-        document_formatting_provider: Some(true),
+        document_formatting_provider: Some(OneOf::Left(true)),
         document_range_formatting_provider: None,
         document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
             first_trigger_character: "=".to_string(),
@@ -60,14 +60,44 @@ pub fn server_capabilities(client_caps: &ClientCapabilities) -> ServerCapabiliti
         selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
         semantic_highlighting: None,
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
-        rename_provider: Some(RenameProviderCapability::Options(RenameOptions {
+        rename_provider: Some(OneOf::Right(RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions { work_done_progress: None },
         })),
+        linked_editing_range_provider: None,
         document_link_provider: None,
         color_provider: None,
         execute_command_provider: None,
-        workspace: None,
+        workspace: Some(WorkspaceServerCapabilities {
+            workspace_folders: None,
+            file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                did_create: None,
+                will_create: None,
+                did_rename: None,
+                will_rename: Some(FileOperationRegistrationOptions {
+                    filters: vec![
+                        FileOperationFilter {
+                            scheme: Some(String::from("file")),
+                            pattern: FileOperationPattern {
+                                glob: String::from("**/*.rs"),
+                                matches: Some(FileOperationPatternKind::File),
+                                options: None,
+                            },
+                        },
+                        FileOperationFilter {
+                            scheme: Some(String::from("file")),
+                            pattern: FileOperationPattern {
+                                glob: String::from("**"),
+                                matches: Some(FileOperationPatternKind::Folder),
+                                options: None,
+                            },
+                        },
+                    ],
+                }),
+                did_delete: None,
+                will_delete: None,
+            }),
+        }),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         semantic_tokens_provider: Some(
             SemanticTokensOptions {
@@ -82,6 +112,7 @@ pub fn server_capabilities(client_caps: &ClientCapabilities) -> ServerCapabiliti
             }
             .into(),
         ),
+        moniker_provider: None,
         experimental: Some(json!({
             "joinLines": true,
             "ssr": true,
@@ -92,6 +123,34 @@ pub fn server_capabilities(client_caps: &ClientCapabilities) -> ServerCapabiliti
             },
         })),
     }
+}
+
+fn completions_resolve_provider(client_caps: &ClientCapabilities) -> Option<bool> {
+    if completion_item_edit_resolve(client_caps) {
+        Some(true)
+    } else {
+        log::info!("No `additionalTextEdits` completion resolve capability was found in the client capabilities, autoimport completion is disabled");
+        None
+    }
+}
+
+/// Parses client capabilities and returns all completion resolve capabilities rust-analyzer supports.
+pub(crate) fn completion_item_edit_resolve(caps: &ClientCapabilities) -> bool {
+    (|| {
+        Some(
+            caps.text_document
+                .as_ref()?
+                .completion
+                .as_ref()?
+                .completion_item
+                .as_ref()?
+                .resolve_support
+                .as_ref()?
+                .properties
+                .iter()
+                .any(|cap_string| cap_string.as_str() == "additionalTextEdits"),
+        )
+    })() == Some(true)
 }
 
 fn code_action_capabilities(client_caps: &ClientCapabilities) -> CodeActionProviderCapability {
@@ -113,6 +172,7 @@ fn code_action_capabilities(client_caps: &ClientCapabilities) -> CodeActionProvi
                     CodeActionKind::REFACTOR_INLINE,
                     CodeActionKind::REFACTOR_REWRITE,
                 ]),
+                resolve_provider: Some(true),
                 work_done_progress_options: Default::default(),
             })
         })

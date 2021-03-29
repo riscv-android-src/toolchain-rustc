@@ -6,12 +6,15 @@ use crate::{
     resolving::{ResolvedPattern, ResolvedRule, UfcsCallInfo},
     SsrMatches,
 };
-use base_db::FileRange;
 use hir::Semantics;
+use ide_db::base_db::FileRange;
 use rustc_hash::FxHashMap;
 use std::{cell::Cell, iter::Peekable};
-use syntax::ast::{AstNode, AstToken};
 use syntax::{ast, SyntaxElement, SyntaxElementChildren, SyntaxKind, SyntaxNode, SyntaxToken};
+use syntax::{
+    ast::{AstNode, AstToken},
+    SmolStr,
+};
 use test_utils::mark;
 
 // Creates a match error. If we're currently attempting to match some code that we thought we were
@@ -398,11 +401,11 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
         code: &SyntaxNode,
     ) -> Result<(), MatchFailed> {
         // Build a map keyed by field name.
-        let mut fields_by_name = FxHashMap::default();
+        let mut fields_by_name: FxHashMap<SmolStr, SyntaxNode> = FxHashMap::default();
         for child in code.children() {
             if let Some(record) = ast::RecordExprField::cast(child.clone()) {
                 if let Some(name) = record.field_name() {
-                    fields_by_name.insert(name.text().clone(), child.clone());
+                    fields_by_name.insert(name.text().into(), child.clone());
                 }
             }
         }
@@ -473,7 +476,7 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                         }
                         SyntaxElement::Node(n) => {
                             if let Some(first_token) = n.first_token() {
-                                if Some(first_token.to_string()) == next_pattern_token {
+                                if Some(first_token.text()) == next_pattern_token.as_deref() {
                                     if let Some(SyntaxElement::Node(p)) = pattern.next() {
                                         // We have a subtree that starts with the next token in our pattern.
                                         self.attempt_match_token_tree(phase, &p, &n)?;
@@ -808,9 +811,9 @@ mod tests {
 
         let edits = match_finder.edits();
         assert_eq!(edits.len(), 1);
-        let edit = &edits[0];
+        let edit = &edits[&position.file_id];
         let mut after = input.to_string();
-        edit.edit.apply(&mut after);
+        edit.apply(&mut after);
         assert_eq!(after, "fn foo() {} fn bar() {} fn main() { bar(1+2); }");
     }
 }

@@ -1,12 +1,17 @@
-//! FIXME: write short doc here
+//! This module implements syntax validation that the parser doesn't handle.
+//!
+//! A failed validation emits a diagnostic.
 
 mod block;
 
 use crate::{
-    ast, match_ast, AstNode, SyntaxError,
-    SyntaxKind::{BYTE, BYTE_STRING, CHAR, CONST, FN, INT_NUMBER, STRING, TYPE_ALIAS},
+    algo,
+    ast::{self, VisibilityOwner},
+    match_ast, AstNode, SyntaxError,
+    SyntaxKind::{CONST, FN, INT_NUMBER, TYPE_ALIAS},
     SyntaxNode, SyntaxToken, TextSize, T,
 };
+use rowan::Direction;
 use rustc_lexer::unescape::{
     self, unescape_byte, unescape_byte_literal, unescape_char, unescape_literal, Mode,
 };
@@ -89,12 +94,17 @@ pub(crate) fn validate(root: &SyntaxNode) -> Vec<SyntaxError> {
         match_ast! {
             match node {
                 ast::Literal(it) => validate_literal(it, &mut errors),
+                ast::Const(it) => validate_const(it, &mut errors),
                 ast::BlockExpr(it) => block::validate_block_expr(it, &mut errors),
                 ast::FieldExpr(it) => validate_numeric_name(it.name_ref(), &mut errors),
                 ast::RecordExprField(it) => validate_numeric_name(it.name_ref(), &mut errors),
                 ast::Visibility(it) => validate_visibility(it, &mut errors),
                 ast::RangeExpr(it) => validate_range_expr(it, &mut errors),
                 ast::PathSegment(it) => validate_path_keywords(it, &mut errors),
+                ast::RefType(it) => validate_trait_object_ref_ty(it, &mut errors),
+                ast::PtrType(it) => validate_trait_object_ptr_ty(it, &mut errors),
+                ast::FnPtrType(it) => validate_trait_object_fn_ptr_ret_ty(it, &mut errors),
+                ast::MacroRules(it) => validate_macro_rules(it, &mut errors),
                 _ => (),
             }
         }
@@ -109,7 +119,7 @@ fn validate_literal(literal: ast::Literal, acc: &mut Vec<SyntaxError>) {
     }
 
     let token = literal.token();
-    let text = token.text().as_str();
+    let text = token.text();
 
     // FIXME: lift this lambda refactor to `fn` (https://github.com/rust-analyzer/rust-analyzer/pull/2834#discussion_r366199205)
     let mut push_err = |prefix_len, (off, err): (usize, unescape::EscapeError)| {
@@ -117,36 +127,42 @@ fn validate_literal(literal: ast::Literal, acc: &mut Vec<SyntaxError>) {
         acc.push(SyntaxError::new_at_offset(rustc_unescape_error_to_string(err), off));
     };
 
-    match token.kind() {
-        BYTE => {
-            if let Some(Err(e)) = unquote(text, 2, '\'').map(unescape_byte) {
-                push_err(2, e);
+    match literal.kind() {
+        ast::LiteralKind::String(s) => {
+            if !s.is_raw() {
+                if let Some(without_quotes) = unquote(text, 1, '"') {
+                    unescape_literal(without_quotes, Mode::Str, &mut |range, char| {
+                        if let Err(err) = char {
+                            push_err(1, (range.start, err));
+                        }
+                    })
+                }
             }
         }
-        CHAR => {
+        ast::LiteralKind::ByteString(s) => {
+            if !s.is_raw() {
+                if let Some(without_quotes) = unquote(text, 2, '"') {
+                    unescape_byte_literal(without_quotes, Mode::ByteStr, &mut |range, char| {
+                        if let Err(err) = char {
+                            push_err(2, (range.start, err));
+                        }
+                    })
+                }
+            }
+        }
+        ast::LiteralKind::Char => {
             if let Some(Err(e)) = unquote(text, 1, '\'').map(unescape_char) {
                 push_err(1, e);
             }
         }
-        BYTE_STRING => {
-            if let Some(without_quotes) = unquote(text, 2, '"') {
-                unescape_byte_literal(without_quotes, Mode::ByteStr, &mut |range, char| {
-                    if let Err(err) = char {
-                        push_err(2, (range.start, err));
-                    }
-                })
+        ast::LiteralKind::Byte => {
+            if let Some(Err(e)) = unquote(text, 2, '\'').map(unescape_byte) {
+                push_err(2, e);
             }
         }
-        STRING => {
-            if let Some(without_quotes) = unquote(text, 1, '"') {
-                unescape_literal(without_quotes, Mode::Str, &mut |range, char| {
-                    if let Err(err) = char {
-                        push_err(1, (range.start, err));
-                    }
-                })
-            }
-        }
-        _ => (),
+        ast::LiteralKind::IntNumber(_)
+        | ast::LiteralKind::FloatNumber(_)
+        | ast::LiteralKind::Bool(_) => {}
     }
 }
 
@@ -160,7 +176,7 @@ pub(crate) fn validate_block_structure(root: &SyntaxNode) {
                     assert_eq!(
                         node.parent(),
                         pair.parent(),
-                        "\nunpaired curleys:\n{}\n{:#?}\n",
+                        "\nunpaired curlys:\n{}\n{:#?}\n",
                         root.text(),
                         root,
                     );
@@ -243,7 +259,7 @@ fn validate_path_keywords(segment: ast::PathSegment, errors: &mut Vec<SyntaxErro
             ));
         }
     } else if let Some(token) = segment.super_token() {
-        if !all_supers(&path) {
+        if segment.coloncolon_token().is_some() || !all_supers(&path) {
             errors.push(SyntaxError::new(
                 "The `super` keyword may only be preceded by other `super`s",
                 token.text_range(),
@@ -299,5 +315,64 @@ fn validate_path_keywords(segment: ast::PathSegment, errors: &mut Vec<SyntaxErro
         }
 
         return true;
+    }
+}
+
+fn validate_trait_object_ref_ty(ty: ast::RefType, errors: &mut Vec<SyntaxError>) {
+    if let Some(ast::Type::DynTraitType(ty)) = ty.ty() {
+        if let Some(err) = validate_trait_object_ty(ty) {
+            errors.push(err);
+        }
+    }
+}
+
+fn validate_trait_object_ptr_ty(ty: ast::PtrType, errors: &mut Vec<SyntaxError>) {
+    if let Some(ast::Type::DynTraitType(ty)) = ty.ty() {
+        if let Some(err) = validate_trait_object_ty(ty) {
+            errors.push(err);
+        }
+    }
+}
+
+fn validate_trait_object_fn_ptr_ret_ty(ty: ast::FnPtrType, errors: &mut Vec<SyntaxError>) {
+    if let Some(ast::Type::DynTraitType(ty)) = ty.ret_type().and_then(|ty| ty.ty()) {
+        if let Some(err) = validate_trait_object_ty(ty) {
+            errors.push(err);
+        }
+    }
+}
+
+fn validate_trait_object_ty(ty: ast::DynTraitType) -> Option<SyntaxError> {
+    let tbl = ty.type_bound_list()?;
+
+    if tbl.bounds().count() > 1 {
+        let dyn_token = ty.dyn_token()?;
+        let potential_parenthesis =
+            algo::skip_trivia_token(dyn_token.prev_token()?, Direction::Prev)?;
+        let kind = potential_parenthesis.kind();
+        if !matches!(kind, T!['('] | T![<] | T![=]) {
+            return Some(SyntaxError::new("ambiguous `+` in a type", ty.syntax().text_range()));
+        }
+    }
+    None
+}
+
+fn validate_macro_rules(mac: ast::MacroRules, errors: &mut Vec<SyntaxError>) {
+    if let Some(vis) = mac.visibility() {
+        errors.push(SyntaxError::new(
+            "visibilities are not allowed on `macro_rules!` items",
+            vis.syntax().text_range(),
+        ));
+    }
+}
+
+fn validate_const(const_: ast::Const, errors: &mut Vec<SyntaxError>) {
+    if let Some(mut_token) = const_
+        .const_token()
+        .and_then(|t| t.next_token())
+        .and_then(|t| algo::skip_trivia_token(t, Direction::Next))
+        .filter(|t| t.kind() == T![mut])
+    {
+        errors.push(SyntaxError::new("const globals cannot be mutable", mut_token.text_range()));
     }
 }

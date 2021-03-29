@@ -7,4 +7,5 @@
 
 #![deny(missing_docs)]
 
+pub use futures;
 pub use jsonrpc_client_transports::*;

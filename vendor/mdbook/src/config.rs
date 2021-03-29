@@ -2,7 +2,7 @@
 //!
 //! The main entrypoint of the `config` module is the `Config` struct. This acts
 //! essentially as a bag of configuration information, with a couple
-//! pre-determined tables (`BookConfig` and `BuildConfig`) as well as support
+//! pre-determined tables ([`BookConfig`] and [`BuildConfig`]) as well as support
 //! for arbitrary data which is exposed to plugins and alternative backends.
 //!
 //!
@@ -351,6 +351,11 @@ impl Serialize for Config {
 
         let book_config = Value::try_from(&self.book).expect("should always be serializable");
         table.insert("book", book_config);
+
+        if self.build != BuildConfig::default() {
+            let build_config = Value::try_from(&self.build).expect("should always be serializable");
+            table.insert("build", build_config);
+        }
 
         if self.rust != RustConfig::default() {
             let rust_config = Value::try_from(&self.rust).expect("should always be serializable");

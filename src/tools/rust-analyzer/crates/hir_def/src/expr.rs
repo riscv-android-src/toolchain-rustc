@@ -1,6 +1,6 @@
 //! This module describes hir-level representation of expressions.
 //!
-//! This representaion is:
+//! This representation is:
 //!
 //! 1. Identity-based. Each expression has an `id`, so we can distinguish
 //!    between different `1` in `1 + 1`.
@@ -12,8 +12,8 @@
 //!
 //! See also a neighboring `body` module.
 
-use arena::{Idx, RawId};
 use hir_expand::name::Name;
+use la_arena::{Idx, RawIdx};
 use syntax::ast::RangeOp;
 
 use crate::{
@@ -24,10 +24,16 @@ use crate::{
 
 pub type ExprId = Idx<Expr>;
 pub(crate) fn dummy_expr_id() -> ExprId {
-    ExprId::from_raw(RawId::from(!0))
+    ExprId::from_raw(RawIdx::from(!0))
 }
 
 pub type PatId = Idx<Pat>;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Label {
+    pub name: Name,
+}
+pub type LabelId = Idx<Label>;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Literal {
@@ -52,22 +58,22 @@ pub enum Expr {
     Block {
         statements: Vec<Statement>,
         tail: Option<ExprId>,
-        label: Option<Name>,
+        label: Option<LabelId>,
     },
     Loop {
         body: ExprId,
-        label: Option<Name>,
+        label: Option<LabelId>,
     },
     While {
         condition: ExprId,
         body: ExprId,
-        label: Option<Name>,
+        label: Option<LabelId>,
     },
     For {
         iterable: ExprId,
         pat: PatId,
         body: ExprId,
-        label: Option<Name>,
+        label: Option<LabelId>,
     },
     Call {
         callee: ExprId,
@@ -93,6 +99,9 @@ pub enum Expr {
     Return {
         expr: Option<ExprId>,
     },
+    Yield {
+        expr: Option<ExprId>,
+    },
     RecordLit {
         path: Option<Path>,
         fields: Vec<RecordLitField>,
@@ -112,6 +121,9 @@ pub enum Expr {
         body: ExprId,
     },
     Async {
+        body: ExprId,
+    },
+    Const {
         body: ExprId,
     },
     Cast {
@@ -253,7 +265,10 @@ impl Expr {
                     f(*expr);
                 }
             }
-            Expr::TryBlock { body } | Expr::Unsafe { body } | Expr::Async { body } => f(*body),
+            Expr::TryBlock { body }
+            | Expr::Unsafe { body }
+            | Expr::Async { body }
+            | Expr::Const { body } => f(*body),
             Expr::Loop { body, .. } => f(*body),
             Expr::While { condition, body, .. } => {
                 f(*condition);
@@ -282,7 +297,7 @@ impl Expr {
                 }
             }
             Expr::Continue { .. } => {}
-            Expr::Break { expr, .. } | Expr::Return { expr } => {
+            Expr::Break { expr, .. } | Expr::Return { expr } | Expr::Yield { expr } => {
                 if let Some(expr) = expr {
                     f(*expr);
                 }
@@ -399,12 +414,18 @@ pub enum Pat {
     TupleStruct { path: Option<Path>, args: Vec<PatId>, ellipsis: Option<usize> },
     Ref { pat: PatId, mutability: Mutability },
     Box { inner: PatId },
+    ConstBlock(ExprId),
 }
 
 impl Pat {
     pub fn walk_child_pats(&self, mut f: impl FnMut(PatId)) {
         match self {
-            Pat::Range { .. } | Pat::Lit(..) | Pat::Path(..) | Pat::Wild | Pat::Missing => {}
+            Pat::Range { .. }
+            | Pat::Lit(..)
+            | Pat::Path(..)
+            | Pat::ConstBlock(..)
+            | Pat::Wild
+            | Pat::Missing => {}
             Pat::Bind { subpat, .. } => {
                 subpat.iter().copied().for_each(f);
             }

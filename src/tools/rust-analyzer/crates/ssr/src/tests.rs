@@ -1,6 +1,6 @@
 use crate::{MatchFinder, SsrRule};
-use base_db::{salsa::Durability, FileId, FilePosition, FileRange, SourceDatabaseExt};
 use expect_test::{expect, Expect};
+use ide_db::base_db::{salsa::Durability, FileId, FilePosition, FileRange, SourceDatabaseExt};
 use rustc_hash::FxHashSet;
 use std::sync::Arc;
 use test_utils::{mark, RangeOrOffset};
@@ -59,10 +59,10 @@ fn parser_undefined_placeholder_in_replacement() {
     );
 }
 
-/// `code` may optionally contain a cursor marker `<|>`. If it doesn't, then the position will be
+/// `code` may optionally contain a cursor marker `$0`. If it doesn't, then the position will be
 /// the start of the file. If there's a second cursor marker, then we'll return a single range.
 pub(crate) fn single_file(code: &str) -> (ide_db::RootDatabase, FilePosition, Vec<FileRange>) {
-    use base_db::fixture::WithFixture;
+    use ide_db::base_db::fixture::WithFixture;
     use ide_db::symbol_index::SymbolsDatabase;
     let (mut db, file_id, range_or_offset) = if code.contains(test_utils::CURSOR_MARKER) {
         ide_db::RootDatabase::with_range_or_offset(code)
@@ -83,7 +83,7 @@ pub(crate) fn single_file(code: &str) -> (ide_db::RootDatabase, FilePosition, Ve
         }
     }
     let mut local_roots = FxHashSet::default();
-    local_roots.insert(base_db::fixture::WORKSPACE);
+    local_roots.insert(ide_db::base_db::fixture::WORKSPACE);
     db.set_local_roots_with_durability(Arc::new(local_roots), Durability::HIGH);
     (db, position, selections)
 }
@@ -103,11 +103,10 @@ fn assert_ssr_transforms(rules: &[&str], input: &str, expected: Expect) {
     if edits.is_empty() {
         panic!("No edits were made");
     }
-    assert_eq!(edits[0].file_id, position.file_id);
     // Note, db.file_text is not necessarily the same as `input`, since fixture parsing alters
     // stuff.
     let mut actual = db.file_text(position.file_id).to_string();
-    edits[0].edit.apply(&mut actual);
+    edits[&position.file_id].apply(&mut actual);
     expected.assert_eq(&actual);
 }
 
@@ -157,6 +156,97 @@ fn assert_match_failure_reason(pattern: &str, code: &str, snippet: &str, expecte
         }
     }
     assert_eq!(reasons, vec![expected_reason]);
+}
+
+#[test]
+fn ssr_let_stmt_in_macro_match() {
+    assert_matches(
+        "let a = 0",
+        r#"
+            macro_rules! m1 { ($a:stmt) => {$a}; }
+            fn f() {m1!{ let a = 0 };}"#,
+        // FIXME: Whitespace is not part of the matched block
+        &["leta=0"],
+    );
+}
+
+#[test]
+fn ssr_let_stmt_in_fn_match() {
+    assert_matches("let $a = 10;", "fn main() { let x = 10; x }", &["let x = 10;"]);
+    assert_matches("let $a = $b;", "fn main() { let x = 10; x }", &["let x = 10;"]);
+}
+
+#[test]
+fn ssr_block_expr_match() {
+    assert_matches("{ let $a = $b; }", "fn main() { let x = 10; }", &["{ let x = 10; }"]);
+    assert_matches("{ let $a = $b; $c }", "fn main() { let x = 10; x }", &["{ let x = 10; x }"]);
+}
+
+#[test]
+fn ssr_let_stmt_replace() {
+    // Pattern and template with trailing semicolon
+    assert_ssr_transform(
+        "let $a = $b; ==>> let $a = 11;",
+        "fn main() { let x = 10; x }",
+        expect![["fn main() { let x = 11; x }"]],
+    );
+}
+
+#[test]
+fn ssr_let_stmt_replace_expr() {
+    // Trailing semicolon should be dropped from the new expression
+    assert_ssr_transform(
+        "let $a = $b; ==>> $b",
+        "fn main() { let x = 10; }",
+        expect![["fn main() { 10 }"]],
+    );
+}
+
+#[test]
+fn ssr_blockexpr_replace_stmt_with_stmt() {
+    assert_ssr_transform(
+        "if $a() {$b;} ==>> $b;",
+        "{
+    if foo() {
+        bar();
+    }
+    Ok(())
+}",
+        expect![[r#"{
+    bar();
+    Ok(())
+}"#]],
+    );
+}
+
+#[test]
+fn ssr_blockexpr_match_trailing_expr() {
+    assert_matches(
+        "if $a() {$b;}",
+        "{
+    if foo() {
+        bar();
+    }
+}",
+        &["if foo() {
+        bar();
+    }"],
+    );
+}
+
+#[test]
+fn ssr_blockexpr_replace_trailing_expr_with_stmt() {
+    assert_ssr_transform(
+        "if $a() {$b;} ==>> $b;",
+        "{
+    if foo() {
+        bar();
+    }
+}",
+        expect![["{
+    bar();
+}"]],
+    );
 }
 
 #[test]
@@ -505,7 +595,7 @@ fn replace_function_call() {
     // This test also makes sure that we ignore empty-ranges.
     assert_ssr_transform(
         "foo() ==>> bar()",
-        "fn foo() {<|><|>} fn bar() {} fn f1() {foo(); foo();}",
+        "fn foo() {$0$0} fn bar() {} fn f1() {foo(); foo();}",
         expect![["fn foo() {} fn bar() {} fn f1() {bar(); bar();}"]],
     );
 }
@@ -615,7 +705,7 @@ fn replace_associated_trait_constant() {
 
 #[test]
 fn replace_path_in_different_contexts() {
-    // Note the <|> inside module a::b which marks the point where the rule is interpreted. We
+    // Note the $0 inside module a::b which marks the point where the rule is interpreted. We
     // replace foo with bar, but both need different path qualifiers in different contexts. In f4,
     // foo is unqualified because of a use statement, however the replacement needs to be fully
     // qualified.
@@ -623,7 +713,7 @@ fn replace_path_in_different_contexts() {
         "c::foo() ==>> c::bar()",
         r#"
             mod a {
-                pub mod b {<|>
+                pub mod b {$0
                     pub mod c {
                         pub fn foo() {}
                         pub fn bar() {}
@@ -1005,7 +1095,7 @@ fn pattern_is_a_single_segment_path() {
         fn f1() -> i32 {
             let foo = 1;
             let bar = 2;
-            foo<|>
+            foo$0
         }
         "#,
         expect![[r#"
@@ -1037,7 +1127,7 @@ fn replace_local_variable_reference() {
                 let foo = 5;
                 res += foo + 1;
                 let foo = 10;
-                res += foo + 2;<|>
+                res += foo + 2;$0
                 res += foo + 3;
                 let foo = 15;
                 res += foo + 4;
@@ -1069,9 +1159,9 @@ fn replace_path_within_selection() {
             let foo = 41;
             let bar = 42;
             do_stuff(foo);
-            do_stuff(foo);<|>
+            do_stuff(foo);$0
             do_stuff(foo);
-            do_stuff(foo);<|>
+            do_stuff(foo);$0
             do_stuff(foo);
         }"#,
         expect![[r#"
@@ -1094,9 +1184,9 @@ fn replace_nonpath_within_selection() {
         "$a + $b ==>> $b * $a",
         r#"
         fn main() {
-            let v = 1 + 2;<|>
+            let v = 1 + 2;$0
             let v2 = 3 + 3;
-            let v3 = 4 + 5;<|>
+            let v3 = 4 + 5;$0
             let v4 = 6 + 7;
         }"#,
         expect![[r#"
@@ -1121,7 +1211,7 @@ fn replace_self() {
         fn bar(_: &S1) {}
         impl S1 {
             fn f1(&self) {
-                foo(self)<|>
+                foo(self)$0
             }
             fn f2(&self) {
                 foo(self)

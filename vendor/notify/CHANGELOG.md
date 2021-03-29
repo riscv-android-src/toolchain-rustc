@@ -8,6 +8,31 @@
 - CHANGE: Make `Notice` events opt-in.
 - CHANGE: Remove `Sender`s from watcher API in favour of `EventFn` [#214]
 - META: The project maintainers have changed from @passcod to notify-rs.
+- CHANGE: Avoid stating the watched path for non-recursive watches with inotify [#256]
+- FIX: Report events promptly on Linux, even when many occur in rapid succession. [#268]
+
+[#268]: https://github.com/notify-rs/notify/pull/268
+
+## unreleased
+
+
+## 5.0.0-pre.5 (2020-01-28)
+
+- RUSTC: Push the minimum version to 1.47.0 [#280]
+- DEPS: Update `inotify` to 0.9 [#280]
+- DEPS: Update `mio` to 0.7 and remove `mio-extras` [#278]
+- FIX: Report events promptly on Linux, even when many occur in rapid succession. [#268]
+
+[#280]: https://github.com/notify-rs/notify/pull/280
+[#278]: https://github.com/notify-rs/notify/pull/278
+
+## 5.0.0-pre.4 (2020-10-31)
+
+- CHANGE: Avoid stating the watched path for non-recursive watches with inotify [#256]
+- DOCS: Fix broken link in crate documentation [#260]
+
+[#256]: https://github.com/notify-rs/notify/pull/256
+[#260]: https://github.com/notify-rs/notify/pull/260
 
 ## 5.0.0-pre.3 (2020-06-22)
 
@@ -35,7 +60,7 @@ _(no changes, just a new release because the old one failed to publish properly)
 ## 5.0.0-pre.0 (2019-06-22)
 
 - **yanked 2019-06-30**
-- RUSTC: Push the minimum version to 1.32.0 [#201]
+- RUSTC: Push the minimum version to 1.36.0 [#201]
 - RUSTC: Switch the crate to Rust 2018.
 - FIX: Implement `Sync` for PollWatcher to support FreeBSD. [#197]
 - FEATURE: Add new runtime configuration system.

@@ -1,3 +1,13 @@
+<!---
+lsp_ext.rs hash: 7609fd6d7b4ab231
+
+If you need to change the above hash to make the test pass, please check if you
+need to adjust this doc as well and ping this  issue:
+
+  https://github.com/rust-analyzer/rust-analyzer/issues/4604
+
+--->
+
 # LSP Extensions
 
 This document describes LSP extensions used by rust-analyzer.
@@ -35,7 +45,7 @@ interface SnippetTextEdit extends TextEdit {
 
 ```typescript
 export interface TextDocumentEdit {
-	textDocument: VersionedTextDocumentIdentifier;
+	textDocument: OptionalVersionedTextDocumentIdentifier;
 	edits: (TextEdit | SnippetTextEdit)[];
 }
 ```
@@ -99,37 +109,13 @@ Invoking code action at this position will yield two code actions for importing 
 * Is a fixed two-level structure enough?
 * Should we devise a general way to encode custom interaction protocols for GUI refactorings?
 
-## Lazy assists with `ResolveCodeAction`
-
-**Issue:** https://github.com/microsoft/language-server-protocol/issues/787
-
-**Client Capability** `{ "resolveCodeAction": boolean }`
-
-If this capability is set, the assists will be computed lazily. Thus `CodeAction` returned from the server will only contain `id` but not `edit` or `command` fields. The only exclusion from the rule is the diagnostic edits.
-
-After the client got the id, it should then call `experimental/resolveCodeAction` command on the server and provide the following payload:
-
-```typescript
-interface ResolveCodeActionParams {
-    id: string;
-    codeActionParams: lc.CodeActionParams;
-}
-```
-
-As a result of the command call the client will get the respective workspace edit (`lc.WorkspaceEdit`).
-
-### Unresolved Questions
-
-* Apply smarter filtering for ids?
-* Upon `resolveCodeAction` command only call the assits which should be resolved and not all of them?
-
 ## Parent Module
 
 **Issue:** https://github.com/microsoft/language-server-protocol/issues/1002
 
 **Server Capability:** `{ "parentModule": boolean }`
 
-This request is send from client to server to handle "Goto Parent Module" editor action.
+This request is sent from client to server to handle "Goto Parent Module" editor action.
 
 **Method:** `experimental/parentModule`
 
@@ -163,7 +149,7 @@ mod foo;
 
 **Server Capability:** `{ "joinLines": boolean }`
 
-This request is send from client to server to handle "Join Lines" editor action.
+This request is sent from client to server to handle "Join Lines" editor action.
 
 **Method:** `experimental/joinLines`
 
@@ -210,7 +196,7 @@ fn main() {
 
 **Server Capability:** `{ "onEnter": boolean }`
 
-This request is send from client to server to handle <kbd>Enter</kbd> keypress.
+This request is sent from client to server to handle <kbd>Enter</kbd> keypress.
 
 **Method:** `experimental/onEnter`
 
@@ -261,7 +247,7 @@ As proper cursor positioning is raison-d'etat for `onEnter`, it uses `SnippetTex
 
 **Server Capability:** `{ "ssr": boolean }`
 
-This request is send from client to server to handle structural search replace -- automated syntax tree based transformation of the source.
+This request is sent from client to server to handle structural search replace -- automated syntax tree based transformation of the source.
 
 **Method:** `experimental/ssr`
 
@@ -303,7 +289,7 @@ SSR with query `foo($a, $b) ==>> ($a).foo($b)` will transform, eg `foo(y + 5, z)
 
 **Server Capability:** `{ "matchingBrace": boolean }`
 
-This request is send from client to server to handle "Matching Brace" editor action.
+This request is sent from client to server to handle "Matching Brace" editor action.
 
 **Method:** `experimental/matchingBrace`
 
@@ -348,7 +334,7 @@ Moreover, it would be cool if editors didn't need to implement even basic langua
 
 **Server Capability:** `{ "runnables": { "kinds": string[] } }`
 
-This request is send from client to server to get the list of things that can be run (tests, binaries, `cargo check -p`).
+This request is sent from client to server to get the list of things that can be run (tests, binaries, `cargo check -p`).
 
 **Method:** `experimental/runnables`
 
@@ -382,15 +368,36 @@ rust-analyzer supports only one `kind`, `"cargo"`. The `args` for `"cargo"` look
 {
     workspaceRoot?: string;
     cargoArgs: string[];
+    cargoExtraArgs: string[];
     executableArgs: string[];
+    expectTest?: boolean;
+    overrideCargo?: string;
 }
 ```
+
+## Open External Documentation
+
+This request is sent from client to server to get a URL to documentation for the symbol under the cursor, if available.
+
+**Method** `experimental/externalDocs`
+
+**Request:**: `TextDocumentPositionParams`
+
+**Response** `string | null`
+
 
 ## Analyzer Status
 
 **Method:** `rust-analyzer/analyzerStatus`
 
-**Request:** `null`
+**Request:**
+
+```typescript
+interface AnalyzerStatusParams {
+    /// If specified, show dependencies of the current file.
+    textDocument?: TextDocumentIdentifier;
+}
+```
 
 **Response:** `string`
 
@@ -416,7 +423,7 @@ Reloads project information (that is, re-executes `cargo metadata`).
 
 ```typescript
 interface StatusParams {
-    status: "loading" | "ready" | "invalid" | "needsReload",
+    status: "loading" | "readyPartial" | "ready" | "invalid" | "needsReload",
 }
 ```
 
@@ -441,6 +448,17 @@ interface SyntaxTeeParams {
 
 Returns textual representation of a parse tree for the file/selected region.
 Primarily for debugging, but very useful for all people working on rust-analyzer itself.
+
+## View Hir
+
+**Method:** `rust-analyzer/viewHir`
+
+**Request:** `TextDocumentPositionParams`
+
+**Response:** `string`
+
+Returns a textual representation of the HIR of the function containing the cursor.
+For debugging or when working on rust-analyzer itself.
 
 ## Expand Macro
 
@@ -470,7 +488,7 @@ Expands macro call at a given position.
 
 **Method:** `rust-analyzer/inlayHints`
 
-This request is send from client to server to render "inlay hints" -- virtual text inserted into editor to show things like inferred types.
+This request is sent from client to server to render "inlay hints" -- virtual text inserted into editor to show things like inferred types.
 Generally, the client should re-query inlay hints after every modification.
 Note that we plan to move this request to `experimental/inlayHints`, as it is not really Rust-specific, but the current API is not necessary the right one.
 Upstream issue: https://github.com/microsoft/language-server-protocol/issues/956
@@ -530,3 +548,28 @@ Such actions on the client side are appended to a hover bottom as command links:
   +-----------------------------+
   ...
 ```
+
+## Open Cargo.toml
+
+**Issue:** https://github.com/rust-analyzer/rust-analyzer/issues/6462
+
+This request is sent from client to server to open the current project's Cargo.toml
+
+**Method:** `experimental/openCargoToml`
+
+**Request:** `OpenCargoTomlParams`
+
+**Response:** `Location | null`
+
+
+### Example
+
+```rust
+// Cargo.toml
+[package]
+// src/main.rs
+
+/* cursor here*/
+```
+
+`experimental/openCargoToml` returns a single `Link` to the start of the `[package]` keyword.

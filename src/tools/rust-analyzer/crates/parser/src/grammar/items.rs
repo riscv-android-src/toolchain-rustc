@@ -27,19 +27,19 @@ pub(super) fn mod_contents(p: &mut Parser, stop_on_r_curly: bool) {
 }
 
 pub(super) const ITEM_RECOVERY_SET: TokenSet = TokenSet::new(&[
-    FN_KW,
-    STRUCT_KW,
-    ENUM_KW,
-    IMPL_KW,
-    TRAIT_KW,
-    CONST_KW,
-    STATIC_KW,
-    LET_KW,
-    MOD_KW,
-    PUB_KW,
-    CRATE_KW,
-    USE_KW,
-    MACRO_KW,
+    T![fn],
+    T![struct],
+    T![enum],
+    T![impl],
+    T![trait],
+    T![const],
+    T![static],
+    T![let],
+    T![mod],
+    T![pub],
+    T![crate],
+    T![use],
+    T![macro],
     T![;],
 ]);
 
@@ -96,7 +96,10 @@ pub(super) fn maybe_item(p: &mut Parser, m: Marker) -> Result<(), Marker> {
     let mut has_mods = false;
 
     // modifiers
-    has_mods |= p.eat(T![const]);
+    if p.at(T![const]) && p.nth(1) != T!['{'] {
+        p.eat(T![const]);
+        has_mods = true;
+    }
 
     // test_err async_without_semicolon
     // fn foo() { let _ = async {} }
@@ -112,7 +115,7 @@ pub(super) fn maybe_item(p: &mut Parser, m: Marker) -> Result<(), Marker> {
         has_mods = true;
     }
 
-    if p.at(T![extern]) {
+    if p.at(T![extern]) && p.nth(1) != T!['{'] && (p.nth(1) != STRING || p.nth(2) != T!['{']) {
         has_mods = true;
         abi(p);
     }
@@ -167,7 +170,7 @@ pub(super) fn maybe_item(p: &mut Parser, m: Marker) -> Result<(), Marker> {
             m.complete(p, TRAIT);
         }
 
-        T![const] => {
+        T![const] if p.nth(1) != T!['{'] => {
             consts::konst(p, m);
         }
 
@@ -181,6 +184,14 @@ pub(super) fn maybe_item(p: &mut Parser, m: Marker) -> Result<(), Marker> {
         T![type] => {
             type_alias(p, m);
         }
+
+        // unsafe extern "C" {}
+        T![extern] => {
+            abi(p);
+            extern_item_list(p);
+            m.complete(p, EXTERN_BLOCK);
+        }
+
         _ => {
             if !has_visibility && !has_mods {
                 return Err(m);
@@ -224,6 +235,9 @@ fn items_without_modifiers(p: &mut Parser, m: Marker) -> Result<(), Marker> {
         T![macro] => {
             macro_def(p, m);
         }
+        IDENT if p.at_contextual_kw("macro_rules") && p.nth(1) == BANG => {
+            macro_rules(p, m);
+        }
         IDENT if p.at_contextual_kw("union") && p.nth(1) == IDENT => {
             // test union_items
             // union Foo {}
@@ -239,9 +253,7 @@ fn items_without_modifiers(p: &mut Parser, m: Marker) -> Result<(), Marker> {
         T![static] => consts::static_(p, m),
         // test extern_block
         // extern {}
-        T![extern]
-            if la == T!['{'] || ((la == STRING || la == RAW_STRING) && p.nth(2) == T!['{']) =>
-        {
+        T![extern] if la == T!['{'] || (la == STRING && p.nth(2) == T!['{']) => {
             abi(p);
             extern_item_list(p);
             m.complete(p, EXTERN_BLOCK);
@@ -258,7 +270,9 @@ fn extern_crate(p: &mut Parser, m: Marker) {
     p.bump(T![crate]);
 
     if p.at(T![self]) {
+        let m = p.start();
         p.bump(T![self]);
+        m.complete(p, NAME_REF);
     } else {
         name_ref(p);
     }
@@ -357,6 +371,39 @@ pub(crate) fn item_list(p: &mut Parser) {
     m.complete(p, ITEM_LIST);
 }
 
+fn macro_rules(p: &mut Parser, m: Marker) {
+    assert!(p.at_contextual_kw("macro_rules"));
+    p.bump_remap(T![macro_rules]);
+    p.expect(T![!]);
+
+    if p.at(IDENT) {
+        name(p);
+    }
+    // Special-case `macro_rules! try`.
+    // This is a hack until we do proper edition support
+
+    // test try_macro_rules
+    // macro_rules! try { () => {} }
+    if p.at(T![try]) {
+        let m = p.start();
+        p.bump_remap(IDENT);
+        m.complete(p, NAME);
+    }
+
+    match p.current() {
+        // test macro_rules_non_brace
+        // macro_rules! m ( ($i:ident) => {} );
+        // macro_rules! m [ ($i:ident) => {} ];
+        T!['['] | T!['('] => {
+            token_tree(p);
+            p.expect(T![;]);
+        }
+        T!['{'] => token_tree(p),
+        _ => p.error("expected `{`, `[`, `(`"),
+    }
+    m.complete(p, MACRO_RULES);
+}
+
 // test macro_def
 // macro m { ($i:ident) => {} }
 // macro m($i:ident) {}
@@ -388,19 +435,6 @@ fn macro_call(p: &mut Parser) -> BlockLike {
 
 pub(super) fn macro_call_after_excl(p: &mut Parser) -> BlockLike {
     p.expect(T![!]);
-    if p.at(IDENT) {
-        name(p);
-    }
-    // Special-case `macro_rules! try`.
-    // This is a hack until we do proper edition support
-
-    // test try_macro_rules
-    // macro_rules! try { () => {} }
-    if p.at(T![try]) {
-        let m = p.start();
-        p.bump_remap(IDENT);
-        m.complete(p, NAME);
-    }
 
     match p.current() {
         T!['{'] => {

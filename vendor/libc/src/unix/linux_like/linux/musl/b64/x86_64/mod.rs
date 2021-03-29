@@ -48,24 +48,6 @@ s! {
         __reserved: [::c_long; 3],
     }
 
-    pub struct nlmsghdr {
-        pub nlmsg_len: u32,
-        pub nlmsg_type: u16,
-        pub nlmsg_flags: u16,
-        pub nlmsg_seq: u32,
-        pub nlmsg_pid: u32,
-    }
-
-    pub struct nlmsgerr {
-        pub error: ::c_int,
-        pub msg: nlmsghdr,
-    }
-
-    pub struct nlattr {
-        pub nla_len: u16,
-        pub nla_type: u16,
-    }
-
     pub struct user_regs_struct {
         pub r15: ::c_ulong,
         pub r14: ::c_ulong,
@@ -837,7 +819,7 @@ pub const MAP_POPULATE: ::c_int = 0x08000;
 pub const MAP_NONBLOCK: ::c_int = 0x010000;
 pub const MAP_STACK: ::c_int = 0x020000;
 pub const MAP_HUGETLB: ::c_int = 0x040000;
-pub const MAP_SYNC : ::c_int = 0x080000;
+pub const MAP_SYNC: ::c_int = 0x080000;
 
 pub const RLIMIT_NLIMITS: ::c_int = 15;
 pub const TIOCINQ: ::c_int = ::FIONREAD;

@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "chalk-derive"
-version = "0.36.0"
+version = "0.55.0"
 authors = ["Rust Compiler Team", "Chalk developers"]
 description = "A helper crate for use by chalk crates for `derive` macros."
 readme = "README.md"

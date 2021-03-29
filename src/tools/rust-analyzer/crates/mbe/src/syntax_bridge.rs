@@ -16,16 +16,18 @@ use crate::ExpandError;
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TokenTextRange {
     Token(TextRange),
-    Delimiter(TextRange, TextRange),
+    Delimiter(TextRange),
 }
 
 impl TokenTextRange {
     pub fn by_kind(self, kind: SyntaxKind) -> Option<TextRange> {
         match self {
             TokenTextRange::Token(it) => Some(it),
-            TokenTextRange::Delimiter(open, close) => match kind {
-                T!['{'] | T!['('] | T!['['] => Some(open),
-                T!['}'] | T![')'] | T![']'] => Some(close),
+            TokenTextRange::Delimiter(it) => match kind {
+                T!['{'] | T!['('] | T!['['] => Some(TextRange::at(it.start(), 1.into())),
+                T!['}'] | T![')'] | T![']'] => {
+                    Some(TextRange::at(it.end() - TextSize::of('}'), 1.into()))
+                }
                 _ => None,
             },
         }
@@ -51,6 +53,7 @@ pub fn syntax_node_to_token_tree(node: &SyntaxNode) -> Option<(tt::Subtree, Toke
     let global_offset = node.text_range().start();
     let mut c = Convertor::new(node, global_offset);
     let subtree = c.go()?;
+    c.id_alloc.map.entries.shrink_to_fit();
     Some((subtree, c.id_alloc.map))
 }
 
@@ -70,15 +73,12 @@ pub fn token_tree_to_syntax_node(
     tt: &tt::Subtree,
     fragment_kind: FragmentKind,
 ) -> Result<(Parse<SyntaxNode>, TokenMap), ExpandError> {
-    let tmp;
-    let tokens = match tt {
-        tt::Subtree { delimiter: None, token_trees } => token_trees.as_slice(),
-        _ => {
-            tmp = [tt.clone().into()];
-            &tmp[..]
+    let buffer = match tt {
+        tt::Subtree { delimiter: None, token_trees } => {
+            TokenBuffer::from_tokens(token_trees.as_slice())
         }
+        _ => TokenBuffer::from_subtree(tt),
     };
-    let buffer = TokenBuffer::new(&tokens);
     let mut token_source = SubtreeTokenSource::new(&buffer);
     let mut tree_sink = TtTreeSink::new(buffer.begin());
     parser::parse_fragment(&mut token_source, &mut tree_sink, fragment_kind);
@@ -116,8 +116,10 @@ impl TokenMap {
     pub fn token_by_range(&self, relative_range: TextRange) -> Option<tt::TokenId> {
         let &(token_id, _) = self.entries.iter().find(|(_, range)| match range {
             TokenTextRange::Token(it) => *it == relative_range,
-            TokenTextRange::Delimiter(open, close) => {
-                *open == relative_range || *close == relative_range
+            TokenTextRange::Delimiter(it) => {
+                let open = TextRange::at(it.start(), 1.into());
+                let close = TextRange::at(it.end() - TextSize::of('}'), 1.into());
+                open == relative_range || close == relative_range
             }
         })?;
         Some(token_id)
@@ -139,20 +141,22 @@ impl TokenMap {
         close_relative_range: TextRange,
     ) -> usize {
         let res = self.entries.len();
-        self.entries
-            .push((token_id, TokenTextRange::Delimiter(open_relative_range, close_relative_range)));
+        let cover = open_relative_range.cover(close_relative_range);
+
+        self.entries.push((token_id, TokenTextRange::Delimiter(cover)));
         res
     }
 
     fn update_close_delim(&mut self, idx: usize, close_relative_range: TextRange) {
         let (_, token_text_range) = &mut self.entries[idx];
-        if let TokenTextRange::Delimiter(dim, _) = token_text_range {
-            *token_text_range = TokenTextRange::Delimiter(*dim, close_relative_range);
+        if let TokenTextRange::Delimiter(dim) = token_text_range {
+            let cover = dim.cover(close_relative_range);
+            *token_text_range = TokenTextRange::Delimiter(cover);
         }
     }
 
     fn remove_delim(&mut self, idx: usize) {
-        // FIXME: This could be accidently quadratic
+        // FIXME: This could be accidentally quadratic
         self.entries.remove(idx);
     }
 }
@@ -380,7 +384,7 @@ trait TokenConvertor {
                 IDENT => make_leaf!(Ident),
                 k if k.is_keyword() => make_leaf!(Ident),
                 k if k.is_literal() => make_leaf!(Literal),
-                LIFETIME => {
+                LIFETIME_IDENT => {
                     let char_unit = TextSize::of('\'');
                     let r = TextRange::at(range.start(), char_unit);
                     let apostrophe = tt::Leaf::from(tt::Punct {
@@ -414,7 +418,7 @@ trait TokenConvertor {
     fn id_alloc(&mut self) -> &mut TokenIdAlloc;
 }
 
-impl<'a> SrcToken for (RawToken, &'a str) {
+impl<'a> SrcToken for (&'a RawToken, &'a str) {
     fn kind(&self) -> SyntaxKind {
         self.0.kind
     }
@@ -431,7 +435,7 @@ impl<'a> SrcToken for (RawToken, &'a str) {
 impl RawConvertor<'_> {}
 
 impl<'a> TokenConvertor for RawConvertor<'a> {
-    type Token = (RawToken, &'a str);
+    type Token = (&'a RawToken, &'a str);
 
     fn convert_doc_comment(&self, token: &Self::Token) -> Option<Vec<tt::TokenTree>> {
         convert_doc_comment(&doc_comment(token.1))
@@ -442,11 +446,11 @@ impl<'a> TokenConvertor for RawConvertor<'a> {
         let range = TextRange::at(self.offset, token.len);
         self.offset += token.len;
 
-        Some(((*token, &self.text[range]), range))
+        Some(((token, &self.text[range]), range))
     }
 
     fn peek(&self) -> Option<Self::Token> {
-        let token = self.inner.as_slice().get(0).cloned();
+        let token = self.inner.as_slice().get(0);
 
         token.map(|it| {
             let range = TextRange::at(self.offset, it.len);
@@ -479,14 +483,14 @@ impl Convertor {
 
 #[derive(Debug)]
 enum SynToken {
-    Ordiniary(SyntaxToken),
+    Ordinary(SyntaxToken),
     Punch(SyntaxToken, TextSize),
 }
 
 impl SynToken {
     fn token(&self) -> &SyntaxToken {
         match self {
-            SynToken::Ordiniary(it) => it,
+            SynToken::Ordinary(it) => it,
             SynToken::Punch(it, _) => it,
         }
     }
@@ -498,12 +502,12 @@ impl SrcToken for SynToken {
     }
     fn to_char(&self) -> Option<char> {
         match self {
-            SynToken::Ordiniary(_) => None,
+            SynToken::Ordinary(_) => None,
             SynToken::Punch(it, i) => it.text().chars().nth((*i).into()),
         }
     }
     fn to_text(&self) -> SmolStr {
-        self.token().text().clone()
+        self.token().text().into()
     }
 }
 
@@ -538,7 +542,7 @@ impl TokenConvertor for Convertor {
         } else {
             self.punct_offset = None;
             let range = curr.text_range();
-            (SynToken::Ordiniary(curr), range)
+            (SynToken::Ordinary(curr), range)
         };
 
         Some(token)
@@ -560,7 +564,7 @@ impl TokenConvertor for Convertor {
         let token = if curr.kind().is_punct() {
             SynToken::Punch(curr, 0.into())
         } else {
-            SynToken::Ordiniary(curr)
+            SynToken::Ordinary(curr)
         };
         Some(token)
     }
@@ -596,22 +600,22 @@ impl<'a> TtTreeSink<'a> {
         }
     }
 
-    fn finish(self) -> (Parse<SyntaxNode>, TokenMap) {
+    fn finish(mut self) -> (Parse<SyntaxNode>, TokenMap) {
+        self.token_map.entries.shrink_to_fit();
         (self.inner.finish(), self.token_map)
     }
 }
 
-fn delim_to_str(d: Option<tt::DelimiterKind>, closing: bool) -> SmolStr {
+fn delim_to_str(d: Option<tt::DelimiterKind>, closing: bool) -> &'static str {
     let texts = match d {
         Some(tt::DelimiterKind::Parenthesis) => "()",
         Some(tt::DelimiterKind::Brace) => "{}",
         Some(tt::DelimiterKind::Bracket) => "[]",
-        None => return "".into(),
+        None => return "",
     };
 
     let idx = closing as usize;
-    let text = &texts[idx..texts.len() - (1 - idx)];
-    text.into()
+    &texts[idx..texts.len() - (1 - idx)]
 }
 
 impl<'a> TreeSink for TtTreeSink<'a> {
@@ -620,32 +624,38 @@ impl<'a> TreeSink for TtTreeSink<'a> {
             self.cursor = self.cursor.bump_subtree();
             return;
         }
-        if kind == LIFETIME {
+        if kind == LIFETIME_IDENT {
             n_tokens = 2;
         }
 
         let mut last = self.cursor;
         for _ in 0..n_tokens {
+            let tmp_str: SmolStr;
             if self.cursor.eof() {
                 break;
             }
             last = self.cursor;
-            let text: SmolStr = match self.cursor.token_tree() {
-                Some(tt::TokenTree::Leaf(leaf)) => {
+            let text: &str = match self.cursor.token_tree() {
+                Some(tt::buffer::TokenTreeRef::Leaf(leaf, _)) => {
                     // Mark the range if needed
                     let (text, id) = match leaf {
-                        tt::Leaf::Ident(ident) => (ident.text.clone(), ident.id),
+                        tt::Leaf::Ident(ident) => (&ident.text, ident.id),
                         tt::Leaf::Punct(punct) => {
-                            (SmolStr::new_inline_from_ascii(1, &[punct.char as u8]), punct.id)
+                            assert!(punct.char.is_ascii());
+                            let char = &(punct.char as u8);
+                            tmp_str = SmolStr::new_inline(
+                                std::str::from_utf8(std::slice::from_ref(char)).unwrap(),
+                            );
+                            (&tmp_str, punct.id)
                         }
-                        tt::Leaf::Literal(lit) => (lit.text.clone(), lit.id),
+                        tt::Leaf::Literal(lit) => (&lit.text, lit.id),
                     };
                     let range = TextRange::at(self.text_pos, TextSize::of(text.as_str()));
                     self.token_map.insert(id, range);
                     self.cursor = self.cursor.bump();
                     text
                 }
-                Some(tt::TokenTree::Subtree(subtree)) => {
+                Some(tt::buffer::TokenTreeRef::Subtree(subtree, _)) => {
                     self.cursor = self.cursor.subtree().unwrap();
                     if let Some(id) = subtree.delimiter.map(|it| it.id) {
                         self.open_delims.insert(id, self.text_pos);
@@ -669,18 +679,16 @@ impl<'a> TreeSink for TtTreeSink<'a> {
                 }
             };
             self.buf += &text;
-            self.text_pos += TextSize::of(text.as_str());
+            self.text_pos += TextSize::of(text);
         }
 
-        let text = SmolStr::new(self.buf.as_str());
+        self.inner.token(kind, self.buf.as_str());
         self.buf.clear();
-        self.inner.token(kind, text);
-
         // Add whitespace between adjoint puncts
         let next = last.bump();
         if let (
-            Some(tt::TokenTree::Leaf(tt::Leaf::Punct(curr))),
-            Some(tt::TokenTree::Leaf(tt::Leaf::Punct(_))),
+            Some(tt::buffer::TokenTreeRef::Leaf(tt::Leaf::Punct(curr), _)),
+            Some(tt::buffer::TokenTreeRef::Leaf(tt::Leaf::Punct(_), _)),
         ) = (last.token_tree(), next.token_tree())
         {
             // Note: We always assume the semi-colon would be the last token in
@@ -739,7 +747,7 @@ mod tests {
         )
         .expand_tt("literals!(foo);");
         let tts = &[expansion.into()];
-        let buffer = tt::buffer::TokenBuffer::new(tts);
+        let buffer = tt::buffer::TokenBuffer::from_tokens(tts);
         let mut tt_src = SubtreeTokenSource::new(&buffer);
         let mut tokens = vec![];
         while tt_src.current().kind != EOF {

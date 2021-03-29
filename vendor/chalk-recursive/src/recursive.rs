@@ -2,11 +2,11 @@ use crate::search_graph::DepthFirstNumber;
 use crate::search_graph::SearchGraph;
 use crate::solve::{SolveDatabase, SolveIteration};
 use crate::stack::{Stack, StackDepth};
-use crate::{combine, Guidance, Minimums, Solution, UCanonicalGoal};
+use crate::{combine, Minimums, UCanonicalGoal};
 use chalk_ir::interner::Interner;
 use chalk_ir::Fallible;
 use chalk_ir::{Canonical, ConstrainedSubst, Constraints, Goal, InEnvironment, UCanonical};
-use chalk_solve::{coinductive_goal::IsCoinductive, RustIrDatabase};
+use chalk_solve::{coinductive_goal::IsCoinductive, RustIrDatabase, Solution};
 use rustc_hash::FxHashMap;
 use std::fmt;
 use tracing::debug;
@@ -23,6 +23,9 @@ struct RecursiveContext<I: Interner> {
     /// Things are added to the cache when we have completely processed their
     /// result.
     cache: FxHashMap<UCanonicalGoal<I>, Fallible<Solution<I>>>,
+
+    /// The maximum size for goals.
+    max_size: usize,
 
     caching_enabled: bool,
 }
@@ -42,9 +45,13 @@ pub struct RecursiveSolver<I: Interner> {
 }
 
 impl<I: Interner> RecursiveSolver<I> {
-    pub fn new(overflow_depth: usize, caching_enabled: bool) -> Self {
+    pub fn new(overflow_depth: usize, max_size: usize, caching_enabled: bool) -> Self {
         Self {
-            ctx: Box::new(RecursiveContext::new(overflow_depth, caching_enabled)),
+            ctx: Box::new(RecursiveContext::new(
+                overflow_depth,
+                max_size,
+                caching_enabled,
+            )),
         }
     }
 }
@@ -76,11 +83,12 @@ impl<T> MergeWith<T> for Fallible<T> {
 }
 
 impl<I: Interner> RecursiveContext<I> {
-    pub fn new(overflow_depth: usize, caching_enabled: bool) -> Self {
+    pub fn new(overflow_depth: usize, max_size: usize, caching_enabled: bool) -> Self {
         RecursiveContext {
             stack: Stack::new(overflow_depth),
             search_graph: SearchGraph::new(),
             cache: FxHashMap::default(),
+            max_size,
             caching_enabled,
         }
     }
@@ -291,6 +299,10 @@ impl<'me, I: Interner> SolveDatabase<I> for Solver<'me, I> {
     fn db(&self) -> &dyn RustIrDatabase<I> {
         self.program
     }
+
+    fn max_size(&self) -> usize {
+        self.context.max_size
+    }
 }
 
 impl<I: Interner> chalk_solve::Solver<I> for RecursiveSolver<I> {
@@ -299,18 +311,7 @@ impl<I: Interner> chalk_solve::Solver<I> for RecursiveSolver<I> {
         program: &dyn RustIrDatabase<I>,
         goal: &UCanonical<InEnvironment<Goal<I>>>,
     ) -> Option<chalk_solve::Solution<I>> {
-        self.ctx
-            .solver(program)
-            .solve_root_goal(goal)
-            .ok()
-            .map(|s| match s {
-                Solution::Unique(c) => chalk_solve::Solution::Unique(c),
-                Solution::Ambig(g) => chalk_solve::Solution::Ambig(match g {
-                    Guidance::Definite(g) => chalk_solve::Guidance::Definite(g),
-                    Guidance::Suggested(g) => chalk_solve::Guidance::Suggested(g),
-                    Guidance::Unknown => chalk_solve::Guidance::Unknown,
-                }),
-            })
+        self.ctx.solver(program).solve_root_goal(goal).ok()
     }
 
     fn solve_limited(
@@ -320,18 +321,7 @@ impl<I: Interner> chalk_solve::Solver<I> for RecursiveSolver<I> {
         _should_continue: &dyn std::ops::Fn() -> bool,
     ) -> Option<chalk_solve::Solution<I>> {
         // TODO support should_continue in recursive solver
-        self.ctx
-            .solver(program)
-            .solve_root_goal(goal)
-            .ok()
-            .map(|s| match s {
-                Solution::Unique(c) => chalk_solve::Solution::Unique(c),
-                Solution::Ambig(g) => chalk_solve::Solution::Ambig(match g {
-                    Guidance::Definite(g) => chalk_solve::Guidance::Definite(g),
-                    Guidance::Suggested(g) => chalk_solve::Guidance::Suggested(g),
-                    Guidance::Unknown => chalk_solve::Guidance::Unknown,
-                }),
-            })
+        self.ctx.solver(program).solve_root_goal(goal).ok()
     }
 
     fn solve_multiple(

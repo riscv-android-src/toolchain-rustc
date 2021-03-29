@@ -2,25 +2,24 @@
 
 use std::mem;
 
-use algo::find_covering_element;
-use base_db::{FileId, FileRange};
 use hir::Semantics;
 use ide_db::{
+    base_db::{AnchoredPathBuf, FileId, FileRange},
+    helpers::SnippetCap,
+};
+use ide_db::{
     label::Label,
-    source_change::{SourceChange, SourceFileEdit},
+    source_change::{FileSystemEdit, SourceChange},
     RootDatabase,
 };
 use syntax::{
     algo::{self, find_node_at_offset, SyntaxRewriter},
-    AstNode, SourceFile, SyntaxElement, SyntaxKind, SyntaxToken, TextRange, TextSize,
+    AstNode, AstToken, SourceFile, SyntaxElement, SyntaxKind, SyntaxToken, TextRange, TextSize,
     TokenAtOffset,
 };
 use text_edit::{TextEdit, TextEditBuilder};
 
-use crate::{
-    assist_config::{AssistConfig, SnippetCap},
-    Assist, AssistId, AssistKind, GroupLabel, ResolvedAssist,
-};
+use crate::{assist_config::AssistConfig, Assist, AssistId, AssistKind, GroupLabel};
 
 /// `AssistContext` allows to apply an assist or check if it could be applied.
 ///
@@ -81,8 +80,11 @@ impl<'a> AssistContext<'a> {
     pub(crate) fn token_at_offset(&self) -> TokenAtOffset<SyntaxToken> {
         self.source_file.syntax().token_at_offset(self.offset())
     }
-    pub(crate) fn find_token_at_offset(&self, kind: SyntaxKind) -> Option<SyntaxToken> {
+    pub(crate) fn find_token_syntax_at_offset(&self, kind: SyntaxKind) -> Option<SyntaxToken> {
         self.token_at_offset().find(|it| it.kind() == kind)
+    }
+    pub(crate) fn find_token_at_offset<T: AstToken>(&self) -> Option<T> {
+        self.token_at_offset().find_map(T::cast)
     }
     pub(crate) fn find_node_at_offset<N: AstNode>(&self) -> Option<N> {
         find_node_at_offset(self.source_file.syntax(), self.offset())
@@ -91,57 +93,34 @@ impl<'a> AssistContext<'a> {
         self.sema.find_node_at_offset_with_descend(self.source_file.syntax(), self.offset())
     }
     pub(crate) fn covering_element(&self) -> SyntaxElement {
-        find_covering_element(self.source_file.syntax(), self.frange.range)
+        self.source_file.syntax().covering_element(self.frange.range)
     }
     // FIXME: remove
     pub(crate) fn covering_node_for_range(&self, range: TextRange) -> SyntaxElement {
-        find_covering_element(self.source_file.syntax(), range)
+        self.source_file.syntax().covering_element(range)
     }
 }
 
 pub(crate) struct Assists {
     resolve: bool,
     file: FileId,
-    buf: Vec<(Assist, Option<SourceChange>)>,
+    buf: Vec<Assist>,
     allowed: Option<Vec<AssistKind>>,
 }
 
 impl Assists {
-    pub(crate) fn new_resolved(ctx: &AssistContext) -> Assists {
+    pub(crate) fn new(ctx: &AssistContext, resolve: bool) -> Assists {
         Assists {
-            resolve: true,
+            resolve,
             file: ctx.frange.file_id,
             buf: Vec::new(),
             allowed: ctx.config.allowed.clone(),
         }
     }
 
-    pub(crate) fn new_unresolved(ctx: &AssistContext) -> Assists {
-        Assists {
-            resolve: false,
-            file: ctx.frange.file_id,
-            buf: Vec::new(),
-            allowed: ctx.config.allowed.clone(),
-        }
-    }
-
-    pub(crate) fn finish_unresolved(self) -> Vec<Assist> {
-        assert!(!self.resolve);
-        self.finish()
-            .into_iter()
-            .map(|(label, edit)| {
-                assert!(edit.is_none());
-                label
-            })
-            .collect()
-    }
-
-    pub(crate) fn finish_resolved(self) -> Vec<ResolvedAssist> {
-        assert!(self.resolve);
-        self.finish()
-            .into_iter()
-            .map(|(label, edit)| ResolvedAssist { assist: label, source_change: edit.unwrap() })
-            .collect()
+    pub(crate) fn finish(mut self) -> Vec<Assist> {
+        self.buf.sort_by_key(|assist| assist.target.len());
+        self.buf
     }
 
     pub(crate) fn add(
@@ -155,7 +134,7 @@ impl Assists {
             return None;
         }
         let label = Label::new(label.into());
-        let assist = Assist { id, label, group: None, target };
+        let assist = Assist { id, label, group: None, target, source_change: None };
         self.add_impl(assist, f)
     }
 
@@ -171,11 +150,11 @@ impl Assists {
             return None;
         }
         let label = Label::new(label.into());
-        let assist = Assist { id, label, group: Some(group.clone()), target };
+        let assist = Assist { id, label, group: Some(group.clone()), target, source_change: None };
         self.add_impl(assist, f)
     }
 
-    fn add_impl(&mut self, assist: Assist, f: impl FnOnce(&mut AssistBuilder)) -> Option<()> {
+    fn add_impl(&mut self, mut assist: Assist, f: impl FnOnce(&mut AssistBuilder)) -> Option<()> {
         let source_change = if self.resolve {
             let mut builder = AssistBuilder::new(self.file);
             f(&mut builder);
@@ -183,14 +162,10 @@ impl Assists {
         } else {
             None
         };
+        assist.source_change = source_change.clone();
 
-        self.buf.push((assist, source_change));
+        self.buf.push(assist);
         Some(())
-    }
-
-    fn finish(mut self) -> Vec<(Assist, Option<SourceChange>)> {
-        self.buf.sort_by_key(|(label, _edit)| label.target.len());
-        self.buf
     }
 
     fn is_allowed(&self, id: &AssistId) -> bool {
@@ -204,30 +179,23 @@ impl Assists {
 pub(crate) struct AssistBuilder {
     edit: TextEditBuilder,
     file_id: FileId,
-    is_snippet: bool,
-    change: SourceChange,
+    source_change: SourceChange,
 }
 
 impl AssistBuilder {
     pub(crate) fn new(file_id: FileId) -> AssistBuilder {
-        AssistBuilder {
-            edit: TextEdit::builder(),
-            file_id,
-            is_snippet: false,
-            change: SourceChange::default(),
-        }
+        AssistBuilder { edit: TextEdit::builder(), file_id, source_change: SourceChange::default() }
     }
 
     pub(crate) fn edit_file(&mut self, file_id: FileId) {
+        self.commit();
         self.file_id = file_id;
     }
 
     fn commit(&mut self) {
         let edit = mem::take(&mut self.edit).finish();
         if !edit.is_empty() {
-            let new_edit = SourceFileEdit { file_id: self.file_id, edit };
-            assert!(!self.change.source_file_edits.iter().any(|it| it.file_id == new_edit.file_id));
-            self.change.source_file_edits.push(new_edit);
+            self.source_change.insert_source_edit(self.file_id, edit);
         }
     }
 
@@ -246,7 +214,7 @@ impl AssistBuilder {
         offset: TextSize,
         snippet: impl Into<String>,
     ) {
-        self.is_snippet = true;
+        self.source_change.is_snippet = true;
         self.insert(offset, snippet);
     }
     /// Replaces specified `range` of text with a given string.
@@ -260,30 +228,26 @@ impl AssistBuilder {
         range: TextRange,
         snippet: impl Into<String>,
     ) {
-        self.is_snippet = true;
+        self.source_change.is_snippet = true;
         self.replace(range, snippet);
     }
     pub(crate) fn replace_ast<N: AstNode>(&mut self, old: N, new: N) {
         algo::diff(old.syntax(), new.syntax()).into_text_edit(&mut self.edit)
     }
     pub(crate) fn rewrite(&mut self, rewriter: SyntaxRewriter) {
-        let node = rewriter.rewrite_root().unwrap();
-        let new = rewriter.rewrite(&node);
-        algo::diff(&node, &new).into_text_edit(&mut self.edit);
+        if let Some(node) = rewriter.rewrite_root() {
+            let new = rewriter.rewrite(&node);
+            algo::diff(&node, &new).into_text_edit(&mut self.edit);
+        }
     }
-
-    // FIXME: kill this API
-    /// Get access to the raw `TextEditBuilder`.
-    pub(crate) fn text_edit_builder(&mut self) -> &mut TextEditBuilder {
-        &mut self.edit
+    pub(crate) fn create_file(&mut self, dst: AnchoredPathBuf, content: impl Into<String>) {
+        let file_system_edit =
+            FileSystemEdit::CreateFile { dst: dst.clone(), initial_contents: content.into() };
+        self.source_change.push_file_system_edit(file_system_edit);
     }
 
     fn finish(mut self) -> SourceChange {
         self.commit();
-        let mut change = mem::take(&mut self.change);
-        if self.is_snippet {
-            change.is_snippet = true;
-        }
-        change
+        mem::take(&mut self.source_change)
     }
 }

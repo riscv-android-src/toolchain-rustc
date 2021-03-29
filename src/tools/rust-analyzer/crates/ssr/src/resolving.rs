@@ -2,7 +2,7 @@
 
 use crate::errors::error;
 use crate::{parsing, SsrError};
-use base_db::FilePosition;
+use ide_db::base_db::FilePosition;
 use parsing::Placeholder;
 use rustc_hash::FxHashMap;
 use syntax::{ast, SmolStr, SyntaxKind, SyntaxNode, SyntaxToken};
@@ -205,7 +205,7 @@ impl<'db> ResolutionScope<'db> {
 
     /// Returns the function in which SSR was invoked, if any.
     pub(crate) fn current_function(&self) -> Option<SyntaxNode> {
-        self.node.ancestors().find(|node| node.kind() == SyntaxKind::FN).map(|node| node.clone())
+        self.node.ancestors().find(|node| node.kind() == SyntaxKind::FN)
     }
 
     fn resolve_path(&self, path: &ast::Path) -> Option<hir::PathResolution> {
@@ -228,7 +228,7 @@ impl<'db> ResolutionScope<'db> {
                 None,
                 |_ty, assoc_item| {
                     let item_name = assoc_item.name(self.scope.db)?;
-                    if item_name.to_string().as_str() == name.text().as_str() {
+                    if item_name.to_string().as_str() == name.text() {
                         Some(hir::PathResolution::AssocItem(assoc_item))
                     } else {
                         None

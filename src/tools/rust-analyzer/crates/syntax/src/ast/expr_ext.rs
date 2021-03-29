@@ -2,7 +2,7 @@
 
 use crate::{
     ast::{self, support, AstChildren, AstNode},
-    SmolStr,
+    AstToken,
     SyntaxKind::*,
     SyntaxToken, T,
 };
@@ -21,6 +21,18 @@ impl ast::Expr {
             | ast::Expr::EffectExpr(_) => true,
             _ => false,
         }
+    }
+
+    pub fn name_ref(&self) -> Option<ast::NameRef> {
+        if let ast::Expr::PathExpr(expr) = self {
+            let path = expr.path()?;
+            let segment = path.segment()?;
+            let name_ref = segment.name_ref()?;
+            if path.qualifier().is_none() {
+                return Some(name_ref);
+            }
+        }
+        None
     }
 }
 
@@ -298,12 +310,12 @@ impl ast::ArrayExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LiteralKind {
-    String,
-    ByteString,
+    String(ast::String),
+    ByteString(ast::ByteString),
+    IntNumber(ast::IntNumber),
+    FloatNumber(ast::FloatNumber),
     Char,
     Byte,
-    IntNumber { suffix: Option<SmolStr> },
-    FloatNumber { suffix: Option<SmolStr> },
     Bool(bool),
 }
 
@@ -315,44 +327,25 @@ impl ast::Literal {
             .and_then(|e| e.into_token())
             .unwrap()
     }
-
-    fn find_suffix(text: &str, possible_suffixes: &[&str]) -> Option<SmolStr> {
-        possible_suffixes
-            .iter()
-            .find(|&suffix| text.ends_with(suffix))
-            .map(|&suffix| SmolStr::new(suffix))
-    }
-
     pub fn kind(&self) -> LiteralKind {
-        const INT_SUFFIXES: [&str; 12] = [
-            "u64", "u32", "u16", "u8", "usize", "isize", "i64", "i32", "i16", "i8", "u128", "i128",
-        ];
-        const FLOAT_SUFFIXES: [&str; 2] = ["f32", "f64"];
-
         let token = self.token();
 
-        match token.kind() {
-            INT_NUMBER => {
-                // FYI: there was a bug here previously, thus the if statement below is necessary.
-                // The lexer treats e.g. `1f64` as an integer literal. See
-                // https://github.com/rust-analyzer/rust-analyzer/issues/1592
-                // and the comments on the linked PR.
+        if let Some(t) = ast::IntNumber::cast(token.clone()) {
+            return LiteralKind::IntNumber(t);
+        }
+        if let Some(t) = ast::FloatNumber::cast(token.clone()) {
+            return LiteralKind::FloatNumber(t);
+        }
+        if let Some(t) = ast::String::cast(token.clone()) {
+            return LiteralKind::String(t);
+        }
+        if let Some(t) = ast::ByteString::cast(token.clone()) {
+            return LiteralKind::ByteString(t);
+        }
 
-                let text = token.text();
-                if let suffix @ Some(_) = Self::find_suffix(&text, &FLOAT_SUFFIXES) {
-                    LiteralKind::FloatNumber { suffix }
-                } else {
-                    LiteralKind::IntNumber { suffix: Self::find_suffix(&text, &INT_SUFFIXES) }
-                }
-            }
-            FLOAT_NUMBER => {
-                let text = token.text();
-                LiteralKind::FloatNumber { suffix: Self::find_suffix(&text, &FLOAT_SUFFIXES) }
-            }
-            STRING | RAW_STRING => LiteralKind::String,
+        match token.kind() {
             T![true] => LiteralKind::Bool(true),
             T![false] => LiteralKind::Bool(false),
-            BYTE_STRING | RAW_BYTE_STRING => LiteralKind::ByteString,
             CHAR => LiteralKind::Char,
             BYTE => LiteralKind::Byte,
             _ => unreachable!(),
@@ -365,6 +358,7 @@ pub enum Effect {
     Async(SyntaxToken),
     Unsafe(SyntaxToken),
     Try(SyntaxToken),
+    Const(SyntaxToken),
     // Very much not an effect, but we stuff it into this node anyway
     Label(ast::Label),
 }
@@ -379,6 +373,9 @@ impl ast::EffectExpr {
         }
         if let Some(token) = self.try_token() {
             return Effect::Try(token);
+        }
+        if let Some(token) = self.const_token() {
+            return Effect::Const(token);
         }
         if let Some(label) = self.label() {
             return Effect::Label(label);

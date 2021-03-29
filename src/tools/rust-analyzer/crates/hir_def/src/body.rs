@@ -1,16 +1,23 @@
 //! Defines `Body`: a lowered representation of bodies of functions, statics and
 //! consts.
 mod lower;
+mod diagnostics;
+#[cfg(test)]
+mod tests;
 pub mod scope;
 
 use std::{mem, ops::Index, sync::Arc};
 
-use arena::{map::ArenaMap, Arena};
 use base_db::CrateId;
 use cfg::CfgOptions;
 use drop_bomb::DropBomb;
 use either::Either;
-use hir_expand::{ast_id_map::AstIdMap, hygiene::Hygiene, AstId, HirFileId, InFile, MacroDefId};
+use hir_expand::{
+    ast_id_map::AstIdMap, diagnostics::DiagnosticSink, hygiene::Hygiene, AstId, ExpandResult,
+    HirFileId, InFile, MacroDefId,
+};
+use la_arena::{Arena, ArenaMap};
+use profile::Count;
 use rustc_hash::FxHashMap;
 use syntax::{ast, AstNode, AstPtr};
 use test_utils::mark;
@@ -18,12 +25,12 @@ use test_utils::mark;
 pub(crate) use lower::LowerCtx;
 
 use crate::{
-    attr::Attrs,
+    attr::{Attrs, RawAttrs},
     db::DefDatabase,
-    expr::{Expr, ExprId, Pat, PatId},
+    expr::{Expr, ExprId, Label, LabelId, Pat, PatId},
     item_scope::BuiltinShadowMode,
     item_scope::ItemScope,
-    nameres::CrateDefMap,
+    nameres::DefMap,
     path::{ModPath, Path},
     src::HasSource,
     AsMacroCall, DefWithBodyId, HasModule, Lookup, ModuleId,
@@ -34,11 +41,12 @@ use crate::{
 pub(crate) struct CfgExpander {
     cfg_options: CfgOptions,
     hygiene: Hygiene,
+    krate: CrateId,
 }
 
 pub(crate) struct Expander {
     cfg_expander: CfgExpander,
-    crate_def_map: Arc<CrateDefMap>,
+    crate_def_map: Arc<DefMap>,
     current_file_id: HirFileId,
     ast_id_map: Arc<AstIdMap>,
     module: ModuleId,
@@ -59,15 +67,15 @@ impl CfgExpander {
     ) -> CfgExpander {
         let hygiene = Hygiene::new(db.upcast(), current_file_id);
         let cfg_options = db.crate_graph()[krate].cfg_options.clone();
-        CfgExpander { cfg_options, hygiene }
+        CfgExpander { cfg_options, hygiene, krate }
     }
 
-    pub(crate) fn parse_attrs(&self, owner: &dyn ast::AttrsOwner) -> Attrs {
-        Attrs::new(owner, &self.hygiene)
+    pub(crate) fn parse_attrs(&self, db: &dyn DefDatabase, owner: &dyn ast::AttrsOwner) -> Attrs {
+        RawAttrs::new(owner, &self.hygiene).filter(db, self.krate)
     }
 
-    pub(crate) fn is_cfg_enabled(&self, owner: &dyn ast::AttrsOwner) -> bool {
-        let attrs = self.parse_attrs(owner);
+    pub(crate) fn is_cfg_enabled(&self, db: &dyn DefDatabase, owner: &dyn ast::AttrsOwner) -> bool {
+        let attrs = self.parse_attrs(db, owner);
         attrs.is_cfg_enabled(&self.cfg_options)
     }
 }
@@ -79,7 +87,7 @@ impl Expander {
         module: ModuleId,
     ) -> Expander {
         let cfg_expander = CfgExpander::new(db, current_file_id, module.krate);
-        let crate_def_map = db.crate_def_map(module.krate);
+        let crate_def_map = module.def_map(db);
         let ast_id_map = db.ast_id_map(current_file_id);
         Expander {
             cfg_expander,
@@ -96,44 +104,79 @@ impl Expander {
         db: &dyn DefDatabase,
         local_scope: Option<&ItemScope>,
         macro_call: ast::MacroCall,
-    ) -> Option<(Mark, T)> {
-        self.recursion_limit += 1;
-        if self.recursion_limit > EXPANSION_RECURSION_LIMIT {
+    ) -> ExpandResult<Option<(Mark, T)>> {
+        if self.recursion_limit + 1 > EXPANSION_RECURSION_LIMIT {
             mark::hit!(your_stack_belongs_to_me);
-            return None;
+            return ExpandResult::str_err("reached recursion limit during macro expansion".into());
         }
 
         let macro_call = InFile::new(self.current_file_id, &macro_call);
 
-        if let Some(call_id) = macro_call.as_call_id(db, self.crate_def_map.krate, |path| {
+        let resolver = |path: ModPath| -> Option<MacroDefId> {
             if let Some(local_scope) = local_scope {
                 if let Some(def) = path.as_ident().and_then(|n| local_scope.get_legacy_macro(n)) {
                     return Some(def);
                 }
             }
             self.resolve_path_as_macro(db, &path)
-        }) {
-            let file_id = call_id.as_file();
-            if let Some(node) = db.parse_or_expand(file_id) {
-                if let Some(expr) = T::cast(node) {
-                    log::debug!("macro expansion {:#?}", expr.syntax());
+        };
 
-                    let mark = Mark {
-                        file_id: self.current_file_id,
-                        ast_id_map: mem::take(&mut self.ast_id_map),
-                        bomb: DropBomb::new("expansion mark dropped"),
-                    };
-                    self.cfg_expander.hygiene = Hygiene::new(db.upcast(), file_id);
-                    self.current_file_id = file_id;
-                    self.ast_id_map = db.ast_id_map(file_id);
-                    return Some((mark, expr));
+        let mut err = None;
+        let call_id =
+            macro_call.as_call_id_with_errors(db, self.crate_def_map.krate(), resolver, &mut |e| {
+                err.get_or_insert(e);
+            });
+        let call_id = match call_id {
+            Some(it) => it,
+            None => {
+                if err.is_none() {
+                    eprintln!("no error despite `as_call_id_with_errors` returning `None`");
                 }
+                return ExpandResult { value: None, err };
             }
+        };
+
+        if err.is_none() {
+            err = db.macro_expand_error(call_id);
         }
 
-        // FIXME: Instead of just dropping the error from expansion
-        // report it
-        None
+        let file_id = call_id.as_file();
+
+        let raw_node = match db.parse_or_expand(file_id) {
+            Some(it) => it,
+            None => {
+                // Only `None` if the macro expansion produced no usable AST.
+                if err.is_none() {
+                    log::warn!("no error despite `parse_or_expand` failing");
+                }
+
+                return ExpandResult::only_err(err.unwrap_or_else(|| {
+                    mbe::ExpandError::Other("failed to parse macro invocation".into())
+                }));
+            }
+        };
+
+        let node = match T::cast(raw_node) {
+            Some(it) => it,
+            None => {
+                // This can happen without being an error, so only forward previous errors.
+                return ExpandResult { value: None, err };
+            }
+        };
+
+        log::debug!("macro expansion {:#?}", node.syntax());
+
+        self.recursion_limit += 1;
+        let mark = Mark {
+            file_id: self.current_file_id,
+            ast_id_map: mem::take(&mut self.ast_id_map),
+            bomb: DropBomb::new("expansion mark dropped"),
+        };
+        self.cfg_expander.hygiene = Hygiene::new(db.upcast(), file_id);
+        self.current_file_id = file_id;
+        self.ast_id_map = db.ast_id_map(file_id);
+
+        ExpandResult { value: Some((mark, node)), err }
     }
 
     pub(crate) fn exit(&mut self, db: &dyn DefDatabase, mut mark: Mark) {
@@ -148,8 +191,12 @@ impl Expander {
         InFile { file_id: self.current_file_id, value }
     }
 
-    pub(crate) fn is_cfg_enabled(&self, owner: &dyn ast::AttrsOwner) -> bool {
-        self.cfg_expander.is_cfg_enabled(owner)
+    pub(crate) fn parse_attrs(&self, db: &dyn DefDatabase, owner: &dyn ast::AttrsOwner) -> Attrs {
+        self.cfg_expander.parse_attrs(db, owner)
+    }
+
+    pub(crate) fn cfg_options(&self) -> &CfgOptions {
+        &self.cfg_expander.cfg_options
     }
 
     fn parse_path(&mut self, path: ast::Path) -> Option<Path> {
@@ -180,6 +227,7 @@ pub(crate) struct Mark {
 pub struct Body {
     pub exprs: Arena<Expr>,
     pub pats: Arena<Pat>,
+    pub labels: Arena<Label>,
     /// The patterns for the function's parameters. While the parameter types are
     /// part of the function signature, the patterns are not (they don't change
     /// the external type of the function).
@@ -190,6 +238,7 @@ pub struct Body {
     /// The `ExprId` of the actual body expression.
     pub body_expr: ExprId,
     pub item_scope: ItemScope,
+    _c: Count<Self>,
 }
 
 pub type ExprPtr = AstPtr<ast::Expr>;
@@ -198,6 +247,8 @@ pub type ExprSource = InFile<ExprPtr>;
 pub type PatPtr = Either<AstPtr<ast::Pat>, AstPtr<ast::SelfParam>>;
 pub type PatSource = InFile<PatPtr>;
 
+pub type LabelPtr = AstPtr<ast::Label>;
+pub type LabelSource = InFile<LabelPtr>;
 /// An item body together with the mapping from syntax nodes to HIR expression
 /// IDs. This is needed to go from e.g. a position in a file to the HIR
 /// expression containing it; but for type inference etc., we want to operate on
@@ -215,8 +266,14 @@ pub struct BodySourceMap {
     expr_map_back: ArenaMap<ExprId, Result<ExprSource, SyntheticSyntax>>,
     pat_map: FxHashMap<PatSource, PatId>,
     pat_map_back: ArenaMap<PatId, Result<PatSource, SyntheticSyntax>>,
+    label_map: FxHashMap<LabelSource, LabelId>,
+    label_map_back: ArenaMap<LabelId, LabelSource>,
     field_map: FxHashMap<(ExprId, usize), InFile<AstPtr<ast::RecordExprField>>>,
     expansions: FxHashMap<InFile<AstPtr<ast::MacroCall>>, HirFileId>,
+
+    /// Diagnostics accumulated during body lowering. These contain `AstPtr`s and so are stored in
+    /// the source map (since they're just as volatile).
+    diagnostics: Vec<diagnostics::BodyDiagnostic>,
 }
 
 #[derive(Default, Debug, Eq, PartialEq, Clone, Copy)]
@@ -284,6 +341,14 @@ impl Index<PatId> for Body {
     }
 }
 
+impl Index<LabelId> for Body {
+    type Output = Label;
+
+    fn index(&self, label: LabelId) -> &Label {
+        &self.labels[label]
+    }
+}
+
 impl BodySourceMap {
     pub fn expr_syntax(&self, expr: ExprId) -> Result<ExprSource, SyntheticSyntax> {
         self.expr_map_back[expr].clone()
@@ -313,48 +378,22 @@ impl BodySourceMap {
         self.pat_map.get(&src).cloned()
     }
 
+    pub fn label_syntax(&self, label: LabelId) -> LabelSource {
+        self.label_map_back[label].clone()
+    }
+
+    pub fn node_label(&self, node: InFile<&ast::Label>) -> Option<LabelId> {
+        let src = node.map(|it| AstPtr::new(it));
+        self.label_map.get(&src).cloned()
+    }
+
     pub fn field_syntax(&self, expr: ExprId, field: usize) -> InFile<AstPtr<ast::RecordExprField>> {
         self.field_map[&(expr, field)].clone()
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use base_db::{fixture::WithFixture, SourceDatabase};
-    use test_utils::mark;
-
-    use crate::ModuleDefId;
-
-    use super::*;
-
-    fn lower(ra_fixture: &str) -> Arc<Body> {
-        let (db, file_id) = crate::test_db::TestDB::with_single_file(ra_fixture);
-
-        let krate = db.crate_graph().iter().next().unwrap();
-        let def_map = db.crate_def_map(krate);
-        let module = def_map.modules_for_file(file_id).next().unwrap();
-        let module = &def_map[module];
-        let fn_def = match module.scope.declarations().next().unwrap() {
-            ModuleDefId::FunctionId(it) => it,
-            _ => panic!(),
-        };
-
-        db.body(fn_def.into())
-    }
-
-    #[test]
-    fn your_stack_belongs_to_me() {
-        mark::check!(your_stack_belongs_to_me);
-        lower(
-            "
-macro_rules! n_nuple {
-    ($e:tt) => ();
-    ($($rest:tt)*) => {{
-        (n_nuple!($($rest)*)None,)
-    }};
-}
-fn main() { n_nuple!(1,2,3); }
-",
-        );
+    pub(crate) fn add_diagnostics(&self, _db: &dyn DefDatabase, sink: &mut DiagnosticSink<'_>) {
+        for diag in &self.diagnostics {
+            diag.add_to(sink);
+        }
     }
 }

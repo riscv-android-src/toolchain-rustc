@@ -41,7 +41,7 @@ rearrange the compiled code which may make it harder to use with a debugger.
 
 The valid options are:
 
-* `0`: no optimizations, also turns on [`cfg(debug_assertions)`](#debug-assertions).
+* `0`: no optimizations
 * `1`: basic optimizations
 * `2`: some optimizations
 * `3`: all optimizations
@@ -71,7 +71,25 @@ The valid options are:
 * `1`: line tables only
 * `2` or `true`: full debug info
 
+You may wish to also configure the [`split-debuginfo`](#split-debuginfo) option
+depending on your needs as well.
+
 [`-C debuginfo` flag]: ../../rustc/codegen-options/index.html#debuginfo
+
+#### split-debuginfo
+
+The `split-debuginfo` setting controls the [`-C split-debuginfo` flag] which
+controls whether debug information, if generated, is either placed in the
+executable itself or adjacent to it.
+
+This option is a string and acceptable values are the same as those the
+[compiler accepts][`-C split-debuginfo` flag]. See that documentation for the
+default behavior, which is platform-specific. Some options are only available
+on the [nightly channel]. The default may change in the future once more
+testing has been performed, and support for DWARF is stabilized.
+
+[nightly channel]: ../../book/appendix-07-nightly-rust.html
+[`-C split-debuginfo` flag]: ../../rustc/codegen-options/index.html#split-debuginfo
 
 #### debug-assertions
 
@@ -212,6 +230,7 @@ The default settings for the `dev` profile are:
 [profile.dev]
 opt-level = 0
 debug = true
+split-debuginfo = '...'  # Platform-specific.
 debug-assertions = true
 overflow-checks = true
 lto = false
@@ -233,6 +252,7 @@ The default settings for the `release` profile are:
 [profile.release]
 opt-level = 3
 debug = false
+split-debuginfo = '...'  # Platform-specific.
 debug-assertions = false
 overflow-checks = false
 lto = false
@@ -253,6 +273,7 @@ The default settings for the `test` profile are:
 [profile.test]
 opt-level = 0
 debug = 2
+split-debuginfo = '...'  # Platform-specific.
 debug-assertions = true
 overflow-checks = true
 lto = false
@@ -273,6 +294,7 @@ The default settings for the `bench` profile are:
 [profile.bench]
 opt-level = 3
 debug = false
+split-debuginfo = '...'  # Platform-specific.
 debug-assertions = false
 overflow-checks = false
 lto = false

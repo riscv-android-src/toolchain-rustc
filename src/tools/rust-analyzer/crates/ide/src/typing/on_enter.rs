@@ -1,7 +1,7 @@
 //! Handles the `Enter` key press. At the momently, this only continues
 //! comments, but should handle indent some time in the future as well.
 
-use base_db::{FilePosition, SourceDatabase};
+use ide_db::base_db::{FilePosition, SourceDatabase};
 use ide_db::RootDatabase;
 use syntax::{
     ast::{self, AstToken},
@@ -51,12 +51,12 @@ pub(crate) fn on_enter(db: &RootDatabase, position: FilePosition) -> Option<Text
         return None;
     }
 
-    let mut remove_last_space = false;
+    let mut remove_trailing_whitespace = false;
     // Continuing single-line non-doc comments (like this one :) ) is annoying
     if prefix == "//" && comment_range.end() == position.offset {
         if comment.text().ends_with(' ') {
             mark::hit!(continues_end_of_line_comment_with_space);
-            remove_last_space = true;
+            remove_trailing_whitespace = true;
         } else if !followed_by_comment(&comment) {
             return None;
         }
@@ -64,8 +64,10 @@ pub(crate) fn on_enter(db: &RootDatabase, position: FilePosition) -> Option<Text
 
     let indent = node_indent(&file, comment.syntax())?;
     let inserted = format!("\n{}{} $0", indent, prefix);
-    let delete = if remove_last_space {
-        TextRange::new(position.offset - TextSize::of(' '), position.offset)
+    let delete = if remove_trailing_whitespace {
+        let trimmed_len = comment.text().trim_end().len() as u32;
+        let trailing_whitespace_len = comment.text().len() as u32 - trimmed_len;
+        TextRange::new(position.offset - TextSize::from(trailing_whitespace_len), position.offset)
     } else {
         TextRange::empty(position.offset)
     };
@@ -109,10 +111,10 @@ mod tests {
     use stdx::trim_indent;
     use test_utils::{assert_eq_text, mark};
 
-    use crate::mock_analysis::analysis_and_position;
+    use crate::fixture;
 
     fn apply_on_enter(before: &str) -> Option<String> {
-        let (analysis, position) = analysis_and_position(&before);
+        let (analysis, position) = fixture::position(&before);
         let result = analysis.on_enter(position).unwrap()?;
 
         let mut actual = analysis.file_text(position.file_id).unwrap().to_string();
@@ -134,7 +136,7 @@ mod tests {
     fn continues_doc_comment() {
         do_check(
             r"
-/// Some docs<|>
+/// Some docs$0
 fn foo() {
 }
 ",
@@ -149,7 +151,7 @@ fn foo() {
         do_check(
             r"
 impl S {
-    /// Some<|> docs.
+    /// Some$0 docs.
     fn foo() {}
 }
 ",
@@ -164,7 +166,7 @@ impl S {
 
         do_check(
             r"
-///<|> Some docs
+///$0 Some docs
 fn foo() {
 }
 ",
@@ -179,7 +181,7 @@ fn foo() {
 
     #[test]
     fn does_not_continue_before_doc_comment() {
-        do_check_noop(r"<|>//! docz");
+        do_check_noop(r"$0//! docz");
     }
 
     #[test]
@@ -187,7 +189,7 @@ fn foo() {
         do_check(
             r"
 fn main() {
-    // Fix<|> me
+    // Fix$0 me
     let x = 1 + 1;
 }
 ",
@@ -206,7 +208,7 @@ fn main() {
         do_check(
             r"
 fn main() {
-    // Fix<|>
+    // Fix$0
     // me
     let x = 1 + 1;
 }
@@ -227,7 +229,7 @@ fn main() {
         do_check_noop(
             r"
 fn main() {
-    // Fix me<|>
+    // Fix me$0
     let x = 1 + 1;
 }
 ",
@@ -240,7 +242,7 @@ fn main() {
         do_check(
             r#"
 fn main() {
-    // Fix me <|>
+    // Fix me $0
     let x = 1 + 1;
 }
 "#,
@@ -251,6 +253,25 @@ fn main() {
     let x = 1 + 1;
 }
 "#,
+        );
+    }
+
+    #[test]
+    fn trims_all_trailing_whitespace() {
+        do_check(
+            "
+fn main() {
+    // Fix me  \t\t   $0
+    let x = 1 + 1;
+}
+",
+            "
+fn main() {
+    // Fix me
+    // $0
+    let x = 1 + 1;
+}
+",
         );
     }
 }

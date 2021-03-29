@@ -10,7 +10,6 @@ use parser::Reparser;
 use text_edit::Indel;
 
 use crate::{
-    algo,
     parsing::{
         lexer::{lex_single_syntax_kind, tokenize, Token},
         text_token_source::TextTokenSource,
@@ -41,10 +40,10 @@ fn reparse_token<'node>(
     root: &'node SyntaxNode,
     edit: &Indel,
 ) -> Option<(GreenNode, Vec<SyntaxError>, TextRange)> {
-    let prev_token = algo::find_covering_element(root, edit.delete).as_token()?.clone();
+    let prev_token = root.covering_element(edit.delete).as_token()?.clone();
     let prev_token_kind = prev_token.kind();
     match prev_token_kind {
-        WHITESPACE | COMMENT | IDENT | STRING | RAW_STRING => {
+        WHITESPACE | COMMENT | IDENT | STRING => {
             if prev_token_kind == WHITESPACE || prev_token_kind == COMMENT {
                 // removing a new line may extends previous token
                 let deleted_range = edit.delete - prev_token.text_range().start();
@@ -74,8 +73,7 @@ fn reparse_token<'node>(
                 new_text.pop();
             }
 
-            let new_token =
-                GreenToken::new(rowan::SyntaxKind(prev_token_kind.into()), new_text.into());
+            let new_token = GreenToken::new(rowan::SyntaxKind(prev_token_kind.into()), &new_text);
             Some((
                 prev_token.replace_with(new_token),
                 new_err.into_iter().collect(),
@@ -124,7 +122,7 @@ fn is_contextual_kw(text: &str) -> bool {
 }
 
 fn find_reparsable_node(node: &SyntaxNode, range: TextRange) -> Option<(SyntaxNode, Reparser)> {
-    let node = algo::find_covering_element(node, range);
+    let node = node.covering_element(range);
 
     let mut ancestors = match node {
         NodeOrToken::Token(it) => it.parent().ancestors(),
@@ -223,7 +221,7 @@ mod tests {
         do_check(
             r"
 fn foo() {
-    let x = foo + <|>bar<|>
+    let x = foo + $0bar$0
 }
 ",
             "baz",
@@ -232,7 +230,7 @@ fn foo() {
         do_check(
             r"
 fn foo() {
-    let x = foo<|> + bar<|>
+    let x = foo$0 + bar$0
 }
 ",
             "baz",
@@ -241,7 +239,7 @@ fn foo() {
         do_check(
             r"
 struct Foo {
-    f: foo<|><|>
+    f: foo$0$0
 }
 ",
             ",\n    g: (),",
@@ -252,7 +250,7 @@ struct Foo {
 fn foo {
     let;
     1 + 1;
-    <|>92<|>;
+    $092$0;
 }
 ",
             "62",
@@ -261,7 +259,7 @@ fn foo {
         do_check(
             r"
 mod foo {
-    fn <|><|>
+    fn $0$0
 }
 ",
             "bar",
@@ -271,7 +269,7 @@ mod foo {
         do_check(
             r"
 trait Foo {
-    type <|>Foo<|>;
+    type $0Foo$0;
 }
 ",
             "Output",
@@ -280,17 +278,17 @@ trait Foo {
         do_check(
             r"
 impl IntoIterator<Item=i32> for Foo {
-    f<|><|>
+    f$0$0
 }
 ",
             "n next(",
             9,
         );
-        do_check(r"use a::b::{foo,<|>,bar<|>};", "baz", 10);
+        do_check(r"use a::b::{foo,$0,bar$0};", "baz", 10);
         do_check(
             r"
 pub enum A {
-    Foo<|><|>
+    Foo$0$0
 }
 ",
             "\nBar;\n",
@@ -298,7 +296,7 @@ pub enum A {
         );
         do_check(
             r"
-foo!{a, b<|><|> d}
+foo!{a, b$0$0 d}
 ",
             ", c[3]",
             8,
@@ -306,7 +304,7 @@ foo!{a, b<|><|> d}
         do_check(
             r"
 fn foo() {
-    vec![<|><|>]
+    vec![$0$0]
 }
 ",
             "123",
@@ -315,7 +313,7 @@ fn foo() {
         do_check(
             r"
 extern {
-    fn<|>;<|>
+    fn$0;$0
 }
 ",
             " exit(code: c_int)",
@@ -326,7 +324,7 @@ extern {
     #[test]
     fn reparse_token_tests() {
         do_check(
-            r"<|><|>
+            r"$0$0
 fn foo() -> i32 { 1 }
 ",
             "\n\n\n   \n",
@@ -334,49 +332,49 @@ fn foo() -> i32 { 1 }
         );
         do_check(
             r"
-fn foo() -> <|><|> {}
+fn foo() -> $0$0 {}
 ",
             "  \n",
             2,
         );
         do_check(
             r"
-fn <|>foo<|>() -> i32 { 1 }
+fn $0foo$0() -> i32 { 1 }
 ",
             "bar",
             3,
         );
         do_check(
             r"
-fn foo<|><|>foo() {  }
+fn foo$0$0foo() {  }
 ",
             "bar",
             6,
         );
         do_check(
             r"
-fn foo /* <|><|> */ () {}
+fn foo /* $0$0 */ () {}
 ",
             "some comment",
             6,
         );
         do_check(
             r"
-fn baz <|><|> () {}
+fn baz $0$0 () {}
 ",
             "    \t\t\n\n",
             2,
         );
         do_check(
             r"
-fn baz <|><|> () {}
+fn baz $0$0 () {}
 ",
             "    \t\t\n\n",
             2,
         );
         do_check(
             r"
-/// foo <|><|>omment
+/// foo $0$0omment
 mod { }
 ",
             "c",
@@ -384,28 +382,28 @@ mod { }
         );
         do_check(
             r#"
-fn -> &str { "Hello<|><|>" }
+fn -> &str { "Hello$0$0" }
 "#,
             ", world",
             7,
         );
         do_check(
             r#"
-fn -> &str { // "Hello<|><|>"
+fn -> &str { // "Hello$0$0"
 "#,
             ", world",
             10,
         );
         do_check(
             r##"
-fn -> &str { r#"Hello<|><|>"#
+fn -> &str { r#"Hello$0$0"#
 "##,
             ", world",
             10,
         );
         do_check(
             r"
-#[derive(<|>Copy<|>)]
+#[derive($0Copy$0)]
 enum Foo {
 
 }
@@ -417,12 +415,12 @@ enum Foo {
 
     #[test]
     fn reparse_str_token_with_error_unchanged() {
-        do_check(r#""<|>Unclosed<|> string literal"#, "Still unclosed", 24);
+        do_check(r#""$0Unclosed$0 string literal"#, "Still unclosed", 24);
     }
 
     #[test]
     fn reparse_str_token_with_error_fixed() {
-        do_check(r#""unterinated<|><|>"#, "\"", 12);
+        do_check(r#""unterinated$0$0"#, "\"", 12);
     }
 
     #[test]
@@ -430,7 +428,7 @@ enum Foo {
         do_check(
             r#"fn main() {
                 if {}
-                32 + 4<|><|>
+                32 + 4$0$0
                 return
                 if {}
             }"#,
@@ -444,7 +442,7 @@ enum Foo {
         do_check(
             r#"fn main() {
                 if {}
-                32 + 4<|><|>
+                32 + 4$0$0
                 return
                 if {}
             }"#,

@@ -72,7 +72,7 @@ Points of note:
 * Trivia and non-trivia tokens are not distinguished on the type level.
 * Each token carries its full text.
 * The original text can be recovered by concatenating the texts of all tokens in order.
-* Accessing a child of particular type (for example, parameter list of a function) generally involves linerary traversing the children, looking for a specific `kind`.
+* Accessing a child of particular type (for example, parameter list of a function) generally involves linearly traversing the children, looking for a specific `kind`.
 * Modifying the tree is roughly `O(depth)`.
   We don't make special efforts to guarantee that the depth is not linear, but, in practice, syntax trees are branchy and shallow.
 * If mandatory (grammar wise) node is missing from the input, it's just missing from the tree.
@@ -195,7 +195,7 @@ Modeling this with immutable trees is possible, but annoying.
 A function green tree is not super-convenient to use.
 The biggest problem is accessing parents (there are no parent pointers!).
 But there are also "identify" issues.
-Let's say you want to write a code which builds a list of expressions in a file: `fn collect_exrepssions(file: GreenNode) -> HashSet<GreenNode>`.
+Let's say you want to write a code which builds a list of expressions in a file: `fn collect_expressions(file: GreenNode) -> HashSet<GreenNode>`.
 For the input like
 
 ```rust
@@ -236,7 +236,7 @@ impl SyntaxNode {
         self.parent.clone()
     }
     fn children(&self) -> impl Iterator<Item = SyntaxNode> {
-        let mut offset = self.offset
+        let mut offset = self.offset;
         self.green.children().map(|green_child| {
             let child_offset = offset;
             offset += green_child.text_len;

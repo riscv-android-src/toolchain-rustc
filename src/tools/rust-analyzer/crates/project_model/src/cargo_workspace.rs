@@ -1,20 +1,16 @@
 //! FIXME: write short doc here
 
-use std::{
-    ffi::OsStr,
-    ops,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{convert::TryInto, ops, process::Command, sync::Arc};
 
 use anyhow::{Context, Result};
-use arena::{Arena, Idx};
 use base_db::Edition;
-use cargo_metadata::{BuildScript, CargoOpt, Message, MetadataCommand, PackageId};
+use cargo_metadata::{CargoOpt, MetadataCommand};
+use la_arena::{Arena, Idx};
 use paths::{AbsPath, AbsPathBuf};
 use rustc_hash::FxHashMap;
 
-use crate::cfg_flag::CfgFlag;
+use crate::build_data::BuildDataConfig;
+use crate::utf8_stdout;
 
 /// `CargoWorkspace` represents the logical structure of, well, a Cargo
 /// workspace. It pretty closely mirrors `cargo metadata` output.
@@ -31,6 +27,7 @@ pub struct CargoWorkspace {
     packages: Arena<PackageData>,
     targets: Arena<TargetData>,
     workspace_root: AbsPathBuf,
+    build_data_config: BuildDataConfig,
 }
 
 impl ops::Index<Package> for CargoWorkspace {
@@ -59,30 +56,44 @@ pub struct CargoConfig {
     /// This will be ignored if `cargo_all_features` is true.
     pub features: Vec<String>,
 
-    /// Runs cargo check on launch to figure out the correct values of OUT_DIR
-    pub load_out_dirs_from_check: bool,
-
     /// rustc target
     pub target: Option<String>,
+
+    /// Don't load sysroot crates (`std`, `core` & friends). Might be useful
+    /// when debugging isolated issues.
+    pub no_sysroot: bool,
+
+    /// rustc private crate source
+    pub rustc_source: Option<AbsPathBuf>,
 }
 
 pub type Package = Idx<PackageData>;
 
 pub type Target = Idx<TargetData>;
 
+/// Information associated with a cargo crate
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PackageData {
+    /// Version given in the `Cargo.toml`
     pub version: String,
+    /// Name as given in the `Cargo.toml`
     pub name: String,
+    /// Path containing the `Cargo.toml`
     pub manifest: AbsPathBuf,
+    /// Targets provided by the crate (lib, bin, example, test, ...)
     pub targets: Vec<Target>,
+    /// Is this package a member of the current workspace
     pub is_member: bool,
+    /// List of packages this package depends on
     pub dependencies: Vec<PackageDependency>,
+    /// Rust edition for this package
     pub edition: Edition,
-    pub features: Vec<String>,
-    pub cfgs: Vec<CfgFlag>,
-    pub out_dir: Option<AbsPathBuf>,
-    pub proc_macro_dylib_path: Option<AbsPathBuf>,
+    /// Features provided by the crate, mapped to the features required by that feature.
+    pub features: FxHashMap<String, Vec<String>>,
+    /// List of features enabled on this package
+    pub active_features: Vec<String>,
+    // String representation of package id
+    pub id: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -91,12 +102,18 @@ pub struct PackageDependency {
     pub name: String,
 }
 
+/// Information associated with a package's target
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TargetData {
+    /// Package that provided this target
     pub package: Package,
+    /// Name as given in the `Cargo.toml` or generated from the file name
     pub name: String,
+    /// Path to the main source file of the target
     pub root: AbsPathBuf,
+    /// Kind of target
     pub kind: TargetKind,
+    /// Is this target a proc-macro
     pub is_proc_macro: bool,
 }
 
@@ -137,42 +154,77 @@ impl PackageData {
 impl CargoWorkspace {
     pub fn from_cargo_metadata(
         cargo_toml: &AbsPath,
-        cargo_features: &CargoConfig,
+        config: &CargoConfig,
+        progress: &dyn Fn(String),
     ) -> Result<CargoWorkspace> {
         let mut meta = MetadataCommand::new();
         meta.cargo_path(toolchain::cargo());
         meta.manifest_path(cargo_toml.to_path_buf());
-        if cargo_features.all_features {
+        if config.all_features {
             meta.features(CargoOpt::AllFeatures);
         } else {
-            if cargo_features.no_default_features {
+            if config.no_default_features {
                 // FIXME: `NoDefaultFeatures` is mutual exclusive with `SomeFeatures`
                 // https://github.com/oli-obk/cargo_metadata/issues/79
                 meta.features(CargoOpt::NoDefaultFeatures);
             }
-            if !cargo_features.features.is_empty() {
-                meta.features(CargoOpt::SomeFeatures(cargo_features.features.clone()));
+            if !config.features.is_empty() {
+                meta.features(CargoOpt::SomeFeatures(config.features.clone()));
             }
         }
         if let Some(parent) = cargo_toml.parent() {
             meta.current_dir(parent.to_path_buf());
         }
-        if let Some(target) = cargo_features.target.as_ref() {
-            meta.other_options(vec![String::from("--filter-platform"), target.clone()]);
+        let target = if let Some(target) = config.target.as_ref() {
+            Some(target.clone())
+        } else {
+            // cargo metadata defaults to giving information for _all_ targets.
+            // In the absence of a preference from the user, we use the host platform.
+            let mut rustc = Command::new(toolchain::rustc());
+            rustc.current_dir(cargo_toml.parent().unwrap()).arg("-vV");
+            log::debug!("Discovering host platform by {:?}", rustc);
+            match utf8_stdout(rustc) {
+                Ok(stdout) => {
+                    let field = "host: ";
+                    let target = stdout.lines().find_map(|l| l.strip_prefix(field));
+                    if let Some(target) = target {
+                        Some(target.to_string())
+                    } else {
+                        // If we fail to resolve the host platform, it's not the end of the world.
+                        log::info!("rustc -vV did not report host platform, got:\n{}", stdout);
+                        None
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to discover host platform: {}", e);
+                    None
+                }
+            }
+        };
+        if let Some(target) = target {
+            meta.other_options(vec![String::from("--filter-platform"), target]);
         }
-        let mut meta = meta.exec().with_context(|| {
-            format!("Failed to run `cargo metadata --manifest-path {}`", cargo_toml.display())
-        })?;
 
-        let mut out_dir_by_id = FxHashMap::default();
-        let mut cfgs = FxHashMap::default();
-        let mut proc_macro_dylib_paths = FxHashMap::default();
-        if cargo_features.load_out_dirs_from_check {
-            let resources = load_extern_resources(cargo_toml, cargo_features)?;
-            out_dir_by_id = resources.out_dirs;
-            cfgs = resources.cfgs;
-            proc_macro_dylib_paths = resources.proc_dylib_paths;
-        }
+        // FIXME: Currently MetadataCommand is not based on parse_stream,
+        // So we just report it as a whole
+        progress("metadata".to_string());
+        let mut meta = meta.exec().with_context(|| {
+            let cwd: Option<AbsPathBuf> =
+                std::env::current_dir().ok().and_then(|p| p.try_into().ok());
+
+            let workdir = cargo_toml
+                .parent()
+                .map(|p| p.to_path_buf())
+                .or(cwd)
+                .map(|dir| dir.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<failed to get path>".into());
+
+            format!(
+                "Failed to run `cargo metadata --manifest-path {}` in `{}`",
+                cargo_toml.display(),
+                workdir
+            )
+        })?;
 
         let mut pkg_by_id = FxHashMap::default();
         let mut packages = Arena::default();
@@ -181,7 +233,7 @@ impl CargoWorkspace {
         let ws_members = &meta.workspace_members;
 
         meta.packages.sort_by(|a, b| a.id.cmp(&b.id));
-        for meta_pkg in meta.packages {
+        for meta_pkg in &meta.packages {
             let cargo_metadata::Package { id, edition, name, manifest_path, version, .. } =
                 meta_pkg;
             let is_member = ws_members.contains(&id);
@@ -189,25 +241,24 @@ impl CargoWorkspace {
                 .parse::<Edition>()
                 .with_context(|| format!("Failed to parse edition {}", edition))?;
             let pkg = packages.alloc(PackageData {
-                name,
+                id: id.repr.clone(),
+                name: name.clone(),
                 version: version.to_string(),
-                manifest: AbsPathBuf::assert(manifest_path),
+                manifest: AbsPathBuf::assert(manifest_path.clone()),
                 targets: Vec::new(),
                 is_member,
                 edition,
                 dependencies: Vec::new(),
-                features: Vec::new(),
-                cfgs: cfgs.get(&id).cloned().unwrap_or_default(),
-                out_dir: out_dir_by_id.get(&id).cloned(),
-                proc_macro_dylib_path: proc_macro_dylib_paths.get(&id).cloned(),
+                features: meta_pkg.features.clone().into_iter().collect(),
+                active_features: Vec::new(),
             });
             let pkg_data = &mut packages[pkg];
             pkg_by_id.insert(id, pkg);
-            for meta_tgt in meta_pkg.targets {
+            for meta_tgt in &meta_pkg.targets {
                 let is_proc_macro = meta_tgt.kind.as_slice() == ["proc-macro"];
                 let tgt = targets.alloc(TargetData {
                     package: pkg,
-                    name: meta_tgt.name,
+                    name: meta_tgt.name.clone(),
                     root: AbsPathBuf::assert(meta_tgt.src_path.clone()),
                     kind: TargetKind::new(meta_tgt.kind.as_slice()),
                     is_proc_macro,
@@ -242,11 +293,17 @@ impl CargoWorkspace {
                 let dep = PackageDependency { name: dep_node.name, pkg };
                 packages[source].dependencies.push(dep);
             }
-            packages[source].features.extend(node.features);
+            packages[source].active_features.extend(node.features);
         }
 
         let workspace_root = AbsPathBuf::assert(meta.workspace_root);
-        Ok(CargoWorkspace { packages, targets, workspace_root: workspace_root })
+        let build_data_config = BuildDataConfig::new(
+            cargo_toml.to_path_buf(),
+            config.clone(),
+            Arc::new(meta.packages.clone()),
+        );
+
+        Ok(CargoWorkspace { packages, targets, workspace_root, build_data_config })
     }
 
     pub fn packages<'a>(&'a self) -> impl Iterator<Item = Package> + ExactSizeIterator + 'a {
@@ -272,91 +329,11 @@ impl CargoWorkspace {
         }
     }
 
+    pub(crate) fn build_data_config(&self) -> &BuildDataConfig {
+        &self.build_data_config
+    }
+
     fn is_unique(&self, name: &str) -> bool {
         self.packages.iter().filter(|(_, v)| v.name == name).count() == 1
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ExternResources {
-    out_dirs: FxHashMap<PackageId, AbsPathBuf>,
-    proc_dylib_paths: FxHashMap<PackageId, AbsPathBuf>,
-    cfgs: FxHashMap<PackageId, Vec<CfgFlag>>,
-}
-
-pub fn load_extern_resources(
-    cargo_toml: &Path,
-    cargo_features: &CargoConfig,
-) -> Result<ExternResources> {
-    let mut cmd = Command::new(toolchain::cargo());
-    cmd.args(&["check", "--message-format=json", "--manifest-path"]).arg(cargo_toml);
-    if cargo_features.all_features {
-        cmd.arg("--all-features");
-    } else {
-        if cargo_features.no_default_features {
-            // FIXME: `NoDefaultFeatures` is mutual exclusive with `SomeFeatures`
-            // https://github.com/oli-obk/cargo_metadata/issues/79
-            cmd.arg("--no-default-features");
-        }
-        if !cargo_features.features.is_empty() {
-            cmd.arg("--features");
-            cmd.arg(cargo_features.features.join(" "));
-        }
-    }
-
-    let output = cmd.output()?;
-
-    let mut res = ExternResources::default();
-
-    for message in cargo_metadata::Message::parse_stream(output.stdout.as_slice()) {
-        if let Ok(message) = message {
-            match message {
-                Message::BuildScriptExecuted(BuildScript { package_id, out_dir, cfgs, .. }) => {
-                    let cfgs = {
-                        let mut acc = Vec::new();
-                        for cfg in cfgs {
-                            match cfg.parse::<CfgFlag>() {
-                                Ok(it) => acc.push(it),
-                                Err(err) => {
-                                    anyhow::bail!("invalid cfg from cargo-metadata: {}", err)
-                                }
-                            };
-                        }
-                        acc
-                    };
-                    // cargo_metadata crate returns default (empty) path for
-                    // older cargos, which is not absolute, so work around that.
-                    if out_dir != PathBuf::default() {
-                        let out_dir = AbsPathBuf::assert(out_dir);
-                        res.out_dirs.insert(package_id.clone(), out_dir);
-                        res.cfgs.insert(package_id, cfgs);
-                    }
-                }
-                Message::CompilerArtifact(message) => {
-                    if message.target.kind.contains(&"proc-macro".to_string()) {
-                        let package_id = message.package_id;
-                        // Skip rmeta file
-                        if let Some(filename) = message.filenames.iter().find(|name| is_dylib(name))
-                        {
-                            let filename = AbsPathBuf::assert(filename.clone());
-                            res.proc_dylib_paths.insert(package_id, filename);
-                        }
-                    }
-                }
-                Message::CompilerMessage(_) => (),
-                Message::Unknown => (),
-                Message::BuildFinished(_) => {}
-                Message::TextLine(_) => {}
-            }
-        }
-    }
-    Ok(res)
-}
-
-// FIXME: File a better way to know if it is a dylib
-fn is_dylib(path: &Path) -> bool {
-    match path.extension().and_then(OsStr::to_str).map(|it| it.to_string().to_lowercase()) {
-        None => false,
-        Some(ext) => matches!(ext.as_str(), "dll" | "dylib" | "so"),
     }
 }

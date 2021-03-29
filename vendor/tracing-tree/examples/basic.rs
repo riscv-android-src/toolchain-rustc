@@ -14,6 +14,8 @@ fn main() {
 
     let subscriber = Registry::default().with(layer);
     tracing::subscriber::set_global_default(subscriber).unwrap();
+    #[cfg(feature = "tracing-log")]
+    tracing_log::LogTracer::init().unwrap();
 
     let app_span = span!(Level::TRACE, "hierarchical-example", version = %0.1);
     let _e = app_span.enter();
@@ -29,11 +31,13 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         debug!(length = 2, "message received");
     });
+    drop(peer1);
     let peer2 = span!(Level::TRACE, "conn", peer_addr = "8.8.8.8", port = 18230);
     peer2.in_scope(|| {
         std::thread::sleep(std::time::Duration::from_millis(300));
         debug!("connected");
     });
+    drop(peer2);
     let peer3 = span!(
         Level::TRACE,
         "foomp",
@@ -44,19 +48,25 @@ fn main() {
     peer3.in_scope(|| {
         error!("hello");
     });
+    drop(peer3);
+    let peer1 = span!(Level::TRACE, "conn", peer_addr = "82.9.9.9", port = 42381);
     peer1.in_scope(|| {
         warn!(algo = "xor", "weak encryption requested");
         std::thread::sleep(std::time::Duration::from_millis(300));
         debug!(length = 8, "response sent");
         debug!("disconnected");
     });
+    drop(peer1);
+    let peer2 = span!(Level::TRACE, "conn", peer_addr = "8.8.8.8", port = 18230);
     peer2.in_scope(|| {
         debug!(length = 5, "message received");
         std::thread::sleep(std::time::Duration::from_millis(300));
         debug!(length = 8, "response sent");
         debug!("disconnected");
     });
+    drop(peer2);
     warn!("internal error");
+    log::error!("this is a log message");
     info!("exit");
 }
 

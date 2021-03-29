@@ -3,7 +3,7 @@ use std::iter::successors;
 use hir::Semantics;
 use ide_db::RootDatabase;
 use syntax::{
-    algo::{self, find_covering_element, skip_trivia_token},
+    algo::{self, skip_trivia_token},
     ast::{self, AstNode, AstToken},
     Direction, NodeOrToken,
     SyntaxKind::{self, *},
@@ -35,7 +35,7 @@ fn try_extend_selection(
 ) -> Option<TextRange> {
     let range = frange.range;
 
-    let string_kinds = [COMMENT, STRING, RAW_STRING, BYTE_STRING, RAW_BYTE_STRING];
+    let string_kinds = [COMMENT, STRING, BYTE_STRING];
     let list_kinds = [
         RECORD_PAT_FIELD_LIST,
         MATCH_ARM_LIST,
@@ -76,7 +76,7 @@ fn try_extend_selection(
         };
         return Some(leaf_range);
     };
-    let node = match find_covering_element(root, range) {
+    let node = match root.covering_element(range) {
         NodeOrToken::Token(token) => {
             if token.text_range() != range {
                 return Some(token.text_range());
@@ -120,7 +120,7 @@ fn extend_tokens_from_range(
     macro_call: ast::MacroCall,
     original_range: TextRange,
 ) -> Option<TextRange> {
-    let src = find_covering_element(&macro_call.syntax(), original_range);
+    let src = macro_call.syntax().covering_element(original_range);
     let (first_token, last_token) = match src {
         NodeOrToken::Node(it) => (it.first_token()?, it.last_token()?),
         NodeOrToken::Token(it) => (it.clone(), it),
@@ -213,8 +213,8 @@ fn extend_ws(root: &SyntaxNode, ws: SyntaxToken, offset: TextSize) -> TextRange 
     let ws_text = ws.text();
     let suffix = TextRange::new(offset, ws.text_range().end()) - ws.text_range().start();
     let prefix = TextRange::new(ws.text_range().start(), offset) - ws.text_range().start();
-    let ws_suffix = &ws_text.as_str()[suffix];
-    let ws_prefix = &ws_text.as_str()[prefix];
+    let ws_suffix = &ws_text[suffix];
+    let ws_prefix = &ws_text[prefix];
     if ws_text.contains('\n') && !ws_suffix.contains('\n') {
         if let Some(node) = ws.next_sibling_or_token() {
             let start = match ws_prefix.rfind('\n') {
@@ -237,7 +237,7 @@ fn pick_best(l: SyntaxToken, r: SyntaxToken) -> SyntaxToken {
     fn priority(n: &SyntaxToken) -> usize {
         match n.kind() {
             WHITESPACE => 0,
-            IDENT | T![self] | T![super] | T![crate] | LIFETIME => 2,
+            IDENT | T![self] | T![super] | T![crate] | LIFETIME_IDENT => 2,
             _ => 1,
         }
     }
@@ -315,12 +315,12 @@ fn adj_comments(comment: &ast::Comment, dir: Direction) -> ast::Comment {
 
 #[cfg(test)]
 mod tests {
-    use crate::mock_analysis::analysis_and_position;
+    use crate::fixture;
 
     use super::*;
 
     fn do_check(before: &str, afters: &[&str]) {
-        let (analysis, position) = analysis_and_position(&before);
+        let (analysis, position) = fixture::position(&before);
         let before = analysis.file_text(position.file_id).unwrap();
         let range = TextRange::empty(position.offset);
         let mut frange = FileRange { file_id: position.file_id, range };
@@ -334,29 +334,29 @@ mod tests {
 
     #[test]
     fn test_extend_selection_arith() {
-        do_check(r#"fn foo() { <|>1 + 1 }"#, &["1", "1 + 1", "{ 1 + 1 }"]);
+        do_check(r#"fn foo() { $01 + 1 }"#, &["1", "1 + 1", "{ 1 + 1 }"]);
     }
 
     #[test]
     fn test_extend_selection_list() {
-        do_check(r#"fn foo(<|>x: i32) {}"#, &["x", "x: i32"]);
-        do_check(r#"fn foo(<|>x: i32, y: i32) {}"#, &["x", "x: i32", "x: i32, "]);
-        do_check(r#"fn foo(<|>x: i32,y: i32) {}"#, &["x", "x: i32", "x: i32,", "(x: i32,y: i32)"]);
-        do_check(r#"fn foo(x: i32, <|>y: i32) {}"#, &["y", "y: i32", ", y: i32"]);
-        do_check(r#"fn foo(x: i32, <|>y: i32, ) {}"#, &["y", "y: i32", "y: i32, "]);
-        do_check(r#"fn foo(x: i32,<|>y: i32) {}"#, &["y", "y: i32", ",y: i32"]);
+        do_check(r#"fn foo($0x: i32) {}"#, &["x", "x: i32"]);
+        do_check(r#"fn foo($0x: i32, y: i32) {}"#, &["x", "x: i32", "x: i32, "]);
+        do_check(r#"fn foo($0x: i32,y: i32) {}"#, &["x", "x: i32", "x: i32,", "(x: i32,y: i32)"]);
+        do_check(r#"fn foo(x: i32, $0y: i32) {}"#, &["y", "y: i32", ", y: i32"]);
+        do_check(r#"fn foo(x: i32, $0y: i32, ) {}"#, &["y", "y: i32", "y: i32, "]);
+        do_check(r#"fn foo(x: i32,$0y: i32) {}"#, &["y", "y: i32", ",y: i32"]);
 
-        do_check(r#"const FOO: [usize; 2] = [ 22<|> , 33];"#, &["22", "22 , "]);
-        do_check(r#"const FOO: [usize; 2] = [ 22 , 33<|>];"#, &["33", ", 33"]);
-        do_check(r#"const FOO: [usize; 2] = [ 22 , 33<|> ,];"#, &["33", "33 ,", "[ 22 , 33 ,]"]);
+        do_check(r#"const FOO: [usize; 2] = [ 22$0 , 33];"#, &["22", "22 , "]);
+        do_check(r#"const FOO: [usize; 2] = [ 22 , 33$0];"#, &["33", ", 33"]);
+        do_check(r#"const FOO: [usize; 2] = [ 22 , 33$0 ,];"#, &["33", "33 ,", "[ 22 , 33 ,]"]);
 
-        do_check(r#"fn main() { (1, 2<|>) }"#, &["2", ", 2", "(1, 2)"]);
+        do_check(r#"fn main() { (1, 2$0) }"#, &["2", ", 2", "(1, 2)"]);
 
         do_check(
             r#"
 const FOO: [usize; 2] = [
     22,
-    <|>33,
+    $033,
 ]"#,
             &["33", "33,"],
         );
@@ -365,7 +365,7 @@ const FOO: [usize; 2] = [
             r#"
 const FOO: [usize; 2] = [
     22
-    , 33<|>,
+    , 33$0,
 ]"#,
             &["33", "33,"],
         );
@@ -376,7 +376,7 @@ const FOO: [usize; 2] = [
         do_check(
             r#"
 impl S {
-<|>    fn foo() {
+$0    fn foo() {
 
     }
 }"#,
@@ -393,7 +393,7 @@ struct A;
 /// bla
 /// bla
 struct B {
-    <|>
+    $0
 }
             "#,
             &["\n    \n", "{\n    \n}", "/// bla\n/// bla\nstruct B {\n    \n}"],
@@ -407,7 +407,7 @@ struct B {
 fn bar(){}
 
 // fn foo() {
-// 1 + <|>1
+// 1 + $01
 // }
 
 // fn foo(){}
@@ -419,7 +419,7 @@ fn bar(){}
             r#"
 // #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // pub enum Direction {
-//  <|>   Next,
+//  $0   Next,
 //     Prev
 // }
 "#,
@@ -433,27 +433,27 @@ fn bar(){}
             r#"
 /*
 foo
-_bar1<|>*/
+_bar1$0*/
 "#,
             &["_bar1", "/*\nfoo\n_bar1*/"],
         );
 
-        do_check(r#"//!<|>foo_2 bar"#, &["foo_2", "//!foo_2 bar"]);
+        do_check(r#"//!$0foo_2 bar"#, &["foo_2", "//!foo_2 bar"]);
 
-        do_check(r#"/<|>/foo bar"#, &["//foo bar"]);
+        do_check(r#"/$0/foo bar"#, &["//foo bar"]);
     }
 
     #[test]
     fn test_extend_selection_prefer_idents() {
         do_check(
             r#"
-fn main() { foo<|>+bar;}
+fn main() { foo$0+bar;}
 "#,
             &["foo", "foo+bar"],
         );
         do_check(
             r#"
-fn main() { foo+<|>bar;}
+fn main() { foo+$0bar;}
 "#,
             &["bar", "foo+bar"],
         );
@@ -461,18 +461,18 @@ fn main() { foo+<|>bar;}
 
     #[test]
     fn test_extend_selection_prefer_lifetimes() {
-        do_check(r#"fn foo<<|>'a>() {}"#, &["'a", "<'a>"]);
-        do_check(r#"fn foo<'a<|>>() {}"#, &["'a", "<'a>"]);
+        do_check(r#"fn foo<$0'a>() {}"#, &["'a", "<'a>"]);
+        do_check(r#"fn foo<'a$0>() {}"#, &["'a", "<'a>"]);
     }
 
     #[test]
     fn test_extend_selection_select_first_word() {
-        do_check(r#"// foo bar b<|>az quxx"#, &["baz", "// foo bar baz quxx"]);
+        do_check(r#"// foo bar b$0az quxx"#, &["baz", "// foo bar baz quxx"]);
         do_check(
             r#"
 impl S {
 fn foo() {
-// hel<|>lo world
+// hel$0lo world
 }
 }
 "#,
@@ -486,7 +486,7 @@ fn foo() {
             r#"
 fn bar(){}
 
-" fn f<|>oo() {"
+" fn f$0oo() {"
 "#,
             &["foo", "\" fn foo() {\""],
         );
@@ -499,7 +499,7 @@ fn bar(){}
 fn foo<R>()
     where
         R: req::Request + 'static,
-        R::Params: DeserializeOwned<|> + panic::UnwindSafe + 'static,
+        R::Params: DeserializeOwned$0 + panic::UnwindSafe + 'static,
         R::Result: Serialize + 'static,
 "#,
             &[
@@ -510,26 +510,26 @@ fn foo<R>()
                 "R::Params: DeserializeOwned + panic::UnwindSafe + 'static,",
             ],
         );
-        do_check(r#"fn foo<T>() where T: <|>Copy"#, &["Copy"]);
-        do_check(r#"fn foo<T>() where T: <|>Copy + Display"#, &["Copy", "Copy + "]);
-        do_check(r#"fn foo<T>() where T: <|>Copy +Display"#, &["Copy", "Copy +"]);
-        do_check(r#"fn foo<T>() where T: <|>Copy+Display"#, &["Copy", "Copy+"]);
-        do_check(r#"fn foo<T>() where T: Copy + <|>Display"#, &["Display", "+ Display"]);
-        do_check(r#"fn foo<T>() where T: Copy + <|>Display + Sync"#, &["Display", "Display + "]);
-        do_check(r#"fn foo<T>() where T: Copy +<|>Display"#, &["Display", "+Display"]);
+        do_check(r#"fn foo<T>() where T: $0Copy"#, &["Copy"]);
+        do_check(r#"fn foo<T>() where T: $0Copy + Display"#, &["Copy", "Copy + "]);
+        do_check(r#"fn foo<T>() where T: $0Copy +Display"#, &["Copy", "Copy +"]);
+        do_check(r#"fn foo<T>() where T: $0Copy+Display"#, &["Copy", "Copy+"]);
+        do_check(r#"fn foo<T>() where T: Copy + $0Display"#, &["Display", "+ Display"]);
+        do_check(r#"fn foo<T>() where T: Copy + $0Display + Sync"#, &["Display", "Display + "]);
+        do_check(r#"fn foo<T>() where T: Copy +$0Display"#, &["Display", "+Display"]);
     }
 
     #[test]
     fn test_extend_trait_bounds_list_inline() {
-        do_check(r#"fn foo<T: <|>Copy>() {}"#, &["Copy"]);
-        do_check(r#"fn foo<T: <|>Copy + Display>() {}"#, &["Copy", "Copy + "]);
-        do_check(r#"fn foo<T: <|>Copy +Display>() {}"#, &["Copy", "Copy +"]);
-        do_check(r#"fn foo<T: <|>Copy+Display>() {}"#, &["Copy", "Copy+"]);
-        do_check(r#"fn foo<T: Copy + <|>Display>() {}"#, &["Display", "+ Display"]);
-        do_check(r#"fn foo<T: Copy + <|>Display + Sync>() {}"#, &["Display", "Display + "]);
-        do_check(r#"fn foo<T: Copy +<|>Display>() {}"#, &["Display", "+Display"]);
+        do_check(r#"fn foo<T: $0Copy>() {}"#, &["Copy"]);
+        do_check(r#"fn foo<T: $0Copy + Display>() {}"#, &["Copy", "Copy + "]);
+        do_check(r#"fn foo<T: $0Copy +Display>() {}"#, &["Copy", "Copy +"]);
+        do_check(r#"fn foo<T: $0Copy+Display>() {}"#, &["Copy", "Copy+"]);
+        do_check(r#"fn foo<T: Copy + $0Display>() {}"#, &["Display", "+ Display"]);
+        do_check(r#"fn foo<T: Copy + $0Display + Sync>() {}"#, &["Display", "Display + "]);
+        do_check(r#"fn foo<T: Copy +$0Display>() {}"#, &["Display", "+Display"]);
         do_check(
-            r#"fn foo<T: Copy<|> + Display, U: Copy>() {}"#,
+            r#"fn foo<T: Copy$0 + Display, U: Copy>() {}"#,
             &[
                 "Copy",
                 "Copy + ",
@@ -544,19 +544,19 @@ fn foo<R>()
     #[test]
     fn test_extend_selection_on_tuple_in_type() {
         do_check(
-            r#"fn main() { let _: (krate, <|>_crate_def_map, module_id) = (); }"#,
+            r#"fn main() { let _: (krate, $0_crate_def_map, module_id) = (); }"#,
             &["_crate_def_map", "_crate_def_map, ", "(krate, _crate_def_map, module_id)"],
         );
         // white space variations
         do_check(
-            r#"fn main() { let _: (krate,<|>_crate_def_map,module_id) = (); }"#,
+            r#"fn main() { let _: (krate,$0_crate_def_map,module_id) = (); }"#,
             &["_crate_def_map", "_crate_def_map,", "(krate,_crate_def_map,module_id)"],
         );
         do_check(
             r#"
 fn main() { let _: (
     krate,
-    _crate<|>_def_map,
+    _crate$0_def_map,
     module_id
 ) = (); }"#,
             &[
@@ -570,19 +570,19 @@ fn main() { let _: (
     #[test]
     fn test_extend_selection_on_tuple_in_rvalue() {
         do_check(
-            r#"fn main() { let var = (krate, _crate_def_map<|>, module_id); }"#,
+            r#"fn main() { let var = (krate, _crate_def_map$0, module_id); }"#,
             &["_crate_def_map", "_crate_def_map, ", "(krate, _crate_def_map, module_id)"],
         );
         // white space variations
         do_check(
-            r#"fn main() { let var = (krate,_crate<|>_def_map,module_id); }"#,
+            r#"fn main() { let var = (krate,_crate$0_def_map,module_id); }"#,
             &["_crate_def_map", "_crate_def_map,", "(krate,_crate_def_map,module_id)"],
         );
         do_check(
             r#"
 fn main() { let var = (
     krate,
-    _crate_def_map<|>,
+    _crate_def_map$0,
     module_id
 ); }"#,
             &[
@@ -596,19 +596,19 @@ fn main() { let var = (
     #[test]
     fn test_extend_selection_on_tuple_pat() {
         do_check(
-            r#"fn main() { let (krate, _crate_def_map<|>, module_id) = var; }"#,
+            r#"fn main() { let (krate, _crate_def_map$0, module_id) = var; }"#,
             &["_crate_def_map", "_crate_def_map, ", "(krate, _crate_def_map, module_id)"],
         );
         // white space variations
         do_check(
-            r#"fn main() { let (krate,_crate<|>_def_map,module_id) = var; }"#,
+            r#"fn main() { let (krate,_crate$0_def_map,module_id) = var; }"#,
             &["_crate_def_map", "_crate_def_map,", "(krate,_crate_def_map,module_id)"],
         );
         do_check(
             r#"
 fn main() { let (
     krate,
-    _crate_def_map<|>,
+    _crate_def_map$0,
     module_id
 ) = var; }"#,
             &[
@@ -623,7 +623,7 @@ fn main() { let (
     fn extend_selection_inside_macros() {
         do_check(
             r#"macro_rules! foo { ($item:item) => {$item} }
-                foo!{fn hello(na<|>me:usize){}}"#,
+                foo!{fn hello(na$0me:usize){}}"#,
             &[
                 "name",
                 "name:usize",
@@ -640,7 +640,7 @@ fn main() { let (
         do_check(
             r#" macro_rules! foo2 { ($item:item) => {$item} }
                 macro_rules! foo { ($item:item) => {foo2!($item);} }
-                foo!{fn hello(na<|>me:usize){}}"#,
+                foo!{fn hello(na$0me:usize){}}"#,
             &[
                 "name",
                 "name:usize",

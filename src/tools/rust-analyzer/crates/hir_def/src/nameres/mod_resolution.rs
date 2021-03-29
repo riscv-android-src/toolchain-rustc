@@ -1,9 +1,12 @@
 //! This module resolves `mod foo;` declaration to file.
-use base_db::FileId;
+use base_db::{AnchoredPath, FileId};
 use hir_expand::name::Name;
 use syntax::SmolStr;
+use test_utils::mark;
 
 use crate::{db::DefDatabase, HirFileId};
+
+const MOD_DEPTH_LIMIT: u32 = 32;
 
 #[derive(Clone, Debug)]
 pub(super) struct ModDir {
@@ -14,18 +17,28 @@ pub(super) struct ModDir {
     dir_path: DirPath,
     /// inside `./foo.rs`, mods with `#[path]` should *not* be relative to `./foo/`
     root_non_dir_owner: bool,
+    depth: u32,
 }
 
 impl ModDir {
     pub(super) fn root() -> ModDir {
-        ModDir { dir_path: DirPath::empty(), root_non_dir_owner: false }
+        ModDir { dir_path: DirPath::empty(), root_non_dir_owner: false, depth: 0 }
+    }
+    fn child(&self, dir_path: DirPath, root_non_dir_owner: bool) -> Option<ModDir> {
+        let depth = self.depth + 1;
+        if depth > MOD_DEPTH_LIMIT {
+            log::error!("MOD_DEPTH_LIMIT exceeded");
+            mark::hit!(circular_mods);
+            return None;
+        }
+        Some(ModDir { dir_path, root_non_dir_owner, depth })
     }
 
     pub(super) fn descend_into_definition(
         &self,
         name: &Name,
         attr_path: Option<&SmolStr>,
-    ) -> ModDir {
+    ) -> Option<ModDir> {
         let path = match attr_path.map(|it| it.as_str()) {
             None => {
                 let mut path = self.dir_path.clone();
@@ -40,7 +53,7 @@ impl ModDir {
                 DirPath::new(path)
             }
         };
-        ModDir { dir_path: path, root_non_dir_owner: false }
+        self.child(path, false)
     }
 
     pub(super) fn resolve_declaration(
@@ -64,15 +77,18 @@ impl ModDir {
         };
 
         for candidate in candidate_files.iter() {
-            if let Some(file_id) = db.resolve_path(file_id, candidate.as_str()) {
-                let is_mod_rs = candidate.ends_with("mod.rs");
+            let path = AnchoredPath { anchor: file_id, path: candidate.as_str() };
+            if let Some(file_id) = db.resolve_path(path) {
+                let is_mod_rs = candidate.ends_with("/mod.rs");
 
                 let (dir_path, root_non_dir_owner) = if is_mod_rs || attr_path.is_some() {
                     (DirPath::empty(), false)
                 } else {
                     (DirPath::new(format!("{}/", name)), true)
                 };
-                return Ok((file_id, is_mod_rs, ModDir { dir_path, root_non_dir_owner }));
+                if let Some(mod_dir) = self.child(dir_path, root_non_dir_owner) {
+                    return Ok((file_id, is_mod_rs, mod_dir));
+                }
             }
         }
         Err(candidate_files.remove(0))

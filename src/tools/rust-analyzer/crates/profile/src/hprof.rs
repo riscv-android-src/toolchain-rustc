@@ -3,6 +3,7 @@ use once_cell::sync::Lazy;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashSet},
+    env,
     io::{stderr, Write},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -18,7 +19,8 @@ use crate::tree::{Idx, Tree};
 /// env RA_PROFILE=foo|bar|baz   // enabled only selected entries
 /// env RA_PROFILE=*@3>10        // dump everything, up to depth 3, if it takes more than 10 ms
 pub fn init() {
-    let spec = std::env::var("RA_PROFILE").unwrap_or_default();
+    countme::enable(env::var("RA_COUNT").is_ok());
+    let spec = env::var("RA_PROFILE").unwrap_or_default();
     init_from(&spec);
 }
 
@@ -27,7 +29,7 @@ pub fn init_from(spec: &str) {
     filter.install();
 }
 
-pub type Label = &'static str;
+type Label = &'static str;
 
 /// This function starts a profiling scope in the current execution stack with a given description.
 /// It returns a `Profile` struct that measures elapsed time between this method invocation and `Profile` struct drop.
@@ -173,7 +175,7 @@ impl ProfileStack {
         true
     }
 
-    pub fn pop(&mut self, label: Label, detail: Option<String>) {
+    fn pop(&mut self, label: Label, detail: Option<String>) {
         let start = self.starts.pop().unwrap();
         let duration = start.elapsed();
         self.messages.finish(Message { duration, label, detail });

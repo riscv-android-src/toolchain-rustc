@@ -326,6 +326,24 @@ fn infer_paren_macro_call() {
 }
 
 #[test]
+fn infer_array_macro_call() {
+    check_infer(
+        r#"
+        macro_rules! bar { () => {0u32} }
+        fn test() {
+            let a = [bar!()];
+        }
+        "#,
+        expect![[r#"
+            !0..4 '0u32': u32
+            44..69 '{     ...()]; }': ()
+            54..55 'a': [u32; _]
+            58..66 '[bar!()]': [u32; _]
+        "#]],
+    );
+}
+
+#[test]
 fn bug_1030() {
     check_infer(
         r#"
@@ -593,6 +611,30 @@ fn issue_4465_dollar_crate_at_type() {
 }
 
 #[test]
+fn issue_6811() {
+    check_infer(
+        r#"
+        macro_rules! profile_function {
+            () => {
+                let _a = 1;
+                let _b = 1;
+            };
+        }
+        fn main() {
+            profile_function!();
+        }
+        "#,
+        expect![[r#"
+            !3..5 '_a': i32
+            !6..7 '1': i32
+            !11..13 '_b': i32
+            !14..15 '1': i32
+            103..131 '{     ...!(); }': ()
+        "#]],
+    );
+}
+
+#[test]
 fn issue_4053_diesel_where_clauses() {
     check_infer(
         r#"
@@ -837,6 +879,86 @@ fn issue_4966() {
             417..423 'repeat': Repeat<Map<|&f64| -> f64>>
             431..434 'vec': Vec<IntoIterator::Item<Repeat<Map<|&f64| -> f64>>>>
             431..444 'vec.foo_bar()': {unknown}
+        "#]],
+    );
+}
+
+#[test]
+fn issue_6628() {
+    check_infer(
+        r#"
+        #[lang = "fn_once"]
+        pub trait FnOnce<Args> {
+            type Output;
+        }
+
+        struct S<T>();
+        impl<T> S<T> {
+            fn f(&self, _t: T) {}
+            fn g<F: FnOnce(&T)>(&self, _f: F) {}
+        }
+        fn main() {
+            let s = S();
+            s.g(|_x| {});
+            s.f(10);
+        }
+        "#,
+        expect![[r#"
+            105..109 'self': &S<T>
+            111..113 '_t': T
+            118..120 '{}': ()
+            146..150 'self': &S<T>
+            152..154 '_f': F
+            159..161 '{}': ()
+            174..225 '{     ...10); }': ()
+            184..185 's': S<i32>
+            188..189 'S': S<i32>() -> S<i32>
+            188..191 'S()': S<i32>
+            197..198 's': S<i32>
+            197..209 's.g(|_x| {})': ()
+            201..208 '|_x| {}': |&i32| -> ()
+            202..204 '_x': &i32
+            206..208 '{}': ()
+            215..216 's': S<i32>
+            215..222 's.f(10)': ()
+            219..221 '10': i32
+        "#]],
+    );
+}
+
+#[test]
+fn issue_6852() {
+    check_infer(
+        r#"
+        #[lang = "deref"]
+        pub trait Deref {
+            type Target;
+        }
+
+        struct BufWriter {}
+
+        struct Mutex<T> {}
+        struct MutexGuard<'a, T> {}
+        impl<T> Mutex<T> {
+            fn lock(&self) -> MutexGuard<'_, T> {}
+        }
+        impl<'a, T: 'a> Deref for MutexGuard<'a, T> {
+            type Target = T;
+        }
+        fn flush(&self) {
+            let w: &Mutex<BufWriter>;
+            *(w.lock());
+        }
+        "#,
+        expect![[r#"
+            156..160 'self': &Mutex<T>
+            183..185 '{}': ()
+            267..271 'self': &{unknown}
+            273..323 '{     ...()); }': ()
+            283..284 'w': &Mutex<BufWriter>
+            309..320 '*(w.lock())': BufWriter
+            311..312 'w': &Mutex<BufWriter>
+            311..319 'w.lock()': MutexGuard<BufWriter>
         "#]],
     );
 }

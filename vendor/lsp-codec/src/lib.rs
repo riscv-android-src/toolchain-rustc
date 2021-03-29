@@ -30,11 +30,10 @@ impl From<crate::proto::HeaderError> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::{Sink, Stream};
     use serde_json::json;
-    use std::io;
-    use tokio::codec::{FramedRead, FramedWrite};
-    use tokio::runtime::current_thread::Runtime;
+    use tokio_util::codec::{FramedRead, FramedWrite};
+    use tokio::runtime::Runtime;
+    use tokio::stream::StreamExt;
 
     #[test]
     fn decode() {
@@ -47,7 +46,7 @@ mod tests {
 
         let reader = FramedRead::new(buf, LspDecoder::default());
 
-        let received = runtime.block_on(reader.collect()).unwrap();
+        let received = runtime.block_on(reader.collect::<Result<Vec<_>, _>>()).unwrap();
         assert_eq!(
             received,
             vec![
@@ -59,20 +58,20 @@ mod tests {
 
     #[test]
     fn encode() {
-        let writer = io::BufWriter::new(io::Cursor::new(Vec::new()));
+        use futures::sink::SinkExt;
 
-        let writer = FramedWrite::new(writer, LspEncoder);
+        let mut writer = FramedWrite::new(vec![], LspEncoder);
 
         let obj = json!({
             "key": "value"
         });
 
         let mut a = Runtime::new().unwrap();
-        let fut = writer.send(obj);
+        let fut = SinkExt::send(&mut writer, obj);
 
-        let sink = a.block_on(fut).unwrap();
+        let _ = a.block_on(fut);
 
-        let buf = sink.into_inner().into_inner().unwrap().into_inner();
+        let buf = writer.into_inner();
         let s = String::from_utf8(buf).unwrap();
 
         assert_eq!(s, "Content-Length: 15\r\n\r\n{\"key\":\"value\"}");

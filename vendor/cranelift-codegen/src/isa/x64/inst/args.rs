@@ -3,6 +3,8 @@
 use super::regs::{self, show_ireg_sized};
 use super::EmitState;
 use crate::ir::condcodes::{FloatCC, IntCC};
+use crate::ir::MemFlags;
+use crate::isa::x64::inst::Inst;
 use crate::machinst::*;
 use regalloc::{
     PrettyPrint, PrettyPrintSized, RealRegUniverse, Reg, RegClass, RegUsageCollector,
@@ -13,10 +15,14 @@ use std::string::String;
 
 /// A possible addressing mode (amode) that can be used in instructions.
 /// These denote a 64-bit value only.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Amode {
     /// Immediate sign-extended and a Register.
-    ImmReg { simm32: u32, base: Reg },
+    ImmReg {
+        simm32: u32,
+        base: Reg,
+        flags: MemFlags,
+    },
 
     /// sign-extend-32-to-64(Immediate) + Register1 + (Register2 << Shift)
     ImmRegRegShift {
@@ -24,6 +30,7 @@ pub enum Amode {
         base: Reg,
         index: Reg,
         shift: u8, /* 0 .. 3 only */
+        flags: MemFlags,
     },
 
     /// sign-extend-32-to-64(Immediate) + RIP (instruction pointer).
@@ -34,7 +41,11 @@ pub enum Amode {
 impl Amode {
     pub(crate) fn imm_reg(simm32: u32, base: Reg) -> Self {
         debug_assert!(base.get_class() == RegClass::I64);
-        Self::ImmReg { simm32, base }
+        Self::ImmReg {
+            simm32,
+            base,
+            flags: MemFlags::trusted(),
+        }
     }
 
     pub(crate) fn imm_reg_reg_shift(simm32: u32, base: Reg, index: Reg, shift: u8) -> Self {
@@ -46,11 +57,36 @@ impl Amode {
             base,
             index,
             shift,
+            flags: MemFlags::trusted(),
         }
     }
 
     pub(crate) fn rip_relative(target: MachLabel) -> Self {
         Self::RipRelative { target }
+    }
+
+    pub(crate) fn with_flags(&self, flags: MemFlags) -> Self {
+        match self {
+            &Self::ImmReg { simm32, base, .. } => Self::ImmReg {
+                simm32,
+                base,
+                flags,
+            },
+            &Self::ImmRegRegShift {
+                simm32,
+                base,
+                index,
+                shift,
+                ..
+            } => Self::ImmRegRegShift {
+                simm32,
+                base,
+                index,
+                shift,
+                flags,
+            },
+            _ => panic!("Amode {:?} cannot take memflags", self),
+        }
     }
 
     /// Add the regs mentioned by `self` to `collector`.
@@ -68,12 +104,24 @@ impl Amode {
             }
         }
     }
+
+    pub(crate) fn get_flags(&self) -> MemFlags {
+        match self {
+            Amode::ImmReg { flags, .. } => *flags,
+            Amode::ImmRegRegShift { flags, .. } => *flags,
+            Amode::RipRelative { .. } => MemFlags::trusted(),
+        }
+    }
+
+    pub(crate) fn can_trap(&self) -> bool {
+        !self.get_flags().notrap()
+    }
 }
 
 impl PrettyPrint for Amode {
     fn show_rru(&self, mb_rru: Option<&RealRegUniverse>) -> String {
         match self {
-            Amode::ImmReg { simm32, base } => {
+            Amode::ImmReg { simm32, base, .. } => {
                 format!("{}({})", *simm32 as i32, base.show_rru(mb_rru))
             }
             Amode::ImmRegRegShift {
@@ -81,6 +129,7 @@ impl PrettyPrint for Amode {
                 base,
                 index,
                 shift,
+                ..
             } => format!(
                 "{}({},{},{})",
                 *simm32 as i32,
@@ -96,7 +145,7 @@ impl PrettyPrint for Amode {
 /// A Memory Address. These denote a 64-bit value only.
 /// Used for usual addressing modes as well as addressing modes used during compilation, when the
 /// moving SP offset is not known.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum SyntheticAmode {
     /// A real amode.
     Real(Amode),
@@ -104,6 +153,9 @@ pub enum SyntheticAmode {
     /// A (virtual) offset to the "nominal SP" value, which will be recomputed as we push and pop
     /// within the function.
     NominalSPOffset { simm32: u32 },
+
+    /// A virtual offset to a constant that will be emitted in the constant section of the buffer.
+    ConstantOffset(VCodeConstant),
 }
 
 impl SyntheticAmode {
@@ -118,6 +170,7 @@ impl SyntheticAmode {
             SyntheticAmode::NominalSPOffset { .. } => {
                 // Nothing to do; the base is SP and isn't involved in regalloc.
             }
+            SyntheticAmode::ConstantOffset(_) => {}
         }
     }
 
@@ -127,10 +180,11 @@ impl SyntheticAmode {
             SyntheticAmode::NominalSPOffset { .. } => {
                 // Nothing to do.
             }
+            SyntheticAmode::ConstantOffset(_) => {}
         }
     }
 
-    pub(crate) fn finalize(&self, state: &mut EmitState) -> Amode {
+    pub(crate) fn finalize(&self, state: &mut EmitState, buffer: &MachBuffer<Inst>) -> Amode {
         match self {
             SyntheticAmode::Real(addr) => addr.clone(),
             SyntheticAmode::NominalSPOffset { simm32 } => {
@@ -141,6 +195,9 @@ impl SyntheticAmode {
                     "amode finalize: add sequence NYI"
                 );
                 Amode::imm_reg(off as u32, regs::rsp())
+            }
+            SyntheticAmode::ConstantOffset(c) => {
+                Amode::rip_relative(buffer.get_label_for_constant(*c))
             }
         }
     }
@@ -159,6 +216,7 @@ impl PrettyPrint for SyntheticAmode {
             SyntheticAmode::NominalSPOffset { simm32 } => {
                 format!("rsp({} + virtual offset)", *simm32 as i32)
             }
+            SyntheticAmode::ConstantOffset(c) => format!("const({:?})", c),
         }
     }
 }
@@ -228,7 +286,7 @@ impl PrettyPrintSized for RegMemImm {
 
 /// An operand which is either an integer Register or a value in Memory.  This can denote an 8, 16,
 /// 32, 64, or 128 bit value.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum RegMem {
     Reg { reg: Reg },
     Mem { addr: SyntheticAmode },
@@ -288,23 +346,35 @@ impl PrettyPrintSized for RegMem {
 #[derive(Copy, Clone, PartialEq)]
 pub enum AluRmiROpcode {
     Add,
+    Adc,
     Sub,
+    Sbb,
     And,
     Or,
     Xor,
     /// The signless, non-extending (N x N -> N, for N in {32,64}) variant.
     Mul,
+    /// 8-bit form of And. Handled separately as we don't have full 8-bit op
+    /// support (we just use wider instructions). Used only with some sequences
+    /// with SETcc.
+    And8,
+    /// 8-bit form of Or.
+    Or8,
 }
 
 impl fmt::Debug for AluRmiROpcode {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let name = match self {
             AluRmiROpcode::Add => "add",
+            AluRmiROpcode::Adc => "adc",
             AluRmiROpcode::Sub => "sub",
+            AluRmiROpcode::Sbb => "sbb",
             AluRmiROpcode::And => "and",
             AluRmiROpcode::Or => "or",
             AluRmiROpcode::Xor => "xor",
             AluRmiROpcode::Mul => "imul",
+            AluRmiROpcode::And8 => "and",
+            AluRmiROpcode::Or8 => "or",
         };
         write!(fmt, "{}", name)
     }
@@ -313,6 +383,16 @@ impl fmt::Debug for AluRmiROpcode {
 impl fmt::Display for AluRmiROpcode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(self, f)
+    }
+}
+
+impl AluRmiROpcode {
+    /// Is this a special-cased 8-bit ALU op?
+    pub fn is_8bit(self) -> bool {
+        match self {
+            AluRmiROpcode::And8 | AluRmiROpcode::Or8 => true,
+            _ => false,
+        }
     }
 }
 
@@ -337,6 +417,14 @@ impl fmt::Display for UnaryRmROpcode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum CmpOpcode {
+    /// CMP instruction: compute `a - b` and set flags from result.
+    Cmp,
+    /// TEST instruction: compute `a & b` and set flags from result.
+    Test,
 }
 
 pub(crate) enum InstructionSet {
@@ -409,7 +497,10 @@ pub enum SseOpcode {
     Pabsb,
     Pabsw,
     Pabsd,
+    Packssdw,
     Packsswb,
+    Packusdw,
+    Packuswb,
     Paddb,
     Paddd,
     Paddq,
@@ -418,6 +509,7 @@ pub enum SseOpcode {
     Paddsw,
     Paddusb,
     Paddusw,
+    Palignr,
     Pand,
     Pandn,
     Pavgb,
@@ -436,6 +528,7 @@ pub enum SseOpcode {
     Pinsrb,
     Pinsrw,
     Pinsrd,
+    Pmaddwd,
     Pmaxsb,
     Pmaxsw,
     Pmaxsd,
@@ -449,6 +542,18 @@ pub enum SseOpcode {
     Pminuw,
     Pminud,
     Pmovmskb,
+    Pmovsxbd,
+    Pmovsxbw,
+    Pmovsxbq,
+    Pmovsxwd,
+    Pmovsxwq,
+    Pmovsxdq,
+    Pmovzxbd,
+    Pmovzxbw,
+    Pmovzxbq,
+    Pmovzxwd,
+    Pmovzxwq,
+    Pmovzxdq,
     Pmulld,
     Pmullw,
     Pmuludq,
@@ -472,8 +577,12 @@ pub enum SseOpcode {
     Psubusb,
     Psubusw,
     Ptest,
+    Punpckhbw,
+    Punpcklbw,
     Pxor,
     Rcpss,
+    Roundps,
+    Roundpd,
     Roundss,
     Roundsd,
     Rsqrtss,
@@ -560,7 +669,9 @@ impl SseOpcode {
             | SseOpcode::Mulpd
             | SseOpcode::Mulsd
             | SseOpcode::Orpd
+            | SseOpcode::Packssdw
             | SseOpcode::Packsswb
+            | SseOpcode::Packuswb
             | SseOpcode::Paddb
             | SseOpcode::Paddd
             | SseOpcode::Paddq
@@ -581,6 +692,7 @@ impl SseOpcode {
             | SseOpcode::Pcmpgtd
             | SseOpcode::Pextrw
             | SseOpcode::Pinsrw
+            | SseOpcode::Pmaddwd
             | SseOpcode::Pmaxsw
             | SseOpcode::Pmaxub
             | SseOpcode::Pminsw
@@ -606,6 +718,8 @@ impl SseOpcode {
             | SseOpcode::Psubsw
             | SseOpcode::Psubusb
             | SseOpcode::Psubusw
+            | SseOpcode::Punpckhbw
+            | SseOpcode::Punpcklbw
             | SseOpcode::Pxor
             | SseOpcode::Sqrtpd
             | SseOpcode::Sqrtsd
@@ -614,9 +728,14 @@ impl SseOpcode {
             | SseOpcode::Ucomisd
             | SseOpcode::Xorpd => SSE2,
 
-            SseOpcode::Pabsb | SseOpcode::Pabsw | SseOpcode::Pabsd | SseOpcode::Pshufb => SSSE3,
+            SseOpcode::Pabsb
+            | SseOpcode::Pabsw
+            | SseOpcode::Pabsd
+            | SseOpcode::Palignr
+            | SseOpcode::Pshufb => SSSE3,
 
             SseOpcode::Insertps
+            | SseOpcode::Packusdw
             | SseOpcode::Pcmpeqq
             | SseOpcode::Pextrb
             | SseOpcode::Pextrd
@@ -630,8 +749,22 @@ impl SseOpcode {
             | SseOpcode::Pminsd
             | SseOpcode::Pminuw
             | SseOpcode::Pminud
+            | SseOpcode::Pmovsxbd
+            | SseOpcode::Pmovsxbw
+            | SseOpcode::Pmovsxbq
+            | SseOpcode::Pmovsxwd
+            | SseOpcode::Pmovsxwq
+            | SseOpcode::Pmovsxdq
+            | SseOpcode::Pmovzxbd
+            | SseOpcode::Pmovzxbw
+            | SseOpcode::Pmovzxbq
+            | SseOpcode::Pmovzxwd
+            | SseOpcode::Pmovzxwq
+            | SseOpcode::Pmovzxdq
             | SseOpcode::Pmulld
             | SseOpcode::Ptest
+            | SseOpcode::Roundps
+            | SseOpcode::Roundpd
             | SseOpcode::Roundss
             | SseOpcode::Roundsd => SSE41,
 
@@ -710,7 +843,10 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Pabsb => "pabsb",
             SseOpcode::Pabsw => "pabsw",
             SseOpcode::Pabsd => "pabsd",
+            SseOpcode::Packssdw => "packssdw",
             SseOpcode::Packsswb => "packsswb",
+            SseOpcode::Packusdw => "packusdw",
+            SseOpcode::Packuswb => "packuswb",
             SseOpcode::Paddb => "paddb",
             SseOpcode::Paddd => "paddd",
             SseOpcode::Paddq => "paddq",
@@ -719,6 +855,7 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Paddsw => "paddsw",
             SseOpcode::Paddusb => "paddusb",
             SseOpcode::Paddusw => "paddusw",
+            SseOpcode::Palignr => "palignr",
             SseOpcode::Pand => "pand",
             SseOpcode::Pandn => "pandn",
             SseOpcode::Pavgb => "pavgb",
@@ -737,6 +874,7 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Pinsrb => "pinsrb",
             SseOpcode::Pinsrw => "pinsrw",
             SseOpcode::Pinsrd => "pinsrd",
+            SseOpcode::Pmaddwd => "pmaddwd",
             SseOpcode::Pmaxsb => "pmaxsb",
             SseOpcode::Pmaxsw => "pmaxsw",
             SseOpcode::Pmaxsd => "pmaxsd",
@@ -750,6 +888,18 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Pminuw => "pminuw",
             SseOpcode::Pminud => "pminud",
             SseOpcode::Pmovmskb => "pmovmskb",
+            SseOpcode::Pmovsxbd => "pmovsxbd",
+            SseOpcode::Pmovsxbw => "pmovsxbw",
+            SseOpcode::Pmovsxbq => "pmovsxbq",
+            SseOpcode::Pmovsxwd => "pmovsxwd",
+            SseOpcode::Pmovsxwq => "pmovsxwq",
+            SseOpcode::Pmovsxdq => "pmovsxdq",
+            SseOpcode::Pmovzxbd => "pmovzxbd",
+            SseOpcode::Pmovzxbw => "pmovzxbw",
+            SseOpcode::Pmovzxbq => "pmovzxbq",
+            SseOpcode::Pmovzxwd => "pmovzxwd",
+            SseOpcode::Pmovzxwq => "pmovzxwq",
+            SseOpcode::Pmovzxdq => "pmovzxdq",
             SseOpcode::Pmulld => "pmulld",
             SseOpcode::Pmullw => "pmullw",
             SseOpcode::Pmuludq => "pmuludq",
@@ -773,8 +923,12 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Psubusb => "psubusb",
             SseOpcode::Psubusw => "psubusw",
             SseOpcode::Ptest => "ptest",
+            SseOpcode::Punpckhbw => "punpckhbw",
+            SseOpcode::Punpcklbw => "punpcklbw",
             SseOpcode::Pxor => "pxor",
             SseOpcode::Rcpss => "rcpss",
+            SseOpcode::Roundps => "roundps",
+            SseOpcode::Roundpd => "roundpd",
             SseOpcode::Roundss => "roundss",
             SseOpcode::Roundsd => "roundsd",
             SseOpcode::Rsqrtss => "rsqrtss",
@@ -878,7 +1032,7 @@ impl fmt::Display for ExtMode {
 }
 
 /// These indicate the form of a scalar shift/rotate: left, signed right, unsigned right.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum ShiftKind {
     ShiftLeft,
     /// Inserts zeros in the most significant bits.
@@ -1120,6 +1274,25 @@ impl From<FloatCC> for FcmpImm {
             FloatCC::Ordered => FcmpImm::Ordered,
             _ => panic!("unable to create comparison predicate for {}", cond),
         }
+    }
+}
+
+/// Encode the rounding modes used as part of the Rounding Control field.
+/// Note, these rounding immediates only consider the rounding control field
+/// (i.e. the rounding mode) which only take up the first two bits when encoded.
+/// However the rounding immediate which this field helps make up, also includes
+/// bits 3 and 4 which define the rounding select and precision mask respectively.
+/// These two bits are not defined here and are implictly set to zero when encoded.
+pub(crate) enum RoundImm {
+    RoundNearest = 0x00,
+    RoundDown = 0x01,
+    RoundUp = 0x02,
+    RoundZero = 0x03,
+}
+
+impl RoundImm {
+    pub(crate) fn encode(self) -> u8 {
+        self as u8
     }
 }
 

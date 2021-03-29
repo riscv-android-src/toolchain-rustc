@@ -5,7 +5,7 @@ use syntax::ast;
 
 use crate::{
     db::DefDatabase,
-    nameres::CrateDefMap,
+    nameres::DefMap,
     path::{ModPath, PathKind},
     ModuleId,
 };
@@ -85,7 +85,7 @@ impl RawVisibility {
 }
 
 /// Visibility of an item, with the path resolved.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Visibility {
     /// Visibility is restricted to a certain module.
     Module(ModuleId),
@@ -103,7 +103,7 @@ impl Visibility {
         if from_module.krate != to_module.krate {
             return false;
         }
-        let def_map = db.crate_def_map(from_module.krate);
+        let def_map = from_module.def_map(db);
         self.is_visible_from_def_map(&def_map, from_module.local_id)
     }
 
@@ -116,7 +116,7 @@ impl Visibility {
 
     pub(crate) fn is_visible_from_def_map(
         self,
-        def_map: &CrateDefMap,
+        def_map: &DefMap,
         from_module: crate::LocalModuleId,
     ) -> bool {
         let to_module = match self {
@@ -135,7 +135,7 @@ impl Visibility {
     ///
     /// If there is no subset relation between `self` and `other`, returns `None` (ie. they're only
     /// visible in unrelated modules).
-    pub(crate) fn max(self, other: Visibility, def_map: &CrateDefMap) -> Option<Visibility> {
+    pub(crate) fn max(self, other: Visibility, def_map: &DefMap) -> Option<Visibility> {
         match (self, other) {
             (Visibility::Module(_), Visibility::Public)
             | (Visibility::Public, Visibility::Module(_))

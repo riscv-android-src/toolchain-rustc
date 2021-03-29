@@ -5,14 +5,17 @@
 
 use std::{sync::Arc, time::Instant};
 
-use base_db::{CrateId, VfsPath};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use flycheck::FlycheckHandle;
-use ide::{Analysis, AnalysisChange, AnalysisHost, FileId};
+use ide::{Analysis, AnalysisHost, Change, FileId};
+use ide_db::base_db::{CrateId, VfsPath};
 use lsp_types::{SemanticTokens, Url};
 use parking_lot::{Mutex, RwLock};
-use project_model::{CargoWorkspace, ProcMacroClient, ProjectWorkspace, Target};
+use project_model::{
+    BuildDataCollector, BuildDataResult, CargoWorkspace, ProcMacroClient, ProjectWorkspace, Target,
+};
 use rustc_hash::FxHashMap;
+use vfs::AnchoredPathBuf;
 
 use crate::{
     config::Config,
@@ -21,6 +24,7 @@ use crate::{
     from_proto,
     line_endings::LineEndings,
     main_loop::Task,
+    op_queue::OpQueue,
     reload::SourceRootConfig,
     request_metrics::{LatestRequests, RequestMetrics},
     thread_pool::TaskPool,
@@ -31,7 +35,7 @@ use crate::{
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub(crate) enum Status {
     Loading,
-    Ready,
+    Ready { partial: bool },
     Invalid,
     NeedsReload,
 }
@@ -63,10 +67,10 @@ pub(crate) struct GlobalState {
     req_queue: ReqQueue,
     pub(crate) task_pool: Handle<TaskPool<Task>, Receiver<Task>>,
     pub(crate) loader: Handle<Box<dyn vfs::loader::Handle>, Receiver<vfs::loader::Message>>,
-    pub(crate) flycheck: Option<FlycheckHandle>,
+    pub(crate) flycheck: Vec<FlycheckHandle>,
     pub(crate) flycheck_sender: Sender<flycheck::Message>,
     pub(crate) flycheck_receiver: Receiver<flycheck::Message>,
-    pub(crate) config: Config,
+    pub(crate) config: Arc<Config>,
     pub(crate) analysis_host: AnalysisHost,
     pub(crate) diagnostics: DiagnosticCollection,
     pub(crate) mem_docs: FxHashMap<VfsPath, DocumentData>,
@@ -75,19 +79,22 @@ pub(crate) struct GlobalState {
     pub(crate) shutdown_requested: bool,
     pub(crate) status: Status,
     pub(crate) source_root_config: SourceRootConfig,
-    pub(crate) proc_macro_client: ProcMacroClient,
+    pub(crate) proc_macro_client: Option<ProcMacroClient>,
     pub(crate) workspaces: Arc<Vec<ProjectWorkspace>>,
+    pub(crate) fetch_workspaces_queue: OpQueue<()>,
+    pub(crate) workspace_build_data: Option<BuildDataResult>,
+    pub(crate) fetch_build_data_queue: OpQueue<BuildDataCollector>,
     latest_requests: Arc<RwLock<LatestRequests>>,
 }
 
 /// An immutable snapshot of the world's state at a point in time.
 pub(crate) struct GlobalStateSnapshot {
-    pub(crate) config: Config,
+    pub(crate) config: Arc<Config>,
     pub(crate) analysis: Analysis,
     pub(crate) check_fixes: CheckFixes,
     pub(crate) latest_requests: Arc<RwLock<LatestRequests>>,
     mem_docs: FxHashMap<VfsPath, DocumentData>,
-    pub semantic_tokens_cache: Arc<Mutex<FxHashMap<Url, SemanticTokens>>>,
+    pub(crate) semantic_tokens_cache: Arc<Mutex<FxHashMap<Url, SemanticTokens>>>,
     vfs: Arc<RwLock<(vfs::Vfs, FxHashMap<FileId, LineEndings>)>>,
     pub(crate) workspaces: Arc<Vec<ProjectWorkspace>>,
 }
@@ -108,17 +115,17 @@ impl GlobalState {
             Handle { handle, receiver }
         };
 
-        let analysis_host = AnalysisHost::new(config.lru_capacity);
+        let analysis_host = AnalysisHost::new(config.lru_capacity());
         let (flycheck_sender, flycheck_receiver) = unbounded();
         GlobalState {
             sender,
             req_queue: ReqQueue::default(),
             task_pool,
             loader,
-            flycheck: None,
+            flycheck: Vec::new(),
             flycheck_sender,
             flycheck_receiver,
-            config,
+            config: Arc::new(config),
             analysis_host,
             diagnostics: Default::default(),
             mem_docs: FxHashMap::default(),
@@ -127,8 +134,11 @@ impl GlobalState {
             shutdown_requested: false,
             status: Status::default(),
             source_root_config: SourceRootConfig::default(),
-            proc_macro_client: ProcMacroClient::dummy(),
+            proc_macro_client: None,
             workspaces: Arc::new(Vec::new()),
+            fetch_workspaces_queue: OpQueue::default(),
+            workspace_build_data: None,
+            fetch_build_data_queue: OpQueue::default(),
             latest_requests: Default::default(),
         }
     }
@@ -139,7 +149,7 @@ impl GlobalState {
         let mut has_fs_changes = false;
 
         let change = {
-            let mut change = AnalysisChange::new();
+            let mut change = Change::new();
             let (vfs, line_endings_map) = &mut *self.vfs.write();
             let changed_files = vfs.take_changes();
             if changed_files.is_empty() {
@@ -183,7 +193,7 @@ impl GlobalState {
 
     pub(crate) fn snapshot(&self) -> GlobalStateSnapshot {
         GlobalStateSnapshot {
-            config: self.config.clone(),
+            config: Arc::clone(&self.config),
             workspaces: Arc::clone(&self.workspaces),
             analysis: self.analysis_host.analysis(),
             vfs: Arc::clone(&self.vfs),
@@ -263,15 +273,15 @@ impl GlobalStateSnapshot {
         self.vfs.read().1[&id]
     }
 
-    pub(crate) fn url_file_version(&self, url: &Url) -> Option<i64> {
+    pub(crate) fn url_file_version(&self, url: &Url) -> Option<i32> {
         let path = from_proto::vfs_path(&url).ok()?;
-        self.mem_docs.get(&path)?.version
+        Some(self.mem_docs.get(&path)?.version)
     }
 
-    pub(crate) fn anchored_path(&self, file_id: FileId, path: &str) -> Url {
-        let mut base = self.vfs.read().0.file_path(file_id);
+    pub(crate) fn anchored_path(&self, path: &AnchoredPathBuf) -> Url {
+        let mut base = self.vfs.read().0.file_path(path.anchor);
         base.pop();
-        let path = base.join(path).unwrap();
+        let path = base.join(&path.path).unwrap();
         let path = path.as_path().unwrap();
         url_from_abs_path(&path)
     }

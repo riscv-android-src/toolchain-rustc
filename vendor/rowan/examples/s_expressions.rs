@@ -9,14 +9,11 @@
 //! alongside this tutorial:
 //! https://github.com/rust-analyzer/rust-analyzer/blob/master/docs/dev/syntax.md
 
-
 /// Currently, rowan doesn't have a hook to add your own interner,
 /// but `SmolStr` should be a "good enough" type for representing
 /// tokens.
 /// Additionally, rowan uses `TextSize` and `TextRange` types to
 /// represent utf8 offsets and ranges.
-use rowan::SmolStr;
-
 /// Let's start with defining all kinds of tokens and
 /// composite nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,7 +85,7 @@ fn parse(text: &str) -> Parse {
     struct Parser {
         /// input tokens, including whitespace,
         /// in *reverse* order.
-        tokens: Vec<(SyntaxKind, SmolStr)>,
+        tokens: Vec<(SyntaxKind, String)>,
         /// the in-progress tree.
         builder: GreenNodeBuilder<'static>,
         /// the list of syntax errors we've accumulated
@@ -177,7 +174,7 @@ fn parse(text: &str) -> Parse {
         /// Advance one token, adding it to the current branch of the tree builder.
         fn bump(&mut self) {
             let (kind, text) = self.tokens.pop().unwrap();
-            self.builder.token(kind.into(), text);
+            self.builder.token(kind.into(), text.as_str());
         }
         /// Peek at the first unprocessed token
         fn current(&self) -> Option<SyntaxKind> {
@@ -324,7 +321,7 @@ impl Atom {
         self.text().parse().ok()
     }
     fn as_op(&self) -> Option<Op> {
-        let op = match self.text().as_str() {
+        let op = match self.text() {
             "+" => Op::Add,
             "-" => Op::Sub,
             "*" => Op::Mul,
@@ -333,8 +330,8 @@ impl Atom {
         };
         Some(op)
     }
-    fn text(&self) -> &SmolStr {
-        match &self.0.green().children().next() {
+    fn text(&self) -> &str {
+        match self.0.green().children().next() {
             Some(rowan::NodeOrToken::Token(token)) => token.text(),
             _ => unreachable!(),
         }
@@ -395,7 +392,7 @@ nan
 
 /// Split the input string into a flat list of tokens
 /// (such as L_PAREN, WORD, and WHITESPACE)
-fn lex(text: &str) -> Vec<(SyntaxKind, SmolStr)> {
+fn lex(text: &str) -> Vec<(SyntaxKind, String)> {
     fn tok(t: SyntaxKind) -> m_lexer::TokenKind {
         m_lexer::TokenKind(rowan::SyntaxKind::from(t).0)
     }
@@ -425,7 +422,7 @@ fn lex(text: &str) -> Vec<(SyntaxKind, SmolStr)> {
         .into_iter()
         .map(|t| (t.len, kind(t.kind)))
         .scan(0usize, |start_offset, (len, kind)| {
-            let s: SmolStr = text[*start_offset..*start_offset + len].into();
+            let s: String = text[*start_offset..*start_offset + len].into();
             *start_offset += len;
             Some((kind, s))
         })

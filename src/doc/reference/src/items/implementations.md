@@ -5,31 +5,19 @@
 > &nbsp;&nbsp; _InherentImpl_ | _TraitImpl_
 >
 > _InherentImpl_ :\
-> &nbsp;&nbsp; `impl` [_Generics_]<sup>?</sup>&nbsp;[_Type_]&nbsp;[_WhereClause_]<sup>?</sup> `{`\
+> &nbsp;&nbsp; `impl` [_GenericParams_]<sup>?</sup>&nbsp;[_Type_]&nbsp;[_WhereClause_]<sup>?</sup> `{`\
 > &nbsp;&nbsp; &nbsp;&nbsp; [_InnerAttribute_]<sup>\*</sup>\
-> &nbsp;&nbsp; &nbsp;&nbsp; _InherentImplItem_<sup>\*</sup>\
+> &nbsp;&nbsp; &nbsp;&nbsp; [_AssociatedItem_]<sup>\*</sup>\
 > &nbsp;&nbsp; `}`
 >
-> _InherentImplItem_ :\
-> &nbsp;&nbsp; [_OuterAttribute_]<sup>\*</sup> (\
-> &nbsp;&nbsp; &nbsp;&nbsp; &nbsp;&nbsp; [_MacroInvocationSemi_]\
-> &nbsp;&nbsp; &nbsp;&nbsp; | ( [_Visibility_]<sup>?</sup> ( [_ConstantItem_] | [_Function_] | [_Method_] ) )\
-> &nbsp;&nbsp; )
->
 > _TraitImpl_ :\
-> &nbsp;&nbsp; `unsafe`<sup>?</sup> `impl` [_Generics_]<sup>?</sup> `!`<sup>?</sup>
+> &nbsp;&nbsp; `unsafe`<sup>?</sup> `impl` [_GenericParams_]<sup>?</sup> `!`<sup>?</sup>
 >              [_TypePath_] `for` [_Type_]\
 > &nbsp;&nbsp; [_WhereClause_]<sup>?</sup>\
 > &nbsp;&nbsp; `{`\
 > &nbsp;&nbsp; &nbsp;&nbsp; [_InnerAttribute_]<sup>\*</sup>\
-> &nbsp;&nbsp; &nbsp;&nbsp; _TraitImplItem_<sup>\*</sup>\
+> &nbsp;&nbsp; &nbsp;&nbsp; [_AssociatedItem_]<sup>\*</sup>\
 > &nbsp;&nbsp; `}`
->
-> _TraitImplItem_ :\
-> &nbsp;&nbsp; [_OuterAttribute_]<sup>\*</sup> (\
-> &nbsp;&nbsp; &nbsp;&nbsp; &nbsp;&nbsp; [_MacroInvocationSemi_]\
-> &nbsp;&nbsp; &nbsp;&nbsp; | ( [_Visibility_]<sup>?</sup> ( [_TypeAlias_] | [_ConstantItem_] | [_Function_] | [_Method_] ) )\
-> &nbsp;&nbsp; )
 
 An _implementation_ is an item that associates items with an _implementing type_.
 Implementations are defined with the keyword `impl` and contain functions
@@ -52,7 +40,7 @@ the _associated items_ to the implementing type.
 
 Inherent implementations associate the contained items to the
 implementing type.  Inherent implementations can contain [associated
-functions] (including methods) and [associated constants]. They cannot
+functions] (including [methods]) and [associated constants]. They cannot
 contain associated type aliases.
 
 The [path] to an associated item is any path to the implementing type,
@@ -180,11 +168,9 @@ is considered local.
 
 ## Generic Implementations
 
-An implementation can take type and lifetime parameters, which can be used in
-the rest of the implementation. Type parameters declared for an implementation
-must be used at least once in either the trait or the implementing type of an
-implementation. Implementation parameters are written directly after the `impl`
-keyword.
+An implementation can take [generic parameters], which can be used in the rest
+of the implementation. Implementation parameters are written directly after the
+`impl` keyword.
 
 ```rust
 # trait Seq<T> { fn dummy(&self, _: T) { } }
@@ -196,6 +182,85 @@ impl Seq<bool> for u32 {
 }
 ```
 
+Generic parameters *constrain* an implementation if the parameter appears at
+least once in one of:
+
+* The implemented trait, if it has one
+* The implementing type
+* As an [associated type] in the [bounds] of a type that contains another
+  parameter that constrains the implementation
+
+Type and const parameters must always constrain the implementation. Lifetimes
+must constrain the implementation if the lifetime is used in an associated type.
+
+Examples of constraining situations:
+
+```rust
+# trait Trait{}
+# trait GenericTrait<T> {}
+# trait HasAssocType { type Ty; }
+# struct Struct;
+# struct GenericStruct<T>(T);
+# struct ConstGenericStruct<const N: usize>([(); N]);
+// T constrains by being an argument to GenericTrait.
+impl<T> GenericTrait<T> for i32 { /* ... */ }
+
+// T constrains by being an arguement to GenericStruct
+impl<T> Trait for GenericStruct<T> { /* ... */ }
+
+// Likewise, N constrains by being an argument to ConstGenericStruct
+impl<const N: usize> Trait for ConstGenericStruct<N> { /* ... */ }
+
+// T constrains by being in an associated type in a bound for type `U` which is
+// itself a generic parameter constraining the trait.
+impl<T, U> GenericTrait<U> for u32 where U: HasAssocType<Ty = T> { /* ... */ }
+
+// Like previous, except the type is `(U, isize)`. `U` appears inside the type
+// that includes `T`, and is not the type itself.
+impl<T, U> GenericStruct<U> where (U, isize): HasAssocType<Ty = T> { /* ... */ }
+```
+
+Examples of non-constraining situations:
+
+```rust,compile_fail
+// The rest of these are errors, since they have type or const parameters that
+// do not constrain.
+
+// T does not constrain since it does not appear at all.
+impl<T> Struct { /* ... */ }
+
+// N does not constrain for the same reason.
+impl<const N: usize> Struct { /* ... */ }
+
+// Usage of T inside the implementation does not constrain the impl.
+impl<T> Struct {
+    fn uses_t(t: &T) { /* ... */ }
+}
+
+// T is used as an associated type in the bounds for U, but U does not constrain.
+impl<T, U> Struct where U: HasAssocType<Ty = T> { /* ... */ }
+
+// T is used in the bounds, but not as an associated type, so it does not constrain.
+impl<T, U> GenericTrait<U> for u32 where U: GenericTrait<T> {}
+```
+
+Example of an allowed unconstraining lifetime parameter:
+
+```rust
+# struct Struct;
+impl<'a> Struct {}
+```
+
+Example of a disallowed unconstraining lifetime parameter:
+
+```rust,compile_fail
+# struct Struct;
+# trait HasAssocType { type Ty; }
+impl<'a> HasAssocType for Struct {
+    type Ty = &'a Struct;
+}
+```
+
 ## Attributes on Implementations
 
 Implementations may contain outer [attributes] before the `impl` keyword and
@@ -204,25 +269,23 @@ attributes must come before any associated items. That attributes that have
 meaning here are [`cfg`], [`deprecated`], [`doc`], and [the lint check
 attributes].
 
-[_ConstantItem_]: constant-items.md
-[_Function_]: functions.md
-[_Generics_]: generics.md
+[_AssociatedItem_]: associated-items.md
+[_GenericParams_]: generics.md
 [_InnerAttribute_]: ../attributes.md
-[_MacroInvocationSemi_]: ../macros.md#macro-invocation
-[_Method_]: associated-items.md#methods
-[_OuterAttribute_]: ../attributes.md
-[_TypeAlias_]: type-aliases.md
 [_TypePath_]: ../paths.md#paths-in-types
 [_Type_]: ../types.md#type-expressions
-[_Visibility_]: ../visibility-and-privacy.md
 [_WhereClause_]: generics.md#where-clauses
 [trait]: traits.md
-[associated functions]: associated-items.md#associated-functions-and-methods
 [associated constants]: associated-items.md#associated-constants
+[associated functions]: associated-items.md#associated-functions-and-methods
+[associated type]: associated-items.md#associated-types
 [attributes]: ../attributes.md
+[bounds]: ../trait-bounds.md
 [`cfg`]: ../conditional-compilation.md
 [`deprecated`]: ../attributes/diagnostics.md#the-deprecated-attribute
 [`doc`]: ../../rustdoc/the-doc-attribute.html
+[generic parameters]: generics.md
+[methods]: associated-items.md#methods
 [path]: ../paths.md
 [the lint check attributes]: ../attributes/diagnostics.md#lint-check-attributes
 [Unsafe traits]: traits.md#unsafe-traits

@@ -367,6 +367,19 @@ where
         }
     }
 
+    /// Sets the layer being built to use an [excessively pretty, human-readable formatter](crate::fmt::format::Pretty).
+    #[cfg(feature = "ansi")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ansi")))]
+    pub fn pretty(self) -> Layer<S, format::Pretty, format::Format<format::Pretty, T>, W> {
+        Layer {
+            fmt_event: self.fmt_event.pretty(),
+            fmt_fields: format::Pretty::default(),
+            fmt_span: self.fmt_span,
+            make_writer: self.make_writer,
+            _inner: self._inner,
+        }
+    }
+
     /// Sets the layer being built to use a [JSON formatter](../fmt/format/struct.Json.html).
     ///
     /// The full format includes fields from all entered spans.
@@ -771,14 +784,14 @@ impl<'a, S, N> fmt::Debug for FmtContext<'a, S, N> {
     }
 }
 
-impl<'a, S, N> FormatFields<'a> for FmtContext<'a, S, N>
+impl<'cx, 'writer, S, N> FormatFields<'writer> for FmtContext<'cx, S, N>
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
-    N: for<'writer> FormatFields<'writer> + 'static,
+    N: FormatFields<'writer> + 'static,
 {
     fn format_fields<R: RecordFields>(
         &self,
-        writer: &'a mut dyn fmt::Write,
+        writer: &'writer mut dyn fmt::Write,
         fields: R,
     ) -> fmt::Result {
         self.fmt_fields.format_fields(writer, fields)
@@ -865,6 +878,17 @@ where
         S: for<'lookup> LookupSpan<'lookup>,
     {
         self.ctx.scope()
+    }
+
+    /// Returns the [field formatter] configured by the subscriber invoking
+    /// `format_event`.
+    ///
+    /// The event formatter may use the returned field formatter to format the
+    /// fields of any events it records.
+    ///
+    /// [field formatter]: FormatFields
+    pub fn field_format(&self) -> &N {
+        self.fmt_fields
     }
 }
 

@@ -46,6 +46,7 @@ mod binary_long;
 
 #[macro_use]
 mod delegate;
+pub use self::delegate::u128_divide_sparc;
 
 #[macro_use]
 mod trifecta;
@@ -60,26 +61,30 @@ fn zero_div_fn() -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
-// The `B` extension on RISC-V determines if a CLZ assembly instruction exists
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-const USE_LZ: bool = cfg!(target_feature = "b");
-
-#[cfg(target_arch = "arm")]
-const USE_LZ: bool = if cfg!(target_feature = "thumb-mode") {
-    // ARM thumb targets have CLZ instructions if the instruction set of ARMv6T2 is supported. This
-    // is needed to successfully differentiate between targets like `thumbv8.base` and
-    // `thumbv8.main`.
-    cfg!(target_feature = "v6t2")
-} else {
-    // Regular ARM targets have CLZ instructions if the ARMv5TE instruction set is supported.
-    // Technically, ARMv5T was the first to have CLZ, but the "v5t" target feature does not seem to
-    // work.
-    cfg!(target_feature = "v5te")
+const USE_LZ: bool = {
+    if cfg!(target_arch = "arm") {
+        if cfg!(target_feature = "thumb-mode") {
+            // ARM thumb targets have CLZ instructions if the instruction set of ARMv6T2 is
+            // supported. This is needed to successfully differentiate between targets like
+            // `thumbv8.base` and `thumbv8.main`.
+            cfg!(target_feature = "v6t2")
+        } else {
+            // Regular ARM targets have CLZ instructions if the ARMv5TE instruction set is
+            // supported. Technically, ARMv5T was the first to have CLZ, but the "v5t" target
+            // feature does not seem to work.
+            cfg!(target_feature = "v5te")
+        }
+    } else if cfg!(any(target_arch = "sparc", target_arch = "sparc64")) {
+        // LZD or LZCNT on SPARC only exists for the VIS 3 extension and later.
+        cfg!(target_feature = "vis3")
+    } else if cfg!(any(target_arch = "riscv32", target_arch = "riscv64")) {
+        // The `B` extension on RISC-V determines if a CLZ assembly instruction exists
+        cfg!(target_feature = "b")
+    } else {
+        // All other common targets Rust supports should have CLZ instructions
+        true
+    }
 };
-
-// All other targets Rust supports have CLZ instructions
-#[cfg(not(any(target_arch = "arm", target_arch = "riscv32", target_arch = "riscv64")))]
-const USE_LZ: bool = true;
 
 impl_normalization_shift!(
     u32_normalization_shift,
@@ -111,43 +116,33 @@ fn u64_by_u64_div_rem(duo: u64, div: u64) -> (u64, u64) {
     zero_div_fn()
 }
 
-// `inline(never)` is placed on unsigned division functions so that there are just three division
-// functions (`u32_div_rem`, `u64_div_rem`, and `u128_div_rem`) backing all `compiler-builtins`
-// division functions. The signed functions like `i32_div_rem` will get inlined into the
-// `compiler-builtins` signed division functions, so that they directly call the three division
-// functions. Otherwise, LLVM may try to inline the unsigned division functions 4 times into the
-// signed division functions, which results in an explosion in code size.
-
 // Whether `trifecta` or `delegate` is faster for 128 bit division depends on the speed at which a
 // microarchitecture can multiply and divide. We decide to be optimistic and assume `trifecta` is
 // faster if the target pointer width is at least 64.
 #[cfg(all(
-    not(all(feature = "asm", target_arch = "x86_64")),
-    not(any(target_pointer_width = "16", target_pointer_width = "32"))
+    not(any(target_pointer_width = "16", target_pointer_width = "32")),
+    not(all(not(feature = "no-asm"), target_arch = "x86_64")),
+    not(any(target_arch = "sparc", target_arch = "sparc64"))
 ))]
 impl_trifecta!(
     u128_div_rem,
-    i128_div_rem,
     zero_div_fn,
     u64_by_u64_div_rem,
     32,
     u32,
     u64,
-    u128,
-    i128,
-    inline(never);
-    inline
+    u128
 );
 
 // If the pointer width less than 64, then the target architecture almost certainly does not have
 // the fast 64 to 128 bit widening multiplication needed for `trifecta` to be faster.
 #[cfg(all(
-    not(all(feature = "asm", target_arch = "x86_64")),
-    any(target_pointer_width = "16", target_pointer_width = "32")
+    any(target_pointer_width = "16", target_pointer_width = "32"),
+    not(all(not(feature = "no-asm"), target_arch = "x86_64")),
+    not(any(target_arch = "sparc", target_arch = "sparc64"))
 ))]
 impl_delegate!(
     u128_div_rem,
-    i128_div_rem,
     zero_div_fn,
     u64_normalization_shift,
     u64_by_u64_div_rem,
@@ -155,9 +150,7 @@ impl_delegate!(
     u32,
     u64,
     u128,
-    i128,
-    inline(never);
-    inline
+    i128
 );
 
 /// Divides `duo` by `div` and returns a tuple of the quotient and the remainder.
@@ -166,7 +159,7 @@ impl_delegate!(
 ///
 /// If the quotient does not fit in a `u64`, a floating point exception occurs.
 /// If `div == 0`, then a division by zero exception occurs.
-#[cfg(all(feature = "asm", target_arch = "x86_64"))]
+#[cfg(all(not(feature = "no-asm"), target_arch = "x86_64"))]
 #[inline]
 unsafe fn u128_by_u64_div_rem(duo: u128, div: u64) -> (u64, u64) {
     let duo_lo = duo as u64;
@@ -176,32 +169,29 @@ unsafe fn u128_by_u64_div_rem(duo: u128, div: u64) -> (u64, u64) {
     unsafe {
         // divides the combined registers rdx:rax (`duo` is split into two 64 bit parts to do this)
         // by `div`. The quotient is stored in rax and the remainder in rdx.
+        // FIXME: Use the Intel syntax once we drop LLVM 9 support on rust-lang/rust.
         asm!(
             "div {0}",
             in(reg) div,
             inlateout("rax") duo_lo => quo,
             inlateout("rdx") duo_hi => rem,
-            options(pure, nomem, nostack)
+            options(att_syntax, pure, nomem, nostack)
         );
     }
     (quo, rem)
 }
 
 // use `asymmetric` instead of `trifecta` on x86_64
-#[cfg(all(feature = "asm", target_arch = "x86_64"))]
+#[cfg(all(not(feature = "no-asm"), target_arch = "x86_64"))]
 impl_asymmetric!(
     u128_div_rem,
-    i128_div_rem,
     zero_div_fn,
     u64_by_u64_div_rem,
     u128_by_u64_div_rem,
     32,
     u32,
     u64,
-    u128,
-    i128,
-    inline(never);
-    inline
+    u128
 );
 
 /// Divides `duo` by `div` and returns a tuple of the quotient and the remainder.
@@ -221,12 +211,11 @@ fn u32_by_u32_div_rem(duo: u32, div: u32) -> (u32, u32) {
 // When not on x86 and the pointer width is not 64, use `delegate` since the division size is larger
 // than register size.
 #[cfg(all(
-    not(all(feature = "asm", target_arch = "x86")),
+    not(all(not(feature = "no-asm"), target_arch = "x86")),
     not(target_pointer_width = "64")
 ))]
 impl_delegate!(
     u64_div_rem,
-    i64_div_rem,
     zero_div_fn,
     u32_normalization_shift,
     u32_by_u32_div_rem,
@@ -234,26 +223,21 @@ impl_delegate!(
     u16,
     u32,
     u64,
-    i64,
-    inline(never);
-    inline
+    i64
 );
 
 // When not on x86 and the pointer width is 64, use `binary_long`.
 #[cfg(all(
-    not(all(feature = "asm", target_arch = "x86")),
+    not(all(not(feature = "no-asm"), target_arch = "x86")),
     target_pointer_width = "64"
 ))]
 impl_binary_long!(
     u64_div_rem,
-    i64_div_rem,
     zero_div_fn,
     u64_normalization_shift,
     64,
     u64,
-    i64,
-    inline(never);
-    inline
+    i64
 );
 
 /// Divides `duo` by `div` and returns a tuple of the quotient and the remainder.
@@ -262,7 +246,7 @@ impl_binary_long!(
 ///
 /// If the quotient does not fit in a `u32`, a floating point exception occurs.
 /// If `div == 0`, then a division by zero exception occurs.
-#[cfg(all(feature = "asm", target_arch = "x86"))]
+#[cfg(all(not(feature = "no-asm"), target_arch = "x86"))]
 #[inline]
 unsafe fn u64_by_u32_div_rem(duo: u64, div: u32) -> (u32, u32) {
     let duo_lo = duo as u32;
@@ -272,43 +256,37 @@ unsafe fn u64_by_u32_div_rem(duo: u64, div: u32) -> (u32, u32) {
     unsafe {
         // divides the combined registers rdx:rax (`duo` is split into two 32 bit parts to do this)
         // by `div`. The quotient is stored in rax and the remainder in rdx.
+        // FIXME: Use the Intel syntax once we drop LLVM 9 support on rust-lang/rust.
         asm!(
             "div {0}",
             in(reg) div,
             inlateout("rax") duo_lo => quo,
             inlateout("rdx") duo_hi => rem,
-            options(pure, nomem, nostack)
+            options(att_syntax, pure, nomem, nostack)
         );
     }
     (quo, rem)
 }
 
 // use `asymmetric` instead of `delegate` on x86
-#[cfg(all(feature = "asm", target_arch = "x86"))]
+#[cfg(all(not(feature = "no-asm"), target_arch = "x86"))]
 impl_asymmetric!(
     u64_div_rem,
-    i64_div_rem,
     zero_div_fn,
     u32_by_u32_div_rem,
     u64_by_u32_div_rem,
     16,
     u16,
     u32,
-    u64,
-    i64,
-    inline(never);
-    inline
+    u64
 );
 
 // 32 bits is the smallest division used by `compiler-builtins`, so we end with binary long division
 impl_binary_long!(
     u32_div_rem,
-    i32_div_rem,
     zero_div_fn,
     u32_normalization_shift,
     32,
     u32,
-    i32,
-    inline(never);
-    inline
+    i32
 );

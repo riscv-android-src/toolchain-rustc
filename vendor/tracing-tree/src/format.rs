@@ -16,8 +16,8 @@ pub(crate) const LINE_OPEN: &str = "┐";
 
 pub(crate) enum SpanMode {
     PreOpen,
-    Open,
-    Close,
+    Open { verbose: bool },
+    Close { verbose: bool },
     PostClose,
     Event,
 }
@@ -189,14 +189,19 @@ pub struct FmtEvent<'a> {
 impl<'a> Visit for FmtEvent<'a> {
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         let buf = &mut self.bufs.current_buf;
-        write!(buf, "{comma} ", comma = if self.comma { "," } else { "" },).unwrap();
-        let name = field.name();
-        if name == "message" {
-            write!(buf, "{:?}", value).unwrap();
-            self.comma = true;
-        } else {
-            write!(buf, "{}={:?}", name, value).unwrap();
-            self.comma = true;
+        let comma = if self.comma { "," } else { "" };
+        match field.name() {
+            "message" => {
+                write!(buf, "{} {:?}", comma, value).unwrap();
+                self.comma = true;
+            }
+            // Skip fields that are actually log metadata that have already been handled
+            #[cfg(feature = "tracing-log")]
+            name if name.starts_with("log.") => {}
+            name => {
+                write!(buf, "{} {}={:?}", comma, name, value).unwrap();
+                self.comma = true;
+            }
         }
     }
 }
@@ -224,13 +229,6 @@ fn indent_block_with_lines(
     prefix: &str,
     style: SpanMode,
 ) {
-    let indent = match style {
-        SpanMode::PreOpen => indent.saturating_sub(1),
-        SpanMode::Open => indent.saturating_sub(1),
-        SpanMode::Close => indent,
-        SpanMode::PostClose => indent,
-        SpanMode::Event => indent,
-    };
     let indent_spaces = indent * indent_amount;
     if lines.is_empty() {
         return;
@@ -266,7 +264,14 @@ fn indent_block_with_lines(
             }
             buf.push_str(LINE_OPEN);
         }
-        SpanMode::Open => {
+        SpanMode::Open { verbose: false } => {
+            buf.push_str(LINE_BRANCH);
+            for _ in 1..indent_amount {
+                buf.push_str(LINE_HORIZ);
+            }
+            buf.push_str(LINE_OPEN);
+        }
+        SpanMode::Open { verbose: true } => {
             buf.push_str(LINE_VERT);
             for _ in 1..(indent_amount / 2) {
                 buf.push(' ');
@@ -285,7 +290,14 @@ fn indent_block_with_lines(
                 buf.push_str(LINE_VERT);
             }
         }
-        SpanMode::Close => {
+        SpanMode::Close { verbose: false } => {
+            buf.push_str(LINE_BRANCH);
+            for _ in 1..indent_amount {
+                buf.push_str(LINE_HORIZ);
+            }
+            buf.push_str(LINE_CLOSE);
+        }
+        SpanMode::Close { verbose: true } => {
             buf.push_str(LINE_VERT);
             for _ in 1..(indent_amount / 2) {
                 buf.push(' ');

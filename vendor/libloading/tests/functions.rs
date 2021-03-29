@@ -145,6 +145,30 @@ fn test_static_ptr() {
     }
 }
 
+#[test]
+// Something about i686-pc-windows-gnu, makes dll initialization code call abort when it is loaded
+// and unloaded many times. So far it seems like an issue with mingw, not libloading, so ignoring
+// the target. Especially since it is very unlikely to be fixed given the state of support its
+// support.
+#[cfg(not(all(target_arch="x86", target_os="windows", target_env="gnu")))]
+fn manual_close_many_times() {
+    make_helpers();
+    let join_handles: Vec<_> = (0..16).map(|_| {
+        std::thread::spawn(|| unsafe {
+            for _ in 0..10000 {
+                let lib = Library::new(LIBPATH).expect("open library");
+                let _: Symbol<unsafe extern fn(u32) -> u32> =
+                    lib.get(b"test_identity_u32").expect("get fn");
+                lib.close().expect("close is successful");
+            }
+        })
+    }).collect();
+    for handle in join_handles {
+        handle.join().expect("thread should succeed");
+    }
+}
+
+
 #[cfg(unix)]
 #[test]
 fn library_this_get() {
@@ -210,4 +234,24 @@ fn works_getlasterror0() {
         errhandlingapi::SetLastError(42);
         assert_eq!(errhandlingapi::GetLastError(), gle())
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn library_open_already_loaded() {
+    use libloading::os::windows::Library;
+
+    // Present on Windows systems and NOT used by any other tests to prevent races.
+    const LIBPATH: &str = "Msftedit.dll";
+
+    // Not loaded yet.
+    assert!(match Library::open_already_loaded(LIBPATH) {
+        Err(libloading::Error::GetModuleHandleExW { .. }) => true,
+        _ => false,
+    });
+
+    let _lib = Library::new(LIBPATH).unwrap();
+
+    // Loaded now.
+    assert!(Library::open_already_loaded(LIBPATH).is_ok());
 }

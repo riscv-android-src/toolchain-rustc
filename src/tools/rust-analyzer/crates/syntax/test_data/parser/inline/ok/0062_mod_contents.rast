@@ -12,11 +12,8 @@ SOURCE_FILE@0..70
       L_CURLY@9..10 "{"
       R_CURLY@10..11 "}"
   WHITESPACE@11..12 "\n"
-  MACRO_CALL@12..31
-    PATH@12..23
-      PATH_SEGMENT@12..23
-        NAME_REF@12..23
-          IDENT@12..23 "macro_rules"
+  MACRO_RULES@12..31
+    MACRO_RULES_KW@12..23 "macro_rules"
     BANG@23..24 "!"
     WHITESPACE@24..25 " "
     NAME@25..28
@@ -46,7 +43,8 @@ SOURCE_FILE@0..70
     PATH@45..55
       PATH@45..50
         PATH_SEGMENT@45..50
-          SUPER_KW@45..50 "super"
+          NAME_REF@45..50
+            SUPER_KW@45..50 "super"
       COLON2@50..52 "::"
       PATH_SEGMENT@52..55
         NAME_REF@52..55

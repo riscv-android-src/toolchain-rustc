@@ -1,50 +1,14 @@
 /*!
 An ultra simple CLI arguments parser.
 
-- Only flags, options, free arguments and subcommands are supported.
-- Arguments can be separated by a space or `=`.
-- Non UTF-8 arguments are supported.
+If you think that this library doesn't support some feature, it's probably intentional.
+
 - No help generation.
+- Only flags, options, free arguments and subcommands are supported.
 - No combined flags (like `-vvv`, `-abc` or `-j1`).
-- Arguments are parsed in a linear order. From first to last.
-
-## Example
-
-```rust
-struct Args {
-    help: bool,
-    version: bool,
-    number: u32,
-    opt_number: Option<u32>,
-    width: u32,
-    free: Vec<String>,
-}
-
-fn parse_width(s: &str) -> Result<u32, String> {
-    s.parse().map_err(|_| "not a number".to_string())
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = pico_args::Arguments::from_env();
-    // Arguments can be parsed in any order.
-    let args = Args {
-        // You can use a slice for multiple commands
-        help: args.contains(["-h", "--help"]),
-        // or just a string for a single one.
-        version: args.contains("-V"),
-        // Parses an optional value that implements `FromStr`.
-        number: args.opt_value_from_str("--number")?.unwrap_or(5),
-        // Parses an optional value that implements `FromStr`.
-        opt_number: args.opt_value_from_str("--opt-number")?,
-        // Parses an optional value using a specified function.
-        width: args.opt_value_from_fn("--width", parse_width)?.unwrap_or(10),
-        // Will return all free arguments or an error if any flags are left.
-        free: args.free()?,
-    };
-
-    Ok(())
-}
-```
+- Options can be separated by a space, `=` or nothing. See build features.
+- Arguments can be in any order.
+- Non UTF-8 arguments are supported.
 
 ## Build features
 
@@ -52,9 +16,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   Allows parsing arguments separated by `=`. Enabled by default.<br/>
   This feature adds about 1KiB to the resulting binary.
+
+- `short-space-opt`
+
+  Makes the space between short keys and their values optional (e.g. `-w10`).<br/>
+  If `eq-separator` is enabled, then it takes precedence and the '=' is not included.<br/>
+  If `eq-separator` is disabled, then `-K=value` gives an error instead of returning `"=value"`.<br/>
+  The optional space is only applicable for short keys because `--keyvalue` would be ambiguous.
 */
 
-#![doc(html_root_url = "https://docs.rs/pico-args/0.3.4")]
+#![doc(html_root_url = "https://docs.rs/pico-args/0.4.0")]
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -70,6 +41,9 @@ pub enum Error {
     /// Arguments must be a valid UTF-8 strings.
     NonUtf8Argument,
 
+    /// A missing free-standing argument.
+    MissingArgument,
+
     /// A missing option.
     MissingOption(Keys),
 
@@ -83,9 +57,6 @@ pub enum Error {
     /// Failed to parse a raw free-standing argument.
     #[allow(missing_docs)]
     ArgumentParsingFailed { cause: String },
-
-    /// Unused arguments left.
-    UnusedArgsLeft(Vec<String>),
 }
 
 impl Display for Error {
@@ -93,6 +64,9 @@ impl Display for Error {
         match self {
             Error::NonUtf8Argument => {
                 write!(f, "argument is not a UTF-8 string")
+            }
+            Error::MissingArgument => {
+                write!(f, "free-standing argument is missing")
             }
             Error::MissingOption(key) => {
                 if key.second().is_empty() {
@@ -109,20 +83,6 @@ impl Display for Error {
             }
             Error::ArgumentParsingFailed { cause } => {
                 write!(f, "failed to parse a binary argument cause {}", cause)
-            }
-            Error::UnusedArgsLeft(args) => {
-                // Do not use `args.join()`, because it adds 1.2KiB.
-
-                write!(f, "unused arguments left: ")?;
-                for (i, arg) in args.iter().enumerate() {
-                    write!(f, "{}", arg)?;
-
-                    if i != args.len() - 1 {
-                        write!(f, ", ")?;
-                    }
-                }
-
-                Ok(())
             }
         }
     }
@@ -147,6 +107,9 @@ impl Arguments {
     /// Creates a parser from a vector of arguments.
     ///
     /// The executable path **must** be removed.
+    ///
+    /// This can be used for supporting `--` arguments to forward to another program.
+    /// See `examples/dash_dash.rs` for an example.
     pub fn from_vec(args: Vec<OsString>) -> Self {
         Arguments(args)
     }
@@ -162,7 +125,13 @@ impl Arguments {
         Arguments(args)
     }
 
-    /// Returns the name of the subcommand, that is, the first positional argument.
+    /// Parses the name of the subcommand, that is, the first positional argument.
+    ///
+    /// Returns `None` when subcommand starts with `-` or when there are no arguments left.
+    ///
+    /// # Errors
+    ///
+    /// - When arguments is not a UTF-8 string.
     pub fn subcommand(&mut self) -> Result<Option<String>, Error> {
         if self.0.is_empty() {
             return Ok(None);
@@ -182,6 +151,8 @@ impl Arguments {
 
     /// Checks that arguments contain a specified flag.
     ///
+    /// Searches through all argument, not only the first/next one.
+    ///
     /// Must be used only once for each flag.
     pub fn contains<A: Into<Keys>>(&mut self, keys: A) -> bool {
         self.contains_impl(keys.into())
@@ -191,10 +162,10 @@ impl Arguments {
     fn contains_impl(&mut self, keys: Keys) -> bool {
         if let Some((idx, _)) = self.index_of(keys) {
             self.0.remove(idx);
-            return true;
+            true
+        } else {
+            false
         }
-
-        false
     }
 
     /// Parses a key-value pair using `FromStr` trait.
@@ -210,6 +181,8 @@ impl Arguments {
     }
 
     /// Parses a key-value pair using a specified function.
+    ///
+    /// Searches through all argument, not only the first/next one.
     ///
     /// When a key-value pair is separated by a space, the algorithm
     /// will threat the next argument after the key as a value,
@@ -461,7 +434,7 @@ impl Arguments {
 
     /// Parses an optional key-value pair using a specified function.
     ///
-    /// The same as `value_from_os_str`, but returns `Ok(None)` when option is not present.
+    /// The same as [`value_from_os_str`], but returns `Ok(None)` when option is not present.
     ///
     /// [`value_from_os_str`]: struct.Arguments.html#method.value_from_os_str
     pub fn opt_value_from_os_str<A: Into<Keys>, T, E: Display>(
@@ -569,7 +542,7 @@ impl Arguments {
     /// Parses a free-standing argument using `FromStr` trait.
     ///
     /// This is a shorthand for `free_from_fn(FromStr::from_str)`
-    pub fn free_from_str<T>(&mut self) -> Result<Option<T>, Error>
+    pub fn free_from_str<T>(&mut self) -> Result<T, Error>
     where
         T: FromStr,
         <T as FromStr>::Err: Display,
@@ -579,30 +552,71 @@ impl Arguments {
 
     /// Parses a free-standing argument using a specified function.
     ///
+    /// Parses the first argument from the list of remaining arguments.
+    /// Therefore, it's up to the caller to check if the argument is actually
+    /// a free-standing one and not an unused flag/option.
+    ///
+    /// Sadly, there is no way to automatically check for flag/option.
+    /// `-`, `--`, `-1`, `-0.5`, `--.txt` - all of this arguments can have different
+    /// meaning depending on the caller requirements.
+    ///
     /// Must be used only once for each argument.
     ///
     /// # Errors
     ///
-    /// - When any flags are left.
     /// - When argument is not a UTF-8 string. Use [`free_from_os_str`] instead.
-    /// - When value parsing failed.
+    /// - When argument parsing failed.
+    /// - When argument is not present.
     ///
-    /// [`value_from_os_str`]: struct.Arguments.html#method.value_from_os_str
+    /// [`free_from_os_str`]: struct.Arguments.html#method.free_from_os_str
     #[inline(never)]
     pub fn free_from_fn<T, E: Display>(
         &mut self,
         f: fn(&str) -> Result<T, E>,
-    ) -> Result<Option<T>, Error> {
-        self.check_for_flags()?;
+    ) -> Result<T, Error> {
+        self.opt_free_from_fn(f)?.ok_or(Error::MissingArgument)
+    }
 
+    /// Parses a free-standing argument using a specified function.
+    ///
+    /// The same as [`free_from_fn`], but parses `&OsStr` instead of `&str`.
+    ///
+    /// [`free_from_fn`]: struct.Arguments.html#method.free_from_fn
+    #[inline(never)]
+    pub fn free_from_os_str<T, E: Display>(
+        &mut self,
+        f: fn(&OsStr) -> Result<T, E>,
+    ) -> Result<T, Error> {
+        self.opt_free_from_os_str(f)?.ok_or(Error::MissingArgument)
+    }
+
+    /// Parses an optional free-standing argument using `FromStr` trait.
+    ///
+    /// The same as [`free_from_str`], but returns `Ok(None)` when argument is not present.
+    ///
+    /// [`free_from_str`]: struct.Arguments.html#method.free_from_str
+    pub fn opt_free_from_str<T>(&mut self) -> Result<Option<T>, Error>
+        where
+            T: FromStr,
+            <T as FromStr>::Err: Display,
+    {
+        self.opt_free_from_fn(FromStr::from_str)
+    }
+
+    /// Parses an optional free-standing argument using a specified function.
+    ///
+    /// The same as [`free_from_fn`], but returns `Ok(None)` when argument is not present.
+    ///
+    /// [`free_from_fn`]: struct.Arguments.html#method.free_from_fn
+    #[inline(never)]
+    pub fn opt_free_from_fn<T, E: Display>(
+        &mut self,
+        f: fn(&str) -> Result<T, E>,
+    ) -> Result<Option<T>, Error> {
         if self.0.is_empty() {
             Ok(None)
         } else {
-            // A simple take_first() implementation.
-            let mut value = OsString::new();
-            std::mem::swap(self.0.first_mut().unwrap(), &mut value);
-            self.0.remove(0);
-
+            let value = self.0.remove(0);
             let value = os_to_str(value.as_os_str())?;
             match f(&value) {
                 Ok(value) => Ok(Some(value)),
@@ -616,27 +630,18 @@ impl Arguments {
 
     /// Parses a free-standing argument using a specified function.
     ///
-    /// Must be used only once for each argument.
+    /// The same as [`free_from_os_str`], but returns `Ok(None)` when argument is not present.
     ///
-    /// # Errors
-    ///
-    /// - When any flags are left.
-    /// - When value parsing failed.
+    /// [`free_from_os_str`]: struct.Arguments.html#method.free_from_os_str
     #[inline(never)]
-    pub fn free_from_os_str<T, E: Display>(
+    pub fn opt_free_from_os_str<T, E: Display>(
         &mut self,
         f: fn(&OsStr) -> Result<T, E>,
     ) -> Result<Option<T>, Error> {
-        self.check_for_flags()?;
-
         if self.0.is_empty() {
             Ok(None)
         } else {
-            // A simple take_first() implementation.
-            let mut value = OsString::new();
-            std::mem::swap(self.0.first_mut().unwrap(), &mut value);
-            self.0.remove(0);
-
+            let value = self.0.remove(0);
             match f(value.as_os_str()) {
                 Ok(value) => Ok(Some(value)),
                 Err(e) => Err(Error::ArgumentParsingFailed { cause: error_to_string(e) }),
@@ -644,88 +649,13 @@ impl Arguments {
         }
     }
 
-    /// Returns a list of free arguments as Strings.
+    /// Returns a list of remaining arguments.
     ///
-    /// This list will also include `-`, which indicates stdin.
-    ///
-    /// # Errors
-    ///
-    /// - When any flags are left.
-    /// - When any of the arguments is not a UTF-8 string.
-    pub fn free(self) -> Result<Vec<String>, Error> {
-        self.check_for_flags()?;
-
-        // This code produces 1.7KiB
-        //
-        // let mut args = Vec::new();
-        // for arg in self.0 {
-        //     let arg = os_to_str(arg.as_os_str())?.to_string();
-        //     args.push(arg);
-        // }
-
-        // And this one is only 874B
-
-        for arg in &self.0 {
-            os_to_str(arg.as_os_str())?;
-        }
-
-        let args = self.0.iter().map(|a| a.to_str().unwrap().to_string()).collect();
-        Ok(args)
-    }
-
-    /// Returns a list of free arguments as OsStrings.
-    ///
-    /// This list will also include `-`, which indicates stdin.
-    ///
-    /// # Errors
-    ///
-    /// - When any flags are left.
-    ///   Only UTF-8 strings will be checked for flag prefixes.
-    pub fn free_os(self) -> Result<Vec<OsString>, Error> {
-        self.check_for_flags()?;
-        Ok(self.0)
-    }
-
-    #[inline(never)]
-    fn check_for_flags(&self) -> Result<(), Error> {
-        // Check that there are no flags left.
-        // But allow `-` which is used to indicate stdin.
-        let mut flags_left = Vec::new();
-        for arg in &self.0 {
-            if let Some(s) = arg.to_str() {
-                if s.starts_with('-') && s != "-" {
-                    flags_left.push(s.to_string());
-                }
-            }
-        }
-
-        if flags_left.is_empty() {
-            Ok(())
-        } else {
-            Err(Error::UnusedArgsLeft(flags_left))
-        }
-    }
-
-    /// Checks that all flags were processed.
-    ///
-    /// Use it instead of [`free`] if you do not expect any free arguments.
-    ///
-    /// [`free`]: struct.Arguments.html#method.free
-    pub fn finish(self) -> Result<(), Error> {
-        if !self.0.is_empty() {
-            let mut args = Vec::new();
-            for arg in &self.0 {
-                if let Some(s) = arg.to_str() {
-                    args.push(s.to_string());
-                } else {
-                    args.push("binary data".to_string());
-                }
-            }
-
-            return Err(Error::UnusedArgsLeft(args));
-        }
-
-        Ok(())
+    /// It's up to the caller what to do with them.
+    /// One can report an error about unused arguments,
+    /// other can use them for further processing.
+    pub fn finish(self) -> Vec<OsString> {
+        self.0
     }
 }
 

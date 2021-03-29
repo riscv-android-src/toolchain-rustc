@@ -23,9 +23,9 @@ fn generic_param_list(p: &mut Parser) {
         attributes::outer_attrs(p);
 
         match p.current() {
-            LIFETIME => lifetime_param(p, m),
+            LIFETIME_IDENT => lifetime_param(p, m),
             IDENT => type_param(p, m),
-            CONST_KW => const_param(p, m),
+            T![const] => const_param(p, m),
             _ => {
                 m.abandon(p);
                 p.err_and_bump("expected type parameter")
@@ -40,8 +40,8 @@ fn generic_param_list(p: &mut Parser) {
 }
 
 fn lifetime_param(p: &mut Parser, m: Marker) {
-    assert!(p.at(LIFETIME));
-    p.bump(LIFETIME);
+    assert!(p.at(LIFETIME_IDENT));
+    lifetime(p);
     if p.at(T![:]) {
         lifetime_bounds(p);
     }
@@ -66,7 +66,7 @@ fn type_param(p: &mut Parser, m: Marker) {
 // test const_param
 // struct S<const N: u32>;
 fn const_param(p: &mut Parser, m: Marker) {
-    assert!(p.at(CONST_KW));
+    assert!(p.at(T![const]));
     p.bump(T![const]);
     name(p);
     types::ascription(p);
@@ -84,8 +84,8 @@ pub(super) fn bounds(p: &mut Parser) {
 fn lifetime_bounds(p: &mut Parser) {
     assert!(p.at(T![:]));
     p.bump(T![:]);
-    while p.at(LIFETIME) {
-        p.bump(LIFETIME);
+    while p.at(LIFETIME_IDENT) {
+        lifetime(p);
         if !p.eat(T![+]) {
             break;
         }
@@ -112,8 +112,8 @@ fn type_bound(p: &mut Parser) -> bool {
     let has_paren = p.eat(T!['(']);
     p.eat(T![?]);
     match p.current() {
-        LIFETIME => p.bump(LIFETIME),
-        T![for] => types::for_type(p),
+        LIFETIME_IDENT => lifetime(p),
+        T![for] => types::for_type(p, false),
         _ if paths::is_use_path_start(p) => types::path_type_(p, false),
         _ => {
             m.abandon(p);
@@ -162,7 +162,7 @@ pub(super) fn opt_where_clause(p: &mut Parser) {
 
 fn is_where_predicate(p: &mut Parser) -> bool {
     match p.current() {
-        LIFETIME => true,
+        LIFETIME_IDENT => true,
         T![impl] => false,
         token => types::TYPE_FIRST.contains(token),
     }
@@ -175,8 +175,8 @@ fn is_where_clause_end(p: &mut Parser) -> bool {
 fn where_predicate(p: &mut Parser) {
     let m = p.start();
     match p.current() {
-        LIFETIME => {
-            p.bump(LIFETIME);
+        LIFETIME_IDENT => {
+            lifetime(p);
             if p.at(T![:]) {
                 bounds(p);
             } else {

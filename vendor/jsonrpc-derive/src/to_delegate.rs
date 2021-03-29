@@ -53,9 +53,11 @@ impl MethodRegistration {
 				let unsub_method_ident = unsubscribe.ident();
 				let unsub_closure = quote! {
 					move |base, id, meta| {
-						use self::_futures::{Future, IntoFuture};
-						Self::#unsub_method_ident(base, meta, id).into_future()
-							.map(|value| _jsonrpc_core::to_value(value)
+						use self::_futures::{FutureExt, TryFutureExt};
+						self::_jsonrpc_core::WrapFuture::into_future(
+							Self::#unsub_method_ident(base, meta, id)
+						)
+							.map_ok(|value| _jsonrpc_core::to_value(value)
 									.expect("Expected always-serializable type; qed"))
 							.map_err(Into::into)
 					}
@@ -278,15 +280,14 @@ impl RpcMethod {
 		} else {
 			quote! {
 				Ok((#(#tuple_fields, )*)) => {
-					use self::_futures::{Future, IntoFuture};
-					let fut = (method)#method_call
-						.into_future()
-						.map(|value| _jsonrpc_core::to_value(value)
+					use self::_futures::{FutureExt, TryFutureExt};
+					let fut = self::_jsonrpc_core::WrapFuture::into_future((method)#method_call)
+						.map_ok(|value| _jsonrpc_core::to_value(value)
 							.expect("Expected always-serializable type; qed"))
 						.map_err(Into::into as fn(_) -> _jsonrpc_core::Error);
-					_futures::future::Either::A(fut)
+					_futures::future::Either::Left(fut)
 				},
-				Err(e) => _futures::future::Either::B(_futures::failed(e)),
+				Err(e) => _futures::future::Either::Right(_futures::future::ready(Err(e))),
 			}
 		};
 
@@ -458,6 +459,8 @@ pub fn generate_where_clause_serialization_predicates(
 	let mut visitor = FindTyParams::default();
 	visitor.visit_item_trait(item_trait);
 
+	let additional_where_clause = item_trait.generics.where_clause.clone();
+
 	item_trait
 		.generics
 		.type_params()
@@ -483,6 +486,20 @@ pub fn generate_where_clause_serialization_predicates(
 					bounds.push(parse_quote!(_jsonrpc_core::serde::de::DeserializeOwned))
 				}
 			}
+
+			// add the trait bounds specified by the user in where clause.
+			if let Some(ref where_clause) = additional_where_clause {
+				for predicate in where_clause.predicates.iter() {
+					if let syn::WherePredicate::Type(where_ty) = predicate {
+						if let syn::Type::Path(ref predicate) = where_ty.bounded_ty {
+							if *predicate == ty_path {
+								bounds.extend(where_ty.bounds.clone().into_iter());
+							}
+						}
+					}
+				}
+			}
+
 			syn::WherePredicate::Type(syn::PredicateType {
 				lifetimes: None,
 				bounded_ty: syn::Type::Path(ty_path),

@@ -6,15 +6,13 @@
 //! actual IO. See `vfs` and `project_model` in the `rust-analyzer` crate for how
 //! actual IO is done and lowered to input.
 
-use std::{fmt, iter::FromIterator, ops, str::FromStr, sync::Arc};
+use std::{fmt, iter::FromIterator, ops, panic::RefUnwindSafe, str::FromStr, sync::Arc};
 
 use cfg::CfgOptions;
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::SmolStr;
-use tt::TokenExpander;
-use vfs::{file_set::FileSet, VfsPath};
-
-pub use vfs::FileId;
+use tt::{ExpansionError, Subtree};
+use vfs::{file_set::FileSet, FileId, VfsPath};
 
 /// Files are grouped into source roots. A source root is a directory on the
 /// file systems which is watched for changes. Typically it corresponds to a
@@ -102,18 +100,70 @@ impl fmt::Display for CrateName {
 
 impl ops::Deref for CrateName {
     type Target = str;
-    fn deref(&self) -> &Self::Target {
+    fn deref(&self) -> &str {
         &*self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CrateDisplayName {
+    // The name we use to display various paths (with `_`).
+    crate_name: CrateName,
+    // The name as specified in Cargo.toml (with `-`).
+    canonical_name: String,
+}
+
+impl From<CrateName> for CrateDisplayName {
+    fn from(crate_name: CrateName) -> CrateDisplayName {
+        let canonical_name = crate_name.to_string();
+        CrateDisplayName { crate_name, canonical_name }
+    }
+}
+
+impl fmt::Display for CrateDisplayName {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.crate_name)
+    }
+}
+
+impl ops::Deref for CrateDisplayName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &*self.crate_name
+    }
+}
+
+impl CrateDisplayName {
+    pub fn from_canonical_name(canonical_name: String) -> CrateDisplayName {
+        let crate_name = CrateName::normalize_dashes(&canonical_name);
+        CrateDisplayName { crate_name, canonical_name }
     }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ProcMacroId(pub u32);
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum ProcMacroKind {
+    CustomDerive,
+    FuncLike,
+    Attr,
+}
+
+pub trait ProcMacroExpander: fmt::Debug + Send + Sync + RefUnwindSafe {
+    fn expand(
+        &self,
+        subtree: &Subtree,
+        attrs: Option<&Subtree>,
+        env: &Env,
+    ) -> Result<Subtree, ExpansionError>;
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcMacro {
     pub name: SmolStr,
-    pub expander: Arc<dyn TokenExpander>,
+    pub kind: ProcMacroKind,
+    pub expander: Arc<dyn ProcMacroExpander>,
 }
 
 impl Eq for ProcMacro {}
@@ -127,20 +177,24 @@ impl PartialEq for ProcMacro {
 pub struct CrateData {
     pub root_file_id: FileId,
     pub edition: Edition,
-    /// The name to display to the end user.
-    /// This actual crate name can be different in a particular dependent crate
-    /// or may even be missing for some cases, such as a dummy crate for the code snippet.
-    pub display_name: Option<String>,
+    /// A name used in the package's project declaration: for Cargo projects,
+    /// its `[package].name` can be different for other project types or even
+    /// absent (a dummy crate for the code snippet, for example).
+    ///
+    /// For purposes of analysis, crates are anonymous (only names in
+    /// `Dependency` matters), this name should only be used for UI.
+    pub display_name: Option<CrateDisplayName>,
     pub cfg_options: CfgOptions,
     pub env: Env,
     pub dependencies: Vec<Dependency>,
     pub proc_macro: Vec<ProcMacro>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Edition {
-    Edition2018,
     Edition2015,
+    Edition2018,
+    Edition2021,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -159,14 +213,11 @@ impl CrateGraph {
         &mut self,
         file_id: FileId,
         edition: Edition,
-        display_name: Option<String>,
+        display_name: Option<CrateDisplayName>,
         cfg_options: CfgOptions,
         env: Env,
-        proc_macro: Vec<(SmolStr, Arc<dyn tt::TokenExpander>)>,
+        proc_macro: Vec<ProcMacro>,
     ) -> CrateId {
-        let proc_macro =
-            proc_macro.into_iter().map(|(name, it)| ProcMacro { name, expander: it }).collect();
-
         let data = CrateData {
             root_file_id: file_id,
             edition,
@@ -189,7 +240,10 @@ impl CrateGraph {
         to: CrateId,
     ) -> Result<(), CyclicDependenciesError> {
         if self.dfs_find(from, to, &mut FxHashSet::default()) {
-            return Err(CyclicDependenciesError);
+            return Err(CyclicDependenciesError {
+                from: (from, self[from].display_name.clone()),
+                to: (to, self[to].display_name.clone()),
+            });
         }
         self.arena.get_mut(&from).unwrap().add_dep(name, to);
         Ok(())
@@ -218,6 +272,34 @@ impl CrateGraph {
 
         deps.remove(&of);
         deps.into_iter()
+    }
+
+    /// Returns all crates in the graph, sorted in topological order (ie. dependencies of a crate
+    /// come before the crate itself).
+    pub fn crates_in_topological_order(&self) -> Vec<CrateId> {
+        let mut res = Vec::new();
+        let mut visited = FxHashSet::default();
+
+        for krate in self.arena.keys().copied() {
+            go(self, &mut visited, &mut res, krate);
+        }
+
+        return res;
+
+        fn go(
+            graph: &CrateGraph,
+            visited: &mut FxHashSet<CrateId>,
+            res: &mut Vec<CrateId>,
+            source: CrateId,
+        ) {
+            if !visited.insert(source) {
+                return;
+            }
+            for dep in graph[source].dependencies.iter() {
+                go(graph, visited, res, dep.crate_id)
+            }
+            res.push(source)
+        }
     }
 
     // FIXME: this only finds one crate with the given root; we could have multiple
@@ -261,6 +343,29 @@ impl CrateGraph {
         }
         false
     }
+
+    // Work around for https://github.com/rust-analyzer/rust-analyzer/issues/6038.
+    // As hacky as it gets.
+    pub fn patch_cfg_if(&mut self) -> bool {
+        let cfg_if = self.hacky_find_crate("cfg_if");
+        let std = self.hacky_find_crate("std");
+        match (cfg_if, std) {
+            (Some(cfg_if), Some(std)) => {
+                self.arena.get_mut(&cfg_if).unwrap().dependencies.clear();
+                self.arena
+                    .get_mut(&std)
+                    .unwrap()
+                    .dependencies
+                    .push(Dependency { crate_id: cfg_if, name: CrateName::new("cfg_if").unwrap() });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn hacky_find_crate(&self, display_name: &str) -> Option<CrateId> {
+        self.iter().find(|it| self[*it].display_name.as_deref() == Some(display_name))
+    }
 }
 
 impl ops::Index<CrateId> for CrateGraph {
@@ -289,6 +394,7 @@ impl FromStr for Edition {
         let res = match s {
             "2015" => Edition::Edition2015,
             "2018" => Edition::Edition2018,
+            "2021" => Edition::Edition2021,
             _ => return Err(ParseEditionError { invalid_input: s.to_string() }),
         };
         Ok(res)
@@ -300,6 +406,7 @@ impl fmt::Display for Edition {
         f.write_str(match self {
             Edition::Edition2015 => "2015",
             Edition::Edition2018 => "2018",
+            Edition::Edition2021 => "2021",
         })
     }
 }
@@ -318,6 +425,10 @@ impl Env {
     pub fn get(&self, env: &str) -> Option<String> {
         self.entries.get(env).cloned()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.entries.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
 }
 
 #[derive(Debug)]
@@ -334,7 +445,20 @@ impl fmt::Display for ParseEditionError {
 impl std::error::Error for ParseEditionError {}
 
 #[derive(Debug)]
-pub struct CyclicDependenciesError;
+pub struct CyclicDependenciesError {
+    from: (CrateId, Option<CrateDisplayName>),
+    to: (CrateId, Option<CrateDisplayName>),
+}
+
+impl fmt::Display for CyclicDependenciesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let render = |(id, name): &(CrateId, Option<CrateDisplayName>)| match name {
+            Some(it) => format!("{}({:?})", it, id),
+            None => format!("{:?}", id),
+        };
+        write!(f, "cyclic deps: {} -> {}", render(&self.from), render(&self.to))
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,5 @@
 //! Convenience macros.
+
 #[macro_export]
 macro_rules! eprintln {
     ($($tt:tt)*) => {{
@@ -18,7 +19,13 @@ macro_rules! format_to {
     };
 }
 
-// Generates `From` impls for `Enum E { Foo(Foo), Bar(Bar) }` enums
+/// Generates `From` impls for `Enum E { Foo(Foo), Bar(Bar) }` enums
+///
+/// # Example
+///
+/// ```rust
+/// impl_from!(Struct, Union, Enum for Adt);
+/// ```
 #[macro_export]
 macro_rules! impl_from {
     ($($variant:ident $(($($sub_variant:ident),*))?),* for $enum:ident) => {

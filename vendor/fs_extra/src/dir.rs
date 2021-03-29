@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
 use error::*;
-use std::fs::{create_dir, create_dir_all, remove_dir_all, read_dir, Metadata};
+use std::collections::{HashMap, HashSet};
+use std::fs::{create_dir, create_dir_all, read_dir, remove_dir_all, Metadata};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use std::collections::{HashSet, HashMap};
 
 ///	Options and flags which can be used to configure how a file will be  copied  or moved.
 #[derive(Clone)]
@@ -15,10 +15,12 @@ pub struct CopyOptions {
     pub buffer_size: usize,
     /// Sets the option true for recursively copying a directory with a new name or place it inside the destination.(same behaviors like cp -r in Unix)
     pub copy_inside: bool,
+    /// Sets the option true, for copy only content without a created folder in the destination folder    
+    pub content_only: bool,
     /// Sets levels reading. Set 0 for read all directory folder. By default 0.
     ///
     /// Warrning: Work only for copy operations!
-    pub depth: u64
+    pub depth: u64,
 }
 
 impl CopyOptions {
@@ -39,31 +41,31 @@ impl CopyOptions {
             skip_exist: false,
             buffer_size: 64000, //64kb
             copy_inside: false,
+            content_only: false,
             depth: 0,
         }
     }
 }
 
+impl Default for CopyOptions {
+    fn default() -> Self {
+        CopyOptions::new()
+    }
+}
+
 ///	Options and flags which can be used to configure how read a directory.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DirOptions {
-    /// Sets levels reading. Set value 0 for read all directory folder. By default 0. 
+    /// Sets levels reading. Set value 0 for read all directory folder. By default 0.
     pub depth: u64,
 }
 
 impl DirOptions {
     /// Initialize struct DirOptions with default value.
-    ///
-    /// ```rust,ignore
-    /// depth: 0
-    /// ```
     pub fn new() -> DirOptions {
-        DirOptions {
-            depth: 0 //  0 - all; 1 - only first level; 2 - second level; ... etc.   
-        }
+        Default::default()
     }
 }
-
 
 /// A structure which imclude information about directory
 pub struct DirContent {
@@ -300,7 +302,6 @@ where
                     err!("Error get parent path", ErrorKind::Other);
                 }
             }
-
         }
         let mut path = result_path.as_os_str().to_os_string().into_string()?;
         if path.find("\\\\?\\") == Some(0) {
@@ -326,7 +327,6 @@ where
                     err!("Error get parent path", ErrorKind::Other);
                 }
             }
-
         }
         let path = result_path.as_os_str().to_os_string().into_string()?;
         item.insert(DirEntryAttr::DosPath, DirEntryValue::String(path));
@@ -368,7 +368,6 @@ where
         );
     }
     Ok(item)
-
 }
 
 /// Returned collection directory entries with information which you choose in config.
@@ -550,21 +549,15 @@ where
         }
         err!("Path is not a directory!", ErrorKind::InvalidFolder);
     }
-    let mut to: PathBuf = to.as_ref().to_path_buf();
-    if options.copy_inside {
-        if to.exists() {
-            if let Some(dir_name) = from.components().last() {
-                to.push(dir_name.as_os_str());
-            } else {
-                err!("Invalid folder from", ErrorKind::InvalidFolder);
-            }
-        }
+    let dir_name;
+    if let Some(val) = from.components().last() {
+        dir_name = val.as_os_str();
     } else {
-        if let Some(dir_name) = from.components().last() {
-            to.push(dir_name.as_os_str());
-        } else {
-            err!("Invalid folder from", ErrorKind::InvalidFolder);
-        }
+        err!("Invalid folder from", ErrorKind::InvalidFolder);
+    }
+    let mut to: PathBuf = to.as_ref().to_path_buf();
+    if !options.content_only && ((options.copy_inside && to.exists()) || !options.copy_inside) {
+        to.push(dir_name);
     }
 
     let mut read_options = DirOptions::new();
@@ -586,7 +579,6 @@ where
     }
     let mut result: u64 = 0;
     for file in dir_content.files {
-
         let to = to.to_path_buf();
         let tp = Path::new(&file).strip_prefix(from)?;
         let path = to.join(&tp);
@@ -600,7 +592,6 @@ where
         let mut work = true;
 
         while work {
-
             result_copy = super::file::copy(&file, &path, &file_options);
             match result_copy {
                 Ok(val) => {
@@ -610,7 +601,7 @@ where
                 Err(err) => {
                     let err_msg = err.to_string();
                     err!(err_msg.as_str(), err.kind)
-                }            
+                }
             }
         }
     }
@@ -650,7 +641,6 @@ where
     let options = DirOptions::new();
     get_dir_content2(path, &options)
 }
-
 
 /// Return DirContent which containt information about directory:
 ///
@@ -725,7 +715,6 @@ where
                 }
             }
         }
-
     } else {
         dir_size = path.as_ref().metadata()?.len();
         files.push(item);
@@ -771,7 +760,6 @@ where
                 result += get_size(_path)?;
             }
         }
-
     } else {
         result = path.as_ref().metadata()?.len();
     }
@@ -839,24 +827,18 @@ where
         err!("Path is not a directory!", ErrorKind::InvalidFolder);
     }
 
-    if options.copy_inside {
-        if to.exists() {
-            if let Some(dir_name) = from.components().last() {
-                to.push(dir_name.as_os_str());
-            } else {
-                err!("Invalid folder from", ErrorKind::InvalidFolder);
-            }
-        }
+    let dir_name;
+    if let Some(val) = from.components().last() {
+        dir_name = val.as_os_str();
     } else {
-        if let Some(dir_name) = from.components().last() {
-            to.push(dir_name.as_os_str());
-        } else {
-            err!("Invalid folder from", ErrorKind::InvalidFolder);
-        }
+        err!("Invalid folder from", ErrorKind::InvalidFolder);
+    }
+    if !options.content_only && ((options.copy_inside && to.exists()) || !options.copy_inside) {
+        to.push(dir_name);
     }
 
     let mut read_options = DirOptions::new();
-    if options.depth > 0{
+    if options.depth > 0 {
         read_options.depth = options.depth;
     }
 
@@ -871,7 +853,6 @@ where
                 create(dir, false)?;
             }
         }
-
     }
 
     let mut result: u64 = 0;
@@ -886,7 +867,6 @@ where
 
     let mut options = options.clone();
     for file in dir_content.files {
-
         let mut to = to.to_path_buf();
         let tp = Path::new(&file).strip_prefix(from)?;
         let path = to.join(&tp);
@@ -932,77 +912,73 @@ where
                     result += val;
                     work = false;
                 }
-                Err(err) => {
-                    match err.kind {
-                        ErrorKind::AlreadyExists => {
-                            let mut info_process = info_process.clone();
-                            info_process.state = TransitState::Exists;
-                            let user_decide = progress_handler(info_process);
-                            match user_decide {
-                                TransitProcessResult::Overwrite => {
-                                    file_options.overwrite = true;
-                                }
-                                TransitProcessResult::OverwriteAll => {
-                                    file_options.overwrite = true;
-                                    options.overwrite = true;
-                                }
-                                TransitProcessResult::Skip => {
-                                    file_options.skip_exist = true;
-                                }
-                                TransitProcessResult::SkipAll => {
-                                    file_options.skip_exist = true;
-                                    options.skip_exist = true;
-                                }
-                                TransitProcessResult::Retry => {}
-                                TransitProcessResult::ContinueOrAbort => {
-                                    let err_msg = err.to_string();
-                                    err!(err_msg.as_str(), err.kind)
-                                }
-                                TransitProcessResult::Abort => {
-                                    let err_msg = err.to_string();
-                                    err!(err_msg.as_str(), err.kind)
-                                }
+                Err(err) => match err.kind {
+                    ErrorKind::AlreadyExists => {
+                        let mut info_process = info_process.clone();
+                        info_process.state = TransitState::Exists;
+                        let user_decide = progress_handler(info_process);
+                        match user_decide {
+                            TransitProcessResult::Overwrite => {
+                                file_options.overwrite = true;
+                            }
+                            TransitProcessResult::OverwriteAll => {
+                                file_options.overwrite = true;
+                                options.overwrite = true;
+                            }
+                            TransitProcessResult::Skip => {
+                                file_options.skip_exist = true;
+                            }
+                            TransitProcessResult::SkipAll => {
+                                file_options.skip_exist = true;
+                                options.skip_exist = true;
+                            }
+                            TransitProcessResult::Retry => {}
+                            TransitProcessResult::ContinueOrAbort => {
+                                let err_msg = err.to_string();
+                                err!(err_msg.as_str(), err.kind)
+                            }
+                            TransitProcessResult::Abort => {
+                                let err_msg = err.to_string();
+                                err!(err_msg.as_str(), err.kind)
                             }
                         }
-                        ErrorKind::PermissionDenied => {
-                            let mut info_process = info_process.clone();
-                            info_process.state = TransitState::Exists;
-                            let user_decide = progress_handler(info_process);
-                            match user_decide {
-                                TransitProcessResult::Overwrite => {
-                                    err!("Overwrite denied for this situation!", ErrorKind::Other);
-                                }
-                                TransitProcessResult::OverwriteAll => {
-                                    err!("Overwrite denied for this situation!", ErrorKind::Other);
-                                }
-                                TransitProcessResult::Skip => {
-                                    file_options.skip_exist = true;
-                                }
-                                TransitProcessResult::SkipAll => {
-                                    file_options.skip_exist = true;
-                                    options.skip_exist = true;
-                                }
-                                TransitProcessResult::Retry => {}
-                                TransitProcessResult::ContinueOrAbort => {
-                                    let err_msg = err.to_string();
-                                    err!(err_msg.as_str(), err.kind)
-                                }
-                                TransitProcessResult::Abort => {
-                                    let err_msg = err.to_string();
-                                    err!(err_msg.as_str(), err.kind)
-                                }
-                            }
-                        }
-                        _ => {
-                            let err_msg = err.to_string();
-                            err!(err_msg.as_str(), err.kind)
-                        }
-
                     }
-                }
+                    ErrorKind::PermissionDenied => {
+                        let mut info_process = info_process.clone();
+                        info_process.state = TransitState::Exists;
+                        let user_decide = progress_handler(info_process);
+                        match user_decide {
+                            TransitProcessResult::Overwrite => {
+                                err!("Overwrite denied for this situation!", ErrorKind::Other);
+                            }
+                            TransitProcessResult::OverwriteAll => {
+                                err!("Overwrite denied for this situation!", ErrorKind::Other);
+                            }
+                            TransitProcessResult::Skip => {
+                                file_options.skip_exist = true;
+                            }
+                            TransitProcessResult::SkipAll => {
+                                file_options.skip_exist = true;
+                                options.skip_exist = true;
+                            }
+                            TransitProcessResult::Retry => {}
+                            TransitProcessResult::ContinueOrAbort => {
+                                let err_msg = err.to_string();
+                                err!(err_msg.as_str(), err.kind)
+                            }
+                            TransitProcessResult::Abort => {
+                                let err_msg = err.to_string();
+                                err!(err_msg.as_str(), err.kind)
+                            }
+                        }
+                    }
+                    _ => {
+                        let err_msg = err.to_string();
+                        err!(err_msg.as_str(), err.kind)
+                    }
+                },
             }
         }
-
     }
 
     Ok(result)
@@ -1069,23 +1045,16 @@ where
             ErrorKind::InvalidFolder
         );
     }
-
-    if options.copy_inside {
-        if to.exists() {
-            if let Some(dir_name) = from.components().last() {
-                to.push(dir_name.as_os_str());
-            } else {
-                err!("Invalid folder from", ErrorKind::InvalidFolder);
-            }
-        }
+    let dir_name;
+    if let Some(val) = from.components().last() {
+        dir_name = val.as_os_str();
     } else {
-        if let Some(dir_name) = from.components().last() {
-            to.push(dir_name.as_os_str());
-        } else {
-            err!("Invalid folder from", ErrorKind::InvalidFolder);
-        }
+        err!("Invalid folder from", ErrorKind::InvalidFolder);
     }
 
+    if !options.content_only && ((options.copy_inside && to.exists()) || !options.copy_inside) {
+        to.push(dir_name);
+    }
     let dir_content = get_dir_content(from)?;
     for directory in dir_content.directories {
         let tmp_to = Path::new(&directory).strip_prefix(from)?;
@@ -1114,7 +1083,6 @@ where
         let mut work = true;
         while work {
             {
-
                 result_copy = super::file::move_file(&file, &path, &file_options);
                 match result_copy {
                     Ok(val) => {
@@ -1124,7 +1092,7 @@ where
                     Err(err) => {
                         let err_msg = err.to_string();
                         err!(err_msg.as_str(), err.kind)
-                    }            
+                    }
                 }
             }
         }
@@ -1201,21 +1169,14 @@ where
         }
         err!("Path is not a directory!", ErrorKind::InvalidFolder);
     }
-
-    if options.copy_inside {
-        if to.exists() {
-            if let Some(dir_name) = from.components().last() {
-                to.push(dir_name.as_os_str());
-            } else {
-                err!("Invalid folder from", ErrorKind::InvalidFolder);
-            }
-        }
+    let dir_name;
+    if let Some(val) = from.components().last() {
+        dir_name = val.as_os_str();
     } else {
-        if let Some(dir_name) = from.components().last() {
-            to.push(dir_name.as_os_str());
-        } else {
-            err!("Invalid folder from", ErrorKind::InvalidFolder);
-        }
+        err!("Invalid folder from", ErrorKind::InvalidFolder);
+    }
+    if !options.content_only && ((options.copy_inside && to.exists()) || !options.copy_inside) {
+        to.push(dir_name);
     }
 
     let dir_content = get_dir_content(from)?;
@@ -1292,80 +1253,76 @@ where
                     result += val;
                     work = false;
                 }
-                Err(err) => {
-                    match err.kind {
-                        ErrorKind::AlreadyExists => {
-                            let mut info_process = info_process.clone();
-                            info_process.state = TransitState::Exists;
-                            let user_decide = progress_handler(info_process);
-                            match user_decide {
-                                TransitProcessResult::Overwrite => {
-                                    file_options.overwrite = true;
-                                }
-                                TransitProcessResult::OverwriteAll => {
-                                    file_options.overwrite = true;
-                                    options.overwrite = true;
-                                }
-                                TransitProcessResult::Skip => {
-                                    is_remove = false;
-                                    file_options.skip_exist = true;
-                                }
-                                TransitProcessResult::SkipAll => {
-                                    is_remove = false;
-                                    file_options.skip_exist = true;
-                                    options.skip_exist = true;
-                                }
-                                TransitProcessResult::Retry => {}
-                                TransitProcessResult::ContinueOrAbort => {
-                                    let err_msg = err.to_string();
-                                    err!(err_msg.as_str(), err.kind)
-                                }
-                                TransitProcessResult::Abort => {
-                                    let err_msg = err.to_string();
-                                    err!(err_msg.as_str(), err.kind)
-                                }
+                Err(err) => match err.kind {
+                    ErrorKind::AlreadyExists => {
+                        let mut info_process = info_process.clone();
+                        info_process.state = TransitState::Exists;
+                        let user_decide = progress_handler(info_process);
+                        match user_decide {
+                            TransitProcessResult::Overwrite => {
+                                file_options.overwrite = true;
+                            }
+                            TransitProcessResult::OverwriteAll => {
+                                file_options.overwrite = true;
+                                options.overwrite = true;
+                            }
+                            TransitProcessResult::Skip => {
+                                is_remove = false;
+                                file_options.skip_exist = true;
+                            }
+                            TransitProcessResult::SkipAll => {
+                                is_remove = false;
+                                file_options.skip_exist = true;
+                                options.skip_exist = true;
+                            }
+                            TransitProcessResult::Retry => {}
+                            TransitProcessResult::ContinueOrAbort => {
+                                let err_msg = err.to_string();
+                                err!(err_msg.as_str(), err.kind)
+                            }
+                            TransitProcessResult::Abort => {
+                                let err_msg = err.to_string();
+                                err!(err_msg.as_str(), err.kind)
                             }
                         }
-                        ErrorKind::PermissionDenied => {
-                            let mut info_process = info_process.clone();
-                            info_process.state = TransitState::Exists;
-                            let user_decide = progress_handler(info_process);
-                            match user_decide {
-                                TransitProcessResult::Overwrite => {
-                                    err!("Overwrite denied for this situation!", ErrorKind::Other);
-                                }
-                                TransitProcessResult::OverwriteAll => {
-                                    err!("Overwrite denied for this situation!", ErrorKind::Other);
-                                }
-                                TransitProcessResult::Skip => {
-                                    is_remove = false;
-                                    file_options.skip_exist = true;
-                                }
-                                TransitProcessResult::SkipAll => {
-                                    file_options.skip_exist = true;
-                                    options.skip_exist = true;
-                                }
-                                TransitProcessResult::Retry => {}
-                                TransitProcessResult::ContinueOrAbort => {
-                                    let err_msg = err.to_string();
-                                    err!(err_msg.as_str(), err.kind)
-                                }
-                                TransitProcessResult::Abort => {
-                                    let err_msg = err.to_string();
-                                    err!(err_msg.as_str(), err.kind)
-                                }
-                            }
-                        }
-                        _ => {
-                            let err_msg = err.to_string();
-                            err!(err_msg.as_str(), err.kind)
-                        }
-
                     }
-                }
+                    ErrorKind::PermissionDenied => {
+                        let mut info_process = info_process.clone();
+                        info_process.state = TransitState::Exists;
+                        let user_decide = progress_handler(info_process);
+                        match user_decide {
+                            TransitProcessResult::Overwrite => {
+                                err!("Overwrite denied for this situation!", ErrorKind::Other);
+                            }
+                            TransitProcessResult::OverwriteAll => {
+                                err!("Overwrite denied for this situation!", ErrorKind::Other);
+                            }
+                            TransitProcessResult::Skip => {
+                                is_remove = false;
+                                file_options.skip_exist = true;
+                            }
+                            TransitProcessResult::SkipAll => {
+                                file_options.skip_exist = true;
+                                options.skip_exist = true;
+                            }
+                            TransitProcessResult::Retry => {}
+                            TransitProcessResult::ContinueOrAbort => {
+                                let err_msg = err.to_string();
+                                err!(err_msg.as_str(), err.kind)
+                            }
+                            TransitProcessResult::Abort => {
+                                let err_msg = err.to_string();
+                                err!(err_msg.as_str(), err.kind)
+                            }
+                        }
+                    }
+                    _ => {
+                        let err_msg = err.to_string();
+                        err!(err_msg.as_str(), err.kind)
+                    }
+                },
             }
         }
-
     }
     if is_remove {
         remove(from)?;
@@ -1373,7 +1330,6 @@ where
 
     Ok(result)
 }
-
 
 /// Removes directory.
 ///

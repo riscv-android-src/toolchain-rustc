@@ -9,7 +9,8 @@ use syntax::{
     AstNode, T,
 };
 
-use crate::{utils::TryEnum, AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, AssistKind, Assists};
+use ide_db::ty_filter::TryEnum;
 
 // Assist: replace_let_with_if_let
 //
@@ -19,7 +20,7 @@ use crate::{utils::TryEnum, AssistContext, AssistId, AssistKind, Assists};
 // # enum Option<T> { Some(T), None }
 //
 // fn main(action: Action) {
-//     <|>let x = compute();
+//     $0let x = compute();
 // }
 //
 // fn compute() -> Option<i32> { None }
@@ -36,7 +37,7 @@ use crate::{utils::TryEnum, AssistContext, AssistId, AssistKind, Assists};
 // fn compute() -> Option<i32> { None }
 // ```
 pub(crate) fn replace_let_with_if_let(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    let let_kw = ctx.find_token_at_offset(T![let])?;
+    let let_kw = ctx.find_token_syntax_at_offset(T![let])?;
     let let_stmt = let_kw.ancestors().find_map(ast::LetStmt::cast)?;
     let init = let_stmt.initializer()?;
     let original_pat = let_stmt.pat()?;
@@ -59,7 +60,7 @@ pub(crate) fn replace_let_with_if_let(acc: &mut Assists, ctx: &AssistContext) ->
             };
             let block =
                 make::block_expr(None, None).indent(IndentLevel::from_node(let_stmt.syntax()));
-            let if_ = make::expr_if(make::condition(init, Some(with_placeholder)), block);
+            let if_ = make::expr_if(make::condition(init, Some(with_placeholder)), block, None);
             let stmt = make::expr_stmt(if_);
 
             let placeholder = stmt.syntax().descendants().find_map(ast::WildcardPat::cast).unwrap();
@@ -84,7 +85,7 @@ mod tests {
 enum E<T> { X(T), Y(T) }
 
 fn main() {
-    <|>let x = E::X(92);
+    $0let x = E::X(92);
 }
             ",
             r"

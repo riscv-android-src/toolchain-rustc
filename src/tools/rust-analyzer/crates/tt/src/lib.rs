@@ -1,10 +1,7 @@
 //! `tt` crate defines a `TokenTree` data structure: this is the interface (both
 //! input and output) of macros. It closely mirrors `proc_macro` crate's
 //! `TokenTree`.
-use std::{
-    fmt::{self, Debug},
-    panic::RefUnwindSafe,
-};
+use std::fmt;
 
 use stdx::impl_from;
 
@@ -139,7 +136,7 @@ fn print_debug_token(f: &mut fmt::Formatter<'_>, tkn: &TokenTree, level: usize) 
     Ok(())
 }
 
-impl Debug for Subtree {
+impl fmt::Debug for Subtree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         print_debug_subtree(f, self, 0)
     }
@@ -240,7 +237,13 @@ pub enum ExpansionError {
     ExpansionError(String),
 }
 
-pub trait TokenExpander: Debug + Send + Sync + RefUnwindSafe {
-    fn expand(&self, subtree: &Subtree, attrs: Option<&Subtree>)
-        -> Result<Subtree, ExpansionError>;
+impl fmt::Display for ExpansionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExpansionError::IOError(e) => write!(f, "I/O error: {}", e),
+            ExpansionError::JsonError(e) => write!(f, "JSON decoding error: {}", e),
+            ExpansionError::Unknown(e) => e.fmt(f),
+            ExpansionError::ExpansionError(e) => write!(f, "proc macro returned error: {}", e),
+        }
+    }
 }

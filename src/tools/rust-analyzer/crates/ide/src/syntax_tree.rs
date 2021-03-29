@@ -1,9 +1,7 @@
-use base_db::{FileId, SourceDatabase};
+use ide_db::base_db::{FileId, SourceDatabase};
 use ide_db::RootDatabase;
 use syntax::{
-    algo, AstNode, NodeOrToken, SourceFile,
-    SyntaxKind::{RAW_STRING, STRING},
-    SyntaxToken, TextRange, TextSize,
+    AstNode, NodeOrToken, SourceFile, SyntaxKind::STRING, SyntaxToken, TextRange, TextSize,
 };
 
 // Feature: Show Syntax Tree
@@ -23,7 +21,7 @@ pub(crate) fn syntax_tree(
 ) -> String {
     let parse = db.parse(file_id);
     if let Some(text_range) = text_range {
-        let node = match algo::find_covering_element(parse.tree().syntax(), text_range) {
+        let node = match parse.tree().syntax().covering_element(text_range) {
             NodeOrToken::Node(node) => node,
             NodeOrToken::Token(token) => {
                 if let Some(tree) = syntax_tree_for_string(&token, text_range) {
@@ -46,7 +44,7 @@ fn syntax_tree_for_string(token: &SyntaxToken, text_range: TextRange) -> Option<
     // we'll attempt parsing it as rust syntax
     // to provide the syntax tree of the contents of the string
     match token.kind() {
-        STRING | RAW_STRING => syntax_tree_for_token(token, text_range),
+        STRING => syntax_tree_for_token(token, text_range),
         _ => None,
     }
 }
@@ -87,7 +85,7 @@ fn syntax_tree_for_token(node: &SyntaxToken, text_range: TextRange) -> Option<St
         .trim_end_matches('"')
         .trim()
         // Remove custom markers
-        .replace("<|>", "");
+        .replace("$0", "");
 
     let parsed = SourceFile::parse(&text);
 
@@ -104,16 +102,15 @@ fn syntax_tree_for_token(node: &SyntaxToken, text_range: TextRange) -> Option<St
 mod tests {
     use test_utils::assert_eq_text;
 
-    use crate::mock_analysis::{analysis_and_range, single_file};
+    use crate::fixture;
 
     #[test]
     fn test_syntax_tree_without_range() {
         // Basic syntax
-        let (analysis, file_id) = single_file(r#"fn foo() {}"#);
+        let (analysis, file_id) = fixture::file(r#"fn foo() {}"#);
         let syn = analysis.syntax_tree(file_id, None).unwrap();
 
         assert_eq_text!(
-            syn.trim(),
             r#"
 SOURCE_FILE@0..11
   FN@0..11
@@ -129,10 +126,11 @@ SOURCE_FILE@0..11
       L_CURLY@9..10 "{"
       R_CURLY@10..11 "}"
 "#
-            .trim()
+            .trim(),
+            syn.trim()
         );
 
-        let (analysis, file_id) = single_file(
+        let (analysis, file_id) = fixture::file(
             r#"
 fn test() {
     assert!("
@@ -145,7 +143,6 @@ fn test() {
         let syn = analysis.syntax_tree(file_id, None).unwrap();
 
         assert_eq_text!(
-            syn.trim(),
             r#"
 SOURCE_FILE@0..60
   FN@0..60
@@ -178,17 +175,17 @@ SOURCE_FILE@0..60
       WHITESPACE@58..59 "\n"
       R_CURLY@59..60 "}"
 "#
-            .trim()
+            .trim(),
+            syn.trim()
         );
     }
 
     #[test]
     fn test_syntax_tree_with_range() {
-        let (analysis, range) = analysis_and_range(r#"<|>fn foo() {}<|>"#.trim());
+        let (analysis, range) = fixture::range(r#"$0fn foo() {}$0"#.trim());
         let syn = analysis.syntax_tree(range.file_id, Some(range.range)).unwrap();
 
         assert_eq_text!(
-            syn.trim(),
             r#"
 FN@0..11
   FN_KW@0..2 "fn"
@@ -203,22 +200,22 @@ FN@0..11
     L_CURLY@9..10 "{"
     R_CURLY@10..11 "}"
 "#
-            .trim()
+            .trim(),
+            syn.trim()
         );
 
-        let (analysis, range) = analysis_and_range(
+        let (analysis, range) = fixture::range(
             r#"fn test() {
-    <|>assert!("
+    $0assert!("
     fn foo() {
     }
-    ", "");<|>
+    ", "");$0
 }"#
             .trim(),
         );
         let syn = analysis.syntax_tree(range.file_id, Some(range.range)).unwrap();
 
         assert_eq_text!(
-            syn.trim(),
             r#"
 EXPR_STMT@16..58
   MACRO_CALL@16..57
@@ -236,17 +233,18 @@ EXPR_STMT@16..58
       R_PAREN@56..57 ")"
   SEMICOLON@57..58 ";"
 "#
-            .trim()
+            .trim(),
+            syn.trim()
         );
     }
 
     #[test]
     fn test_syntax_tree_inside_string() {
-        let (analysis, range) = analysis_and_range(
+        let (analysis, range) = fixture::range(
             r#"fn test() {
     assert!("
-<|>fn foo() {
-}<|>
+$0fn foo() {
+}$0
 fn bar() {
 }
     ", "");
@@ -255,7 +253,6 @@ fn bar() {
         );
         let syn = analysis.syntax_tree(range.file_id, Some(range.range)).unwrap();
         assert_eq_text!(
-            syn.trim(),
             r#"
 SOURCE_FILE@0..12
   FN@0..12
@@ -272,15 +269,16 @@ SOURCE_FILE@0..12
       WHITESPACE@10..11 "\n"
       R_CURLY@11..12 "}"
 "#
-            .trim()
+            .trim(),
+            syn.trim()
         );
 
         // With a raw string
-        let (analysis, range) = analysis_and_range(
+        let (analysis, range) = fixture::range(
             r###"fn test() {
     assert!(r#"
-<|>fn foo() {
-}<|>
+$0fn foo() {
+}$0
 fn bar() {
 }
     "#, "");
@@ -289,7 +287,6 @@ fn bar() {
         );
         let syn = analysis.syntax_tree(range.file_id, Some(range.range)).unwrap();
         assert_eq_text!(
-            syn.trim(),
             r#"
 SOURCE_FILE@0..12
   FN@0..12
@@ -306,23 +303,23 @@ SOURCE_FILE@0..12
       WHITESPACE@10..11 "\n"
       R_CURLY@11..12 "}"
 "#
-            .trim()
+            .trim(),
+            syn.trim()
         );
 
         // With a raw string
-        let (analysis, range) = analysis_and_range(
+        let (analysis, range) = fixture::range(
             r###"fn test() {
-    assert!(r<|>#"
+    assert!(r$0#"
 fn foo() {
 }
 fn bar() {
-}"<|>#, "");
+}"$0#, "");
 }"###
                 .trim(),
         );
         let syn = analysis.syntax_tree(range.file_id, Some(range.range)).unwrap();
         assert_eq_text!(
-            syn.trim(),
             r#"
 SOURCE_FILE@0..25
   FN@0..12
@@ -353,7 +350,8 @@ SOURCE_FILE@0..25
       WHITESPACE@23..24 "\n"
       R_CURLY@24..25 "}"
 "#
-            .trim()
+            .trim(),
+            syn.trim()
         );
     }
 }

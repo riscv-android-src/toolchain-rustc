@@ -5,7 +5,7 @@ pub use crate::options::*;
 
 use crate::lint;
 use crate::search_paths::SearchPath;
-use crate::utils::NativeLibKind;
+use crate::utils::{CanonicalizedPath, NativeLibKind};
 use crate::{early_error, early_warn, Session};
 
 use rustc_data_structures::fx::FxHashSet;
@@ -13,7 +13,7 @@ use rustc_data_structures::impl_stable_hash_via_hash;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 
 use rustc_target::abi::{Align, TargetDataLayout};
-use rustc_target::spec::{Target, TargetTriple};
+use rustc_target::spec::{SplitDebuginfo, Target, TargetTriple};
 
 use crate::parse::CrateConfig;
 use rustc_feature::UnstableFeatures;
@@ -214,7 +214,7 @@ pub enum SymbolManglingVersion {
 
 impl_stable_hash_via_hash!(SymbolManglingVersion);
 
-#[derive(Clone, Copy, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum DebugInfo {
     None,
     Limited,
@@ -344,7 +344,7 @@ impl Default for TrimmedDefPaths {
 /// Use tree-based collections to cheaply get a deterministic `Hash` implementation.
 /// *Do not* switch `BTreeMap` out for an unsorted container type! That would break
 /// dependency tracking for command-line arguments.
-#[derive(Clone, Hash)]
+#[derive(Clone, Hash, Debug)]
 pub struct OutputTypes(BTreeMap<OutputType, Option<PathBuf>>);
 
 impl_stable_hash_via_hash!(OutputTypes);
@@ -386,6 +386,20 @@ impl OutputTypes {
             OutputType::Metadata | OutputType::DepInfo => false,
         })
     }
+
+    // Returns `true` if any of the output types require linking.
+    pub fn should_link(&self) -> bool {
+        self.0.keys().any(|k| match *k {
+            OutputType::Bitcode
+            | OutputType::Assembly
+            | OutputType::LlvmAssembly
+            | OutputType::Mir
+            | OutputType::Metadata
+            | OutputType::Object
+            | OutputType::DepInfo => false,
+            OutputType::Exe => true,
+        })
+    }
 }
 
 /// Use tree-based collections to cheaply get a deterministic `Hash` implementation.
@@ -422,7 +436,7 @@ pub enum ExternLocation {
     /// which one to use.
     ///
     /// Added via `--extern prelude_name=some_file.rlib`
-    ExactPaths(BTreeSet<String>),
+    ExactPaths(BTreeSet<CanonicalizedPath>),
 }
 
 impl Externs {
@@ -444,7 +458,7 @@ impl ExternEntry {
         ExternEntry { location, is_private_dep: false, add_prelude: false }
     }
 
-    pub fn files(&self) -> Option<impl Iterator<Item = &String>> {
+    pub fn files(&self) -> Option<impl Iterator<Item = &CanonicalizedPath>> {
         match &self.location {
             ExternLocation::ExactPaths(set) => Some(set.iter()),
             _ => None,
@@ -521,7 +535,7 @@ impl Input {
     }
 }
 
-#[derive(Clone, Hash)]
+#[derive(Clone, Hash, Debug)]
 pub struct OutputFilenames {
     pub out_directory: PathBuf,
     filestem: String,
@@ -533,6 +547,7 @@ impl_stable_hash_via_hash!(OutputFilenames);
 
 pub const RLINK_EXT: &str = "rlink";
 pub const RUST_CGU_EXT: &str = "rcgu";
+pub const DWARF_OBJECT_EXT: &str = "dwo";
 
 impl OutputFilenames {
     pub fn new(
@@ -566,7 +581,12 @@ impl OutputFilenames {
         self.temp_path_ext(extension, codegen_unit_name)
     }
 
-    /// Like temp_path, but also supports things where there is no corresponding
+    /// Like `temp_path`, but specifically for dwarf objects.
+    pub fn temp_path_dwo(&self, codegen_unit_name: Option<&str>) -> PathBuf {
+        self.temp_path_ext(DWARF_OBJECT_EXT, codegen_unit_name)
+    }
+
+    /// Like `temp_path`, but also supports things where there is no corresponding
     /// OutputType, like noopt-bitcode or lto-bitcode.
     pub fn temp_path_ext(&self, ext: &str, codegen_unit_name: Option<&str>) -> PathBuf {
         let mut extension = String::new();
@@ -592,6 +612,37 @@ impl OutputFilenames {
         let mut path = self.out_directory.join(&self.filestem);
         path.set_extension(extension);
         path
+    }
+
+    /// Returns the name of the Split DWARF file - this can differ depending on which Split DWARF
+    /// mode is being used, which is the logic that this function is intended to encapsulate.
+    pub fn split_dwarf_filename(
+        &self,
+        split_debuginfo_kind: SplitDebuginfo,
+        cgu_name: Option<&str>,
+    ) -> Option<PathBuf> {
+        self.split_dwarf_path(split_debuginfo_kind, cgu_name)
+            .map(|path| path.strip_prefix(&self.out_directory).unwrap_or(&path).to_path_buf())
+    }
+
+    /// Returns the path for the Split DWARF file - this can differ depending on which Split DWARF
+    /// mode is being used, which is the logic that this function is intended to encapsulate.
+    pub fn split_dwarf_path(
+        &self,
+        split_debuginfo_kind: SplitDebuginfo,
+        cgu_name: Option<&str>,
+    ) -> Option<PathBuf> {
+        let obj_out = self.temp_path(OutputType::Object, cgu_name);
+        let dwo_out = self.temp_path_dwo(cgu_name);
+        match split_debuginfo_kind {
+            SplitDebuginfo::Off => None,
+            // Single mode doesn't change how DWARF is emitted, but does add Split DWARF attributes
+            // (pointing at the path which is being determined here). Use the path to the current
+            // object file.
+            SplitDebuginfo::Packed => Some(obj_out),
+            // Split mode emits the DWARF into a different file, use that path.
+            SplitDebuginfo::Unpacked => Some(dwo_out),
+        }
     }
 }
 
@@ -692,6 +743,10 @@ impl DebuggingOptions {
             deduplicate_diagnostics: self.deduplicate_diagnostics,
         }
     }
+
+    pub fn get_symbol_mangling_version(&self) -> SymbolManglingVersion {
+        self.symbol_mangling_version.unwrap_or(SymbolManglingVersion::Legacy)
+    }
 }
 
 // The type of entry function, so users can have their own entry functions
@@ -761,7 +816,7 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
         }
     }
     ret.insert((sym::target_arch, Some(Symbol::intern(arch))));
-    ret.insert((sym::target_endian, Some(Symbol::intern(end))));
+    ret.insert((sym::target_endian, Some(Symbol::intern(end.as_str()))));
     ret.insert((sym::target_pointer_width, Some(Symbol::intern(&wordsz))));
     ret.insert((sym::target_env, Some(Symbol::intern(env))));
     ret.insert((sym::target_vendor, Some(Symbol::intern(vendor))));
@@ -1250,12 +1305,11 @@ fn parse_crate_edition(matches: &getopts::Matches) -> Edition {
         None => DEFAULT_EDITION,
     };
 
-    if !edition.is_stable() && !nightly_options::match_is_nightly_build(matches) {
+    if !edition.is_stable() && !nightly_options::is_unstable_enabled(matches) {
         early_error(
             ErrorOutputType::default(),
             &format!(
-                "edition {} is unstable and only \
-                     available for nightly builds of rustc.",
+                "edition {} is unstable and only available with -Z unstable-options.",
                 edition,
             ),
         )
@@ -1296,8 +1350,10 @@ fn parse_output_types(
     if !debugging_opts.parse_only {
         for list in matches.opt_strs("emit") {
             for output_type in list.split(',') {
-                let mut parts = output_type.splitn(2, '=');
-                let shorthand = parts.next().unwrap();
+                let (shorthand, path) = match output_type.split_once('=') {
+                    None => (output_type, None),
+                    Some((shorthand, path)) => (shorthand, Some(PathBuf::from(path))),
+                };
                 let output_type = OutputType::from_shorthand(shorthand).unwrap_or_else(|| {
                     early_error(
                         error_format,
@@ -1308,7 +1364,6 @@ fn parse_output_types(
                         ),
                     )
                 });
-                let path = parts.next().map(PathBuf::from);
                 output_types.insert(output_type, path);
             }
         }
@@ -1432,7 +1487,7 @@ fn parse_target_triple(matches: &getopts::Matches, error_format: ErrorOutputType
                 early_error(error_format, &format!("target file {:?} does not exist", path))
             })
         }
-        Some(target) => TargetTriple::TargetTriple(target),
+        Some(target) => TargetTriple::from_alias(target),
         _ => TargetTriple::from_triple(host_triple()),
     }
 }
@@ -1452,11 +1507,10 @@ fn parse_opt_level(
     let max_c = matches
         .opt_strs_pos("C")
         .into_iter()
-        .flat_map(
-            |(i, s)| {
-                if let Some("opt-level") = s.splitn(2, '=').next() { Some(i) } else { None }
-            },
-        )
+        .flat_map(|(i, s)| {
+            // NB: This can match a string without `=`.
+            if let Some("opt-level") = s.splitn(2, '=').next() { Some(i) } else { None }
+        })
         .max();
     if max_o > max_c {
         OptLevel::Default
@@ -1491,11 +1545,10 @@ fn select_debuginfo(
     let max_c = matches
         .opt_strs_pos("C")
         .into_iter()
-        .flat_map(
-            |(i, s)| {
-                if let Some("debuginfo") = s.splitn(2, '=').next() { Some(i) } else { None }
-            },
-        )
+        .flat_map(|(i, s)| {
+            // NB: This can match a string without `=`.
+            if let Some("debuginfo") = s.splitn(2, '=').next() { Some(i) } else { None }
+        })
         .max();
     if max_g > max_c {
         DebugInfo::Full
@@ -1528,23 +1581,26 @@ fn parse_libs(
         .map(|s| {
             // Parse string of the form "[KIND=]lib[:new_name]",
             // where KIND is one of "dylib", "framework", "static".
-            let mut parts = s.splitn(2, '=');
-            let kind = parts.next().unwrap();
-            let (name, kind) = match (parts.next(), kind) {
-                (None, name) => (name, NativeLibKind::Unspecified),
-                (Some(name), "dylib") => (name, NativeLibKind::Dylib),
-                (Some(name), "framework") => (name, NativeLibKind::Framework),
-                (Some(name), "static") => (name, NativeLibKind::StaticBundle),
-                (Some(name), "static-nobundle") => (name, NativeLibKind::StaticNoBundle),
-                (_, s) => {
-                    early_error(
-                        error_format,
-                        &format!(
-                            "unknown library kind `{}`, expected \
-                             one of dylib, framework, or static",
-                            s
-                        ),
-                    );
+            let (name, kind) = match s.split_once('=') {
+                None => (s, NativeLibKind::Unspecified),
+                Some((kind, name)) => {
+                    let kind = match kind {
+                        "dylib" => NativeLibKind::Dylib,
+                        "framework" => NativeLibKind::Framework,
+                        "static" => NativeLibKind::StaticBundle,
+                        "static-nobundle" => NativeLibKind::StaticNoBundle,
+                        s => {
+                            early_error(
+                                error_format,
+                                &format!(
+                                    "unknown library kind `{}`, expected \
+                                     one of dylib, framework, or static",
+                                    s
+                                ),
+                            );
+                        }
+                    };
+                    (name.to_string(), kind)
                 }
             };
             if kind == NativeLibKind::StaticNoBundle
@@ -1556,10 +1612,11 @@ fn parse_libs(
                      accepted on the nightly compiler",
                 );
             }
-            let mut name_parts = name.splitn(2, ':');
-            let name = name_parts.next().unwrap();
-            let new_name = name_parts.next();
-            (name.to_owned(), new_name.map(|n| n.to_owned()), kind)
+            let (name, new_name) = match name.split_once(':') {
+                None => (name, None),
+                Some((name, new_name)) => (name.to_string(), Some(new_name.to_owned())),
+            };
+            (name, new_name, kind)
         })
         .collect()
 }
@@ -1580,21 +1637,16 @@ pub fn parse_externs(
     let is_unstable_enabled = debugging_opts.unstable_options;
     let mut externs: BTreeMap<String, ExternEntry> = BTreeMap::new();
     for arg in matches.opt_strs("extern") {
-        let mut parts = arg.splitn(2, '=');
-        let name = parts
-            .next()
-            .unwrap_or_else(|| early_error(error_format, "--extern value must not be empty"));
-        let path = parts.next().map(|s| s.to_string());
-
-        let mut name_parts = name.splitn(2, ':');
-        let first_part = name_parts.next();
-        let second_part = name_parts.next();
-        let (options, name) = match (first_part, second_part) {
-            (Some(opts), Some(name)) => (Some(opts), name),
-            (Some(name), None) => (None, name),
-            (None, None) => early_error(error_format, "--extern name must not be empty"),
-            _ => unreachable!(),
+        let (name, path) = match arg.split_once('=') {
+            None => (arg, None),
+            Some((name, path)) => (name.to_string(), Some(Path::new(path))),
         };
+        let (options, name) = match name.split_once(':') {
+            None => (None, name),
+            Some((opts, name)) => (Some(opts), name.to_string()),
+        };
+
+        let path = path.map(|p| CanonicalizedPath::new(p));
 
         let entry = externs.entry(name.to_owned());
 
@@ -1682,17 +1734,12 @@ fn parse_remap_path_prefix(
     matches
         .opt_strs("remap-path-prefix")
         .into_iter()
-        .map(|remap| {
-            let mut parts = remap.rsplitn(2, '='); // reverse iterator
-            let to = parts.next();
-            let from = parts.next();
-            match (from, to) {
-                (Some(from), Some(to)) => (PathBuf::from(from), PathBuf::from(to)),
-                _ => early_error(
-                    error_format,
-                    "--remap-path-prefix must contain '=' between FROM and TO",
-                ),
-            }
+        .map(|remap| match remap.rsplit_once('=') {
+            None => early_error(
+                error_format,
+                "--remap-path-prefix must contain '=' between FROM and TO",
+            ),
+            Some((from, to)) => (PathBuf::from(from), PathBuf::from(to)),
         })
         .collect()
 }
@@ -1766,7 +1813,36 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
         // and reversible name mangling. Note, LLVM coverage tools can analyze coverage over
         // multiple runs, including some changes to source code; so mangled names must be consistent
         // across compilations.
-        debugging_opts.symbol_mangling_version = SymbolManglingVersion::V0;
+        match debugging_opts.symbol_mangling_version {
+            None => {
+                debugging_opts.symbol_mangling_version = Some(SymbolManglingVersion::V0);
+            }
+            Some(SymbolManglingVersion::Legacy) => {
+                early_warn(
+                    error_format,
+                    "-Z instrument-coverage requires symbol mangling version `v0`, \
+                    but `-Z symbol-mangling-version=legacy` was specified",
+                );
+            }
+            Some(SymbolManglingVersion::V0) => {}
+        }
+
+        if debugging_opts.mir_opt_level > 1 {
+            // Functions inlined during MIR transform can, at best, make it impossible to
+            // effectively cover inlined functions, and, at worst, break coverage map generation
+            // during LLVM codegen. For example, function counter IDs are only unique within a
+            // function. Inlining after these counters are injected can produce duplicate counters,
+            // resulting in an invalid coverage map (and ICE); so this option combination is not
+            // allowed.
+            early_warn(
+                error_format,
+                &format!(
+                    "`-Z mir-opt-level={}` (or any level > 1) enables function inlining, which \
+                    is incompatible with `-Z instrument-coverage`. Inlining will be disabled.",
+                    debugging_opts.mir_opt_level,
+                ),
+            );
+        }
     }
 
     if let Ok(graphviz_font) = std::env::var("RUSTC_GRAPHVIZ_FONT") {
@@ -1818,6 +1894,15 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
     let remap_path_prefix = parse_remap_path_prefix(matches, error_format);
 
     let pretty = parse_pretty(matches, &debugging_opts, error_format);
+
+    if !debugging_opts.unstable_options
+        && !target_triple.triple().contains("apple")
+        && cg.split_debuginfo.is_some()
+    {
+        {
+            early_error(error_format, "`-Csplit-debuginfo` is unstable on this platform");
+        }
+    }
 
     Options {
         crate_types,
@@ -2095,11 +2180,12 @@ crate mod dep_tracking {
         SymbolManglingVersion, TrimmedDefPaths,
     };
     use crate::lint;
+    use crate::options::WasiExecModel;
     use crate::utils::NativeLibKind;
     use rustc_feature::UnstableFeatures;
     use rustc_span::edition::Edition;
     use rustc_target::spec::{CodeModel, MergeFunctions, PanicStrategy, RelocModel};
-    use rustc_target::spec::{RelroLevel, TargetTriple, TlsModel};
+    use rustc_target::spec::{RelroLevel, SplitDebuginfo, TargetTriple, TlsModel};
     use std::collections::hash_map::DefaultHasher;
     use std::collections::BTreeMap;
     use std::hash::Hash;
@@ -2150,6 +2236,7 @@ crate mod dep_tracking {
     impl_dep_tracking_hash_via_hash!(Option<RelocModel>);
     impl_dep_tracking_hash_via_hash!(Option<CodeModel>);
     impl_dep_tracking_hash_via_hash!(Option<TlsModel>);
+    impl_dep_tracking_hash_via_hash!(Option<WasiExecModel>);
     impl_dep_tracking_hash_via_hash!(Option<PanicStrategy>);
     impl_dep_tracking_hash_via_hash!(Option<RelroLevel>);
     impl_dep_tracking_hash_via_hash!(Option<lint::Level>);
@@ -2170,8 +2257,9 @@ crate mod dep_tracking {
     impl_dep_tracking_hash_via_hash!(TargetTriple);
     impl_dep_tracking_hash_via_hash!(Edition);
     impl_dep_tracking_hash_via_hash!(LinkerPluginLto);
+    impl_dep_tracking_hash_via_hash!(Option<SplitDebuginfo>);
     impl_dep_tracking_hash_via_hash!(SwitchWithOptPath);
-    impl_dep_tracking_hash_via_hash!(SymbolManglingVersion);
+    impl_dep_tracking_hash_via_hash!(Option<SymbolManglingVersion>);
     impl_dep_tracking_hash_via_hash!(Option<SourceFileHashAlgorithm>);
     impl_dep_tracking_hash_via_hash!(TrimmedDefPaths);
 

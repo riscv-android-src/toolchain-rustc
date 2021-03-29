@@ -2,7 +2,13 @@ import * as lc from 'vscode-languageclient/node';
 import * as vscode from 'vscode';
 import * as ra from '../src/lsp_ext';
 import * as Is from 'vscode-languageclient/lib/common/utils/is';
+import { DocumentSemanticsTokensSignature, DocumentSemanticsTokensEditsSignature, DocumentRangeSemanticTokensSignature } from 'vscode-languageclient/lib/common/semanticTokens';
 import { assert } from './util';
+import { WorkspaceEdit } from 'vscode';
+
+export interface Env {
+    [name: string]: string;
+}
 
 function renderCommand(cmd: ra.CommandLink) {
     return `[${cmd.title}](command:${cmd.command}?${encodeURIComponent(JSON.stringify(cmd.arguments))} '${cmd.tooltip!}')`;
@@ -18,14 +24,24 @@ function renderHoverActions(actions: ra.CommandLinkGroup[]): vscode.MarkdownStri
     return result;
 }
 
-export function createClient(serverPath: string, cwd: string): lc.LanguageClient {
+// Workaround for https://github.com/microsoft/vscode-languageserver-node/issues/576
+async function semanticHighlightingWorkaround<R, F extends (...args: any[]) => vscode.ProviderResult<R>>(next: F, ...args: Parameters<F>): Promise<R> {
+    const res = await next(...args);
+    if (res == null) throw new Error('busy');
+    return res;
+}
+
+export function createClient(serverPath: string, cwd: string, extraEnv: Env): lc.LanguageClient {
     // '.' Is the fallback if no folder is open
     // TODO?: Workspace folders support Uri's (eg: file://test.txt).
     // It might be a good idea to test if the uri points to a file.
 
+    const newEnv = Object.assign({}, process.env);
+    Object.assign(newEnv, extraEnv);
+
     const run: lc.Executable = {
         command: serverPath,
-        options: { cwd },
+        options: { cwd, env: newEnv },
     };
     const serverOptions: lc.ServerOptions = {
         run,
@@ -41,6 +57,15 @@ export function createClient(serverPath: string, cwd: string): lc.LanguageClient
         diagnosticCollectionName: "rustc",
         traceOutputChannel,
         middleware: {
+            provideDocumentSemanticTokens(document: vscode.TextDocument, token: vscode.CancellationToken, next: DocumentSemanticsTokensSignature): vscode.ProviderResult<vscode.SemanticTokens> {
+                return semanticHighlightingWorkaround(next, document, token);
+            },
+            provideDocumentSemanticTokensEdits(document: vscode.TextDocument, previousResultId: string, token: vscode.CancellationToken, next: DocumentSemanticsTokensEditsSignature): vscode.ProviderResult<vscode.SemanticTokensEdits | vscode.SemanticTokens> {
+                return semanticHighlightingWorkaround(next, document, previousResultId, token);
+            },
+            provideDocumentRangeSemanticTokens(document: vscode.TextDocument, range: vscode.Range, token: vscode.CancellationToken, next: DocumentRangeSemanticTokensSignature): vscode.ProviderResult<vscode.SemanticTokens> {
+                return semanticHighlightingWorkaround(next, document, range, token);
+            },
             async provideHover(document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken, _next: lc.ProvideHoverSignature) {
                 return client.sendRequest(lc.HoverRequest.type, client.code2ProtocolConverter.asTextDocumentPositionParams(document, position), token).then(
                     (result) => {
@@ -58,8 +83,8 @@ export function createClient(serverPath: string, cwd: string): lc.LanguageClient
                         return Promise.resolve(null);
                     });
             },
-            // Using custom handling of CodeActions where each code action is resolved lazily
-            // That's why we are not waiting for any command or edits
+            // Using custom handling of CodeActions to support action groups and snippet edits.
+            // Note that this means we have to re-implement lazy edit resolving ourselves as well.
             async provideCodeActions(document: vscode.TextDocument, range: vscode.Range, context: vscode.CodeActionContext, token: vscode.CancellationToken, _next: lc.ProvideCodeActionsSignature) {
                 const params: lc.CodeActionParams = {
                     textDocument: client.code2ProtocolConverter.asTextDocumentIdentifier(document),
@@ -82,16 +107,15 @@ export function createClient(serverPath: string, cwd: string): lc.LanguageClient
                         const kind = client.protocol2CodeConverter.asCodeActionKind((item as any).kind);
                         const action = new vscode.CodeAction(item.title, kind);
                         const group = (item as any).group;
-                        const id = (item as any).id;
-                        const resolveParams: ra.ResolveCodeActionParams = {
-                            id: id,
-                            codeActionParams: params
-                        };
                         action.command = {
                             command: "rust-analyzer.resolveCodeAction",
                             title: item.title,
-                            arguments: [resolveParams],
+                            arguments: [item],
                         };
+
+                        // Set a dummy edit, so that VS Code doesn't try to resolve this.
+                        action.edit = new WorkspaceEdit();
+
                         if (group) {
                             let entry = groups.get(group);
                             if (!entry) {
@@ -117,6 +141,10 @@ export function createClient(serverPath: string, cwd: string): lc.LanguageClient
                                     return { label: item.title, arguments: item.command!!.arguments!![0] };
                                 })],
                             };
+
+                            // Set a dummy edit, so that VS Code doesn't try to resolve this.
+                            action.edit = new WorkspaceEdit();
+
                             result[index] = action;
                         }
                     }
@@ -147,12 +175,13 @@ class ExperimentalFeatures implements lc.StaticFeature {
         const caps: any = capabilities.experimental ?? {};
         caps.snippetTextEdit = true;
         caps.codeActionGroup = true;
-        caps.resolveCodeAction = true;
         caps.hoverActions = true;
         caps.statusNotification = true;
         capabilities.experimental = caps;
     }
     initialize(_capabilities: lc.ServerCapabilities<any>, _documentSelector: lc.DocumentSelector | undefined): void {
+    }
+    dispose(): void {
     }
 }
 

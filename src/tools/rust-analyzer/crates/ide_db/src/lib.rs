@@ -2,27 +2,33 @@
 //!
 //! It is mainly a `HirDatabase` for semantic analysis, plus a `SymbolsDatabase`, for fuzzy search.
 
+mod apply_change;
 pub mod label;
 pub mod line_index;
 pub mod symbol_index;
-pub mod change;
 pub mod defs;
 pub mod search;
 pub mod imports_locator;
 pub mod source_change;
-mod wasm_shims;
+pub mod ty_filter;
+pub mod traits;
+pub mod call_info;
+pub mod helpers;
 
 use std::{fmt, sync::Arc};
 
 use base_db::{
     salsa::{self, Durability},
-    Canceled, CheckCanceled, CrateId, FileId, FileLoader, FileLoaderDelegate, SourceDatabase,
-    Upcast,
+    AnchoredPath, Canceled, CheckCanceled, CrateId, FileId, FileLoader, FileLoaderDelegate,
+    SourceDatabase, Upcast,
 };
 use hir::db::{AstDatabase, DefDatabase, HirDatabase};
 use rustc_hash::FxHashSet;
 
 use crate::{line_index::LineIndex, symbol_index::SymbolsDatabase};
+
+/// `base_db` is normally also needed in places where `ide_db` is used, so this re-export is for convenience.
+pub use base_db;
 
 #[salsa::database(
     base_db::SourceDatabaseStorage,
@@ -36,8 +42,6 @@ use crate::{line_index::LineIndex, symbol_index::SymbolsDatabase};
 )]
 pub struct RootDatabase {
     storage: salsa::Storage<RootDatabase>,
-    pub last_gc: crate::wasm_shims::Instant,
-    pub last_gc_check: crate::wasm_shims::Instant,
 }
 
 impl fmt::Debug for RootDatabase {
@@ -68,8 +72,8 @@ impl FileLoader for RootDatabase {
     fn file_text(&self, file_id: FileId) -> Arc<String> {
         FileLoaderDelegate(self).file_text(file_id)
     }
-    fn resolve_path(&self, anchor: FileId, path: &str) -> Option<FileId> {
-        FileLoaderDelegate(self).resolve_path(anchor, path)
+    fn resolve_path(&self, path: AnchoredPath) -> Option<FileId> {
+        FileLoaderDelegate(self).resolve_path(path)
     }
     fn relevant_crates(&self, file_id: FileId) -> Arc<FxHashSet<CrateId>> {
         FileLoaderDelegate(self).relevant_crates(file_id)
@@ -99,11 +103,7 @@ impl Default for RootDatabase {
 
 impl RootDatabase {
     pub fn new(lru_capacity: Option<usize>) -> RootDatabase {
-        let mut db = RootDatabase {
-            storage: salsa::Storage::default(),
-            last_gc: crate::wasm_shims::Instant::now(),
-            last_gc_check: crate::wasm_shims::Instant::now(),
-        };
+        let mut db = RootDatabase { storage: salsa::Storage::default() };
         db.set_crate_graph_with_durability(Default::default(), Durability::HIGH);
         db.set_local_roots_with_durability(Default::default(), Durability::HIGH);
         db.set_library_roots_with_durability(Default::default(), Durability::HIGH);
@@ -114,18 +114,14 @@ impl RootDatabase {
     pub fn update_lru_capacity(&mut self, lru_capacity: Option<usize>) {
         let lru_capacity = lru_capacity.unwrap_or(base_db::DEFAULT_LRU_CAP);
         base_db::ParseQuery.in_db_mut(self).set_lru_capacity(lru_capacity);
-        hir::db::ParseMacroQuery.in_db_mut(self).set_lru_capacity(lru_capacity);
+        hir::db::ParseMacroExpansionQuery.in_db_mut(self).set_lru_capacity(lru_capacity);
         hir::db::MacroExpandQuery.in_db_mut(self).set_lru_capacity(lru_capacity);
     }
 }
 
 impl salsa::ParallelDatabase for RootDatabase {
     fn snapshot(&self) -> salsa::Snapshot<RootDatabase> {
-        salsa::Snapshot::new(RootDatabase {
-            storage: self.storage.snapshot(),
-            last_gc: self.last_gc,
-            last_gc_check: self.last_gc_check,
-        })
+        salsa::Snapshot::new(RootDatabase { storage: self.storage.snapshot() })
     }
 }
 
@@ -137,4 +133,28 @@ pub trait LineIndexDatabase: base_db::SourceDatabase + CheckCanceled {
 fn line_index(db: &dyn LineIndexDatabase, file_id: FileId) -> Arc<LineIndex> {
     let text = db.file_text(file_id);
     Arc::new(LineIndex::new(&*text))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SymbolKind {
+    Const,
+    ConstParam,
+    Enum,
+    Field,
+    Function,
+    Impl,
+    Label,
+    LifetimeParam,
+    Local,
+    Macro,
+    Module,
+    SelfParam,
+    Static,
+    Struct,
+    Trait,
+    TypeAlias,
+    TypeParam,
+    Union,
+    ValueParam,
+    Variant,
 }

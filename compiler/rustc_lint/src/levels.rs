@@ -10,7 +10,7 @@ use rustc_hir as hir;
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_hir::{intravisit, HirId};
 use rustc_middle::hir::map::Map;
-use rustc_middle::lint::LevelSource;
+use rustc_middle::lint::LevelAndSource;
 use rustc_middle::lint::LintDiagnosticBuilder;
 use rustc_middle::lint::{
     struct_lint_level, LintLevelMap, LintLevelSets, LintLevelSource, LintSet,
@@ -112,9 +112,9 @@ impl<'s> LintLevelsBuilder<'s> {
     /// diagnostic with no change to `specs`.
     fn insert_spec(
         &mut self,
-        specs: &mut FxHashMap<LintId, LevelSource>,
+        specs: &mut FxHashMap<LintId, LevelAndSource>,
         id: LintId,
-        (level, src): LevelSource,
+        (level, src): LevelAndSource,
     ) {
         // Setting to a non-forbid level is an error if the lint previously had
         // a forbid level. Note that this is not necessarily true even with a
@@ -356,8 +356,7 @@ impl<'s> LintLevelsBuilder<'s> {
                                     |lint| {
                                         let msg = format!(
                                             "lint name `{}` is deprecated \
-                                             and may not have an effect in the future. \
-                                             Also `cfg_attr(cargo-clippy)` won't be necessary anymore",
+                                             and may not have an effect in the future.",
                                             name
                                         );
                                         lint.build(&msg)
@@ -426,6 +425,11 @@ impl<'s> LintLevelsBuilder<'s> {
                             src,
                             Some(li.span().into()),
                             |lint| {
+                                let name = if let Some(tool_name) = tool_name {
+                                    format!("{}::{}", tool_name, name)
+                                } else {
+                                    name.to_string()
+                                };
                                 let mut db = lint.build(&format!("unknown lint: `{}`", name));
                                 if let Some(suggestion) = suggestion {
                                     db.span_suggestion(

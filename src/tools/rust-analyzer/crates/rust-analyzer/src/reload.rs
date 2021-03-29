@@ -1,10 +1,10 @@
 //! Project loading & configuration updates
 use std::{mem, sync::Arc};
 
-use base_db::{CrateGraph, SourceRoot, VfsPath};
-use flycheck::FlycheckHandle;
-use ide::AnalysisChange;
-use project_model::{ProcMacroClient, ProjectWorkspace};
+use flycheck::{FlycheckConfig, FlycheckHandle};
+use ide::Change;
+use ide_db::base_db::{CrateGraph, SourceRoot, VfsPath};
+use project_model::{BuildDataCollector, BuildDataResult, ProcMacroClient, ProjectWorkspace};
 use vfs::{file_set::FileSetConfig, AbsPath, AbsPathBuf, ChangeKind};
 
 use crate::{
@@ -15,16 +15,30 @@ use crate::{
 };
 use lsp_ext::StatusParams;
 
+#[derive(Debug)]
+pub(crate) enum ProjectWorkspaceProgress {
+    Begin,
+    Report(String),
+    End(Vec<anyhow::Result<ProjectWorkspace>>),
+}
+
+#[derive(Debug)]
+pub(crate) enum BuildDataProgress {
+    Begin,
+    Report(String),
+    End(anyhow::Result<BuildDataResult>),
+}
+
 impl GlobalState {
     pub(crate) fn update_configuration(&mut self, config: Config) {
         let _p = profile::span("GlobalState::update_configuration");
-        let old_config = mem::replace(&mut self.config, config);
-        if self.config.lru_capacity != old_config.lru_capacity {
-            self.analysis_host.update_lru_capacity(old_config.lru_capacity);
+        let old_config = mem::replace(&mut self.config, Arc::new(config));
+        if self.config.lru_capacity() != old_config.lru_capacity() {
+            self.analysis_host.update_lru_capacity(self.config.lru_capacity());
         }
-        if self.config.linked_projects != old_config.linked_projects {
-            self.fetch_workspaces()
-        } else if self.config.flycheck != old_config.flycheck {
+        if self.config.linked_projects() != old_config.linked_projects() {
+            self.fetch_workspaces_request()
+        } else if self.config.flycheck() != old_config.flycheck() {
             self.reload_flycheck();
         }
     }
@@ -34,10 +48,10 @@ impl GlobalState {
         }
         match self.status {
             Status::Loading | Status::NeedsReload => return,
-            Status::Ready | Status::Invalid => (),
+            Status::Ready { .. } | Status::Invalid => (),
         }
-        if self.config.cargo_autoreload {
-            self.fetch_workspaces();
+        if self.config.cargo_autoreload() {
+            self.fetch_workspaces_request();
         } else {
             self.transition(Status::NeedsReload);
         }
@@ -79,10 +93,11 @@ impl GlobalState {
     }
     pub(crate) fn transition(&mut self, new_status: Status) {
         self.status = new_status;
-        if self.config.client_caps.status_notification {
+        if self.config.status_notification() {
             let lsp_status = match new_status {
                 Status::Loading => lsp_ext::Status::Loading,
-                Status::Ready => lsp_ext::Status::Ready,
+                Status::Ready { partial: true } => lsp_ext::Status::ReadyPartial,
+                Status::Ready { partial: false } => lsp_ext::Status::Ready,
                 Status::Invalid => lsp_ext::Status::Invalid,
                 Status::NeedsReload => lsp_ext::Status::NeedsReload,
             };
@@ -91,13 +106,58 @@ impl GlobalState {
             });
         }
     }
-    pub(crate) fn fetch_workspaces(&mut self) {
+
+    pub(crate) fn fetch_build_data_request(&mut self, build_data_collector: BuildDataCollector) {
+        self.fetch_build_data_queue.request_op(build_data_collector);
+    }
+
+    pub(crate) fn fetch_build_data_if_needed(&mut self) {
+        let mut build_data_collector = match self.fetch_build_data_queue.should_start_op() {
+            Some(it) => it,
+            None => return,
+        };
+        self.task_pool.handle.spawn_with_sender(move |sender| {
+            sender.send(Task::FetchBuildData(BuildDataProgress::Begin)).unwrap();
+
+            let progress = {
+                let sender = sender.clone();
+                move |msg| {
+                    sender.send(Task::FetchBuildData(BuildDataProgress::Report(msg))).unwrap()
+                }
+            };
+            let res = build_data_collector.collect(&progress);
+            sender.send(Task::FetchBuildData(BuildDataProgress::End(res))).unwrap();
+        });
+    }
+    pub(crate) fn fetch_build_data_completed(&mut self) {
+        self.fetch_build_data_queue.op_completed()
+    }
+
+    pub(crate) fn fetch_workspaces_request(&mut self) {
+        self.fetch_workspaces_queue.request_op(())
+    }
+    pub(crate) fn fetch_workspaces_if_needed(&mut self) {
+        if self.fetch_workspaces_queue.should_start_op().is_none() {
+            return;
+        }
         log::info!("will fetch workspaces");
-        self.task_pool.handle.spawn({
-            let linked_projects = self.config.linked_projects.clone();
-            let cargo_config = self.config.cargo.clone();
-            let with_sysroot = self.config.with_sysroot.clone();
-            move || {
+
+        self.task_pool.handle.spawn_with_sender({
+            let linked_projects = self.config.linked_projects();
+            let cargo_config = self.config.cargo();
+
+            move |sender| {
+                let progress = {
+                    let sender = sender.clone();
+                    move |msg| {
+                        sender
+                            .send(Task::FetchWorkspace(ProjectWorkspaceProgress::Report(msg)))
+                            .unwrap()
+                    }
+                };
+
+                sender.send(Task::FetchWorkspace(ProjectWorkspaceProgress::Begin)).unwrap();
+
                 let workspaces = linked_projects
                     .iter()
                     .map(|project| match project {
@@ -105,20 +165,34 @@ impl GlobalState {
                             project_model::ProjectWorkspace::load(
                                 manifest.clone(),
                                 &cargo_config,
-                                with_sysroot,
+                                &progress,
                             )
                         }
                         LinkedProject::InlineJsonProject(it) => {
-                            project_model::ProjectWorkspace::load_inline(it.clone())
+                            project_model::ProjectWorkspace::load_inline(
+                                it.clone(),
+                                cargo_config.target.as_deref(),
+                            )
                         }
                     })
                     .collect::<Vec<_>>();
+
                 log::info!("did fetch workspaces {:?}", workspaces);
-                Task::Workspaces(workspaces)
+                sender
+                    .send(Task::FetchWorkspace(ProjectWorkspaceProgress::End(workspaces)))
+                    .unwrap();
             }
         });
     }
-    pub(crate) fn switch_workspaces(&mut self, workspaces: Vec<anyhow::Result<ProjectWorkspace>>) {
+    pub(crate) fn fetch_workspaces_completed(&mut self) {
+        self.fetch_workspaces_queue.op_completed()
+    }
+
+    pub(crate) fn switch_workspaces(
+        &mut self,
+        workspaces: Vec<anyhow::Result<ProjectWorkspace>>,
+        workspace_build_data: Option<anyhow::Result<BuildDataResult>>,
+    ) {
         let _p = profile::span("GlobalState::switch_workspaces");
         log::info!("will switch workspaces: {:?}", workspaces);
 
@@ -140,7 +214,20 @@ impl GlobalState {
             })
             .collect::<Vec<_>>();
 
-        if &*self.workspaces == &workspaces {
+        let workspace_build_data = match workspace_build_data {
+            Some(Ok(it)) => Some(it),
+            Some(Err(err)) => {
+                log::error!("failed to fetch build data: {:#}", err);
+                self.show_message(
+                    lsp_types::MessageType::Error,
+                    format!("rust-analyzer failed to fetch build data: {:#}", err),
+                );
+                return;
+            }
+            None => None,
+        };
+
+        if &*self.workspaces == &workspaces && self.workspace_build_data == workspace_build_data {
             return;
         }
 
@@ -148,49 +235,56 @@ impl GlobalState {
             return;
         }
 
-        if let FilesWatcher::Client = self.config.files.watcher {
-            let registration_options = lsp_types::DidChangeWatchedFilesRegistrationOptions {
-                watchers: workspaces
-                    .iter()
-                    .flat_map(ProjectWorkspace::to_roots)
-                    .filter(|it| it.is_member)
-                    .flat_map(|root| {
-                        root.include.into_iter().map(|it| format!("{}/**/*.rs", it.display()))
-                    })
-                    .map(|glob_pattern| lsp_types::FileSystemWatcher { glob_pattern, kind: None })
-                    .collect(),
-            };
-            let registration = lsp_types::Registration {
-                id: "workspace/didChangeWatchedFiles".to_string(),
-                method: "workspace/didChangeWatchedFiles".to_string(),
-                register_options: Some(serde_json::to_value(registration_options).unwrap()),
-            };
-            self.send_request::<lsp_types::request::RegisterCapability>(
-                lsp_types::RegistrationParams { registrations: vec![registration] },
-                |_, _| (),
-            );
+        if let FilesWatcher::Client = self.config.files().watcher {
+            if self.config.did_change_watched_files_dynamic_registration() {
+                let registration_options = lsp_types::DidChangeWatchedFilesRegistrationOptions {
+                    watchers: workspaces
+                        .iter()
+                        .flat_map(|it| it.to_roots(workspace_build_data.as_ref()))
+                        .filter(|it| it.is_member)
+                        .flat_map(|root| {
+                            root.include.into_iter().map(|it| format!("{}/**/*.rs", it.display()))
+                        })
+                        .map(|glob_pattern| lsp_types::FileSystemWatcher {
+                            glob_pattern,
+                            kind: None,
+                        })
+                        .collect(),
+                };
+                let registration = lsp_types::Registration {
+                    id: "workspace/didChangeWatchedFiles".to_string(),
+                    method: "workspace/didChangeWatchedFiles".to_string(),
+                    register_options: Some(serde_json::to_value(registration_options).unwrap()),
+                };
+                self.send_request::<lsp_types::request::RegisterCapability>(
+                    lsp_types::RegistrationParams { registrations: vec![registration] },
+                    |_, _| (),
+                );
+            }
         }
 
-        let mut change = AnalysisChange::new();
+        let mut change = Change::new();
 
-        let project_folders = ProjectFolders::new(&workspaces);
+        let files_config = self.config.files();
+        let project_folders =
+            ProjectFolders::new(&workspaces, &files_config.exclude, workspace_build_data.as_ref());
 
-        self.proc_macro_client = match &self.config.proc_macro_srv {
-            None => ProcMacroClient::dummy(),
-            Some((path, args)) => match ProcMacroClient::extern_process(path.into(), args) {
-                Ok(it) => it,
+        self.proc_macro_client = match self.config.proc_macro_srv() {
+            None => None,
+            Some((path, args)) => match ProcMacroClient::extern_process(path.clone(), args) {
+                Ok(it) => Some(it),
                 Err(err) => {
                     log::error!(
                         "Failed to run proc_macro_srv from path {}, error: {:?}",
                         path.display(),
                         err
                     );
-                    ProcMacroClient::dummy()
+                    None
                 }
             },
         };
 
-        let watch = match self.config.files.watcher {
+        let watch = match files_config.watcher {
             FilesWatcher::Client => vec![],
             FilesWatcher::Notify => project_folders.watch,
         };
@@ -201,16 +295,23 @@ impl GlobalState {
             let mut crate_graph = CrateGraph::default();
             let vfs = &mut self.vfs.write().0;
             let loader = &mut self.loader;
+            let mem_docs = &self.mem_docs;
             let mut load = |path: &AbsPath| {
-                let contents = loader.handle.load_sync(path);
-                let path = vfs::VfsPath::from(path.to_path_buf());
-                vfs.set_file_contents(path.clone(), contents);
-                vfs.file_id(&path)
+                let vfs_path = vfs::VfsPath::from(path.to_path_buf());
+                if !mem_docs.contains_key(&vfs_path) {
+                    let contents = loader.handle.load_sync(path);
+                    vfs.set_file_contents(vfs_path.clone(), contents);
+                }
+                let res = vfs.file_id(&vfs_path);
+                if res.is_none() {
+                    log::warn!("failed to load {}", path.display())
+                }
+                res
             };
             for ws in workspaces.iter() {
                 crate_graph.extend(ws.to_crate_graph(
-                    self.config.cargo.target.as_deref(),
-                    &self.proc_macro_client,
+                    workspace_build_data.as_ref(),
+                    self.proc_macro_client.as_ref(),
                     &mut load,
                 ));
             }
@@ -219,8 +320,17 @@ impl GlobalState {
         };
         change.set_crate_graph(crate_graph);
 
+        if self.config.load_out_dirs_from_check() && workspace_build_data.is_none() {
+            let mut collector = BuildDataCollector::default();
+            for ws in &workspaces {
+                ws.collect_build_data_configs(&mut collector);
+            }
+            self.fetch_build_data_request(collector)
+        }
+
         self.source_root_config = project_folders.source_root_config;
         self.workspaces = Arc::new(workspaces);
+        self.workspace_build_data = workspace_build_data;
 
         self.analysis_host.apply_change(change);
         self.process_changes();
@@ -229,28 +339,41 @@ impl GlobalState {
     }
 
     fn reload_flycheck(&mut self) {
-        let config = match self.config.flycheck.clone() {
+        let _p = profile::span("GlobalState::reload_flycheck");
+        let config = match self.config.flycheck() {
             Some(it) => it,
             None => {
-                self.flycheck = None;
+                self.flycheck = Vec::new();
                 return;
             }
         };
 
         let sender = self.flycheck_sender.clone();
-        let sender = Box::new(move |msg| sender.send(msg).unwrap());
         self.flycheck = self
             .workspaces
             .iter()
-            // FIXME: Figure out the multi-workspace situation
-            .find_map(|w| match w {
-                ProjectWorkspace::Cargo { cargo, sysroot: _ } => Some(cargo),
-                ProjectWorkspace::Json { .. } => None,
+            .enumerate()
+            .filter_map(|(id, w)| match w {
+                ProjectWorkspace::Cargo { cargo, .. } => Some((id, cargo.workspace_root())),
+                ProjectWorkspace::Json { project, .. } => {
+                    // Enable flychecks for json projects if a custom flycheck command was supplied
+                    // in the workspace configuration.
+                    match config {
+                        FlycheckConfig::CustomCommand { .. } => Some((id, project.path())),
+                        _ => None,
+                    }
+                }
             })
-            .map(move |cargo| {
-                let cargo_project_root = cargo.workspace_root().to_path_buf();
-                FlycheckHandle::spawn(sender, config, cargo_project_root.into())
+            .map(|(id, root)| {
+                let sender = sender.clone();
+                FlycheckHandle::spawn(
+                    id,
+                    Box::new(move |msg| sender.send(msg).unwrap()),
+                    config.clone(),
+                    root.to_path_buf().into(),
+                )
             })
+            .collect();
     }
 }
 
@@ -262,12 +385,16 @@ pub(crate) struct ProjectFolders {
 }
 
 impl ProjectFolders {
-    pub(crate) fn new(workspaces: &[ProjectWorkspace]) -> ProjectFolders {
+    pub(crate) fn new(
+        workspaces: &[ProjectWorkspace],
+        global_excludes: &[AbsPathBuf],
+        build_data: Option<&BuildDataResult>,
+    ) -> ProjectFolders {
         let mut res = ProjectFolders::default();
         let mut fsc = FileSetConfig::builder();
         let mut local_filesets = vec![];
 
-        for root in workspaces.iter().flat_map(|it| it.to_roots()) {
+        for root in workspaces.iter().flat_map(|it| it.to_roots(build_data)) {
             let file_set_roots: Vec<VfsPath> =
                 root.include.iter().cloned().map(VfsPath::from).collect();
 
@@ -276,6 +403,12 @@ impl ProjectFolders {
                 dirs.extensions.push("rs".into());
                 dirs.include.extend(root.include);
                 dirs.exclude.extend(root.exclude);
+                for excl in global_excludes {
+                    if dirs.include.iter().any(|incl| incl.starts_with(excl)) {
+                        dirs.exclude.push(excl.clone());
+                    }
+                }
+
                 vfs::loader::Entry::Directories(dirs)
             };
 

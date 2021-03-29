@@ -7,7 +7,7 @@
 use std::{convert::TryFrom, env, ops, path::PathBuf, process::Command};
 
 use anyhow::{format_err, Result};
-use arena::{Arena, Idx};
+use la_arena::{Arena, Idx};
 use paths::{AbsPath, AbsPathBuf};
 
 use crate::utf8_stdout;
@@ -17,7 +17,7 @@ pub struct Sysroot {
     crates: Arena<SysrootCrateData>,
 }
 
-pub type SysrootCrate = Idx<SysrootCrateData>;
+pub(crate) type SysrootCrate = Idx<SysrootCrateData>;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SysrootCrateData {
@@ -37,7 +37,7 @@ impl Sysroot {
     pub fn public_deps(&self) -> impl Iterator<Item = (&'static str, SysrootCrate)> + '_ {
         // core is added as a dependency before std in order to
         // mimic rustcs dependency order
-        vec!["core", "alloc", "std"].into_iter().filter_map(move |it| Some((it, self.by_name(it)?)))
+        ["core", "alloc", "std"].iter().filter_map(move |&it| Some((it, self.by_name(it)?)))
     }
 
     pub fn proc_macro(&self) -> Option<SysrootCrate> {
@@ -49,6 +49,7 @@ impl Sysroot {
     }
 
     pub fn discover(cargo_toml: &AbsPath) -> Result<Sysroot> {
+        log::debug!("Discovering sysroot for {}", cargo_toml.display());
         let current_dir = cargo_toml.parent().unwrap();
         let sysroot_src_dir = discover_sysroot_src_dir(current_dir)?;
         let res = Sysroot::load(&sysroot_src_dir)?;
@@ -59,9 +60,7 @@ impl Sysroot {
         let mut sysroot = Sysroot { crates: Arena::default() };
 
         for name in SYSROOT_CRATES.trim().lines() {
-            // FIXME: first path when 1.47 comes out
-            // https://github.com/rust-lang/rust/pull/73265
-            let root = [format!("lib{}/lib.rs", name), format!("{}/src/lib.rs", name)]
+            let root = [format!("{}/src/lib.rs", name), format!("lib{}/lib.rs", name)]
                 .iter()
                 .map(|it| sysroot_src_dir.join(it))
                 .find(|it| it.exists());
@@ -90,9 +89,15 @@ impl Sysroot {
         }
 
         if sysroot.by_name("core").is_none() {
+            let var_note = if env::var_os("RUST_SRC_PATH").is_some() {
+                " (`RUST_SRC_PATH` might be incorrect, try unsetting it)"
+            } else {
+                ""
+            };
             anyhow::bail!(
-                "could not find libcore in sysroot path `{}`",
-                sysroot_src_dir.as_ref().display()
+                "could not find libcore in sysroot path `{}`{}",
+                sysroot_src_dir.as_ref().display(),
+                var_note,
             );
         }
 
@@ -109,12 +114,18 @@ fn discover_sysroot_src_dir(current_dir: &AbsPath) -> Result<AbsPathBuf> {
     if let Ok(path) = env::var("RUST_SRC_PATH") {
         let path = AbsPathBuf::try_from(path.as_str())
             .map_err(|path| format_err!("RUST_SRC_PATH must be absolute: {}", path.display()))?;
-        return Ok(path);
+        let core = path.join("core");
+        if core.exists() {
+            log::debug!("Discovered sysroot by RUST_SRC_PATH: {}", path.display());
+            return Ok(path);
+        }
+        log::debug!("RUST_SRC_PATH is set, but is invalid (no core: {:?}), ignoring", core);
     }
 
     let sysroot_path = {
         let mut rustc = Command::new(toolchain::rustc());
         rustc.current_dir(current_dir).args(&["--print", "sysroot"]);
+        log::debug!("Discovering sysroot by {:?}", rustc);
         let stdout = utf8_stdout(rustc)?;
         AbsPathBuf::assert(PathBuf::from(stdout))
     };
@@ -132,7 +143,7 @@ fn discover_sysroot_src_dir(current_dir: &AbsPath) -> Result<AbsPathBuf> {
 can't load standard library from sysroot
 {}
 (discovered via `rustc --print sysroot`)
-try running `rustup component add rust-src` or set `RUST_SRC_PATH`",
+try installing the Rust source the same way you installed rustc",
                 sysroot_path.display(),
             )
         })
@@ -140,10 +151,8 @@ try running `rustup component add rust-src` or set `RUST_SRC_PATH`",
 
 fn get_rust_src(sysroot_path: &AbsPath) -> Option<AbsPathBuf> {
     // Try the new path first since the old one still exists.
-    //
-    // FIXME: remove `src` when 1.47 comes out
-    // https://github.com/rust-lang/rust/pull/73265
     let rust_src = sysroot_path.join("lib/rustlib/src/rust");
+    log::debug!("Checking sysroot (looking for `library` and `src` dirs): {}", rust_src.display());
     ["library", "src"].iter().map(|it| rust_src.join(it)).find(|it| it.exists())
 }
 

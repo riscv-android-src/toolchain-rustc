@@ -189,7 +189,7 @@ static void test_stress(void) {
       }
     }
     // mi_collect(false);
-#ifndef NDEBUG
+#if !defined(NDEBUG) || defined(MI_TSAN)
     if ((n + 1) % 10 == 0) { printf("- iterations left: %3d\n", ITER - (n + 1)); }
 #endif
   }
@@ -260,7 +260,7 @@ static void (*thread_entry_fun)(intptr_t) = &stress;
 
 #ifdef _WIN32
 
-#include <windows.h>
+#include <Windows.h>
 
 static DWORD WINAPI thread_entry(LPVOID param) {
   thread_entry_fun((intptr_t)param);
@@ -272,7 +272,7 @@ static void run_os_threads(size_t nthreads, void (*fun)(intptr_t)) {
   DWORD* tids = (DWORD*)custom_calloc(nthreads,sizeof(DWORD));
   HANDLE* thandles = (HANDLE*)custom_calloc(nthreads,sizeof(HANDLE));
   for (uintptr_t i = 0; i < nthreads; i++) {
-    thandles[i] = CreateThread(0, 4096, &thread_entry, (void*)(i), 0, &tids[i]);
+    thandles[i] = CreateThread(0, 8*1024, &thread_entry, (void*)(i), 0, &tids[i]);
   }
   for (size_t i = 0; i < nthreads; i++) {
     WaitForSingleObject(thandles[i], INFINITE);

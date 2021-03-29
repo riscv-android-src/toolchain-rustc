@@ -28,7 +28,7 @@ pub trait ExpectOne<A: Array> {
 
 impl<A: Array> ExpectOne<A> for SmallVec<A> {
     fn expect_one(self, err: &'static str) -> A::Item {
-        assert!(self.len() == 1, err);
+        assert!(self.len() == 1, "{}", err);
         self.into_iter().next().unwrap()
     }
 }
@@ -365,18 +365,16 @@ pub fn visit_mac_args<T: MutVisitor>(args: &mut MacArgs, vis: &mut T) {
             visit_delim_span(dspan, vis);
             visit_tts(tokens, vis);
         }
-        MacArgs::Eq(eq_span, tokens) => {
+        MacArgs::Eq(eq_span, token) => {
             vis.visit_span(eq_span);
-            visit_tts(tokens, vis);
-            // The value in `#[key = VALUE]` must be visited as an expression for backward
-            // compatibility, so that macros can be expanded in that position.
-            if !vis.token_visiting_enabled() {
-                match Lrc::make_mut(&mut tokens.0).get_mut(0) {
-                    Some((TokenTree::Token(token), _spacing)) => match &mut token.kind {
-                        token::Interpolated(nt) => match Lrc::make_mut(nt) {
-                            token::NtExpr(expr) => vis.visit_expr(expr),
-                            t => panic!("unexpected token in key-value attribute: {:?}", t),
-                        },
+            if vis.token_visiting_enabled() {
+                visit_token(token, vis);
+            } else {
+                // The value in `#[key = VALUE]` must be visited as an expression for backward
+                // compatibility, so that macros can be expanded in that position.
+                match &mut token.kind {
+                    token::Interpolated(nt) => match Lrc::make_mut(nt) {
+                        token::NtExpr(expr) => vis.visit_expr(expr),
                         t => panic!("unexpected token in key-value attribute: {:?}", t),
                     },
                     t => panic!("unexpected token in key-value attribute: {:?}", t),
@@ -567,7 +565,7 @@ pub fn noop_visit_parenthesized_parameter_data<T: MutVisitor>(
     args: &mut ParenthesizedArgs,
     vis: &mut T,
 ) {
-    let ParenthesizedArgs { inputs, output, span } = args;
+    let ParenthesizedArgs { inputs, output, span, .. } = args;
     visit_vec(inputs, |input| vis.visit_ty(input));
     noop_visit_fn_ret_ty(output, vis);
     vis.visit_span(span);
@@ -790,8 +788,9 @@ pub fn noop_flat_map_generic_param<T: MutVisitor>(
         GenericParamKind::Type { default } => {
             visit_opt(default, |default| vis.visit_ty(default));
         }
-        GenericParamKind::Const { ty, kw_span: _ } => {
+        GenericParamKind::Const { ty, kw_span: _, default } => {
             vis.visit_ty(ty);
+            visit_opt(default, |default| vis.visit_anon_const(default));
         }
     }
     smallvec![param]
@@ -913,7 +912,7 @@ pub fn noop_visit_item_kind<T: MutVisitor>(kind: &mut ItemKind, vis: &mut T) {
             vis.visit_ty(ty);
             visit_opt(expr, |expr| vis.visit_expr(expr));
         }
-        ItemKind::Fn(_, sig, generics, body) => {
+        ItemKind::Fn(box FnKind(_, sig, generics, body)) => {
             visit_fn_sig(sig, vis);
             vis.visit_generics(generics);
             visit_opt(body, |body| vis.visit_block(body));
@@ -921,7 +920,7 @@ pub fn noop_visit_item_kind<T: MutVisitor>(kind: &mut ItemKind, vis: &mut T) {
         ItemKind::Mod(m) => vis.visit_mod(m),
         ItemKind::ForeignMod(nm) => vis.visit_foreign_mod(nm),
         ItemKind::GlobalAsm(_ga) => {}
-        ItemKind::TyAlias(_, generics, bounds, ty) => {
+        ItemKind::TyAlias(box TyAliasKind(_, generics, bounds, ty)) => {
             vis.visit_generics(generics);
             visit_bounds(bounds, vis);
             visit_opt(ty, |ty| vis.visit_ty(ty));
@@ -934,7 +933,7 @@ pub fn noop_visit_item_kind<T: MutVisitor>(kind: &mut ItemKind, vis: &mut T) {
             vis.visit_variant_data(variant_data);
             vis.visit_generics(generics);
         }
-        ItemKind::Impl {
+        ItemKind::Impl(box ImplKind {
             unsafety: _,
             polarity: _,
             defaultness: _,
@@ -943,13 +942,13 @@ pub fn noop_visit_item_kind<T: MutVisitor>(kind: &mut ItemKind, vis: &mut T) {
             of_trait,
             self_ty,
             items,
-        } => {
+        }) => {
             vis.visit_generics(generics);
             visit_opt(of_trait, |trait_ref| vis.visit_trait_ref(trait_ref));
             vis.visit_ty(self_ty);
             items.flat_map_in_place(|item| vis.flat_map_impl_item(item));
         }
-        ItemKind::Trait(_is_auto, _unsafety, generics, bounds, items) => {
+        ItemKind::Trait(box TraitKind(.., generics, bounds, items)) => {
             vis.visit_generics(generics);
             visit_bounds(bounds, vis);
             items.flat_map_in_place(|item| vis.flat_map_trait_item(item));
@@ -977,12 +976,12 @@ pub fn noop_flat_map_assoc_item<T: MutVisitor>(
             visitor.visit_ty(ty);
             visit_opt(expr, |expr| visitor.visit_expr(expr));
         }
-        AssocItemKind::Fn(_, sig, generics, body) => {
+        AssocItemKind::Fn(box FnKind(_, sig, generics, body)) => {
             visitor.visit_generics(generics);
             visit_fn_sig(sig, visitor);
             visit_opt(body, |body| visitor.visit_block(body));
         }
-        AssocItemKind::TyAlias(_, generics, bounds, ty) => {
+        AssocItemKind::TyAlias(box TyAliasKind(_, generics, bounds, ty)) => {
             visitor.visit_generics(generics);
             visit_bounds(bounds, visitor);
             visit_opt(ty, |ty| visitor.visit_ty(ty));
@@ -1067,12 +1066,12 @@ pub fn noop_flat_map_foreign_item<T: MutVisitor>(
             visitor.visit_ty(ty);
             visit_opt(expr, |expr| visitor.visit_expr(expr));
         }
-        ForeignItemKind::Fn(_, sig, generics, body) => {
+        ForeignItemKind::Fn(box FnKind(_, sig, generics, body)) => {
             visitor.visit_generics(generics);
             visit_fn_sig(sig, visitor);
             visit_opt(body, |body| visitor.visit_block(body));
         }
-        ForeignItemKind::TyAlias(_, generics, bounds, ty) => {
+        ForeignItemKind::TyAlias(box TyAliasKind(_, generics, bounds, ty)) => {
             visitor.visit_generics(generics);
             visit_bounds(bounds, visitor);
             visit_opt(ty, |ty| visitor.visit_ty(ty));

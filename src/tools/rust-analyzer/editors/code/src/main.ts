@@ -19,9 +19,8 @@ let ctx: Ctx | undefined;
 const RUST_PROJECT_CONTEXT_NAME = "inRustProject";
 
 export async function activate(context: vscode.ExtensionContext) {
-    // For some reason vscode not always shows pop-up error notifications
-    // when an extension fails to activate, so we do it explicitly by ourselves.
-    // FIXME: remove this bit of code once vscode fixes this issue: https://github.com/microsoft/vscode/issues/101242
+    // VS Code doesn't show a notification when an extension fails to activate
+    // so we do it ourselves.
     await tryActivate(context).catch(err => {
         void vscode.window.showErrorMessage(`Cannot activate rust-analyzer: ${err.message}`);
         throw err;
@@ -95,6 +94,10 @@ async function tryActivate(context: vscode.ExtensionContext) {
         await activate(context).catch(log.error);
     });
 
+    ctx.registerCommand('updateGithubToken', ctx => async () => {
+        await queryForGithubToken(new PersistentState(ctx.globalState));
+    });
+
     ctx.registerCommand('analyzerStatus', commands.analyzerStatus);
     ctx.registerCommand('memoryUsage', commands.memoryUsage);
     ctx.registerCommand('reloadWorkspace', commands.reloadWorkspace);
@@ -102,10 +105,13 @@ async function tryActivate(context: vscode.ExtensionContext) {
     ctx.registerCommand('joinLines', commands.joinLines);
     ctx.registerCommand('parentModule', commands.parentModule);
     ctx.registerCommand('syntaxTree', commands.syntaxTree);
+    ctx.registerCommand('viewHir', commands.viewHir);
     ctx.registerCommand('expandMacro', commands.expandMacro);
     ctx.registerCommand('run', commands.run);
     ctx.registerCommand('debug', commands.debug);
     ctx.registerCommand('newDebugConfig', commands.newDebugConfig);
+    ctx.registerCommand('openDocs', commands.openDocs);
+    ctx.registerCommand('openCargoToml', commands.openCargoToml);
 
     defaultOnEnter.dispose();
     ctx.registerCommand('onEnter', commands.onEnter);
@@ -126,6 +132,7 @@ async function tryActivate(context: vscode.ExtensionContext) {
     ctx.pushCleanup(activateTaskProvider(workspaceFolder, ctx.config));
 
     activateInlayHints(ctx);
+    warnAboutExtensionConflicts();
 
     vscode.workspace.onDidChangeConfiguration(
         _ => ctx?.client?.sendNotification('workspace/didChangeConfiguration', { settings: "" }),
@@ -160,6 +167,7 @@ async function bootstrapExtension(config: Config, state: PersistentState): Promi
         }
         return;
     };
+    if (serverPath(config)) return;
 
     const now = Date.now();
     if (config.package.releaseTag === NIGHTLY_TAG) {
@@ -173,7 +181,9 @@ async function bootstrapExtension(config: Config, state: PersistentState): Promi
         if (!shouldCheckForNewNightly) return;
     }
 
-    const release = await fetchRelease("nightly").catch((e) => {
+    const release = await downloadWithRetryDialog(state, async () => {
+        return await fetchRelease("nightly", state.githubToken);
+    }).catch((e) => {
         log.error(e);
         if (state.releaseId === undefined) { // Show error only for the initial download
             vscode.window.showErrorMessage(`Failed to download rust-analyzer nightly ${e}`);
@@ -192,10 +202,13 @@ async function bootstrapExtension(config: Config, state: PersistentState): Promi
     assert(!!artifact, `Bad release: ${JSON.stringify(release)}`);
 
     const dest = path.join(config.globalStoragePath, "rust-analyzer.vsix");
-    await download({
-        url: artifact.browser_download_url,
-        dest,
-        progressTitle: "Downloading rust-analyzer extension",
+
+    await downloadWithRetryDialog(state, async () => {
+        await download({
+            url: artifact.browser_download_url,
+            dest,
+            progressTitle: "Downloading rust-analyzer extension",
+        });
     });
 
     await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(dest));
@@ -265,7 +278,7 @@ async function patchelf(dest: PathLike): Promise<void> {
 }
 
 async function getServer(config: Config, state: PersistentState): Promise<string | undefined> {
-    const explicitPath = process.env.__RA_LSP_SERVER_DEBUG ?? config.serverPath;
+    const explicitPath = serverPath(config);
     if (explicitPath) {
         if (explicitPath.startsWith("~/")) {
             return os.homedir() + explicitPath.slice("~".length);
@@ -274,12 +287,16 @@ async function getServer(config: Config, state: PersistentState): Promise<string
     };
     if (config.package.releaseTag === null) return "rust-analyzer";
 
-    let platform: string | undefined;
-    if (process.arch === "x64" || process.arch === "ia32") {
-        if (process.platform === "linux") platform = "linux";
-        if (process.platform === "darwin") platform = "mac";
-        if (process.platform === "win32") platform = "windows";
-    }
+    const platforms: { [key: string]: string } = {
+        "ia32 win32": "x86_64-pc-windows-msvc",
+        "x64 win32": "x86_64-pc-windows-msvc",
+        "x64 linux": "x86_64-unknown-linux-gnu",
+        "x64 darwin": "x86_64-apple-darwin",
+        "arm64 win32": "aarch64-pc-windows-msvc",
+        "arm64 linux": "aarch64-unknown-linux-gnu",
+        "arm64 darwin": "aarch64-apple-darwin",
+    };
+    const platform = platforms[`${process.arch} ${process.platform}`];
     if (platform === undefined) {
         vscode.window.showErrorMessage(
             "Unfortunately we don't ship binaries for your platform yet. " +
@@ -291,7 +308,7 @@ async function getServer(config: Config, state: PersistentState): Promise<string
         );
         return undefined;
     }
-    const ext = platform === "windows" ? ".exe" : "";
+    const ext = platform.indexOf("-windows-") !== -1 ? ".exe" : "";
     const dest = path.join(config.globalStoragePath, `rust-analyzer-${platform}${ext}`);
     const exists = await fs.stat(dest).then(() => true, () => false);
     if (!exists) {
@@ -308,28 +325,114 @@ async function getServer(config: Config, state: PersistentState): Promise<string
         if (userResponse !== "Download now") return dest;
     }
 
-    const release = await fetchRelease(config.package.releaseTag);
+    const releaseTag = config.package.releaseTag;
+    const release = await downloadWithRetryDialog(state, async () => {
+        return await fetchRelease(releaseTag, state.githubToken);
+    });
     const artifact = release.assets.find(artifact => artifact.name === `rust-analyzer-${platform}.gz`);
     assert(!!artifact, `Bad release: ${JSON.stringify(release)}`);
 
-    // Unlinking the exe file before moving new one on its place should prevent ETXTBSY error.
-    await fs.unlink(dest).catch(err => {
-        if (err.code !== "ENOENT") throw err;
-    });
-
-    await download({
-        url: artifact.browser_download_url,
-        dest,
-        progressTitle: "Downloading rust-analyzer server",
-        gunzip: true,
-        mode: 0o755
+    await downloadWithRetryDialog(state, async () => {
+        await download({
+            url: artifact.browser_download_url,
+            dest,
+            progressTitle: "Downloading rust-analyzer server",
+            gunzip: true,
+            mode: 0o755,
+        });
     });
 
     // Patching executable if that's NixOS.
-    if (await fs.stat("/etc/nixos").then(_ => true).catch(_ => false)) {
+    if (await isNixOs()) {
         await patchelf(dest);
     }
 
     await state.updateServerVersion(config.package.version);
     return dest;
+}
+
+function serverPath(config: Config): string | null {
+    return process.env.__RA_LSP_SERVER_DEBUG ?? config.serverPath;
+}
+
+async function isNixOs(): Promise<boolean> {
+    try {
+        const contents = await fs.readFile("/etc/os-release");
+        return contents.indexOf("ID=nixos") !== -1;
+    } catch (e) {
+        return false;
+    }
+}
+
+async function downloadWithRetryDialog<T>(state: PersistentState, downloadFunc: () => Promise<T>): Promise<T> {
+    while (true) {
+        try {
+            return await downloadFunc();
+        } catch (e) {
+            const selected = await vscode.window.showErrorMessage("Failed to download: " + e.message, {}, {
+                title: "Update Github Auth Token",
+                updateToken: true,
+            }, {
+                title: "Retry download",
+                retry: true,
+            }, {
+                title: "Dismiss",
+            });
+
+            if (selected?.updateToken) {
+                await queryForGithubToken(state);
+                continue;
+            } else if (selected?.retry) {
+                continue;
+            }
+            throw e;
+        };
+    }
+}
+
+async function queryForGithubToken(state: PersistentState): Promise<void> {
+    const githubTokenOptions: vscode.InputBoxOptions = {
+        value: state.githubToken,
+        password: true,
+        prompt: `
+            This dialog allows to store a Github authorization token.
+            The usage of an authorization token will increase the rate
+            limit on the use of Github APIs and can thereby prevent getting
+            throttled.
+            Auth tokens can be created at https://github.com/settings/tokens`,
+    };
+
+    const newToken = await vscode.window.showInputBox(githubTokenOptions);
+    if (newToken === undefined) {
+        // The user aborted the dialog => Do not update the stored token
+        return;
+    }
+
+    if (newToken === "") {
+        log.info("Clearing github token");
+        await state.updateGithubToken(undefined);
+    } else {
+        log.info("Storing new github token");
+        await state.updateGithubToken(newToken);
+    }
+}
+
+function warnAboutExtensionConflicts() {
+    const conflicting = [
+        ["rust-analyzer", "matklad.rust-analyzer"],
+        ["Rust", "rust-lang.rust"],
+        ["Rust", "kalitaalexey.vscode-rust"],
+    ];
+
+    const found = conflicting.filter(
+        nameId => vscode.extensions.getExtension(nameId[1]) !== undefined);
+
+    if (found.length > 1) {
+        const fst = found[0];
+        const sec = found[1];
+        vscode.window.showWarningMessage(
+            `You have both the ${fst[0]} (${fst[1]}) and ${sec[0]} (${sec[1]}) ` +
+            "plugins enabled. These are known to conflict and cause various functions of " +
+            "both plugins to not work correctly. You should disable one of them.", "Got it");
+    };
 }

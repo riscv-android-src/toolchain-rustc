@@ -61,10 +61,13 @@ fn generate_tokens(grammar: &AstSrc) -> Result<String> {
         }
     });
 
-    let pretty = reformat(quote! {
-        use crate::{SyntaxKind::{self, *}, SyntaxToken, ast::AstToken};
-        #(#tokens)*
-    })?
+    let pretty = reformat(
+        &quote! {
+            use crate::{SyntaxKind::{self, *}, SyntaxToken, ast::AstToken};
+            #(#tokens)*
+        }
+        .to_string(),
+    )?
     .replace("#[derive", "\n#[derive");
     Ok(pretty)
 }
@@ -261,7 +264,7 @@ fn generate_nodes(kinds: KindsSrc<'_>, grammar: &AstSrc) -> Result<String> {
         }
     }
 
-    let pretty = reformat(res)?;
+    let pretty = reformat(&res)?;
     Ok(pretty)
 }
 
@@ -377,13 +380,13 @@ fn generate_syntax_kinds(grammar: KindsSrc<'_>) -> Result<String> {
         macro_rules! T {
             #([#punctuation_values] => { $crate::SyntaxKind::#punctuation };)*
             #([#all_keywords_idents] => { $crate::SyntaxKind::#all_keywords };)*
-            [lifetime] => { $crate::SyntaxKind::LIFETIME };
+            [lifetime_ident] => { $crate::SyntaxKind::LIFETIME_IDENT };
             [ident] => { $crate::SyntaxKind::IDENT };
             [shebang] => { $crate::SyntaxKind::SHEBANG };
         }
     };
 
-    reformat(ast)
+    reformat(&ast.to_string())
 }
 
 fn to_upper_snake_case(s: &str) -> String {
@@ -501,7 +504,11 @@ impl Field {
 
 fn lower(grammar: &Grammar) -> AstSrc {
     let mut res = AstSrc::default();
-    res.tokens = vec!["Whitespace".into(), "Comment".into(), "String".into(), "RawString".into()];
+
+    res.tokens = "Whitespace Comment String ByteString IntNumber FloatNumber"
+        .split_ascii_whitespace()
+        .map(|it| it.to_string())
+        .collect::<Vec<_>>();
 
     let nodes = grammar.iter().collect::<Vec<_>>();
 

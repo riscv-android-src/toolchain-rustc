@@ -4,15 +4,14 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use base_db::{FileId, FileRange};
 use ide::{
-    Assist, AssistKind, CallInfo, CompletionItem, CompletionItemKind, Documentation,
-    FileSystemEdit, Fold, FoldKind, Highlight, HighlightModifier, HighlightTag, HighlightedRange,
-    Indel, InlayHint, InlayKind, InsertTextFormat, LineIndex, Markup, NavigationTarget,
-    ReferenceAccess, ResolvedAssist, Runnable, Severity, SourceChange, SourceFileEdit, TextEdit,
+    Assist, AssistKind, CallInfo, CompletionItem, CompletionItemKind, Documentation, FileId,
+    FileRange, FileSystemEdit, Fold, FoldKind, Highlight, HlMod, HlPunct, HlRange, HlTag, Indel,
+    InlayHint, InlayKind, InsertTextFormat, LineIndex, Markup, NavigationTarget, ReferenceAccess,
+    RenameError, Runnable, Severity, SourceChange, TextEdit, TextRange, TextSize,
 };
+use ide_db::SymbolKind;
 use itertools::Itertools;
-use syntax::{SyntaxKind, TextRange, TextSize};
 
 use crate::{
     cargo_target_spec::CargoTargetSpec, global_state::GlobalStateSnapshot,
@@ -21,9 +20,7 @@ use crate::{
 
 pub(crate) fn position(line_index: &LineIndex, offset: TextSize) -> lsp_types::Position {
     let line_col = line_index.line_col(offset);
-    let line = u64::from(line_col.line);
-    let character = u64::from(line_col.col_utf16);
-    lsp_types::Position::new(line, character)
+    lsp_types::Position::new(line_col.line, line_col.col_utf16)
 }
 
 pub(crate) fn range(line_index: &LineIndex, range: TextRange) -> lsp_types::Range {
@@ -32,21 +29,27 @@ pub(crate) fn range(line_index: &LineIndex, range: TextRange) -> lsp_types::Rang
     lsp_types::Range::new(start, end)
 }
 
-pub(crate) fn symbol_kind(syntax_kind: SyntaxKind) -> lsp_types::SymbolKind {
-    match syntax_kind {
-        SyntaxKind::FN => lsp_types::SymbolKind::Function,
-        SyntaxKind::STRUCT => lsp_types::SymbolKind::Struct,
-        SyntaxKind::ENUM => lsp_types::SymbolKind::Enum,
-        SyntaxKind::VARIANT => lsp_types::SymbolKind::EnumMember,
-        SyntaxKind::TRAIT => lsp_types::SymbolKind::Interface,
-        SyntaxKind::MACRO_CALL => lsp_types::SymbolKind::Function,
-        SyntaxKind::MODULE => lsp_types::SymbolKind::Module,
-        SyntaxKind::TYPE_ALIAS => lsp_types::SymbolKind::TypeParameter,
-        SyntaxKind::RECORD_FIELD => lsp_types::SymbolKind::Field,
-        SyntaxKind::STATIC => lsp_types::SymbolKind::Constant,
-        SyntaxKind::CONST => lsp_types::SymbolKind::Constant,
-        SyntaxKind::IMPL => lsp_types::SymbolKind::Object,
-        _ => lsp_types::SymbolKind::Variable,
+pub(crate) fn symbol_kind(symbol_kind: SymbolKind) -> lsp_types::SymbolKind {
+    match symbol_kind {
+        SymbolKind::Function => lsp_types::SymbolKind::Function,
+        SymbolKind::Struct => lsp_types::SymbolKind::Struct,
+        SymbolKind::Enum => lsp_types::SymbolKind::Enum,
+        SymbolKind::Variant => lsp_types::SymbolKind::EnumMember,
+        SymbolKind::Trait => lsp_types::SymbolKind::Interface,
+        SymbolKind::Macro => lsp_types::SymbolKind::Function,
+        SymbolKind::Module => lsp_types::SymbolKind::Module,
+        SymbolKind::TypeAlias | SymbolKind::TypeParam => lsp_types::SymbolKind::TypeParameter,
+        SymbolKind::Field => lsp_types::SymbolKind::Field,
+        SymbolKind::Static => lsp_types::SymbolKind::Constant,
+        SymbolKind::Const => lsp_types::SymbolKind::Constant,
+        SymbolKind::ConstParam => lsp_types::SymbolKind::Constant,
+        SymbolKind::Impl => lsp_types::SymbolKind::Object,
+        SymbolKind::Local
+        | SymbolKind::SelfParam
+        | SymbolKind::LifetimeParam
+        | SymbolKind::ValueParam
+        | SymbolKind::Label => lsp_types::SymbolKind::Variable,
+        SymbolKind::Union => lsp_types::SymbolKind::Struct,
     }
 }
 
@@ -85,25 +88,35 @@ pub(crate) fn completion_item_kind(
     completion_item_kind: CompletionItemKind,
 ) -> lsp_types::CompletionItemKind {
     match completion_item_kind {
-        CompletionItemKind::Keyword => lsp_types::CompletionItemKind::Keyword,
-        CompletionItemKind::Snippet => lsp_types::CompletionItemKind::Snippet,
-        CompletionItemKind::Module => lsp_types::CompletionItemKind::Module,
-        CompletionItemKind::Function => lsp_types::CompletionItemKind::Function,
-        CompletionItemKind::Struct => lsp_types::CompletionItemKind::Struct,
-        CompletionItemKind::Enum => lsp_types::CompletionItemKind::Enum,
-        CompletionItemKind::EnumVariant => lsp_types::CompletionItemKind::EnumMember,
-        CompletionItemKind::BuiltinType => lsp_types::CompletionItemKind::Struct,
-        CompletionItemKind::Binding => lsp_types::CompletionItemKind::Variable,
-        CompletionItemKind::Field => lsp_types::CompletionItemKind::Field,
-        CompletionItemKind::Trait => lsp_types::CompletionItemKind::Interface,
-        CompletionItemKind::TypeAlias => lsp_types::CompletionItemKind::Struct,
-        CompletionItemKind::Const => lsp_types::CompletionItemKind::Constant,
-        CompletionItemKind::Static => lsp_types::CompletionItemKind::Value,
-        CompletionItemKind::Method => lsp_types::CompletionItemKind::Method,
-        CompletionItemKind::TypeParam => lsp_types::CompletionItemKind::TypeParameter,
-        CompletionItemKind::Macro => lsp_types::CompletionItemKind::Method,
         CompletionItemKind::Attribute => lsp_types::CompletionItemKind::EnumMember,
+        CompletionItemKind::Binding => lsp_types::CompletionItemKind::Variable,
+        CompletionItemKind::BuiltinType => lsp_types::CompletionItemKind::Struct,
+        CompletionItemKind::Keyword => lsp_types::CompletionItemKind::Keyword,
+        CompletionItemKind::Method => lsp_types::CompletionItemKind::Method,
+        CompletionItemKind::Snippet => lsp_types::CompletionItemKind::Snippet,
         CompletionItemKind::UnresolvedReference => lsp_types::CompletionItemKind::Reference,
+        CompletionItemKind::SymbolKind(symbol) => match symbol {
+            SymbolKind::Const => lsp_types::CompletionItemKind::Constant,
+            SymbolKind::ConstParam => lsp_types::CompletionItemKind::TypeParameter,
+            SymbolKind::Enum => lsp_types::CompletionItemKind::Enum,
+            SymbolKind::Field => lsp_types::CompletionItemKind::Field,
+            SymbolKind::Function => lsp_types::CompletionItemKind::Function,
+            SymbolKind::Impl => lsp_types::CompletionItemKind::Text,
+            SymbolKind::Label => lsp_types::CompletionItemKind::Variable,
+            SymbolKind::LifetimeParam => lsp_types::CompletionItemKind::TypeParameter,
+            SymbolKind::Local => lsp_types::CompletionItemKind::Variable,
+            SymbolKind::Macro => lsp_types::CompletionItemKind::Method,
+            SymbolKind::Module => lsp_types::CompletionItemKind::Module,
+            SymbolKind::SelfParam => lsp_types::CompletionItemKind::Value,
+            SymbolKind::Static => lsp_types::CompletionItemKind::Value,
+            SymbolKind::Struct => lsp_types::CompletionItemKind::Struct,
+            SymbolKind::Trait => lsp_types::CompletionItemKind::Interface,
+            SymbolKind::TypeAlias => lsp_types::CompletionItemKind::Struct,
+            SymbolKind::TypeParam => lsp_types::CompletionItemKind::TypeParameter,
+            SymbolKind::Union => lsp_types::CompletionItemKind::Struct,
+            SymbolKind::ValueParam => lsp_types::CompletionItemKind::Value,
+            SymbolKind::Variant => lsp_types::CompletionItemKind::EnumMember,
+        },
     }
 }
 
@@ -160,7 +173,13 @@ pub(crate) fn completion_item(
     line_index: &LineIndex,
     line_endings: LineEndings,
     completion_item: CompletionItem,
-) -> lsp_types::CompletionItem {
+) -> Vec<lsp_types::CompletionItem> {
+    fn set_score(res: &mut lsp_types::CompletionItem, label: &str) {
+        res.preselect = Some(true);
+        // HACK: sort preselect items first
+        res.sort_text = Some(format!(" {}", label));
+    }
+
     let mut additional_text_edits = Vec::new();
     let mut text_edit = None;
     // LSP does not allow arbitrary edits in completion, so we have to do a
@@ -200,9 +219,7 @@ pub(crate) fn completion_item(
     };
 
     if completion_item.score().is_some() {
-        res.preselect = Some(true);
-        // HACK: sort preselect items first
-        res.sort_text = Some(format!(" {}", completion_item.label()));
+        set_score(&mut res, completion_item.label());
     }
 
     if completion_item.deprecated() {
@@ -217,9 +234,22 @@ pub(crate) fn completion_item(
         });
     }
 
-    res.insert_text_format = Some(insert_text_format(completion_item.insert_text_format()));
+    let mut all_results = match completion_item.ref_match() {
+        Some(ref_match) => {
+            let mut refed = res.clone();
+            let (mutability, _score) = ref_match;
+            let label = format!("&{}{}", mutability.as_keyword_for_ref(), refed.label);
+            set_score(&mut refed, &label);
+            refed.label = label;
+            vec![res, refed]
+        }
+        None => vec![res],
+    };
 
-    res
+    for mut r in all_results.iter_mut() {
+        r.insert_text_format = Some(insert_text_format(completion_item.insert_text_format()));
+    }
+    all_results
 }
 
 pub(crate) fn signature_help(
@@ -261,9 +291,9 @@ pub(crate) fn signature_help(
                     label.push_str(", ");
                 }
                 first = false;
-                let start = label.len() as u64;
+                let start = label.len() as u32;
                 label.push_str(param);
-                let end = label.len() as u64;
+                let end = label.len() as u32;
                 params.push(lsp_types::ParameterInformation {
                     label: lsp_types::ParameterLabel::LabelOffsets([start, end]),
                     documentation: None,
@@ -285,12 +315,18 @@ pub(crate) fn signature_help(
         })
     };
 
-    let signature =
-        lsp_types::SignatureInformation { label, documentation, parameters: Some(parameters) };
+    let active_parameter = call_info.active_parameter.map(|it| it as u32);
+
+    let signature = lsp_types::SignatureInformation {
+        label,
+        documentation,
+        parameters: Some(parameters),
+        active_parameter,
+    };
     lsp_types::SignatureHelp {
         signatures: vec![signature],
         active_signature: None,
-        active_parameter: call_info.active_parameter.map(|it| it as i64),
+        active_parameter,
     }
 }
 
@@ -311,12 +347,15 @@ static TOKEN_RESULT_COUNTER: AtomicU32 = AtomicU32::new(1);
 pub(crate) fn semantic_tokens(
     text: &str,
     line_index: &LineIndex,
-    highlights: Vec<HighlightedRange>,
+    highlights: Vec<HlRange>,
 ) -> lsp_types::SemanticTokens {
     let id = TOKEN_RESULT_COUNTER.fetch_add(1, Ordering::SeqCst).to_string();
     let mut builder = semantic_tokens::SemanticTokensBuilder::new(id);
 
     for highlight_range in highlights {
+        if highlight_range.highlight.is_empty() {
+            continue;
+        }
         let (type_, mods) = semantic_token_type_and_modifiers(highlight_range.highlight);
         let token_index = semantic_tokens::type_index(type_);
         let modifier_bitset = mods.0;
@@ -348,60 +387,79 @@ fn semantic_token_type_and_modifiers(
 ) -> (lsp_types::SemanticTokenType, semantic_tokens::ModifierSet) {
     let mut mods = semantic_tokens::ModifierSet::default();
     let type_ = match highlight.tag {
-        HighlightTag::Struct => lsp_types::SemanticTokenType::STRUCT,
-        HighlightTag::Enum => lsp_types::SemanticTokenType::ENUM,
-        HighlightTag::Union => semantic_tokens::UNION,
-        HighlightTag::TypeAlias => semantic_tokens::TYPE_ALIAS,
-        HighlightTag::Trait => lsp_types::SemanticTokenType::INTERFACE,
-        HighlightTag::BuiltinType => semantic_tokens::BUILTIN_TYPE,
-        HighlightTag::SelfKeyword => semantic_tokens::SELF_KEYWORD,
-        HighlightTag::SelfType => lsp_types::SemanticTokenType::TYPE,
-        HighlightTag::Field => lsp_types::SemanticTokenType::PROPERTY,
-        HighlightTag::Function => lsp_types::SemanticTokenType::FUNCTION,
-        HighlightTag::Generic => semantic_tokens::GENERIC,
-        HighlightTag::Module => lsp_types::SemanticTokenType::NAMESPACE,
-        HighlightTag::Constant => {
-            mods |= semantic_tokens::CONSTANT;
-            mods |= lsp_types::SemanticTokenModifier::STATIC;
-            lsp_types::SemanticTokenType::VARIABLE
-        }
-        HighlightTag::Static => {
-            mods |= lsp_types::SemanticTokenModifier::STATIC;
-            lsp_types::SemanticTokenType::VARIABLE
-        }
-        HighlightTag::EnumVariant => lsp_types::SemanticTokenType::ENUM_MEMBER,
-        HighlightTag::Macro => lsp_types::SemanticTokenType::MACRO,
-        HighlightTag::ValueParam => lsp_types::SemanticTokenType::PARAMETER,
-        HighlightTag::Local => lsp_types::SemanticTokenType::VARIABLE,
-        HighlightTag::TypeParam => lsp_types::SemanticTokenType::TYPE_PARAMETER,
-        HighlightTag::Lifetime => semantic_tokens::LIFETIME,
-        HighlightTag::ByteLiteral | HighlightTag::NumericLiteral => {
-            lsp_types::SemanticTokenType::NUMBER
-        }
-        HighlightTag::BoolLiteral => semantic_tokens::BOOLEAN,
-        HighlightTag::CharLiteral | HighlightTag::StringLiteral => {
-            lsp_types::SemanticTokenType::STRING
-        }
-        HighlightTag::Comment => lsp_types::SemanticTokenType::COMMENT,
-        HighlightTag::Attribute => semantic_tokens::ATTRIBUTE,
-        HighlightTag::Keyword => lsp_types::SemanticTokenType::KEYWORD,
-        HighlightTag::UnresolvedReference => semantic_tokens::UNRESOLVED_REFERENCE,
-        HighlightTag::FormatSpecifier => semantic_tokens::FORMAT_SPECIFIER,
-        HighlightTag::Operator => lsp_types::SemanticTokenType::OPERATOR,
-        HighlightTag::EscapeSequence => semantic_tokens::ESCAPE_SEQUENCE,
-        HighlightTag::Punctuation => semantic_tokens::PUNCTUATION,
+        HlTag::Symbol(symbol) => match symbol {
+            SymbolKind::Module => lsp_types::SemanticTokenType::NAMESPACE,
+            SymbolKind::Impl => lsp_types::SemanticTokenType::TYPE,
+            SymbolKind::Field => lsp_types::SemanticTokenType::PROPERTY,
+            SymbolKind::TypeParam => lsp_types::SemanticTokenType::TYPE_PARAMETER,
+            SymbolKind::ConstParam => semantic_tokens::CONST_PARAMETER,
+            SymbolKind::LifetimeParam => semantic_tokens::LIFETIME,
+            SymbolKind::Label => semantic_tokens::LABEL,
+            SymbolKind::ValueParam => lsp_types::SemanticTokenType::PARAMETER,
+            SymbolKind::SelfParam => semantic_tokens::SELF_KEYWORD,
+            SymbolKind::Local => lsp_types::SemanticTokenType::VARIABLE,
+            SymbolKind::Function => {
+                if highlight.mods.contains(HlMod::Associated) {
+                    lsp_types::SemanticTokenType::METHOD
+                } else {
+                    lsp_types::SemanticTokenType::FUNCTION
+                }
+            }
+            SymbolKind::Const => {
+                mods |= semantic_tokens::CONSTANT;
+                mods |= lsp_types::SemanticTokenModifier::STATIC;
+                lsp_types::SemanticTokenType::VARIABLE
+            }
+            SymbolKind::Static => {
+                mods |= lsp_types::SemanticTokenModifier::STATIC;
+                lsp_types::SemanticTokenType::VARIABLE
+            }
+            SymbolKind::Struct => lsp_types::SemanticTokenType::STRUCT,
+            SymbolKind::Enum => lsp_types::SemanticTokenType::ENUM,
+            SymbolKind::Variant => lsp_types::SemanticTokenType::ENUM_MEMBER,
+            SymbolKind::Union => semantic_tokens::UNION,
+            SymbolKind::TypeAlias => semantic_tokens::TYPE_ALIAS,
+            SymbolKind::Trait => lsp_types::SemanticTokenType::INTERFACE,
+            SymbolKind::Macro => lsp_types::SemanticTokenType::MACRO,
+        },
+        HlTag::BuiltinType => semantic_tokens::BUILTIN_TYPE,
+        HlTag::None => semantic_tokens::GENERIC,
+        HlTag::ByteLiteral | HlTag::NumericLiteral => lsp_types::SemanticTokenType::NUMBER,
+        HlTag::BoolLiteral => semantic_tokens::BOOLEAN,
+        HlTag::CharLiteral | HlTag::StringLiteral => lsp_types::SemanticTokenType::STRING,
+        HlTag::Comment => lsp_types::SemanticTokenType::COMMENT,
+        HlTag::Attribute => semantic_tokens::ATTRIBUTE,
+        HlTag::Keyword => lsp_types::SemanticTokenType::KEYWORD,
+        HlTag::UnresolvedReference => semantic_tokens::UNRESOLVED_REFERENCE,
+        HlTag::FormatSpecifier => semantic_tokens::FORMAT_SPECIFIER,
+        HlTag::Operator => lsp_types::SemanticTokenType::OPERATOR,
+        HlTag::EscapeSequence => semantic_tokens::ESCAPE_SEQUENCE,
+        HlTag::Punctuation(punct) => match punct {
+            HlPunct::Bracket => semantic_tokens::BRACKET,
+            HlPunct::Brace => semantic_tokens::BRACE,
+            HlPunct::Parenthesis => semantic_tokens::PARENTHESIS,
+            HlPunct::Angle => semantic_tokens::ANGLE,
+            HlPunct::Comma => semantic_tokens::COMMA,
+            HlPunct::Dot => semantic_tokens::DOT,
+            HlPunct::Colon => semantic_tokens::COLON,
+            HlPunct::Semi => semantic_tokens::SEMICOLON,
+            HlPunct::Other => semantic_tokens::PUNCTUATION,
+        },
     };
 
-    for modifier in highlight.modifiers.iter() {
+    for modifier in highlight.mods.iter() {
         let modifier = match modifier {
-            HighlightModifier::Attribute => semantic_tokens::ATTRIBUTE_MODIFIER,
-            HighlightModifier::Definition => lsp_types::SemanticTokenModifier::DECLARATION,
-            HighlightModifier::Documentation => lsp_types::SemanticTokenModifier::DOCUMENTATION,
-            HighlightModifier::Injected => semantic_tokens::INJECTED,
-            HighlightModifier::ControlFlow => semantic_tokens::CONTROL_FLOW,
-            HighlightModifier::Mutable => semantic_tokens::MUTABLE,
-            HighlightModifier::Consuming => semantic_tokens::CONSUMING,
-            HighlightModifier::Unsafe => semantic_tokens::UNSAFE,
+            HlMod::Attribute => semantic_tokens::ATTRIBUTE_MODIFIER,
+            HlMod::Definition => lsp_types::SemanticTokenModifier::DECLARATION,
+            HlMod::Documentation => lsp_types::SemanticTokenModifier::DOCUMENTATION,
+            HlMod::Injected => semantic_tokens::INJECTED,
+            HlMod::ControlFlow => semantic_tokens::CONTROL_FLOW,
+            HlMod::Mutable => semantic_tokens::MUTABLE,
+            HlMod::Consuming => semantic_tokens::CONSUMING,
+            HlMod::Unsafe => semantic_tokens::UNSAFE,
+            HlMod::Callable => semantic_tokens::CALLABLE,
+            HlMod::Static => lsp_types::SemanticTokenModifier::STATIC,
+            HlMod::Associated => continue,
         };
         mods |= modifier;
     }
@@ -493,13 +551,13 @@ pub(crate) fn url_from_abs_path(path: &Path) -> lsp_types::Url {
     lsp_types::Url::parse(&url).unwrap()
 }
 
-pub(crate) fn versioned_text_document_identifier(
+pub(crate) fn optional_versioned_text_document_identifier(
     snap: &GlobalStateSnapshot,
     file_id: FileId,
-) -> lsp_types::VersionedTextDocumentIdentifier {
+) -> lsp_types::OptionalVersionedTextDocumentIdentifier {
     let url = url(snap, file_id);
     let version = snap.url_file_version(&url);
-    lsp_types::VersionedTextDocumentIdentifier { uri: url, version }
+    lsp_types::OptionalVersionedTextDocumentIdentifier { uri: url, version }
 }
 
 pub(crate) fn location(
@@ -566,7 +624,7 @@ pub(crate) fn goto_definition_response(
     src: Option<FileRange>,
     targets: Vec<NavigationTarget>,
 ) -> Result<lsp_types::GotoDefinitionResponse> {
-    if snap.config.client_caps.location_link {
+    if snap.config.location_link() {
         let links = targets
             .into_iter()
             .map(|nav| location_link(snap, src, nav))
@@ -586,34 +644,60 @@ pub(crate) fn goto_definition_response(
 pub(crate) fn snippet_text_document_edit(
     snap: &GlobalStateSnapshot,
     is_snippet: bool,
-    source_file_edit: SourceFileEdit,
+    file_id: FileId,
+    edit: TextEdit,
 ) -> Result<lsp_ext::SnippetTextDocumentEdit> {
-    let text_document = versioned_text_document_identifier(snap, source_file_edit.file_id);
-    let line_index = snap.analysis.file_line_index(source_file_edit.file_id)?;
-    let line_endings = snap.file_line_endings(source_file_edit.file_id);
-    let edits = source_file_edit
-        .edit
+    let text_document = optional_versioned_text_document_identifier(snap, file_id);
+    let line_index = snap.analysis.file_line_index(file_id)?;
+    let line_endings = snap.file_line_endings(file_id);
+    let edits = edit
         .into_iter()
         .map(|it| snippet_text_edit(&line_index, line_endings, is_snippet, it))
         .collect();
     Ok(lsp_ext::SnippetTextDocumentEdit { text_document, edits })
 }
 
-pub(crate) fn resource_op(
+pub(crate) fn snippet_text_document_ops(
     snap: &GlobalStateSnapshot,
     file_system_edit: FileSystemEdit,
-) -> lsp_types::ResourceOp {
+) -> Vec<lsp_ext::SnippetDocumentChangeOperation> {
+    let mut ops = Vec::new();
     match file_system_edit {
-        FileSystemEdit::CreateFile { anchor, dst } => {
-            let uri = snap.anchored_path(anchor, &dst);
-            lsp_types::ResourceOp::Create(lsp_types::CreateFile { uri, options: None })
+        FileSystemEdit::CreateFile { dst, initial_contents } => {
+            let uri = snap.anchored_path(&dst);
+            let create_file = lsp_types::ResourceOp::Create(lsp_types::CreateFile {
+                uri: uri.clone(),
+                options: None,
+                annotation_id: None,
+            });
+            ops.push(lsp_ext::SnippetDocumentChangeOperation::Op(create_file));
+            if !initial_contents.is_empty() {
+                let text_document =
+                    lsp_types::OptionalVersionedTextDocumentIdentifier { uri, version: None };
+                let range = range(&LineIndex::new(""), TextRange::empty(TextSize::from(0)));
+                let text_edit = lsp_ext::SnippetTextEdit {
+                    range,
+                    new_text: initial_contents,
+                    insert_text_format: Some(lsp_types::InsertTextFormat::PlainText),
+                };
+                let edit_file =
+                    lsp_ext::SnippetTextDocumentEdit { text_document, edits: vec![text_edit] };
+                ops.push(lsp_ext::SnippetDocumentChangeOperation::Edit(edit_file));
+            }
         }
-        FileSystemEdit::MoveFile { src, anchor, dst } => {
+        FileSystemEdit::MoveFile { src, dst } => {
             let old_uri = snap.file_id_to_url(src);
-            let new_uri = snap.anchored_path(anchor, &dst);
-            lsp_types::ResourceOp::Rename(lsp_types::RenameFile { old_uri, new_uri, options: None })
+            let new_uri = snap.anchored_path(&dst);
+            let rename_file = lsp_types::ResourceOp::Rename(lsp_types::RenameFile {
+                old_uri,
+                new_uri,
+                options: None,
+                annotation_id: None,
+            });
+            ops.push(lsp_ext::SnippetDocumentChangeOperation::Op(rename_file))
         }
     }
+    ops
 }
 
 pub(crate) fn snippet_workspace_edit(
@@ -622,11 +706,11 @@ pub(crate) fn snippet_workspace_edit(
 ) -> Result<lsp_ext::SnippetWorkspaceEdit> {
     let mut document_changes: Vec<lsp_ext::SnippetDocumentChangeOperation> = Vec::new();
     for op in source_change.file_system_edits {
-        let op = resource_op(&snap, op);
-        document_changes.push(lsp_ext::SnippetDocumentChangeOperation::Op(op));
+        let ops = snippet_text_document_ops(snap, op);
+        document_changes.extend_from_slice(&ops);
     }
-    for edit in source_change.source_file_edits {
-        let edit = snippet_text_document_edit(&snap, source_change.is_snippet, edit)?;
+    for (file_id, edit) in source_change.source_file_edits {
+        let edit = snippet_text_document_edit(&snap, source_change.is_snippet, file_id, edit)?;
         document_changes.push(lsp_ext::SnippetDocumentChangeOperation::Edit(edit));
     }
     let workspace_edit =
@@ -661,9 +745,11 @@ impl From<lsp_ext::SnippetWorkspaceEdit> for lsp_types::WorkspaceEdit {
                                         edits: edit
                                             .edits
                                             .into_iter()
-                                            .map(|edit| lsp_types::TextEdit {
-                                                range: edit.range,
-                                                new_text: edit.new_text,
+                                            .map(|edit| {
+                                                lsp_types::OneOf::Left(lsp_types::TextEdit {
+                                                    range: edit.range,
+                                                    new_text: edit.new_text,
+                                                })
                                             })
                                             .collect(),
                                     },
@@ -673,6 +759,7 @@ impl From<lsp_ext::SnippetWorkspaceEdit> for lsp_types::WorkspaceEdit {
                         .collect(),
                 )
             }),
+            change_annotations: None,
         }
     }
 }
@@ -683,9 +770,18 @@ pub(crate) fn call_hierarchy_item(
 ) -> Result<lsp_types::CallHierarchyItem> {
     let name = target.name.to_string();
     let detail = target.description.clone();
-    let kind = symbol_kind(target.kind);
+    let kind = target.kind.map(symbol_kind).unwrap_or(lsp_types::SymbolKind::Function);
     let (uri, range, selection_range) = location_info(snap, target)?;
-    Ok(lsp_types::CallHierarchyItem { name, kind, tags: None, detail, uri, range, selection_range })
+    Ok(lsp_types::CallHierarchyItem {
+        name,
+        kind,
+        tags: None,
+        detail,
+        uri,
+        range,
+        selection_range,
+        data: None,
+    })
 }
 
 pub(crate) fn code_action_kind(kind: AssistKind) -> lsp_types::CodeActionKind {
@@ -701,32 +797,39 @@ pub(crate) fn code_action_kind(kind: AssistKind) -> lsp_types::CodeActionKind {
 
 pub(crate) fn unresolved_code_action(
     snap: &GlobalStateSnapshot,
+    code_action_params: lsp_types::CodeActionParams,
     assist: Assist,
     index: usize,
 ) -> Result<lsp_ext::CodeAction> {
+    assert!(assist.source_change.is_none());
     let res = lsp_ext::CodeAction {
         title: assist.label.to_string(),
-        id: Some(format!("{}:{}", assist.id.0, index.to_string())),
-        group: assist.group.filter(|_| snap.config.client_caps.code_action_group).map(|gr| gr.0),
+        group: assist.group.filter(|_| snap.config.code_action_group()).map(|gr| gr.0),
         kind: Some(code_action_kind(assist.id.1)),
         edit: None,
         is_preferred: None,
+        data: Some(lsp_ext::CodeActionData {
+            id: format!("{}:{}", assist.id.0, index.to_string()),
+            code_action_params,
+        }),
     };
     Ok(res)
 }
 
 pub(crate) fn resolved_code_action(
     snap: &GlobalStateSnapshot,
-    assist: ResolvedAssist,
+    assist: Assist,
 ) -> Result<lsp_ext::CodeAction> {
-    let change = assist.source_change;
-    unresolved_code_action(snap, assist.assist, 0).and_then(|it| {
-        Ok(lsp_ext::CodeAction {
-            id: None,
-            edit: Some(snippet_workspace_edit(snap, change)?),
-            ..it
-        })
-    })
+    let change = assist.source_change.unwrap();
+    let res = lsp_ext::CodeAction {
+        edit: Some(snippet_workspace_edit(snap, change)?),
+        title: assist.label.to_string(),
+        group: assist.group.filter(|_| snap.config.code_action_group()).map(|gr| gr.0),
+        kind: Some(code_action_kind(assist.id.1)),
+        is_preferred: None,
+        data: None,
+    };
+    Ok(res)
 }
 
 pub(crate) fn runnable(
@@ -734,11 +837,12 @@ pub(crate) fn runnable(
     file_id: FileId,
     runnable: Runnable,
 ) -> Result<lsp_ext::Runnable> {
+    let config = snap.config.runnables();
     let spec = CargoTargetSpec::for_file(snap, file_id)?;
     let workspace_root = spec.as_ref().map(|it| it.workspace_root.clone());
     let target = spec.as_ref().map(|s| s.target.clone());
     let (cargo_args, executable_args) =
-        CargoTargetSpec::runnable_args(snap, spec, &runnable.kind, &runnable.cfg_exprs)?;
+        CargoTargetSpec::runnable_args(snap, spec, &runnable.kind, &runnable.cfg)?;
     let label = runnable.label(target);
     let location = location_link(snap, None, runnable.nav)?;
 
@@ -748,7 +852,9 @@ pub(crate) fn runnable(
         kind: lsp_ext::RunnableKind::Cargo,
         args: lsp_ext::CargoRunnable {
             workspace_root: workspace_root.map(|it| it.into()),
+            override_cargo: config.override_cargo,
             cargo_args,
+            cargo_extra_args: config.cargo_extra_args,
             executable_args,
             expect_test: None,
         },
@@ -760,11 +866,66 @@ pub(crate) fn markup_content(markup: Markup) -> lsp_types::MarkupContent {
     lsp_types::MarkupContent { kind: lsp_types::MarkupKind::Markdown, value }
 }
 
+pub(crate) fn rename_error(err: RenameError) -> crate::LspError {
+    crate::LspError { code: lsp_server::ErrorCode::InvalidParams as i32, message: err.to_string() }
+}
+
 #[cfg(test)]
 mod tests {
+    use hir::PrefixKind;
     use ide::Analysis;
+    use ide_db::helpers::{insert_use::InsertUseConfig, SnippetCap};
 
     use super::*;
+
+    #[test]
+    fn test_completion_with_ref() {
+        let fixture = r#"
+        struct Foo;
+        fn foo(arg: &Foo) {}
+        fn main() {
+            let arg = Foo;
+            foo($0)
+        }"#;
+
+        let (offset, text) = test_utils::extract_offset(fixture);
+        let line_index = LineIndex::new(&text);
+        let (analysis, file_id) = Analysis::from_single_file(text);
+        let completions: Vec<(String, Option<String>)> = analysis
+            .completions(
+                &ide::CompletionConfig {
+                    enable_postfix_completions: true,
+                    enable_imports_on_the_fly: true,
+                    add_call_parenthesis: true,
+                    add_call_argument_snippets: true,
+                    snippet_cap: SnippetCap::new(true),
+                    insert_use: InsertUseConfig { merge: None, prefix_kind: PrefixKind::Plain },
+                },
+                ide_db::base_db::FilePosition { file_id, offset },
+            )
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.label().ends_with("arg"))
+            .map(|c| completion_item(&line_index, LineEndings::Unix, c))
+            .flat_map(|comps| comps.into_iter().map(|c| (c.label, c.sort_text)))
+            .collect();
+        expect_test::expect![[r#"
+            [
+                (
+                    "arg",
+                    None,
+                ),
+                (
+                    "&arg",
+                    Some(
+                        " &arg",
+                    ),
+                ),
+            ]
+        "#]]
+        .assert_debug_eq(&completions);
+    }
 
     #[test]
     fn conv_fold_line_folding_only_fixup() {

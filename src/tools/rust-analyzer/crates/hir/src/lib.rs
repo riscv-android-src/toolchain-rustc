@@ -34,35 +34,36 @@ pub use crate::{
     attrs::{HasAttrs, Namespace},
     code_model::{
         Access, Adt, AsAssocItem, AssocItem, AssocItemContainer, Callable, CallableKind, Const,
-        Crate, CrateDependency, DefWithBody, Enum, EnumVariant, Field, FieldSource, Function,
-        GenericDef, HasVisibility, ImplDef, Local, MacroDef, Module, ModuleDef, ScopeDef, Static,
-        Struct, Trait, Type, TypeAlias, TypeParam, Union, VariantDef, Visibility,
+        ConstParam, Crate, CrateDependency, DefWithBody, Enum, Field, FieldSource, Function,
+        GenericDef, GenericParam, HasVisibility, Impl, Label, LifetimeParam, Local, MacroDef,
+        Module, ModuleDef, ScopeDef, Static, Struct, Trait, Type, TypeAlias, TypeParam, Union,
+        Variant, VariantDef,
     },
     has_source::HasSource,
-    semantics::{original_range, PathResolution, Semantics, SemanticsScope},
+    semantics::{PathResolution, Semantics, SemanticsScope},
 };
 
 pub use hir_def::{
     adt::StructKind,
-    attr::Attrs,
+    attr::{Attrs, Documentation},
     body::scope::ExprScopes,
     builtin_type::BuiltinType,
-    docs::Documentation,
+    find_path::PrefixKind,
+    import_map,
     item_scope::ItemInNs,
     nameres::ModuleSource,
-    path::ModPath,
+    path::{ModPath, PathKind},
     type_ref::{Mutability, TypeRef},
+    visibility::Visibility,
 };
 pub use hir_expand::{
-    name::AsName, name::Name, HirFileId, InFile, MacroCallId, MacroCallLoc,
-    /* FIXME */ MacroDefId, MacroFile, Origin,
+    name::{known, AsName, Name},
+    ExpandResult, HirFileId, InFile, MacroCallId, MacroCallLoc, /* FIXME */ MacroDefId,
+    MacroFile, Origin,
 };
 pub use hir_ty::display::HirDisplay;
 
 // These are negative re-exports: pub using these names is forbidden, they
 // should remain private to hir internals.
 #[allow(unused)]
-use {
-    hir_def::path::{Path, PathKind},
-    hir_expand::hygiene::Hygiene,
-};
+use {hir_def::path::Path, hir_expand::hygiene::Hygiene};

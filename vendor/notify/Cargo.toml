@@ -13,9 +13,9 @@
 [package]
 edition = "2018"
 name = "notify"
-version = "5.0.0-pre.3"
+version = "5.0.0-pre.5"
 authors = ["Félix Saparelli <me@passcod.name>", "Daniel Faust <hessijames@gmail.com>"]
-exclude = ["/.travis.yml", "/clippy.toml", ".github/*"]
+exclude = ["/clippy.toml", ".github/*"]
 description = "Cross-platform filesystem notification library"
 homepage = "https://github.com/notify-rs/notify"
 documentation = "https://docs.rs/notify"
@@ -31,7 +31,7 @@ version = "0.12.1"
 version = "1.0.4"
 
 [dependencies.crossbeam-channel]
-version = "0.4.0"
+version = "0.5.0"
 
 [dependencies.filetime]
 version = "0.2.6"
@@ -53,14 +53,12 @@ version = "1.0.39"
 manual_tests = []
 timing_tests = []
 [target."cfg(target_os=\"linux\")".dependencies.inotify]
-version = "0.8"
+version = "0.9"
 default-features = false
 
 [target."cfg(target_os=\"linux\")".dependencies.mio]
-version = "0.6.15"
-
-[target."cfg(target_os=\"linux\")".dependencies.mio-extras]
-version = "2.0.5"
+version = "0.7.7"
+features = ["os-ext"]
 [target."cfg(target_os=\"macos\")".dependencies.fsevent]
 version = "2.0.1"
 
@@ -69,6 +67,3 @@ version = "3"
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3.8"
 features = ["fileapi", "handleapi", "ioapiset", "minwinbase", "synchapi", "winbase", "winnt"]
-[badges.travis-ci]
-branch = "main"
-repository = "notify-rs/notify"

@@ -12,15 +12,15 @@ use std::marker::PhantomData;
 
 use crate::{
     syntax_node::{SyntaxNode, SyntaxNodeChildren, SyntaxToken},
-    SmolStr, SyntaxKind,
+    SyntaxKind,
 };
 
 pub use self::{
     expr_ext::{ArrayExprKind, BinOp, Effect, ElseBranch, LiteralKind, PrefixOp, RangeOp},
-    generated::*,
+    generated::{nodes::*, tokens::*},
     node_ext::{
-        AttrKind, FieldKind, NameOrNameRef, PathSegmentKind, SelfParamKind, SlicePatComponents,
-        StructKind, TypeBoundKind, VisibilityKind,
+        AttrKind, FieldKind, Macro, NameOrNameRef, PathSegmentKind, SelfParamKind,
+        SlicePatComponents, StructKind, TypeBoundKind, VisibilityKind,
     },
     token_ext::*,
     traits::*,
@@ -54,7 +54,7 @@ pub trait AstToken {
 
     fn syntax(&self) -> &SyntaxToken;
 
-    fn text(&self) -> &SmolStr {
+    fn text(&self) -> &str {
         self.syntax().text()
     }
 }
@@ -115,7 +115,22 @@ fn test_doc_comment_none() {
 }
 
 #[test]
-fn test_doc_comment_of_items() {
+fn test_outer_doc_comment_of_items() {
+    let file = SourceFile::parse(
+        r#"
+        /// doc
+        // non-doc
+        mod foo {}
+        "#,
+    )
+    .ok()
+    .unwrap();
+    let module = file.syntax().descendants().find_map(Module::cast).unwrap();
+    assert_eq!("doc", module.doc_comment_text().unwrap());
+}
+
+#[test]
+fn test_inner_doc_comment_of_items() {
     let file = SourceFile::parse(
         r#"
         //! doc
@@ -126,7 +141,7 @@ fn test_doc_comment_of_items() {
     .ok()
     .unwrap();
     let module = file.syntax().descendants().find_map(Module::cast).unwrap();
-    assert_eq!("doc", module.doc_comment_text().unwrap());
+    assert!(module.doc_comment_text().is_none());
 }
 
 #[test]
@@ -296,7 +311,7 @@ where
     let pred = predicates.next().unwrap();
     let mut bounds = pred.type_bound_list().unwrap().bounds();
 
-    assert_eq!("'a", pred.lifetime_token().unwrap().text());
+    assert_eq!("'a", pred.lifetime().unwrap().lifetime_ident_token().unwrap().text());
 
     assert_bound("'b", bounds.next());
     assert_bound("'c", bounds.next());

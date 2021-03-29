@@ -95,28 +95,33 @@ fn duration_from_f64(millis: f64) -> Duration {
         + Duration::from_nanos((millis.fract() * 1.0e6) as u64)
 }
 
-fn duration_to_f64(d: Duration) -> f64 {
-    d.as_secs() as f64 * 1.0e3 + f64::from(d.subsec_nanos()) * 1.0e-6
-}
-
 #[cfg(all(feature = "stdweb", not(feature = "wasm-bindgen")))]
 #[allow(unused_results)] // Needed because the js macro triggers it.
 pub fn now() -> f64 {
     use stdweb::unstable::TryInto;
 
     // https://developer.mozilla.org/en-US/docs/Web/API/Performance/now
+    #[cfg(not(feature = "inaccurate"))]
     let v = js! { return performance.now(); };
+    #[cfg(feature = "inaccurate")]
+    let v = js! { return Date.now(); };
     v.try_into().unwrap()
 }
 
 #[cfg(feature = "wasm-bindgen")]
 pub fn now() -> f64 {
-    use wasm_bindgen_rs::prelude::*;
-    use wasm_bindgen_rs::JsCast;
-    js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance"))
-        .expect("failed to get performance from global object")
-        .unchecked_into::<web_sys::Performance>()
-        .now()
+    #[cfg(not(feature = "inaccurate"))]
+    let now = {
+        use wasm_bindgen_rs::prelude::*;
+        use wasm_bindgen_rs::JsCast;
+        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance"))
+            .expect("failed to get performance from global object")
+            .unchecked_into::<web_sys::Performance>()
+            .now()
+    };
+    #[cfg(feature = "inaccurate")]
+    let now = js_sys::Date::now();
+    now
 }
 
 // The JS now function is in a module so it won't have to be renamed

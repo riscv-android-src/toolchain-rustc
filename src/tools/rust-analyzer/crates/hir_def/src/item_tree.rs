@@ -1,8 +1,6 @@
 //! A simplified AST that only contains items.
 
 mod lower;
-#[cfg(test)]
-mod tests;
 
 use std::{
     any::type_name,
@@ -13,8 +11,8 @@ use std::{
     sync::Arc,
 };
 
-use arena::{Arena, Idx, RawId};
-use ast::{AstNode, AttrsOwner, NameOwner, StructKind};
+use ast::{AstNode, NameOwner, StructKind};
+use base_db::CrateId;
 use either::Either;
 use hir_expand::{
     ast_id_map::FileAstId,
@@ -22,13 +20,15 @@ use hir_expand::{
     name::{name, AsName, Name},
     HirFileId, InFile,
 };
+use la_arena::{Arena, Idx, RawIdx};
+use profile::Count;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use syntax::{ast, match_ast};
 use test_utils::mark;
 
 use crate::{
-    attr::Attrs,
+    attr::{Attrs, RawAttrs},
     db::DefDatabase,
     generics::GenericParams,
     path::{path, AssociatedTypeBinding, GenericArgs, ImportAlias, ModPath, Path, PathKind},
@@ -66,22 +66,23 @@ impl GenericParamsId {
 }
 
 /// The item tree of a source file.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub struct ItemTree {
+    _c: Count<Self>,
+
     top_level: SmallVec<[ModItem; 1]>,
-    attrs: FxHashMap<AttrOwner, Attrs>,
-    inner_items: FxHashMap<FileAstId<ast::Item>, SmallVec<[ModItem; 1]>>,
+    attrs: FxHashMap<AttrOwner, RawAttrs>,
 
     data: Option<Box<ItemTreeData>>,
 }
 
 impl ItemTree {
-    pub fn item_tree_query(db: &dyn DefDatabase, file_id: HirFileId) -> Arc<ItemTree> {
+    pub(crate) fn item_tree_query(db: &dyn DefDatabase, file_id: HirFileId) -> Arc<ItemTree> {
         let _p = profile::span("item_tree_query").detail(|| format!("{:?}", file_id));
         let syntax = if let Some(node) = db.parse_or_expand(file_id) {
             node
         } else {
-            return Arc::new(Self::empty());
+            return Default::default();
         };
 
         let hygiene = Hygiene::new(db.upcast(), file_id);
@@ -90,19 +91,24 @@ impl ItemTree {
         let mut item_tree = match_ast! {
             match syntax {
                 ast::SourceFile(file) => {
-                    top_attrs = Some(Attrs::new(&file, &hygiene));
+                    top_attrs = Some(RawAttrs::new(&file, &hygiene));
                     ctx.lower_module_items(&file)
                 },
                 ast::MacroItems(items) => {
                     ctx.lower_module_items(&items)
                 },
-                // Macros can expand to expressions. We return an empty item tree in this case, but
-                // still need to collect inner items.
+                ast::MacroStmts(stmts) => {
+                    // The produced statements can include items, which should be added as top-level
+                    // items.
+                    ctx.lower_macro_stmts(stmts)
+                },
                 ast::Expr(e) => {
+                    // Macros can expand to expressions. We return an empty item tree in this case, but
+                    // still need to collect inner items.
                     ctx.lower_inner_items(e.syntax())
                 },
                 _ => {
-                    panic!("cannot create item tree from {:?}", syntax);
+                    panic!("cannot create item tree from {:?} {}", syntax, syntax);
                 },
             }
         };
@@ -112,15 +118,6 @@ impl ItemTree {
         }
         item_tree.shrink_to_fit();
         Arc::new(item_tree)
-    }
-
-    fn empty() -> Self {
-        Self {
-            top_level: Default::default(),
-            attrs: Default::default(),
-            inner_items: Default::default(),
-            data: Default::default(),
-        }
     }
 
     fn shrink_to_fit(&mut self) {
@@ -141,9 +138,11 @@ impl ItemTree {
                 type_aliases,
                 mods,
                 macro_calls,
-                exprs,
+                macro_rules,
+                macro_defs,
                 vis,
                 generics,
+                inner_items,
             } = &mut **data;
 
             imports.shrink_to_fit();
@@ -161,10 +160,13 @@ impl ItemTree {
             type_aliases.shrink_to_fit();
             mods.shrink_to_fit();
             macro_calls.shrink_to_fit();
-            exprs.shrink_to_fit();
+            macro_rules.shrink_to_fit();
+            macro_defs.shrink_to_fit();
 
             vis.arena.shrink_to_fit();
             generics.arena.shrink_to_fit();
+
+            inner_items.shrink_to_fit();
         }
     }
 
@@ -175,24 +177,30 @@ impl ItemTree {
     }
 
     /// Returns the inner attributes of the source file.
-    pub fn top_level_attrs(&self) -> &Attrs {
-        self.attrs.get(&AttrOwner::TopLevel).unwrap_or(&Attrs::EMPTY)
+    pub fn top_level_attrs(&self, db: &dyn DefDatabase, krate: CrateId) -> Attrs {
+        self.attrs.get(&AttrOwner::TopLevel).unwrap_or(&RawAttrs::EMPTY).clone().filter(db, krate)
     }
 
-    pub fn attrs(&self, of: AttrOwner) -> &Attrs {
-        self.attrs.get(&of).unwrap_or(&Attrs::EMPTY)
+    pub(crate) fn raw_attrs(&self, of: AttrOwner) -> &RawAttrs {
+        self.attrs.get(&of).unwrap_or(&RawAttrs::EMPTY)
     }
 
-    /// Returns the lowered inner items that `ast` corresponds to.
-    ///
-    /// Most AST items are lowered to a single `ModItem`, but some (eg. `use` items) may be lowered
-    /// to multiple items in the `ItemTree`.
-    pub fn inner_items(&self, ast: FileAstId<ast::Item>) -> &[ModItem] {
-        &self.inner_items[&ast]
+    pub fn attrs(&self, db: &dyn DefDatabase, krate: CrateId, of: AttrOwner) -> Attrs {
+        self.raw_attrs(of).clone().filter(db, krate)
     }
 
     pub fn all_inner_items(&self) -> impl Iterator<Item = ModItem> + '_ {
-        self.inner_items.values().flatten().copied()
+        match &self.data {
+            Some(data) => Some(data.inner_items.values().flatten().copied()).into_iter().flatten(),
+            None => None.into_iter().flatten(),
+        }
+    }
+
+    pub fn inner_items_of_block(&self, block: FileAstId<ast::BlockExpr>) -> &[ModItem] {
+        match &self.data {
+            Some(data) => data.inner_items.get(&block).map(|it| &**it).unwrap_or(&[]),
+            None => &[],
+        }
     }
 
     pub fn source<S: ItemTreeNode>(&self, db: &dyn DefDatabase, of: ItemTreeId<S>) -> S::Source {
@@ -248,7 +256,11 @@ struct GenericParamsStorage {
 
 impl GenericParamsStorage {
     fn alloc(&mut self, params: GenericParams) -> GenericParamsId {
-        if params.types.is_empty() && params.where_predicates.is_empty() {
+        if params.types.is_empty()
+            && params.lifetimes.is_empty()
+            && params.consts.is_empty()
+            && params.where_predicates.is_empty()
+        {
             return GenericParamsId::EMPTY;
         }
 
@@ -256,8 +268,12 @@ impl GenericParamsStorage {
     }
 }
 
-static EMPTY_GENERICS: GenericParams =
-    GenericParams { types: Arena::new(), where_predicates: Vec::new() };
+static EMPTY_GENERICS: GenericParams = GenericParams {
+    types: Arena::new(),
+    lifetimes: Arena::new(),
+    consts: Arena::new(),
+    where_predicates: Vec::new(),
+};
 
 #[derive(Default, Debug, Eq, PartialEq)]
 struct ItemTreeData {
@@ -276,10 +292,13 @@ struct ItemTreeData {
     type_aliases: Arena<TypeAlias>,
     mods: Arena<Mod>,
     macro_calls: Arena<MacroCall>,
-    exprs: Arena<Expr>,
+    macro_rules: Arena<MacroRules>,
+    macro_defs: Arena<MacroDef>,
 
     vis: ItemVisibilities,
     generics: GenericParamsStorage,
+
+    inner_items: FxHashMap<FileAstId<ast::BlockExpr>, SmallVec<[ModItem; 1]>>,
 }
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -291,7 +310,6 @@ pub enum AttrOwner {
 
     Variant(Idx<Variant>),
     Field(Idx<Field>),
-    // FIXME: Store variant and field attrs, and stop reparsing them in `attrs_query`.
 }
 
 macro_rules! from_attrs {
@@ -424,6 +442,8 @@ mod_items! {
     TypeAlias in type_aliases -> ast::TypeAlias,
     Mod in mods -> ast::Module,
     MacroCall in macro_calls -> ast::MacroCall,
+    MacroRules in macro_rules -> ast::MacroRules,
+    MacroDef in macro_defs -> ast::MacroDef,
 }
 
 macro_rules! impl_index {
@@ -440,7 +460,7 @@ macro_rules! impl_index {
     };
 }
 
-impl_index!(fields: Field, variants: Variant, exprs: Expr);
+impl_index!(fields: Field, variants: Variant);
 
 impl Index<RawVisibilityId> for ItemTree {
     type Output = RawVisibility;
@@ -479,19 +499,21 @@ pub struct Import {
     pub alias: Option<ImportAlias>,
     pub visibility: RawVisibilityId,
     pub is_glob: bool,
-    pub is_prelude: bool,
     /// AST ID of the `use` or `extern crate` item this import was derived from. Note that many
     /// `Import`s can map to the same `use` item.
     pub ast_id: FileAstId<ast::Use>,
+    /// Index of this `Import` when the containing `Use` is visited via `ModPath::expand_use_item`.
+    ///
+    /// This can be used to get the `UseTree` this `Import` corresponds to and allows emitting
+    /// precise diagnostics.
+    pub index: usize,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ExternCrate {
-    pub path: ModPath,
+    pub name: Name,
     pub alias: Option<ImportAlias>,
     pub visibility: RawVisibilityId,
-    /// Whether this is a `#[macro_use] extern crate ...`.
-    pub is_macro_use: bool,
     pub ast_id: FileAstId<ast::ExternCrate>,
 }
 
@@ -501,7 +523,11 @@ pub struct Function {
     pub visibility: RawVisibilityId,
     pub generic_params: GenericParamsId,
     pub has_self_param: bool,
+    pub has_body: bool,
     pub is_unsafe: bool,
+    /// Whether the function is located in an `extern` block (*not* whether it is an
+    /// `extern "abi" fn`).
+    pub is_extern: bool,
     pub params: Box<[TypeRef]>,
     pub is_varargs: bool,
     pub ret_type: TypeRef,
@@ -560,6 +586,8 @@ pub struct Static {
     pub name: Name,
     pub visibility: RawVisibilityId,
     pub mutable: bool,
+    /// Whether the static is in an `extern` block.
+    pub is_extern: bool,
     pub type_ref: TypeRef,
     pub ast_id: FileAstId<ast::Static>,
 }
@@ -592,6 +620,7 @@ pub struct TypeAlias {
     pub bounds: Box<[TypeBound]>,
     pub generic_params: GenericParamsId,
     pub type_ref: Option<TypeRef>,
+    pub is_extern: bool,
     pub ast_id: FileAstId<ast::TypeAlias>,
 }
 
@@ -614,23 +643,25 @@ pub enum ModKind {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MacroCall {
-    /// For `macro_rules!` declarations, this is the name of the declared macro.
-    pub name: Option<Name>,
     /// Path to the called macro.
     pub path: ModPath,
-    /// Has `#[macro_export]`.
-    pub is_export: bool,
-    /// Has `#[macro_export(local_inner_macros)]`.
-    pub is_local_inner: bool,
-    /// Has `#[rustc_builtin_macro]`.
-    pub is_builtin: bool,
     pub ast_id: FileAstId<ast::MacroCall>,
 }
 
-// NB: There's no `FileAstId` for `Expr`. The only case where this would be useful is for array
-// lengths, but we don't do much with them yet.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Expr;
+pub struct MacroRules {
+    /// The name of the declared macro.
+    pub name: Name,
+    pub ast_id: FileAstId<ast::MacroRules>,
+}
+
+/// "Macros 2.0" macro definition.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct MacroDef {
+    pub name: Name,
+    pub visibility: RawVisibilityId,
+    pub ast_id: FileAstId<ast::MacroDef>,
+}
 
 macro_rules! impl_froms {
     ($e:ident { $($v:ident ($t:ty)),* $(,)? }) => {
@@ -655,7 +686,9 @@ impl ModItem {
             | ModItem::Static(_)
             | ModItem::Trait(_)
             | ModItem::Impl(_)
-            | ModItem::Mod(_) => None,
+            | ModItem::Mod(_)
+            | ModItem::MacroRules(_)
+            | ModItem::MacroDef(_) => None,
             ModItem::MacroCall(call) => Some(AssocItem::MacroCall(*call)),
             ModItem::Const(konst) => Some(AssocItem::Const(*konst)),
             ModItem::TypeAlias(alias) => Some(AssocItem::TypeAlias(*alias)),
@@ -665,6 +698,26 @@ impl ModItem {
 
     pub fn downcast<N: ItemTreeNode>(self) -> Option<FileItemTreeId<N>> {
         N::id_from_mod_item(self)
+    }
+
+    pub fn ast_id(&self, tree: &ItemTree) -> FileAstId<ast::Item> {
+        match self {
+            ModItem::Import(it) => tree[it.index].ast_id().upcast(),
+            ModItem::ExternCrate(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Function(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Struct(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Union(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Enum(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Const(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Static(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Trait(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Impl(it) => tree[it.index].ast_id().upcast(),
+            ModItem::TypeAlias(it) => tree[it.index].ast_id().upcast(),
+            ModItem::Mod(it) => tree[it.index].ast_id().upcast(),
+            ModItem::MacroCall(it) => tree[it.index].ast_id().upcast(),
+            ModItem::MacroRules(it) => tree[it.index].ast_id().upcast(),
+            ModItem::MacroDef(it) => tree[it.index].ast_id().upcast(),
+        }
     }
 }
 

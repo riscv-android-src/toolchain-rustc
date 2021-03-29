@@ -6,7 +6,7 @@ use crate::search_paths::SearchPath;
 use crate::utils::NativeLibKind;
 
 use rustc_target::spec::{CodeModel, LinkerFlavor, MergeFunctions, PanicStrategy};
-use rustc_target::spec::{RelocModel, RelroLevel, TargetTriple, TlsModel};
+use rustc_target::spec::{RelocModel, RelroLevel, SplitDebuginfo, TargetTriple, TlsModel};
 
 use rustc_feature::UnstableFeatures;
 use rustc_span::edition::Edition;
@@ -179,9 +179,10 @@ macro_rules! options {
     {
         let mut op = $defaultfn();
         for option in matches.opt_strs($prefix) {
-            let mut iter = option.splitn(2, '=');
-            let key = iter.next().unwrap();
-            let value = iter.next();
+            let (key, value) = match option.split_once('=') {
+                None => (option, None),
+                Some((k, v)) => (k.to_string(), Some(v)),
+            };
             let option_to_lookup = key.replace("-", "_");
             let mut found = false;
             for &(candidate, setter, type_desc, _) in $stat {
@@ -277,6 +278,9 @@ macro_rules! options {
         pub const parse_tls_model: &str =
             "one of supported TLS models (`rustc --print tls-models`)";
         pub const parse_target_feature: &str = parse_string;
+        pub const parse_wasi_exec_model: &str = "either `command` or `reactor`";
+        pub const parse_split_debuginfo: &str =
+            "one of supported split-debuginfo modes (`off` or `dsymutil`)";
     }
 
     #[allow(dead_code)]
@@ -676,12 +680,12 @@ macro_rules! options {
         }
 
         fn parse_symbol_mangling_version(
-            slot: &mut SymbolManglingVersion,
+            slot: &mut Option<SymbolManglingVersion>,
             v: Option<&str>,
         ) -> bool {
             *slot = match v {
-                Some("legacy") => SymbolManglingVersion::Legacy,
-                Some("v0") => SymbolManglingVersion::V0,
+                Some("legacy") => Some(SymbolManglingVersion::Legacy),
+                Some("v0") => Some(SymbolManglingVersion::V0),
                 _ => return false,
             };
             true
@@ -706,6 +710,23 @@ macro_rules! options {
                 }
                 None => false,
             }
+        }
+
+        fn parse_wasi_exec_model(slot: &mut Option<WasiExecModel>, v: Option<&str>) -> bool {
+            match v {
+                Some("command")  => *slot = Some(WasiExecModel::Command),
+                Some("reactor") => *slot = Some(WasiExecModel::Reactor),
+                _ => return false,
+            }
+            true
+        }
+
+        fn parse_split_debuginfo(slot: &mut Option<SplitDebuginfo>, v: Option<&str>) -> bool {
+            match v.and_then(|s| SplitDebuginfo::from_str(s).ok()) {
+                Some(e) => *slot = Some(e),
+                _ => return false,
+            }
+            true
         }
     }
 ) }
@@ -805,6 +826,8 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "save all temporary output files during compilation (default: no)"),
     soft_float: bool = (false, parse_bool, [TRACKED],
         "use soft float ABI (*eabihf targets only) (default: no)"),
+    split_debuginfo: Option<SplitDebuginfo> = (None, parse_split_debuginfo, [TRACKED],
+        "how to handle split-debuginfo, a platform-specific option"),
     target_cpu: Option<String> = (None, parse_opt_string, [TRACKED],
         "select target processor (`rustc --print target-cpus` for details)"),
     target_feature: String = (String::new(), parse_target_feature, [TRACKED],
@@ -831,6 +854,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "only allow the listed language features to be enabled in code (space separated)"),
     always_encode_mir: bool = (false, parse_bool, [TRACKED],
         "encode MIR of all functions into the crate metadata (default: no)"),
+    assume_incomplete_release: bool = (false, parse_bool, [TRACKED],
+        "make cfg(version) treat the current version as incomplete (default: no)"),
     asm_comments: bool = (false, parse_bool, [TRACKED],
         "generate comments into the assembly (may change behavior) (default: no)"),
     ast_json: bool = (false, parse_bool, [UNTRACKED],
@@ -945,8 +970,7 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "instrument the generated code to support LLVM source-based code coverage \
         reports (note, the compiler build config must include `profiler = true`, \
         and is mutually exclusive with `-C profile-generate`/`-C profile-use`); \
-        implies `-C link-dead-code` (unless targeting MSVC, or explicitly disabled) \
-        and `-Z symbol-mangling-version=v0`; disables/overrides some Rust \
+        implies `-Z symbol-mangling-version=v0`; disables/overrides some Rust \
         optimizations (default: no)"),
     instrument_mcount: bool = (false, parse_bool, [TRACKED],
         "insert function instrument code for mcount-based tracing (default: no)"),
@@ -996,6 +1020,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "run LLVM in non-parallel mode (while keeping codegen-units and ThinLTO)"),
     no_profiler_runtime: bool = (false, parse_no_flag, [TRACKED],
         "prevent automatic injection of the profiler_builtins crate"),
+    normalize_docs: bool = (false, parse_bool, [TRACKED],
+        "normalize associated items in rustdoc when generating documentation"),
     osx_rpath_install_name: bool = (false, parse_bool, [TRACKED],
         "pass `-install_name @rpath/...` to the macOS linker (default: no)"),
     panic_abort_tests: bool = (false, parse_bool, [TRACKED],
@@ -1047,11 +1073,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "choose which RELRO level to use"),
     report_delayed_bugs: bool = (false, parse_bool, [TRACKED],
         "immediately print bugs registered with `delay_span_bug` (default: no)"),
-    // The default historical behavior was to always run dsymutil, so we're
-    // preserving that temporarily, but we're likely to switch the default
-    // soon.
-    run_dsymutil: bool = (true, parse_bool, [TRACKED],
-        "if on Mac, run `dsymutil` and delete intermediate object files (default: yes)"),
     sanitizer: SanitizerSet = (SanitizerSet::empty(), parse_sanitizers, [TRACKED],
         "use a sanitizer"),
     sanitizer_memory_track_origins: usize = (0, parse_sanitizer_memory_track_origins, [TRACKED],
@@ -1086,9 +1107,12 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "hash algorithm of source files in debug info (`md5`, `sha1`, or `sha256`)"),
     strip: Strip = (Strip::None, parse_strip, [UNTRACKED],
         "tell the linker which information to strip (`none` (default), `debuginfo` or `symbols`)"),
-    symbol_mangling_version: SymbolManglingVersion = (SymbolManglingVersion::Legacy,
+    split_dwarf_inlining: bool = (true, parse_bool, [UNTRACKED],
+        "provide minimal debug info in the object/executable to facilitate online \
+         symbolication/stack traces in the absence of .dwo/.dwp files when using Split DWARF"),
+    symbol_mangling_version: Option<SymbolManglingVersion> = (None,
         parse_symbol_mangling_version, [TRACKED],
-        "which mangling version to use for symbol names"),
+        "which mangling version to use for symbol names ('legacy' (default) or 'v0')"),
     teach: bool = (false, parse_bool, [TRACKED],
         "show extended diagnostic help (default: no)"),
     terminal_width: Option<usize> = (None, parse_opt_uint, [UNTRACKED],
@@ -1145,9 +1169,17 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "in general, enable more debug printouts (default: no)"),
     verify_llvm_ir: bool = (false, parse_bool, [TRACKED],
         "verify LLVM IR (default: no)"),
+    wasi_exec_model: Option<WasiExecModel> = (None, parse_wasi_exec_model, [TRACKED],
+        "whether to build a wasi command or reactor"),
 
     // This list is in alphabetical order.
     //
     // If you add a new option, please update:
-    // - src/librustc_interface/tests.rs
+    // - compiler/rustc_interface/src/tests.rs
+}
+
+#[derive(Clone, Hash)]
+pub enum WasiExecModel {
+    Command,
+    Reactor,
 }

@@ -4,11 +4,11 @@ use crate::{
     MacroDefId, MacroDefKind, TextSize,
 };
 
-use base_db::FileId;
+use base_db::{AnchoredPath, FileId};
 use either::Either;
-use mbe::parse_to_token_tree;
+use mbe::{parse_to_token_tree, ExpandResult};
 use parser::FragmentKind;
-use syntax::ast::{self, AstToken, HasStringValue};
+use syntax::ast::{self, AstToken};
 
 macro_rules! register_builtin {
     ( LAZY: $(($name:ident, $kind: ident) => $expand:ident),* , EAGER: $(($e_name:ident, $e_kind: ident) => $e_expand:ident),*  ) => {
@@ -28,7 +28,7 @@ macro_rules! register_builtin {
                 db: &dyn AstDatabase,
                 id: LazyMacroId,
                 tt: &tt::Subtree,
-            ) -> Result<tt::Subtree, mbe::ExpandError> {
+            ) -> ExpandResult<tt::Subtree> {
                 let expander = match *self {
                     $( BuiltinFnLikeExpander::$kind => $expand, )*
                 };
@@ -42,7 +42,7 @@ macro_rules! register_builtin {
                 db: &dyn AstDatabase,
                 arg_id: EagerMacroId,
                 tt: &tt::Subtree,
-            ) -> Result<(tt::Subtree, FragmentKind), mbe::ExpandError> {
+            ) -> ExpandResult<Option<(tt::Subtree, FragmentKind)>> {
                 let expander = match *self {
                     $( EagerExpander::$e_kind => $e_expand, )*
                 };
@@ -63,19 +63,19 @@ macro_rules! register_builtin {
 pub fn find_builtin_macro(
     ident: &name::Name,
     krate: CrateId,
-    ast_id: AstId<ast::MacroCall>,
+    ast_id: AstId<ast::Macro>,
 ) -> Option<MacroDefId> {
     let kind = find_by_name(ident)?;
 
     match kind {
         Either::Left(kind) => Some(MacroDefId {
-            krate: Some(krate),
+            krate,
             ast_id: Some(ast_id),
             kind: MacroDefKind::BuiltIn(kind),
             local_inner: false,
         }),
         Either::Right(kind) => Some(MacroDefId {
-            krate: Some(krate),
+            krate,
             ast_id: Some(ast_id),
             kind: MacroDefKind::BuiltInEager(kind),
             local_inner: false,
@@ -86,17 +86,20 @@ pub fn find_builtin_macro(
 register_builtin! {
     LAZY:
     (column, Column) => column_expand,
-    (compile_error, CompileError) => compile_error_expand,
     (file, File) => file_expand,
     (line, Line) => line_expand,
+    (module_path, ModulePath) => module_path_expand,
     (assert, Assert) => assert_expand,
     (stringify, Stringify) => stringify_expand,
     (format_args, FormatArgs) => format_args_expand,
     // format_args_nl only differs in that it adds a newline in the end,
     // so we use the same stub expansion for now
     (format_args_nl, FormatArgsNl) => format_args_expand,
+    (llvm_asm, LlvmAsm) => asm_expand,
+    (asm, Asm) => asm_expand,
 
     EAGER:
+    (compile_error, CompileError) => compile_error_expand,
     (concat, Concat) => concat_expand,
     (include, Include) => include_expand,
     (include_bytes, IncludeBytes) => include_bytes_expand,
@@ -105,29 +108,41 @@ register_builtin! {
     (option_env, OptionEnv) => option_env_expand
 }
 
+fn module_path_expand(
+    _db: &dyn AstDatabase,
+    _id: LazyMacroId,
+    _tt: &tt::Subtree,
+) -> ExpandResult<tt::Subtree> {
+    // Just return a dummy result.
+    ExpandResult::ok(quote! { "module::path" })
+}
+
 fn line_expand(
     _db: &dyn AstDatabase,
     _id: LazyMacroId,
     _tt: &tt::Subtree,
-) -> Result<tt::Subtree, mbe::ExpandError> {
+) -> ExpandResult<tt::Subtree> {
     // dummy implementation for type-checking purposes
     let line_num = 0;
     let expanded = quote! {
         #line_num
     };
 
-    Ok(expanded)
+    ExpandResult::ok(expanded)
 }
 
 fn stringify_expand(
     db: &dyn AstDatabase,
     id: LazyMacroId,
     _tt: &tt::Subtree,
-) -> Result<tt::Subtree, mbe::ExpandError> {
+) -> ExpandResult<tt::Subtree> {
     let loc = db.lookup_intern_macro(id);
 
     let macro_content = {
-        let arg = loc.kind.arg(db).ok_or_else(|| mbe::ExpandError::UnexpectedToken)?;
+        let arg = match loc.kind.arg(db) {
+            Some(arg) => arg,
+            None => return ExpandResult::only_err(mbe::ExpandError::UnexpectedToken),
+        };
         let macro_args = arg;
         let text = macro_args.text();
         let without_parens = TextSize::of('(')..text.len() - TextSize::of(')');
@@ -138,28 +153,28 @@ fn stringify_expand(
         #macro_content
     };
 
-    Ok(expanded)
+    ExpandResult::ok(expanded)
 }
 
 fn column_expand(
     _db: &dyn AstDatabase,
     _id: LazyMacroId,
     _tt: &tt::Subtree,
-) -> Result<tt::Subtree, mbe::ExpandError> {
+) -> ExpandResult<tt::Subtree> {
     // dummy implementation for type-checking purposes
     let col_num = 0;
     let expanded = quote! {
         #col_num
     };
 
-    Ok(expanded)
+    ExpandResult::ok(expanded)
 }
 
 fn assert_expand(
     _db: &dyn AstDatabase,
     _id: LazyMacroId,
     tt: &tt::Subtree,
-) -> Result<tt::Subtree, mbe::ExpandError> {
+) -> ExpandResult<tt::Subtree> {
     // A hacky implementation for goto def and hover
     // We expand `assert!(cond, arg1, arg2)` to
     // ```
@@ -191,14 +206,14 @@ fn assert_expand(
     let expanded = quote! {
         { { (##arg_tts); } }
     };
-    Ok(expanded)
+    ExpandResult::ok(expanded)
 }
 
 fn file_expand(
     _db: &dyn AstDatabase,
     _id: LazyMacroId,
     _tt: &tt::Subtree,
-) -> Result<tt::Subtree, mbe::ExpandError> {
+) -> ExpandResult<tt::Subtree> {
     // FIXME: RA purposefully lacks knowledge of absolute file names
     // so just return "".
     let file_name = "";
@@ -207,31 +222,14 @@ fn file_expand(
         #file_name
     };
 
-    Ok(expanded)
-}
-
-fn compile_error_expand(
-    _db: &dyn AstDatabase,
-    _id: LazyMacroId,
-    tt: &tt::Subtree,
-) -> Result<tt::Subtree, mbe::ExpandError> {
-    if tt.count() == 1 {
-        if let tt::TokenTree::Leaf(tt::Leaf::Literal(it)) = &tt.token_trees[0] {
-            let s = it.text.as_str();
-            if s.contains('"') {
-                return Ok(quote! { loop { #it }});
-            }
-        };
-    }
-
-    Err(mbe::ExpandError::BindingError("Must be a string".into()))
+    ExpandResult::ok(expanded)
 }
 
 fn format_args_expand(
     _db: &dyn AstDatabase,
     _id: LazyMacroId,
     tt: &tt::Subtree,
-) -> Result<tt::Subtree, mbe::ExpandError> {
+) -> ExpandResult<tt::Subtree> {
     // We expand `format_args!("", a1, a2)` to
     // ```
     // std::fmt::Arguments::new_v1(&[], &[
@@ -257,7 +255,14 @@ fn format_args_expand(
         args.push(current);
     }
     if args.is_empty() {
-        return Err(mbe::ExpandError::NoMatchingRule);
+        return ExpandResult::only_err(mbe::ExpandError::NoMatchingRule);
+    }
+    for arg in &mut args {
+        // Remove `key =`.
+        if matches!(arg.get(1), Some(tt::TokenTree::Leaf(tt::Leaf::Punct(p))) if p.char == '=' && p.spacing != tt::Spacing::Joint)
+        {
+            arg.drain(..2);
+        }
     }
     let _format_string = args.remove(0);
     let arg_tts = args.into_iter().flat_map(|arg| {
@@ -266,7 +271,20 @@ fn format_args_expand(
     let expanded = quote! {
         std::fmt::Arguments::new_v1(&[], &[##arg_tts])
     };
-    Ok(expanded)
+    ExpandResult::ok(expanded)
+}
+
+fn asm_expand(
+    _db: &dyn AstDatabase,
+    _id: LazyMacroId,
+    _tt: &tt::Subtree,
+) -> ExpandResult<tt::Subtree> {
+    // both asm and llvm_asm don't return anything, so we can expand them to nothing,
+    // for now
+    let expanded = quote! {
+        ()
+    };
+    ExpandResult::ok(expanded)
 }
 
 fn unquote_str(lit: &tt::Literal) -> Option<String> {
@@ -275,23 +293,56 @@ fn unquote_str(lit: &tt::Literal) -> Option<String> {
     token.value().map(|it| it.into_owned())
 }
 
+fn compile_error_expand(
+    _db: &dyn AstDatabase,
+    _id: EagerMacroId,
+    tt: &tt::Subtree,
+) -> ExpandResult<Option<(tt::Subtree, FragmentKind)>> {
+    let err = match &*tt.token_trees {
+        [tt::TokenTree::Leaf(tt::Leaf::Literal(it))] => {
+            let text = it.text.as_str();
+            if text.starts_with('"') && text.ends_with('"') {
+                // FIXME: does not handle raw strings
+                mbe::ExpandError::Other(text[1..text.len() - 1].to_string())
+            } else {
+                mbe::ExpandError::BindingError("`compile_error!` argument must be a string".into())
+            }
+        }
+        _ => mbe::ExpandError::BindingError("`compile_error!` argument must be a string".into()),
+    };
+
+    ExpandResult { value: Some((quote! {}, FragmentKind::Items)), err: Some(err) }
+}
+
 fn concat_expand(
     _db: &dyn AstDatabase,
     _arg_id: EagerMacroId,
     tt: &tt::Subtree,
-) -> Result<(tt::Subtree, FragmentKind), mbe::ExpandError> {
+) -> ExpandResult<Option<(tt::Subtree, FragmentKind)>> {
+    let mut err = None;
     let mut text = String::new();
     for (i, t) in tt.token_trees.iter().enumerate() {
         match t {
             tt::TokenTree::Leaf(tt::Leaf::Literal(it)) if i % 2 == 0 => {
-                text += &unquote_str(&it).ok_or_else(|| mbe::ExpandError::ConversionError)?;
+                // concat works with string and char literals, so remove any quotes.
+                // It also works with integer, float and boolean literals, so just use the rest
+                // as-is.
+                let component = unquote_str(&it).unwrap_or_else(|| it.text.to_string());
+                text.push_str(&component);
+            }
+            // handle boolean literals
+            tt::TokenTree::Leaf(tt::Leaf::Ident(id))
+                if i % 2 == 0 && (id.text == "true" || id.text == "false") =>
+            {
+                text.push_str(id.text.as_str());
             }
             tt::TokenTree::Leaf(tt::Leaf::Punct(punct)) if i % 2 == 1 && punct.char == ',' => (),
-            _ => return Err(mbe::ExpandError::UnexpectedToken),
+            _ => {
+                err.get_or_insert(mbe::ExpandError::UnexpectedToken);
+            }
         }
     }
-
-    Ok((quote!(#text), FragmentKind::Expr))
+    ExpandResult { value: Some((quote!(#text), FragmentKind::Expr)), err }
 }
 
 fn relative_file(
@@ -301,7 +352,8 @@ fn relative_file(
     allow_recursion: bool,
 ) -> Option<FileId> {
     let call_site = call_id.as_file().original_file(db);
-    let res = db.resolve_path(call_site, path)?;
+    let path = AnchoredPath { anchor: call_site, path };
+    let res = db.resolve_path(path)?;
     // Prevent include itself
     if res == call_site && !allow_recursion {
         None
@@ -324,26 +376,35 @@ fn include_expand(
     db: &dyn AstDatabase,
     arg_id: EagerMacroId,
     tt: &tt::Subtree,
-) -> Result<(tt::Subtree, FragmentKind), mbe::ExpandError> {
-    let path = parse_string(tt)?;
-    let file_id = relative_file(db, arg_id.into(), &path, false)
-        .ok_or_else(|| mbe::ExpandError::ConversionError)?;
+) -> ExpandResult<Option<(tt::Subtree, FragmentKind)>> {
+    let res = (|| {
+        let path = parse_string(tt)?;
+        let file_id = relative_file(db, arg_id.into(), &path, false)
+            .ok_or_else(|| mbe::ExpandError::ConversionError)?;
 
-    // FIXME:
-    // Handle include as expression
-    let res = parse_to_token_tree(&db.file_text(file_id))
-        .ok_or_else(|| mbe::ExpandError::ConversionError)?
-        .0;
+        Ok(parse_to_token_tree(&db.file_text(file_id))
+            .ok_or_else(|| mbe::ExpandError::ConversionError)?
+            .0)
+    })();
 
-    Ok((res, FragmentKind::Items))
+    match res {
+        Ok(res) => {
+            // FIXME:
+            // Handle include as expression
+            ExpandResult::ok(Some((res, FragmentKind::Items)))
+        }
+        Err(e) => ExpandResult::only_err(e),
+    }
 }
 
 fn include_bytes_expand(
     _db: &dyn AstDatabase,
     _arg_id: EagerMacroId,
     tt: &tt::Subtree,
-) -> Result<(tt::Subtree, FragmentKind), mbe::ExpandError> {
-    let _path = parse_string(tt)?;
+) -> ExpandResult<Option<(tt::Subtree, FragmentKind)>> {
+    if let Err(e) = parse_string(tt) {
+        return ExpandResult::only_err(e);
+    }
 
     // FIXME: actually read the file here if the user asked for macro expansion
     let res = tt::Subtree {
@@ -353,15 +414,18 @@ fn include_bytes_expand(
             id: tt::TokenId::unspecified(),
         }))],
     };
-    Ok((res, FragmentKind::Expr))
+    ExpandResult::ok(Some((res, FragmentKind::Expr)))
 }
 
 fn include_str_expand(
     db: &dyn AstDatabase,
     arg_id: EagerMacroId,
     tt: &tt::Subtree,
-) -> Result<(tt::Subtree, FragmentKind), mbe::ExpandError> {
-    let path = parse_string(tt)?;
+) -> ExpandResult<Option<(tt::Subtree, FragmentKind)>> {
+    let path = match parse_string(tt) {
+        Ok(it) => it,
+        Err(e) => return ExpandResult::only_err(e),
+    };
 
     // FIXME: we're not able to read excluded files (which is most of them because
     // it's unusual to `include_str!` a Rust file), but we can return an empty string.
@@ -370,14 +434,14 @@ fn include_str_expand(
     let file_id = match relative_file(db, arg_id.into(), &path, true) {
         Some(file_id) => file_id,
         None => {
-            return Ok((quote!(""), FragmentKind::Expr));
+            return ExpandResult::ok(Some((quote!(""), FragmentKind::Expr)));
         }
     };
 
     let text = db.file_text(file_id);
     let text = &*text;
 
-    Ok((quote!(#text), FragmentKind::Expr))
+    ExpandResult::ok(Some((quote!(#text), FragmentKind::Expr)))
 }
 
 fn get_env_inner(db: &dyn AstDatabase, arg_id: EagerMacroId, key: &str) -> Option<String> {
@@ -389,34 +453,49 @@ fn env_expand(
     db: &dyn AstDatabase,
     arg_id: EagerMacroId,
     tt: &tt::Subtree,
-) -> Result<(tt::Subtree, FragmentKind), mbe::ExpandError> {
-    let key = parse_string(tt)?;
+) -> ExpandResult<Option<(tt::Subtree, FragmentKind)>> {
+    let key = match parse_string(tt) {
+        Ok(it) => it,
+        Err(e) => return ExpandResult::only_err(e),
+    };
 
-    // FIXME:
-    // If the environment variable is not defined int rustc, then a compilation error will be emitted.
-    // We might do the same if we fully support all other stuffs.
-    // But for now on, we should return some dummy string for better type infer purpose.
-    // However, we cannot use an empty string here, because for
-    // `include!(concat!(env!("OUT_DIR"), "/foo.rs"))` will become
-    // `include!("foo.rs"), which might go to infinite loop
-    let s = get_env_inner(db, arg_id, &key).unwrap_or_else(|| "__RA_UNIMPLEMENTED__".to_string());
+    let mut err = None;
+    let s = get_env_inner(db, arg_id, &key).unwrap_or_else(|| {
+        // The only variable rust-analyzer ever sets is `OUT_DIR`, so only diagnose that to avoid
+        // unnecessary diagnostics for eg. `CARGO_PKG_NAME`.
+        if key == "OUT_DIR" {
+            err = Some(mbe::ExpandError::Other(
+                r#"`OUT_DIR` not set, enable "load out dirs from check" to fix"#.into(),
+            ));
+        }
+
+        // If the variable is unset, still return a dummy string to help type inference along.
+        // We cannot use an empty string here, because for
+        // `include!(concat!(env!("OUT_DIR"), "/foo.rs"))` will become
+        // `include!("foo.rs"), which might go to infinite loop
+        "__RA_UNIMPLEMENTED__".to_string()
+    });
     let expanded = quote! { #s };
 
-    Ok((expanded, FragmentKind::Expr))
+    ExpandResult { value: Some((expanded, FragmentKind::Expr)), err }
 }
 
 fn option_env_expand(
     db: &dyn AstDatabase,
     arg_id: EagerMacroId,
     tt: &tt::Subtree,
-) -> Result<(tt::Subtree, FragmentKind), mbe::ExpandError> {
-    let key = parse_string(tt)?;
+) -> ExpandResult<Option<(tt::Subtree, FragmentKind)>> {
+    let key = match parse_string(tt) {
+        Ok(it) => it,
+        Err(e) => return ExpandResult::only_err(e),
+    };
+
     let expanded = match get_env_inner(db, arg_id, &key) {
         None => quote! { std::option::Option::None::<&str> },
         Some(s) => quote! { std::option::Some(#s) },
     };
 
-    Ok((expanded, FragmentKind::Expr))
+    ExpandResult::ok(Some((expanded, FragmentKind::Expr)))
 }
 
 #[cfg(test)]
@@ -433,20 +512,27 @@ mod tests {
     fn expand_builtin_macro(ra_fixture: &str) -> String {
         let (db, file_id) = TestDB::with_single_file(&ra_fixture);
         let parsed = db.parse(file_id);
-        let macro_calls: Vec<_> =
+        let mut macro_rules: Vec<_> =
+            parsed.syntax_node().descendants().filter_map(ast::MacroRules::cast).collect();
+        let mut macro_calls: Vec<_> =
             parsed.syntax_node().descendants().filter_map(ast::MacroCall::cast).collect();
 
         let ast_id_map = db.ast_id_map(file_id.into());
 
-        let expander = find_by_name(&macro_calls[0].name().unwrap().as_name()).unwrap();
+        assert_eq!(macro_rules.len(), 1, "test must contain exactly 1 `macro_rules!`");
+        assert_eq!(macro_calls.len(), 1, "test must contain exactly 1 macro call");
+        let macro_rules = ast::Macro::from(macro_rules.pop().unwrap());
+        let macro_call = macro_calls.pop().unwrap();
+
+        let expander = find_by_name(&macro_rules.name().unwrap().as_name()).unwrap();
 
         let krate = CrateId(0);
         let file_id = match expander {
             Either::Left(expander) => {
                 // the first one should be a macro_rules
                 let def = MacroDefId {
-                    krate: Some(CrateId(0)),
-                    ast_id: Some(AstId::new(file_id.into(), ast_id_map.ast_id(&macro_calls[0]))),
+                    krate: CrateId(0),
+                    ast_id: Some(AstId::new(file_id.into(), ast_id_map.ast_id(&macro_rules))),
                     kind: MacroDefKind::BuiltIn(expander),
                     local_inner: false,
                 };
@@ -456,7 +542,7 @@ mod tests {
                     krate,
                     kind: MacroCallKind::FnLike(AstId::new(
                         file_id.into(),
-                        ast_id_map.ast_id(&macro_calls[1]),
+                        ast_id_map.ast_id(&macro_call),
                     )),
                 };
 
@@ -466,14 +552,15 @@ mod tests {
             Either::Right(expander) => {
                 // the first one should be a macro_rules
                 let def = MacroDefId {
-                    krate: Some(krate),
-                    ast_id: Some(AstId::new(file_id.into(), ast_id_map.ast_id(&macro_calls[0]))),
+                    krate,
+                    ast_id: Some(AstId::new(file_id.into(), ast_id_map.ast_id(&macro_rules))),
                     kind: MacroDefKind::BuiltInEager(expander),
                     local_inner: false,
                 };
 
-                let args = macro_calls[1].token_tree().unwrap();
+                let args = macro_call.token_tree().unwrap();
                 let parsed_args = mbe::ast_to_token_tree(&args).unwrap().0;
+                let call_id = AstId::new(file_id.into(), ast_id_map.ast_id(&macro_call));
 
                 let arg_id = db.intern_eager_expansion({
                     EagerCallLoc {
@@ -481,17 +568,17 @@ mod tests {
                         fragment: FragmentKind::Expr,
                         subtree: Arc::new(parsed_args.clone()),
                         krate,
-                        file_id: file_id.into(),
+                        call: call_id,
                     }
                 });
 
-                let (subtree, fragment) = expander.expand(&db, arg_id, &parsed_args).unwrap();
+                let (subtree, fragment) = expander.expand(&db, arg_id, &parsed_args).value.unwrap();
                 let eager = EagerCallLoc {
                     def,
                     fragment,
                     subtree: Arc::new(subtree),
                     krate,
-                    file_id: file_id.into(),
+                    call: call_id,
                 };
 
                 let id: MacroCallId = db.intern_eager_expansion(eager).into();
@@ -609,7 +696,8 @@ mod tests {
             "#,
         );
 
-        assert_eq!(expanded, r#"loop{"error!"}"#);
+        // This expands to nothing (since it's in item position), but emits an error.
+        assert_eq!(expanded, "");
     }
 
     #[test]
@@ -645,5 +733,18 @@ mod tests {
         );
 
         assert_eq!(expanded, r#"b"""#);
+    }
+
+    #[test]
+    fn test_concat_expand() {
+        let expanded = expand_builtin_macro(
+            r##"
+            #[rustc_builtin_macro]
+            macro_rules! concat {}
+            concat!("foo", "r", 0, r#"bar"#, false);
+            "##,
+        );
+
+        assert_eq!(expanded, r#""foor0barfalse""#);
     }
 }

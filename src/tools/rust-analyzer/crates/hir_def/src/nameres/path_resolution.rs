@@ -10,20 +10,19 @@
 //!
 //! `ReachedFixedPoint` signals about this.
 
-use std::iter::successors;
-
 use base_db::Edition;
+use hir_expand::name;
 use hir_expand::name::Name;
 use test_utils::mark;
 
 use crate::{
     db::DefDatabase,
     item_scope::BUILTIN_SCOPE,
-    nameres::{BuiltinShadowMode, CrateDefMap},
+    nameres::{BuiltinShadowMode, DefMap},
     path::{ModPath, PathKind},
     per_ns::PerNs,
     visibility::{RawVisibility, Visibility},
-    AdtId, CrateId, EnumVariantId, LocalModuleId, ModuleDefId, ModuleId,
+    AdtId, CrateId, EnumVariantId, LocalModuleId, ModuleDefId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,8 +60,12 @@ impl ResolvePathResult {
     }
 }
 
-impl CrateDefMap {
+impl DefMap {
     pub(super) fn resolve_name_in_extern_prelude(&self, name: &Name) -> PerNs {
+        if name == &name!(self) {
+            mark::hit!(extern_crate_self_as);
+            return PerNs::types(self.module_id(self.root).into(), Visibility::Public);
+        }
         self.extern_prelude
             .get(name)
             .map_or(PerNs::none(), |&it| PerNs::types(it, Visibility::Public))
@@ -100,6 +103,46 @@ impl CrateDefMap {
         &self,
         db: &dyn DefDatabase,
         mode: ResolveMode,
+        mut original_module: LocalModuleId,
+        path: &ModPath,
+        shadow: BuiltinShadowMode,
+    ) -> ResolvePathResult {
+        let mut result = ResolvePathResult::empty(ReachedFixedPoint::No);
+        result.segment_index = Some(usize::max_value());
+
+        let mut current_map = self;
+        loop {
+            let new = current_map.resolve_path_fp_with_macro_single(
+                db,
+                mode,
+                original_module,
+                path,
+                shadow,
+            );
+
+            // Merge `new` into `result`.
+            result.resolved_def = result.resolved_def.or(new.resolved_def);
+            if result.reached_fixedpoint == ReachedFixedPoint::No {
+                result.reached_fixedpoint = new.reached_fixedpoint;
+            }
+            // FIXME: this doesn't seem right; what if the different namespace resolutions come from different crates?
+            result.krate = result.krate.or(new.krate);
+            result.segment_index = result.segment_index.min(new.segment_index);
+
+            match &current_map.block {
+                Some(block) => {
+                    current_map = &block.parent;
+                    original_module = block.parent_module;
+                }
+                None => return result,
+            }
+        }
+    }
+
+    pub(super) fn resolve_path_fp_with_macro_single(
+        &self,
+        db: &dyn DefDatabase,
+        mode: ResolveMode,
         original_module: LocalModuleId,
         path: &ModPath,
         shadow: BuiltinShadowMode,
@@ -109,21 +152,15 @@ impl CrateDefMap {
             PathKind::DollarCrate(krate) => {
                 if krate == self.krate {
                     mark::hit!(macro_dollar_crate_self);
-                    PerNs::types(
-                        ModuleId { krate: self.krate, local_id: self.root }.into(),
-                        Visibility::Public,
-                    )
+                    PerNs::types(self.module_id(self.root).into(), Visibility::Public)
                 } else {
                     let def_map = db.crate_def_map(krate);
-                    let module = ModuleId { krate, local_id: def_map.root };
+                    let module = def_map.module_id(def_map.root);
                     mark::hit!(macro_dollar_crate_other);
                     PerNs::types(module.into(), Visibility::Public)
                 }
             }
-            PathKind::Crate => PerNs::types(
-                ModuleId { krate: self.krate, local_id: self.root }.into(),
-                Visibility::Public,
-            ),
+            PathKind::Crate => PerNs::types(self.module_id(self.root).into(), Visibility::Public),
             // plain import or absolute path in 2015: crate-relative with
             // fallback to extern prelude (with the simplification in
             // rust-lang/rust#57745)
@@ -157,17 +194,35 @@ impl CrateDefMap {
                 self.resolve_name_in_module(db, original_module, &segment, prefer_module)
             }
             PathKind::Super(lvl) => {
-                let m = successors(Some(original_module), |m| self.modules[*m].parent)
-                    .nth(lvl as usize);
-                if let Some(local_id) = m {
-                    PerNs::types(
-                        ModuleId { krate: self.krate, local_id }.into(),
-                        Visibility::Public,
-                    )
-                } else {
-                    log::debug!("super path in root module");
-                    return ResolvePathResult::empty(ReachedFixedPoint::Yes);
+                let mut module = original_module;
+                for i in 0..lvl {
+                    match self.modules[module].parent {
+                        Some(it) => module = it,
+                        None => match &self.block {
+                            Some(block) => {
+                                // Look up remaining path in parent `DefMap`
+                                let new_path = ModPath {
+                                    kind: PathKind::Super(lvl - i),
+                                    segments: path.segments.clone(),
+                                };
+                                log::debug!("`super` path: {} -> {} in parent map", path, new_path);
+                                return block.parent.resolve_path_fp_with_macro(
+                                    db,
+                                    mode,
+                                    block.parent_module,
+                                    &new_path,
+                                    shadow,
+                                );
+                            }
+                            None => {
+                                log::debug!("super path in root module");
+                                return ResolvePathResult::empty(ReachedFixedPoint::Yes);
+                            }
+                        },
+                    }
                 }
+
+                PerNs::types(self.module_id(module).into(), Visibility::Public)
             }
             PathKind::Abs => {
                 // 2018-style absolute path -- only extern prelude
@@ -206,7 +261,7 @@ impl CrateDefMap {
                             kind: PathKind::Super(0),
                         };
                         log::debug!("resolving {:?} in other crate", path);
-                        let defp_map = db.crate_def_map(module.krate);
+                        let defp_map = module.def_map(db);
                         let (def, s) = defp_map.resolve_path(db, module.local_id, &path, shadow);
                         return ResolvePathResult::with(
                             def,
@@ -319,7 +374,7 @@ impl CrateDefMap {
                 self
             } else {
                 // Extend lifetime
-                keep = db.crate_def_map(prelude.krate);
+                keep = prelude.def_map(db);
                 &keep
             };
             def_map[prelude.local_id].scope.get(name)

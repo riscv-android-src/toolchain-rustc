@@ -12,6 +12,7 @@ use hir_def::{
 };
 use hir_expand::name::{name, Name};
 use syntax::ast::RangeOp;
+use test_utils::mark;
 
 use crate::{
     autoderef, method_resolution, op,
@@ -106,7 +107,7 @@ impl<'a> InferenceContext<'a> {
         }
     }
 
-    pub fn callable_sig(&mut self, ty: &Ty, num_args: usize) -> Option<(Vec<Ty>, Ty)> {
+    pub(crate) fn callable_sig(&mut self, ty: &Ty, num_args: usize) -> Option<(Vec<Ty>, Ty)> {
         match ty.callable_sig(self.db) {
             Some(sig) => Some((sig.params().to_vec(), sig.ret().clone())),
             None => self.callable_sig_from_fn_trait(ty, num_args),
@@ -136,11 +137,25 @@ impl<'a> InferenceContext<'a> {
 
                 self.coerce_merge_branch(&then_ty, &else_ty)
             }
-            Expr::Block { statements, tail, .. } => {
-                // FIXME: Breakable block inference
-                self.infer_block(statements, *tail, expected)
-            }
-            Expr::Unsafe { body } => self.infer_expr(*body, expected),
+            Expr::Block { statements, tail, label } => match label {
+                Some(_) => {
+                    let break_ty = self.table.new_type_var();
+                    self.breakables.push(BreakableContext {
+                        may_break: false,
+                        break_ty: break_ty.clone(),
+                        label: label.map(|label| self.body[label].name.clone()),
+                    });
+                    let ty = self.infer_block(statements, *tail, &Expectation::has_type(break_ty));
+                    let ctxt = self.breakables.pop().expect("breakable stack broken");
+                    if ctxt.may_break {
+                        ctxt.break_ty
+                    } else {
+                        ty
+                    }
+                }
+                None => self.infer_block(statements, *tail, expected),
+            },
+            Expr::Unsafe { body } | Expr::Const { body } => self.infer_expr(*body, expected),
             Expr::TryBlock { body } => {
                 let _inner = self.infer_expr(*body, expected);
                 // FIXME should be std::result::Result<{inner}, _>
@@ -157,7 +172,7 @@ impl<'a> InferenceContext<'a> {
                 self.breakables.push(BreakableContext {
                     may_break: false,
                     break_ty: self.table.new_type_var(),
-                    label: label.clone(),
+                    label: label.map(|label| self.body[label].name.clone()),
                 });
                 self.infer_expr(*body, &Expectation::has_type(Ty::unit()));
 
@@ -176,7 +191,7 @@ impl<'a> InferenceContext<'a> {
                 self.breakables.push(BreakableContext {
                     may_break: false,
                     break_ty: Ty::Unknown,
-                    label: label.clone(),
+                    label: label.map(|label| self.body[label].name.clone()),
                 });
                 // while let is desugared to a match loop, so this is always simple while
                 self.infer_expr(*condition, &Expectation::has_type(Ty::simple(TypeCtor::Bool)));
@@ -192,7 +207,7 @@ impl<'a> InferenceContext<'a> {
                 self.breakables.push(BreakableContext {
                     may_break: false,
                     break_ty: Ty::Unknown,
-                    label: label.clone(),
+                    label: label.map(|label| self.body[label].name.clone()),
                 });
                 let pat_ty =
                     self.resolve_associated_type(iterable_ty, self.resolve_into_iter_item());
@@ -352,6 +367,13 @@ impl<'a> InferenceContext<'a> {
                 }
                 Ty::simple(TypeCtor::Never)
             }
+            Expr::Yield { expr } => {
+                // FIXME: track yield type for coercion
+                if let Some(expr) = expr {
+                    self.infer_expr(*expr, &Expectation::none());
+                }
+                Ty::simple(TypeCtor::Never)
+            }
             Expr::RecordLit { path, fields, spread } => {
                 let (ty, def_id) = self.resolve_variant(path.as_ref());
                 if let Some(variant) = def_id {
@@ -469,7 +491,10 @@ impl<'a> InferenceContext<'a> {
             Expr::Box { expr } => {
                 let inner_ty = self.infer_expr_inner(*expr, &Expectation::none());
                 if let Some(box_) = self.resolve_boxed_box() {
-                    Ty::apply_one(TypeCtor::Adt(box_), inner_ty)
+                    let mut sb = Substs::build_for_type_ctor(self.db, TypeCtor::Adt(box_));
+                    sb = sb.push(inner_ty);
+                    sb = sb.fill(repeat_with(|| self.table.new_type_var()));
+                    Ty::apply(TypeCtor::Adt(box_), sb.build())
                 } else {
                     Ty::Unknown
                 }
@@ -531,13 +556,22 @@ impl<'a> InferenceContext<'a> {
                         _ => Expectation::none(),
                     };
                     let lhs_ty = self.infer_expr(*lhs, &lhs_expectation);
-                    // FIXME: find implementation of trait corresponding to operation
-                    // symbol and resolve associated `Output` type
                     let rhs_expectation = op::binary_op_rhs_expectation(*op, lhs_ty.clone());
                     let rhs_ty = self.infer_expr(*rhs, &Expectation::has_type(rhs_expectation));
 
-                    // FIXME: similar as above, return ty is often associated trait type
-                    op::binary_op_return_ty(*op, lhs_ty, rhs_ty)
+                    let ret = op::binary_op_return_ty(*op, lhs_ty.clone(), rhs_ty.clone());
+
+                    if ret == Ty::Unknown {
+                        mark::hit!(infer_expr_inner_binary_operator_overload);
+
+                        self.resolve_associated_type_with_params(
+                            lhs_ty,
+                            self.resolve_binary_op_output(op),
+                            &[rhs_ty],
+                        )
+                    } else {
+                        ret
+                    }
                 }
                 _ => Ty::Unknown,
             },
@@ -624,6 +658,8 @@ impl<'a> InferenceContext<'a> {
             }
             Expr::Array(array) => {
                 let elem_ty = match &expected.ty {
+                    // FIXME: remove when https://github.com/rust-lang/rust/issues/80501 is fixed
+                    #[allow(unreachable_patterns)]
                     ty_app!(TypeCtor::Array, st) | ty_app!(TypeCtor::Slice, st) => {
                         st.as_single().clone()
                     }
@@ -832,12 +868,18 @@ impl<'a> InferenceContext<'a> {
         // handle provided type arguments
         if let Some(generic_args) = generic_args {
             // if args are provided, it should be all of them, but we can't rely on that
-            for arg in generic_args.args.iter().take(type_params) {
+            for arg in generic_args
+                .args
+                .iter()
+                .filter(|arg| matches!(arg, GenericArg::Type(_)))
+                .take(type_params)
+            {
                 match arg {
                     GenericArg::Type(type_ref) => {
                         let ty = self.make_ty(type_ref);
                         substs.push(ty);
                     }
+                    GenericArg::Lifetime(_) => {}
                 }
             }
         };

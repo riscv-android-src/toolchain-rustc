@@ -12,6 +12,8 @@ static void double_free2();
 static void corrupt_free();
 static void block_overflow1();
 static void invalid_free();
+static void test_aslr(void);
+static void test_process_info(void);
 
 int main() {
   mi_version();
@@ -21,6 +23,7 @@ int main() {
   // double_free2();
   // corrupt_free();
   // block_overflow1();
+  // test_aslr();
   invalid_free();
 
   void* p1 = malloc(78);
@@ -42,6 +45,7 @@ int main() {
   //p2 = malloc(32);
   //mi_free(p2);
   mi_stats_print(NULL);
+  test_process_info();
   return 0;
 }
 
@@ -121,3 +125,44 @@ static void corrupt_free() {
     malloc(SZ);
   }
 }
+
+static void test_aslr(void) {
+  void* p[256];
+  p[0] = malloc(378200);
+  p[1] = malloc(1134626);
+  printf("p1: %p, p2: %p\n", p[0], p[1]);
+}
+
+static void test_process_info(void) {
+  size_t elapsed = 0;
+  size_t user_msecs = 0;
+  size_t system_msecs = 0;
+  size_t current_rss = 0;
+  size_t peak_rss = 0;
+  size_t current_commit = 0;
+  size_t peak_commit = 0;
+  size_t page_faults = 0;  
+  for (int i = 0; i < 100000; i++) {
+    void* p = calloc(100,10);
+    free(p);
+  }
+  mi_process_info(&elapsed, &user_msecs, &system_msecs, &current_rss, &peak_rss, &current_commit, &peak_commit, &page_faults);
+  printf("\n\n*** process info: elapsed %3zd.%03zd s, user: %3zd.%03zd s, rss: %zd b, commit: %zd b\n\n", elapsed/1000, elapsed%1000, user_msecs/1000, user_msecs%1000, peak_rss, peak_commit);
+}
+
+static void test_reserved(void) {
+#define KiB 1024ULL
+#define MiB (KiB*KiB)
+#define GiB (MiB*KiB)
+  mi_reserve_os_memory(4*GiB, false, true);
+  void* p1 = malloc(100);
+  void* p2 = malloc(100000);
+  void* p3 = malloc(2*GiB);
+  void* p4 = malloc(1*GiB + 100000);
+  free(p1);
+  free(p2);
+  free(p3);
+  p3 = malloc(1*GiB);
+  free(p4);
+}
+

@@ -3,10 +3,12 @@
 use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
-use base_db::CrateGraph;
 use crossbeam_channel::{unbounded, Receiver};
-use ide::{AnalysisChange, AnalysisHost};
-use project_model::{CargoConfig, ProcMacroClient, ProjectManifest, ProjectWorkspace};
+use ide::{AnalysisHost, Change};
+use ide_db::base_db::CrateGraph;
+use project_model::{
+    BuildDataCollector, CargoConfig, ProcMacroClient, ProjectManifest, ProjectWorkspace,
+};
 use vfs::{loader::Handle, AbsPath, AbsPathBuf};
 
 use crate::reload::{ProjectFolders, SourceRootConfig};
@@ -18,11 +20,7 @@ pub fn load_cargo(
 ) -> Result<(AnalysisHost, vfs::Vfs)> {
     let root = AbsPathBuf::assert(std::env::current_dir()?.join(root));
     let root = ProjectManifest::discover_single(&root)?;
-    let ws = ProjectWorkspace::load(
-        root,
-        &CargoConfig { load_out_dirs_from_check, ..Default::default() },
-        true,
-    )?;
+    let ws = ProjectWorkspace::load(root, &CargoConfig::default(), &|_| {})?;
 
     let (sender, receiver) = unbounded();
     let mut vfs = vfs::Vfs::default();
@@ -34,19 +32,31 @@ pub fn load_cargo(
 
     let proc_macro_client = if with_proc_macro {
         let path = std::env::current_exe()?;
-        ProcMacroClient::extern_process(path, &["proc-macro"]).unwrap()
+        Some(ProcMacroClient::extern_process(path, &["proc-macro"]).unwrap())
     } else {
-        ProcMacroClient::dummy()
+        None
     };
 
-    let crate_graph = ws.to_crate_graph(None, &proc_macro_client, &mut |path: &AbsPath| {
-        let contents = loader.load_sync(path);
-        let path = vfs::VfsPath::from(path.to_path_buf());
-        vfs.set_file_contents(path.clone(), contents);
-        vfs.file_id(&path)
-    });
+    let build_data = if load_out_dirs_from_check {
+        let mut collector = BuildDataCollector::default();
+        ws.collect_build_data_configs(&mut collector);
+        Some(collector.collect(&|_| {})?)
+    } else {
+        None
+    };
 
-    let project_folders = ProjectFolders::new(&[ws]);
+    let crate_graph = ws.to_crate_graph(
+        build_data.as_ref(),
+        proc_macro_client.as_ref(),
+        &mut |path: &AbsPath| {
+            let contents = loader.load_sync(path);
+            let path = vfs::VfsPath::from(path.to_path_buf());
+            vfs.set_file_contents(path.clone(), contents);
+            vfs.file_id(&path)
+        },
+    );
+
+    let project_folders = ProjectFolders::new(&[ws], &[], build_data.as_ref());
     loader.set_config(vfs::loader::Config { load: project_folders.load, watch: vec![] });
 
     log::debug!("crate graph: {:?}", crate_graph);
@@ -62,7 +72,7 @@ fn load(
 ) -> AnalysisHost {
     let lru_cap = std::env::var("RA_LRU_CAP").ok().and_then(|it| it.parse::<usize>().ok());
     let mut host = AnalysisHost::new(lru_cap);
-    let mut analysis_change = AnalysisChange::new();
+    let mut analysis_change = Change::new();
 
     // wait until Vfs has loaded all roots
     for task in receiver {
@@ -74,7 +84,7 @@ fn load(
             }
             vfs::loader::Message::Loaded { files } => {
                 for (path, contents) in files {
-                    vfs.set_file_contents(path.into(), contents)
+                    vfs.set_file_contents(path.into(), contents);
                 }
             }
         }

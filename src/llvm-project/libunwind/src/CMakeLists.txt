@@ -85,14 +85,10 @@ endif()
 set_source_files_properties(${LIBUNWIND_C_SOURCES}
                             PROPERTIES
                               COMPILE_FLAGS "-std=c99")
-if (MINGW OR APPLE)
-  # CMake doesn't build assembly sources for windows/gnu targets properly
-  # (up to current CMake, 3.16), so treat them as C files.
-  # Additionally, CMake ignores OSX_ARCHITECTURE for ASM files when targeting
-  # Apple platforms.
-  set_source_files_properties(${LIBUNWIND_ASM_SOURCES}
-                              PROPERTIES
-                                LANGUAGE C)
+
+# See add_asm_sources() in compiler-rt for explanation of this workaround.
+if((APPLE AND CMAKE_VERSION VERSION_LESS 3.19) OR (MINGW AND CMAKE_VERSION VERSION_LESS 3.17))
+  set_source_files_properties(${LIBUNWIND_ASM_SOURCES} PROPERTIES LANGUAGE C)
 endif()
 
 set(LIBUNWIND_SOURCES

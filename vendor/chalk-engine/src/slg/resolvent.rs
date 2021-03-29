@@ -1,6 +1,7 @@
 use crate::normalize_deep::DeepNormalizer;
-use crate::slg::{self, ResolventOps, TruncatingInferenceTable};
+use crate::slg::ResolventOps;
 use crate::{ExClause, Literal, TimeStamp};
+use chalk_ir::cast::Caster;
 use chalk_ir::fold::shift::Shift;
 use chalk_ir::fold::Fold;
 use chalk_ir::interner::{HasInterner, Interner};
@@ -45,7 +46,7 @@ use tracing::{debug, instrument};
 //
 // is the SLG resolvent of G with C.
 
-impl<I: Interner> ResolventOps<I> for TruncatingInferenceTable<I> {
+impl<I: Interner> ResolventOps<I> for InferenceTable<I> {
     /// Applies the SLG resolvent algorithm to incorporate a program
     /// clause into the main X-clause, producing a new X-clause that
     /// must be solved.
@@ -57,6 +58,7 @@ impl<I: Interner> ResolventOps<I> for TruncatingInferenceTable<I> {
     #[instrument(level = "debug", skip(self, interner, environment, subst))]
     fn resolvent_clause(
         &mut self,
+        db: &dyn UnificationDatabase<I>,
         interner: &I,
         environment: &Environment<I>,
         goal: &DomainGoal<I>,
@@ -80,15 +82,19 @@ impl<I: Interner> ResolventOps<I> for TruncatingInferenceTable<I> {
         } = {
             let ProgramClauseData(implication) = clause.data(interner);
 
-            self.infer
-                .instantiate_binders_existentially(interner, implication)
+            self.instantiate_binders_existentially(interner, implication.clone())
         };
         debug!(?consequence, ?conditions, ?constraints);
 
         // Unify the selected literal Li with C'.
-        let unification_result = self
-            .infer
-            .unify(interner, environment, goal, &consequence)?;
+        let unification_result = self.relate(
+            interner,
+            db,
+            environment,
+            Variance::Invariant,
+            goal,
+            &consequence,
+        )?;
 
         // Final X-clause that we will return.
         let mut ex_clause = ExClause {
@@ -102,7 +108,13 @@ impl<I: Interner> ResolventOps<I> for TruncatingInferenceTable<I> {
         };
 
         // Add the subgoals/region-constraints that unification gave us.
-        slg::into_ex_clause(interner, unification_result, &mut ex_clause);
+        ex_clause.subgoals.extend(
+            unification_result
+                .goals
+                .into_iter()
+                .casted(interner)
+                .map(Literal::Positive),
+        );
 
         ex_clause
             .constraints
@@ -203,12 +215,13 @@ impl<I: Interner> ResolventOps<I> for TruncatingInferenceTable<I> {
     fn apply_answer_subst(
         &mut self,
         interner: &I,
+        unification_database: &dyn UnificationDatabase<I>,
         ex_clause: &mut ExClause<I>,
         selected_goal: &InEnvironment<Goal<I>>,
         answer_table_goal: &Canonical<InEnvironment<Goal<I>>>,
-        canonical_answer_subst: &Canonical<AnswerSubst<I>>,
+        canonical_answer_subst: Canonical<AnswerSubst<I>>,
     ) -> Fallible<()> {
-        debug!(selected_goal = ?DeepNormalizer::normalize_deep(&mut self.infer, interner, selected_goal));
+        debug!(selected_goal = ?DeepNormalizer::normalize_deep(self, interner, selected_goal.clone()));
 
         // C' is now `answer`. No variables in common with G.
         let AnswerSubst {
@@ -222,13 +235,12 @@ impl<I: Interner> ResolventOps<I> for TruncatingInferenceTable<I> {
             constraints: answer_constraints,
 
             delayed_subgoals,
-        } = self
-            .infer
-            .instantiate_canonical(interner, &canonical_answer_subst);
+        } = self.instantiate_canonical(interner, canonical_answer_subst);
 
         AnswerSubstitutor::substitute(
             interner,
-            &mut self.infer,
+            unification_database,
+            self,
             &selected_goal.environment,
             &answer_subst,
             ex_clause,
@@ -265,11 +277,13 @@ struct AnswerSubstitutor<'t, I: Interner> {
 
     ex_clause: &'t mut ExClause<I>,
     interner: &'t I,
+    unification_database: &'t dyn UnificationDatabase<I>,
 }
 
 impl<I: Interner> AnswerSubstitutor<'_, I> {
     fn substitute<T: Zip<I>>(
         interner: &I,
+        unification_database: &dyn UnificationDatabase<I>,
         table: &mut InferenceTable<I>,
         environment: &Environment<I>,
         answer_subst: &Substitution<I>,
@@ -279,19 +293,22 @@ impl<I: Interner> AnswerSubstitutor<'_, I> {
     ) -> Fallible<()> {
         let mut this = AnswerSubstitutor {
             interner,
+            unification_database,
             table,
             environment,
             answer_subst,
             ex_clause,
             outer_binder: DebruijnIndex::INNERMOST,
         };
-        Zip::zip_with(&mut this, answer, pending)?;
+        Zip::zip_with(&mut this, Variance::Invariant, answer, pending)?;
         Ok(())
     }
 
     fn unify_free_answer_var(
         &mut self,
         interner: &I,
+        db: &dyn UnificationDatabase<I>,
+        variance: Variance,
         answer_var: BoundVar,
         pending: GenericArgData<I>,
     ) -> Fallible<bool> {
@@ -307,22 +324,23 @@ impl<I: Interner> AnswerSubstitutor<'_, I> {
 
         let pending_shifted = pending
             .shifted_out_to(interner, self.outer_binder)
-            .unwrap_or_else(|_| {
-                panic!(
-                    "truncate extracted a pending value that references internal binder: {:?}",
-                    pending,
-                )
-            });
+            .expect("truncate extracted a pending value that references internal binder");
 
-        slg::into_ex_clause(
+        let result = self.table.relate(
             interner,
-            self.table.unify(
-                interner,
-                &self.environment,
-                answer_param,
-                &GenericArg::new(interner, pending_shifted),
-            )?,
-            self.ex_clause,
+            db,
+            &self.environment,
+            variance,
+            answer_param,
+            &GenericArg::new(interner, pending_shifted),
+        )?;
+
+        self.ex_clause.subgoals.extend(
+            result
+                .goals
+                .into_iter()
+                .casted(interner)
+                .map(Literal::Positive),
         );
 
         Ok(true)
@@ -362,11 +380,11 @@ impl<I: Interner> AnswerSubstitutor<'_, I> {
 }
 
 impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
-    fn zip_tys(&mut self, answer: &Ty<I>, pending: &Ty<I>) -> Fallible<()> {
+    fn zip_tys(&mut self, variance: Variance, answer: &Ty<I>, pending: &Ty<I>) -> Fallible<()> {
         let interner = self.interner;
 
         if let Some(pending) = self.table.normalize_ty_shallow(interner, pending) {
-            return Zip::zip_with(self, answer, &pending);
+            return Zip::zip_with(self, variance, answer, &pending);
         }
 
         // If the answer has a variable here, then this is one of the
@@ -376,6 +394,8 @@ impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
         if let TyKind::BoundVar(answer_depth) = answer.kind(interner) {
             if self.unify_free_answer_var(
                 interner,
+                self.unification_database,
+                variance,
                 *answer_depth,
                 GenericArgData::Ty(pending.clone()),
             )? {
@@ -390,20 +410,24 @@ impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
                 self.assert_matching_vars(*answer_depth, *pending_depth)
             }
 
-            (TyKind::Dyn(answer), TyKind::Dyn(pending)) => Zip::zip_with(self, answer, pending),
+            (TyKind::Dyn(answer), TyKind::Dyn(pending)) => {
+                Zip::zip_with(self, variance, answer, pending)
+            }
 
-            (TyKind::Alias(answer), TyKind::Alias(pending)) => Zip::zip_with(self, answer, pending),
+            (TyKind::Alias(answer), TyKind::Alias(pending)) => {
+                Zip::zip_with(self, variance, answer, pending)
+            }
 
             (TyKind::Placeholder(answer), TyKind::Placeholder(pending)) => {
-                Zip::zip_with(self, answer, pending)
+                Zip::zip_with(self, variance, answer, pending)
             }
 
-            (TyKind::Function(answer), TyKind::Function(pending)) => {
-                self.outer_binder.shift_in();
-                Zip::zip_with(self, &answer.substitution, &pending.substitution)?;
-                self.outer_binder.shift_out();
-                Ok(())
-            }
+            (TyKind::Function(answer), TyKind::Function(pending)) => Zip::zip_with(
+                self,
+                variance,
+                &answer.clone().into_binders(interner),
+                &pending.clone().into_binders(interner),
+            ),
 
             (TyKind::InferenceVar(_, _), _) | (_, TyKind::InferenceVar(_, _)) => panic!(
                 "unexpected inference var in answer `{:?}` or pending goal `{:?}`",
@@ -411,70 +435,146 @@ impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
             ),
 
             (TyKind::Adt(id_a, substitution_a), TyKind::Adt(id_b, substitution_b)) => {
-                Zip::zip_with(self, id_a, id_b)?;
-                Zip::zip_with(self, substitution_a, substitution_b)
+                if id_a != id_b {
+                    return Err(NoSolution);
+                }
+                self.zip_substs(
+                    variance,
+                    Some(self.unification_database().adt_variance(*id_a)),
+                    substitution_a.as_slice(interner),
+                    substitution_b.as_slice(interner),
+                )
             }
             (
-                TyKind::AssociatedType(assoc_ty_a, substitution_a),
-                TyKind::AssociatedType(assoc_ty_b, substitution_b),
+                TyKind::AssociatedType(id_a, substitution_a),
+                TyKind::AssociatedType(id_b, substitution_b),
             ) => {
-                Zip::zip_with(self, assoc_ty_a, assoc_ty_b)?;
-                Zip::zip_with(self, substitution_a, substitution_b)
+                if id_a != id_b {
+                    return Err(NoSolution);
+                }
+                self.zip_substs(
+                    variance,
+                    None,
+                    substitution_a.as_slice(interner),
+                    substitution_b.as_slice(interner),
+                )
             }
             (TyKind::Scalar(scalar_a), TyKind::Scalar(scalar_b)) => {
-                Zip::zip_with(self, scalar_a, scalar_b)
+                Zip::zip_with(self, variance, scalar_a, scalar_b)
             }
             (TyKind::Str, TyKind::Str) => Ok(()),
-            (TyKind::Tuple(_arity_a, substitution_a), TyKind::Tuple(_arity_b, substitution_b)) => {
-                Zip::zip_with(self, substitution_a, substitution_b)
+            (TyKind::Tuple(arity_a, substitution_a), TyKind::Tuple(arity_b, substitution_b)) => {
+                if arity_a != arity_b {
+                    return Err(NoSolution);
+                }
+                self.zip_substs(
+                    variance,
+                    None,
+                    substitution_a.as_slice(interner),
+                    substitution_b.as_slice(interner),
+                )
             }
             (
-                TyKind::OpaqueType(opaque_ty_a, substitution_a),
-                TyKind::OpaqueType(opaque_ty_b, substitution_b),
+                TyKind::OpaqueType(id_a, substitution_a),
+                TyKind::OpaqueType(id_b, substitution_b),
             ) => {
-                Zip::zip_with(self, opaque_ty_a, opaque_ty_b)?;
-                Zip::zip_with(self, substitution_a, substitution_b)
+                if id_a != id_b {
+                    return Err(NoSolution);
+                }
+                self.zip_substs(
+                    variance,
+                    None,
+                    substitution_a.as_slice(interner),
+                    substitution_b.as_slice(interner),
+                )
             }
-            (TyKind::Slice(substitution_a), TyKind::Slice(substitution_b)) => {
-                Zip::zip_with(self, substitution_a, substitution_b)
-            }
-            (TyKind::FnDef(fn_def_a, substitution_a), TyKind::FnDef(fn_def_b, substitution_b)) => {
-                Zip::zip_with(self, fn_def_a, fn_def_b)?;
-                Zip::zip_with(self, substitution_a, substitution_b)
+            (TyKind::Slice(ty_a), TyKind::Slice(ty_b)) => Zip::zip_with(self, variance, ty_a, ty_b),
+            (TyKind::FnDef(id_a, substitution_a), TyKind::FnDef(id_b, substitution_b)) => {
+                if id_a != id_b {
+                    return Err(NoSolution);
+                }
+                self.zip_substs(
+                    variance,
+                    Some(self.unification_database().fn_def_variance(*id_a)),
+                    substitution_a.as_slice(interner),
+                    substitution_b.as_slice(interner),
+                )
             }
             (
                 TyKind::Ref(mutability_a, lifetime_a, ty_a),
                 TyKind::Ref(mutability_b, lifetime_b, ty_b),
             ) => {
-                Zip::zip_with(self, mutability_a, mutability_b)?;
-                Zip::zip_with(self, lifetime_a, lifetime_b)?;
-                Zip::zip_with(self, ty_a, ty_b)
+                if mutability_a != mutability_b {
+                    return Err(NoSolution);
+                }
+                // The lifetime is `Contravariant`
+                Zip::zip_with(
+                    self,
+                    variance.xform(Variance::Contravariant),
+                    lifetime_a,
+                    lifetime_b,
+                )?;
+                // The type is `Covariant` when not mut, `Invariant` otherwise
+                let output_variance = match mutability_a {
+                    Mutability::Not => Variance::Covariant,
+                    Mutability::Mut => Variance::Invariant,
+                };
+                Zip::zip_with(self, variance.xform(output_variance), ty_a, ty_b)
             }
             (TyKind::Raw(mutability_a, ty_a), TyKind::Raw(mutability_b, ty_b)) => {
-                Zip::zip_with(self, mutability_a, mutability_b)?;
-                Zip::zip_with(self, ty_a, ty_b)
+                if mutability_a != mutability_b {
+                    return Err(NoSolution);
+                }
+                let ty_variance = match mutability_a {
+                    Mutability::Not => Variance::Covariant,
+                    Mutability::Mut => Variance::Invariant,
+                };
+                Zip::zip_with(self, variance.xform(ty_variance), ty_a, ty_b)
             }
             (TyKind::Never, TyKind::Never) => Ok(()),
             (TyKind::Array(ty_a, const_a), TyKind::Array(ty_b, const_b)) => {
-                Zip::zip_with(self, ty_a, ty_b)?;
-                Zip::zip_with(self, const_a, const_b)
+                Zip::zip_with(self, variance, ty_a, ty_b)?;
+                Zip::zip_with(self, variance, const_a, const_b)
             }
             (TyKind::Closure(id_a, substitution_a), TyKind::Closure(id_b, substitution_b)) => {
-                Zip::zip_with(self, id_a, id_b)?;
-                Zip::zip_with(self, substitution_a, substitution_b)
+                if id_a != id_b {
+                    return Err(NoSolution);
+                }
+                self.zip_substs(
+                    variance,
+                    None,
+                    substitution_a.as_slice(interner),
+                    substitution_b.as_slice(interner),
+                )
             }
             (TyKind::Generator(id_a, substitution_a), TyKind::Generator(id_b, substitution_b)) => {
-                Zip::zip_with(self, id_a, id_b)?;
-                Zip::zip_with(self, substitution_a, substitution_b)
+                if id_a != id_b {
+                    return Err(NoSolution);
+                }
+                self.zip_substs(
+                    variance,
+                    None,
+                    substitution_a.as_slice(interner),
+                    substitution_b.as_slice(interner),
+                )
             }
             (
                 TyKind::GeneratorWitness(id_a, substitution_a),
                 TyKind::GeneratorWitness(id_b, substitution_b),
             ) => {
-                Zip::zip_with(self, id_a, id_b)?;
-                Zip::zip_with(self, substitution_a, substitution_b)
+                if id_a != id_b {
+                    return Err(NoSolution);
+                }
+                self.zip_substs(
+                    variance,
+                    None,
+                    substitution_a.as_slice(interner),
+                    substitution_b.as_slice(interner),
+                )
             }
-            (TyKind::Foreign(id_a), TyKind::Foreign(id_b)) => Zip::zip_with(self, id_a, id_b),
+            (TyKind::Foreign(id_a), TyKind::Foreign(id_b)) => {
+                Zip::zip_with(self, variance, id_a, id_b)
+            }
             (TyKind::Error, TyKind::Error) => Ok(()),
 
             (_, _) => panic!(
@@ -484,15 +584,22 @@ impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
         }
     }
 
-    fn zip_lifetimes(&mut self, answer: &Lifetime<I>, pending: &Lifetime<I>) -> Fallible<()> {
+    fn zip_lifetimes(
+        &mut self,
+        variance: Variance,
+        answer: &Lifetime<I>,
+        pending: &Lifetime<I>,
+    ) -> Fallible<()> {
         let interner = self.interner;
         if let Some(pending) = self.table.normalize_lifetime_shallow(interner, pending) {
-            return Zip::zip_with(self, answer, &pending);
+            return Zip::zip_with(self, variance, answer, &pending);
         }
 
         if let LifetimeData::BoundVar(answer_depth) = answer.data(interner) {
             if self.unify_free_answer_var(
                 interner,
+                self.unification_database,
+                variance,
                 *answer_depth,
                 GenericArgData::Lifetime(pending.clone()),
             )? {
@@ -506,7 +613,9 @@ impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
             }
 
             (LifetimeData::Static, LifetimeData::Static)
-            | (LifetimeData::Placeholder(_), LifetimeData::Placeholder(_)) => {
+            | (LifetimeData::Placeholder(_), LifetimeData::Placeholder(_))
+            | (LifetimeData::Erased, LifetimeData::Erased)
+            | (LifetimeData::Empty(_), LifetimeData::Empty(_)) => {
                 assert_eq!(answer, pending);
                 Ok(())
             }
@@ -518,19 +627,26 @@ impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
 
             (LifetimeData::Static, _)
             | (LifetimeData::BoundVar(_), _)
-            | (LifetimeData::Placeholder(_), _) => panic!(
+            | (LifetimeData::Placeholder(_), _)
+            | (LifetimeData::Erased, _)
+            | (LifetimeData::Empty(_), _) => panic!(
                 "structural mismatch between answer `{:?}` and pending goal `{:?}`",
                 answer, pending,
             ),
 
-            (LifetimeData::Phantom(..), _) => unreachable!(),
+            (LifetimeData::Phantom(void, _), _) => match *void {},
         }
     }
 
-    fn zip_consts(&mut self, answer: &Const<I>, pending: &Const<I>) -> Fallible<()> {
+    fn zip_consts(
+        &mut self,
+        variance: Variance,
+        answer: &Const<I>,
+        pending: &Const<I>,
+    ) -> Fallible<()> {
         let interner = self.interner;
         if let Some(pending) = self.table.normalize_const_shallow(interner, pending) {
-            return Zip::zip_with(self, answer, &pending);
+            return Zip::zip_with(self, variance, answer, &pending);
         }
 
         let ConstData {
@@ -542,11 +658,13 @@ impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
             value: pending_value,
         } = pending.data(interner);
 
-        self.zip_tys(answer_ty, pending_ty)?;
+        self.zip_tys(variance, answer_ty, pending_ty)?;
 
         if let ConstValue::BoundVar(answer_depth) = answer_value {
             if self.unify_free_answer_var(
                 interner,
+                self.unification_database,
+                variance,
                 *answer_depth,
                 GenericArgData::Const(pending.clone()),
             )? {
@@ -583,17 +701,31 @@ impl<'i, I: Interner> Zipper<'i, I> for AnswerSubstitutor<'i, I> {
         }
     }
 
-    fn zip_binders<T>(&mut self, answer: &Binders<T>, pending: &Binders<T>) -> Fallible<()>
+    fn zip_binders<T>(
+        &mut self,
+        variance: Variance,
+        answer: &Binders<T>,
+        pending: &Binders<T>,
+    ) -> Fallible<()>
     where
         T: HasInterner<Interner = I> + Zip<I> + Fold<I, Result = T>,
     {
         self.outer_binder.shift_in();
-        Zip::zip_with(self, answer.skip_binders(), pending.skip_binders())?;
+        Zip::zip_with(
+            self,
+            variance,
+            answer.skip_binders(),
+            pending.skip_binders(),
+        )?;
         self.outer_binder.shift_out();
         Ok(())
     }
 
     fn interner(&self) -> &'i I {
         self.interner
+    }
+
+    fn unification_database(&self) -> &dyn UnificationDatabase<I> {
+        self.unification_database
     }
 }

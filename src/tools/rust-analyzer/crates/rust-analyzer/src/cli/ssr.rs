@@ -4,7 +4,7 @@ use crate::cli::{load_cargo::load_cargo, Result};
 use ssr::{MatchFinder, SsrPattern, SsrRule};
 
 pub fn apply_ssr_rules(rules: Vec<SsrRule>) -> Result<()> {
-    use base_db::SourceDatabaseExt;
+    use ide_db::base_db::SourceDatabaseExt;
     let (host, vfs) = load_cargo(&std::env::current_dir()?, true, true)?;
     let db = host.raw_database();
     let mut match_finder = MatchFinder::at_first_file(db)?;
@@ -12,10 +12,10 @@ pub fn apply_ssr_rules(rules: Vec<SsrRule>) -> Result<()> {
         match_finder.add_rule(rule)?;
     }
     let edits = match_finder.edits();
-    for edit in edits {
-        if let Some(path) = vfs.file_path(edit.file_id).as_path() {
-            let mut contents = db.file_text(edit.file_id).to_string();
-            edit.edit.apply(&mut contents);
+    for (file_id, edit) in edits {
+        if let Some(path) = vfs.file_path(file_id).as_path() {
+            let mut contents = db.file_text(file_id).to_string();
+            edit.apply(&mut contents);
             std::fs::write(path, contents)?;
         }
     }
@@ -26,7 +26,7 @@ pub fn apply_ssr_rules(rules: Vec<SsrRule>) -> Result<()> {
 /// `debug_snippet`. This is intended for debugging and probably isn't in it's current form useful
 /// for much else.
 pub fn search_for_patterns(patterns: Vec<SsrPattern>, debug_snippet: Option<String>) -> Result<()> {
-    use base_db::SourceDatabaseExt;
+    use ide_db::base_db::SourceDatabaseExt;
     use ide_db::symbol_index::SymbolsDatabase;
     let (host, _vfs) = load_cargo(&std::env::current_dir()?, true, true)?;
     let db = host.raw_database();

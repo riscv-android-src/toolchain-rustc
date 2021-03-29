@@ -13,14 +13,13 @@
 [package]
 edition = "2018"
 name = "salsa"
-version = "0.15.2"
+version = "0.16.0"
 authors = ["Salsa developers"]
 description = "A generic framework for on-demand, incrementalized computation (experimental)"
-readme = "README.md"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/salsa-rs/salsa"
 [dependencies.crossbeam-utils]
-version = "0.7.1"
+version = "0.8"
 default-features = false
 
 [dependencies.indexmap]
@@ -42,7 +41,7 @@ version = "0.11.0"
 version = "1.0"
 
 [dependencies.salsa-macros]
-version = "0.15.0"
+version = "0.16.0"
 
 [dependencies.smallvec]
 version = "1.0.0"

@@ -1,4 +1,5 @@
 use expect_test::expect;
+use test_utils::mark;
 
 use super::{check_infer, check_types};
 
@@ -21,6 +22,30 @@ mod boxed {
     #[lang = "owned_box"]
     pub struct Box<T: ?Sized> {
         inner: *mut T,
+    }
+}
+"#,
+    );
+}
+
+#[test]
+fn infer_box_with_allocator() {
+    check_types(
+        r#"
+//- /main.rs crate:main deps:std
+fn test() {
+    let x = box 1;
+    let t = (x, box x, box &1, box [1]);
+    t;
+} //^ (Box<i32, {unknown}>, Box<Box<i32, {unknown}>, {unknown}>, Box<&i32, {unknown}>, Box<[i32; _], {unknown}>)
+
+//- /std.rs crate:std
+#[prelude_import] use prelude::*;
+mod boxed {
+    #[lang = "owned_box"]
+    pub struct Box<T: ?Sized, A: Allocator> {
+        inner: *mut T,
+        allocator: A,
     }
 }
 "#,
@@ -1893,6 +1918,7 @@ fn effects_smoke_test() {
             let x = unsafe { 92 };
             let y = async { async { () }.await };
             let z = try { () };
+            let w = const { 92 };
             let t = 'a: { 92 };
         }
 
@@ -1904,7 +1930,7 @@ fn effects_smoke_test() {
         }
         "#,
         expect![[r#"
-            16..136 '{     ...2 }; }': ()
+            16..162 '{     ...2 }; }': ()
             26..27 'x': i32
             30..43 'unsafe { 92 }': i32
             37..43 '{ 92 }': i32
@@ -1920,9 +1946,13 @@ fn effects_smoke_test() {
             99..109 'try { () }': {unknown}
             103..109 '{ () }': ()
             105..107 '()': ()
-            119..120 't': i32
-            127..133 '{ 92 }': i32
-            129..131 '92': i32
+            119..120 'w': i32
+            123..135 'const { 92 }': i32
+            129..135 '{ 92 }': i32
+            131..133 '92': i32
+            145..146 't': i32
+            153..159 '{ 92 }': i32
+            155..157 '92': i32
         "#]],
     )
 }
@@ -2069,6 +2099,62 @@ fn infer_labelled_break_with_val() {
             316..321 'inner': i8
             316..325 'inner < 8': bool
             324..325 '8': i8
+        "#]],
+    );
+}
+
+#[test]
+fn infer_labelled_block_break_with_val() {
+    check_infer(
+        r#"
+        fn default<T>() -> T { loop {} }
+        fn foo() {
+            let _x = 'outer: {
+                let inner = 'inner: {
+                    let i = default();
+                    if (break 'outer i) {
+                        break 'inner 5i8;
+                    } else if true {
+                        break 'inner 6;
+                    }
+                    break 'inner 'innermost: { 0 };
+                    42
+                };
+                break 'outer inner < 8;
+            };
+        }
+        "#,
+        expect![[r#"
+            21..32 '{ loop {} }': T
+            23..30 'loop {}': !
+            28..30 '{}': ()
+            42..381 '{     ...  }; }': ()
+            52..54 '_x': bool
+            65..378 '{     ...     }': bool
+            79..84 'inner': i8
+            95..339 '{     ...     }': i8
+            113..114 'i': bool
+            117..124 'default': fn default<bool>() -> bool
+            117..126 'default()': bool
+            140..270 'if (br...     }': ()
+            144..158 'break 'outer i': !
+            157..158 'i': bool
+            160..209 '{     ...     }': ()
+            178..194 'break ...er 5i8': !
+            191..194 '5i8': i8
+            215..270 'if tru...     }': ()
+            218..222 'true': bool
+            223..270 '{     ...     }': ()
+            241..255 'break 'inner 6': !
+            254..255 '6': i8
+            283..313 'break ... { 0 }': !
+            308..313 '{ 0 }': i8
+            310..311 '0': i8
+            327..329 '42': i8
+            349..371 'break ...er < 8': !
+            362..367 'inner': i8
+            362..371 'inner < 8': bool
+            370..371 '8': i8
         "#]],
     );
 }
@@ -2222,6 +2308,110 @@ fn generic_default_depending_on_other_type_arg_forward() {
             56..58 't1': Thing<fn() -> {unknown}, u128>
             67..78 '{     t1; }': ()
             73..75 't1': Thing<fn() -> {unknown}, u128>
+        "#]],
+    );
+}
+
+#[test]
+fn infer_operator_overload() {
+    mark::check!(infer_expr_inner_binary_operator_overload);
+
+    check_infer(
+        r#"
+        struct V2([f32; 2]);
+
+        #[lang = "add"]
+        pub trait Add<Rhs = Self> {
+            /// The resulting type after applying the `+` operator.
+            type Output;
+
+            /// Performs the `+` operation.
+            #[must_use]
+            fn add(self, rhs: Rhs) -> Self::Output;
+        }
+
+        impl Add<V2> for V2 {
+            type Output = V2;
+
+            fn add(self, rhs: V2) -> V2 {
+                let x = self.0[0] + rhs.0[0];
+                let y = self.0[1] + rhs.0[1];
+                V2([x, y])
+            }
+        }
+
+        fn test() {
+            let va = V2([0.0, 1.0]);
+            let vb = V2([0.0, 1.0]);
+
+            let r = va + vb;
+        }
+
+        "#,
+        expect![[r#"
+            207..211 'self': Self
+            213..216 'rhs': Rhs
+            299..303 'self': V2
+            305..308 'rhs': V2
+            320..422 '{     ...     }': V2
+            334..335 'x': f32
+            338..342 'self': V2
+            338..344 'self.0': [f32; _]
+            338..347 'self.0[0]': {unknown}
+            338..358 'self.0...s.0[0]': f32
+            345..346 '0': i32
+            350..353 'rhs': V2
+            350..355 'rhs.0': [f32; _]
+            350..358 'rhs.0[0]': {unknown}
+            356..357 '0': i32
+            372..373 'y': f32
+            376..380 'self': V2
+            376..382 'self.0': [f32; _]
+            376..385 'self.0[1]': {unknown}
+            376..396 'self.0...s.0[1]': f32
+            383..384 '1': i32
+            388..391 'rhs': V2
+            388..393 'rhs.0': [f32; _]
+            388..396 'rhs.0[1]': {unknown}
+            394..395 '1': i32
+            406..408 'V2': V2([f32; _]) -> V2
+            406..416 'V2([x, y])': V2
+            409..415 '[x, y]': [f32; _]
+            410..411 'x': f32
+            413..414 'y': f32
+            436..519 '{     ... vb; }': ()
+            446..448 'va': V2
+            451..453 'V2': V2([f32; _]) -> V2
+            451..465 'V2([0.0, 1.0])': V2
+            454..464 '[0.0, 1.0]': [f32; _]
+            455..458 '0.0': f32
+            460..463 '1.0': f32
+            475..477 'vb': V2
+            480..482 'V2': V2([f32; _]) -> V2
+            480..494 'V2([0.0, 1.0])': V2
+            483..493 '[0.0, 1.0]': [f32; _]
+            484..487 '0.0': f32
+            489..492 '1.0': f32
+            505..506 'r': V2
+            509..511 'va': V2
+            509..516 'va + vb': V2
+            514..516 'vb': V2
+        "#]],
+    );
+}
+
+#[test]
+fn infer_const_params() {
+    check_infer(
+        r#"
+        fn foo<const FOO: usize>() {
+            let bar = FOO;
+        }
+        "#,
+        expect![[r#"
+            27..49 '{     ...FOO; }': ()
+            37..40 'bar': usize
+            43..46 'FOO': usize
         "#]],
     );
 }

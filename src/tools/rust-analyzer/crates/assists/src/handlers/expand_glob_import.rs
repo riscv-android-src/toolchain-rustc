@@ -1,17 +1,17 @@
 use either::Either;
 use hir::{AssocItem, MacroDef, Module, ModuleDef, Name, PathResolution, ScopeDef};
 use ide_db::{
-    defs::{classify_name_ref, Definition, NameRefClass},
+    defs::{Definition, NameRefClass},
     search::SearchScope,
 };
 use syntax::{
-    algo,
+    algo::SyntaxRewriter,
     ast::{self, make},
     AstNode, Direction, SyntaxNode, SyntaxToken, T,
 };
 
 use crate::{
-    assist_context::{AssistBuilder, AssistContext, Assists},
+    assist_context::{AssistContext, Assists},
     AssistId, AssistKind,
 };
 
@@ -25,7 +25,7 @@ use crate::{
 //     pub struct Baz;
 // }
 //
-// use foo::*<|>;
+// use foo::*$0;
 //
 // fn qux(bar: Bar, baz: Baz) {}
 // ```
@@ -41,7 +41,7 @@ use crate::{
 // fn qux(bar: Bar, baz: Baz) {}
 // ```
 pub(crate) fn expand_glob_import(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    let star = ctx.find_token_at_offset(T![*])?;
+    let star = ctx.find_token_syntax_at_offset(T![*])?;
     let (parent, mod_path) = find_parent_and_path(&star)?;
     let target_module = match ctx.sema.resolve_path(&mod_path)? {
         PathResolution::Def(ModuleDef::Module(it)) => it,
@@ -61,7 +61,9 @@ pub(crate) fn expand_glob_import(acc: &mut Assists, ctx: &AssistContext) -> Opti
         "Expand glob import",
         target.text_range(),
         |builder| {
-            replace_ast(builder, parent, mod_path, names_to_import);
+            let mut rewriter = SyntaxRewriter::default();
+            replace_ast(&mut rewriter, parent, mod_path, names_to_import);
+            builder.rewrite(rewriter);
         },
     )
 }
@@ -199,7 +201,7 @@ fn is_mod_visible_from(ctx: &AssistContext, module: Module, from: Module) -> boo
 // }
 //
 // ↓ ---------------
-// use foo::*<|>;
+// use foo::*$0;
 // use baz::Baz;
 // ↑ ---------------
 fn find_imported_defs(ctx: &AssistContext, star: SyntaxToken) -> Option<Vec<Def>> {
@@ -217,7 +219,7 @@ fn find_imported_defs(ctx: &AssistContext, star: SyntaxToken) -> Option<Vec<Def>
             .flatten()
             .filter_map(|n| Some(n.descendants().filter_map(ast::NameRef::cast)))
             .flatten()
-            .filter_map(|r| match classify_name_ref(&ctx.sema, &r)? {
+            .filter_map(|r| match NameRefClass::classify(&ctx.sema, &r)? {
                 NameRefClass::Definition(Definition::ModuleDef(def)) => Some(Def::ModuleDef(def)),
                 NameRefClass::Definition(Definition::Macro(def)) => Some(Def::MacroDef(def)),
                 _ => None,
@@ -236,7 +238,7 @@ fn find_names_to_import(
 }
 
 fn replace_ast(
-    builder: &mut AssistBuilder,
+    rewriter: &mut SyntaxRewriter,
     parent: Either<ast::UseTree, ast::UseTreeList>,
     path: ast::Path,
     names_to_import: Vec<Name>,
@@ -264,36 +266,21 @@ fn replace_ast(
     match use_trees.as_slice() {
         [name] => {
             if let Some(end_path) = name.path() {
-                let replacement = make::use_tree(
-                    make::path_from_text(&format!("{}::{}", path, end_path)),
-                    None,
-                    None,
-                    false,
+                rewriter.replace_ast(
+                    &parent.left_or_else(|tl| tl.parent_use_tree()),
+                    &make::use_tree(make::path_concat(path, end_path), None, None, false),
                 );
-
-                algo::diff(
-                    &parent.either(|n| n.syntax().clone(), |n| n.syntax().clone()),
-                    replacement.syntax(),
-                )
-                .into_text_edit(builder.text_edit_builder());
             }
         }
-        names => {
-            let replacement = match parent {
-                Either::Left(_) => {
-                    make::use_tree(path, Some(make::use_tree_list(names.to_owned())), None, false)
-                        .syntax()
-                        .clone()
-                }
-                Either::Right(_) => make::use_tree_list(names.to_owned()).syntax().clone(),
-            };
-
-            algo::diff(
-                &parent.either(|n| n.syntax().clone(), |n| n.syntax().clone()),
-                &replacement,
-            )
-            .into_text_edit(builder.text_edit_builder());
-        }
+        names => match &parent {
+            Either::Left(parent) => rewriter.replace_ast(
+                parent,
+                &make::use_tree(path, Some(make::use_tree_list(names.to_owned())), None, false),
+            ),
+            Either::Right(parent) => {
+                rewriter.replace_ast(parent, &make::use_tree_list(names.to_owned()))
+            }
+        },
     };
 }
 
@@ -316,7 +303,7 @@ mod foo {
     pub fn f() {}
 }
 
-use foo::*<|>;
+use foo::*$0;
 
 fn qux(bar: Bar, baz: Baz) {
     f();
@@ -353,7 +340,7 @@ mod foo {
     pub fn f() {}
 }
 
-use foo::{*<|>, f};
+use foo::{*$0, f};
 
 fn qux(bar: Bar, baz: Baz) {
     f();
@@ -391,7 +378,7 @@ mod foo {
 }
 
 use foo::Bar;
-use foo::{*<|>, f};
+use foo::{*$0, f};
 
 fn qux(bar: Bar, baz: Baz) {
     f();
@@ -435,7 +422,7 @@ mod foo {
     }
 }
 
-use foo::{bar::{*<|>, f}, baz::*};
+use foo::{bar::{*$0, f}, baz::*};
 
 fn qux(bar: Bar, baz: Baz) {
     f();
@@ -483,7 +470,7 @@ mod foo {
     }
 }
 
-use foo::{bar::{Bar, Baz, f}, baz::*<|>};
+use foo::{bar::{Bar, Baz, f}, baz::*$0};
 
 fn qux(bar: Bar, baz: Baz) {
     f();
@@ -542,7 +529,7 @@ mod foo {
 
 use foo::{
     bar::{*, f},
-    baz::{g, qux::*<|>}
+    baz::{g, qux::*$0}
 };
 
 fn qux(bar: Bar, baz: Baz) {
@@ -618,7 +605,7 @@ mod foo {
 
 use foo::{
     bar::{*, f},
-    baz::{g, qux::{h, q::*<|>}}
+    baz::{g, qux::{h, q::*$0}}
 };
 
 fn qux(bar: Bar, baz: Baz) {
@@ -694,7 +681,7 @@ mod foo {
 
 use foo::{
     bar::{*, f},
-    baz::{g, qux::{q::j, *<|>}}
+    baz::{g, qux::{q::j, *$0}}
 };
 
 fn qux(bar: Bar, baz: Baz) {
@@ -760,7 +747,7 @@ fn qux(bar: Bar, baz: Baz) {
         // pub fn baz() {}
 
         // //- /main.rs crate:main deps:foo
-        // use foo::*<|>;
+        // use foo::*$0;
 
         // fn main() {
         //     bar!();
@@ -790,7 +777,7 @@ pub trait Tr {
 impl Tr for () {}
 
 //- /main.rs crate:main deps:foo
-use foo::*<|>;
+use foo::*$0;
 
 fn main() {
     ().method();
@@ -820,7 +807,7 @@ pub trait Tr2 {
 impl Tr2 for () {}
 
 //- /main.rs crate:main deps:foo
-use foo::*<|>;
+use foo::*$0;
 
 fn main() {
     ().method();
@@ -847,7 +834,7 @@ mod foo {
     }
 }
 
-use foo::bar::*<|>;
+use foo::bar::*$0;
 
 fn baz(bar: Bar) {}
 ",
@@ -864,7 +851,7 @@ mod foo {
     }
 }
 
-use foo::bar::baz::*<|>;
+use foo::bar::baz::*$0;
 
 fn qux(baz: Baz) {}
 ",
@@ -882,10 +869,39 @@ fn qux(baz: Baz) {}
         pub struct Qux;
     }
 
-    use foo::Bar<|>;
+    use foo::Bar$0;
 
     fn qux(bar: Bar, baz: Baz) {}
     ",
         )
+    }
+
+    #[test]
+    fn expanding_glob_import_single_nested_glob_only() {
+        check_assist(
+            expand_glob_import,
+            r"
+mod foo {
+    pub struct Bar;
+}
+
+use foo::{*$0};
+
+struct Baz {
+    bar: Bar
+}
+",
+            r"
+mod foo {
+    pub struct Bar;
+}
+
+use foo::Bar;
+
+struct Baz {
+    bar: Bar
+}
+",
+        );
     }
 }

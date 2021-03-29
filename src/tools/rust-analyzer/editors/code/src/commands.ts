@@ -21,7 +21,12 @@ export function analyzerStatus(ctx: Ctx): Cmd {
         provideTextDocumentContent(_uri: vscode.Uri): vscode.ProviderResult<string> {
             if (!vscode.window.activeTextEditor) return '';
 
-            return ctx.client.sendRequest(ra.analyzerStatus, null);
+            const params: ra.AnalyzerStatusParams = {};
+            const doc = ctx.activeRustEditor?.document;
+            if (doc != null) {
+                params.textDocument = ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(doc);
+            }
+            return ctx.client.sendRequest(ra.analyzerStatus, params);
         }
 
         get onDidChange(): vscode.Event<vscode.Uri> {
@@ -63,7 +68,7 @@ export function memoryUsage(ctx: Ctx): Cmd {
         provideTextDocumentContent(_uri: vscode.Uri): vscode.ProviderResult<string> {
             if (!vscode.window.activeTextEditor) return '';
 
-            return ctx.client.sendRequest(ra.memoryUsage, null).then((mem: any) => {
+            return ctx.client.sendRequest(ra.memoryUsage).then((mem: any) => {
                 return 'Per-query memory usage:\n' + mem + '\n(note: database has been cleared)';
             });
         }
@@ -94,7 +99,7 @@ export function matchingBrace(ctx: Ctx): Cmd {
         if (!editor || !client) return;
 
         const response = await client.sendRequest(ra.matchingBrace, {
-            textDocument: { uri: editor.document.uri.toString() },
+            textDocument: ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document),
             positions: editor.selections.map(s =>
                 client.code2ProtocolConverter.asPosition(s.active),
             ),
@@ -118,7 +123,7 @@ export function joinLines(ctx: Ctx): Cmd {
 
         const items: lc.TextEdit[] = await client.sendRequest(ra.joinLines, {
             ranges: editor.selections.map((it) => client.code2ProtocolConverter.asRange(it)),
-            textDocument: { uri: editor.document.uri.toString() },
+            textDocument: ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document),
         });
         editor.edit((builder) => {
             client.protocol2CodeConverter.asTextEdits(items).forEach((edit: any) => {
@@ -136,7 +141,7 @@ export function onEnter(ctx: Ctx): Cmd {
         if (!editor || !client) return false;
 
         const lcEdits = await client.sendRequest(ra.onEnter, {
-            textDocument: { uri: editor.document.uri.toString() },
+            textDocument: ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document),
             position: client.code2ProtocolConverter.asPosition(
                 editor.selection.active,
             ),
@@ -165,7 +170,7 @@ export function parentModule(ctx: Ctx): Cmd {
         if (!editor || !client) return;
 
         const response = await client.sendRequest(ra.parentModule, {
-            textDocument: { uri: editor.document.uri.toString() },
+            textDocument: ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document),
             position: client.code2ProtocolConverter.asPosition(
                 editor.selection.active,
             ),
@@ -183,6 +188,27 @@ export function parentModule(ctx: Ctx): Cmd {
     };
 }
 
+export function openCargoToml(ctx: Ctx): Cmd {
+    return async () => {
+        const editor = ctx.activeRustEditor;
+        const client = ctx.client;
+        if (!editor || !client) return;
+
+        const response = await client.sendRequest(ra.openCargoToml, {
+            textDocument: ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document),
+        });
+        if (!response) return;
+
+        const uri = client.protocol2CodeConverter.asUri(response.uri);
+        const range = client.protocol2CodeConverter.asRange(response.range);
+
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const e = await vscode.window.showTextDocument(doc);
+        e.selection = new vscode.Selection(range.start, range.start);
+        e.revealRange(range, vscode.TextEditorRevealType.InCenter);
+    };
+}
+
 export function ssr(ctx: Ctx): Cmd {
     return async () => {
         const editor = vscode.window.activeTextEditor;
@@ -191,11 +217,11 @@ export function ssr(ctx: Ctx): Cmd {
 
         const position = editor.selection.active;
         const selections = editor.selections;
-        const textDocument = { uri: editor.document.uri.toString() };
+        const textDocument = ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document);
 
         const options: vscode.InputBoxOptions = {
             value: "() ==>> ()",
-            prompt: "Enter request, for example 'Foo($a) ==> Foo::new($a)' ",
+            prompt: "Enter request, for example 'Foo($a) ==>> Foo::new($a)' ",
             validateInput: async (x: string) => {
                 try {
                     await client.sendRequest(ra.ssr, {
@@ -314,6 +340,61 @@ export function syntaxTree(ctx: Ctx): Cmd {
     };
 }
 
+// Opens the virtual file that will show the HIR of the function containing the cursor position
+//
+// The contents of the file come from the `TextDocumentContentProvider`
+export function viewHir(ctx: Ctx): Cmd {
+    const tdcp = new class implements vscode.TextDocumentContentProvider {
+        readonly uri = vscode.Uri.parse('rust-analyzer://viewHir/hir.txt');
+        readonly eventEmitter = new vscode.EventEmitter<vscode.Uri>();
+        constructor() {
+            vscode.workspace.onDidChangeTextDocument(this.onDidChangeTextDocument, this, ctx.subscriptions);
+            vscode.window.onDidChangeActiveTextEditor(this.onDidChangeActiveTextEditor, this, ctx.subscriptions);
+        }
+
+        private onDidChangeTextDocument(event: vscode.TextDocumentChangeEvent) {
+            if (isRustDocument(event.document)) {
+                // We need to order this after language server updates, but there's no API for that.
+                // Hence, good old sleep().
+                void sleep(10).then(() => this.eventEmitter.fire(this.uri));
+            }
+        }
+        private onDidChangeActiveTextEditor(editor: vscode.TextEditor | undefined) {
+            if (editor && isRustEditor(editor)) {
+                this.eventEmitter.fire(this.uri);
+            }
+        }
+
+        provideTextDocumentContent(_uri: vscode.Uri, ct: vscode.CancellationToken): vscode.ProviderResult<string> {
+            const rustEditor = ctx.activeRustEditor;
+            const client = ctx.client;
+            if (!rustEditor || !client) return '';
+
+            const params = {
+                textDocument: client.code2ProtocolConverter.asTextDocumentIdentifier(rustEditor.document),
+                position: client.code2ProtocolConverter.asPosition(
+                    rustEditor.selection.active,
+                ),
+            };
+            return client.sendRequest(ra.viewHir, params, ct);
+        }
+
+        get onDidChange(): vscode.Event<vscode.Uri> {
+            return this.eventEmitter.event;
+        }
+    };
+
+    ctx.pushCleanup(vscode.workspace.registerTextDocumentContentProvider('rust-analyzer', tdcp));
+
+    return async () => {
+        const document = await vscode.workspace.openTextDocument(tdcp.uri);
+        tdcp.eventEmitter.fire(tdcp.uri);
+        void await vscode.window.showTextDocument(document, {
+            viewColumn: vscode.ViewColumn.Two,
+            preserveFocus: true
+        });
+    };
+}
 
 // Opens the virtual file that will show the syntax tree
 //
@@ -339,7 +420,7 @@ export function expandMacro(ctx: Ctx): Cmd {
             const position = editor.selection.active;
 
             const expanded = await client.sendRequest(ra.expandMacro, {
-                textDocument: { uri: editor.document.uri.toString() },
+                textDocument: ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document),
                 position,
             });
 
@@ -372,7 +453,7 @@ export function expandMacro(ctx: Ctx): Cmd {
 }
 
 export function reloadWorkspace(ctx: Ctx): Cmd {
-    return async () => ctx.client.sendRequest(ra.reloadWorkspace, null);
+    return async () => ctx.client.sendRequest(ra.reloadWorkspace);
 }
 
 export function showReferences(ctx: Ctx): Cmd {
@@ -390,7 +471,7 @@ export function showReferences(ctx: Ctx): Cmd {
 }
 
 export function applyActionGroup(_ctx: Ctx): Cmd {
-    return async (actions: { label: string; arguments: ra.ResolveCodeActionParams }[]) => {
+    return async (actions: { label: string; arguments: lc.CodeAction }[]) => {
         const selectedAction = await vscode.window.showQuickPick(actions);
         if (!selectedAction) return;
         vscode.commands.executeCommand(
@@ -414,15 +495,43 @@ export function gotoLocation(ctx: Ctx): Cmd {
     };
 }
 
+export function openDocs(ctx: Ctx): Cmd {
+    return async () => {
+
+        const client = ctx.client;
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || !client) {
+            return;
+        };
+
+        const position = editor.selection.active;
+        const textDocument = { uri: editor.document.uri.toString() };
+
+        const doclink = await client.sendRequest(ra.openDocs, { position, textDocument });
+
+        if (doclink != null) {
+            vscode.commands.executeCommand("vscode.open", vscode.Uri.parse(doclink));
+        }
+    };
+
+}
+
 export function resolveCodeAction(ctx: Ctx): Cmd {
     const client = ctx.client;
-    return async (params: ra.ResolveCodeActionParams) => {
-        const item: lc.WorkspaceEdit = await client.sendRequest(ra.resolveCodeAction, params);
-        if (!item) {
+    return async (params: lc.CodeAction) => {
+        params.command = undefined;
+        const item = await client.sendRequest(lc.CodeActionResolveRequest.type, params);
+        if (!item.edit) {
             return;
         }
-        const edit = client.protocol2CodeConverter.asWorkspaceEdit(item);
+        const itemEdit = item.edit;
+        const edit = client.protocol2CodeConverter.asWorkspaceEdit(itemEdit);
+        // filter out all text edits and recreate the WorkspaceEdit without them so we can apply
+        // snippet edits on our own
+        const itemEditWithoutTextEdits = { ...item, documentChanges: itemEdit.documentChanges?.filter(change => "kind" in change) };
+        const editWithoutTextEdits = client.protocol2CodeConverter.asWorkspaceEdit(itemEditWithoutTextEdits);
         await applySnippetWorkspaceEdit(edit);
+        await vscode.workspace.applyEdit(editWithoutTextEdits);
     };
 }
 

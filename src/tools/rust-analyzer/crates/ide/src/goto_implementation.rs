@@ -1,8 +1,8 @@
-use hir::{Crate, ImplDef, Semantics};
+use hir::{Crate, Impl, Semantics};
 use ide_db::RootDatabase;
 use syntax::{algo::find_node_at_offset, ast, AstNode};
 
-use crate::{display::ToNav, FilePosition, NavigationTarget, RangeInfo};
+use crate::{display::TryToNav, FilePosition, NavigationTarget, RangeInfo};
 
 // Feature: Go to Implementation
 //
@@ -49,13 +49,13 @@ fn impls_for_def(
         ast::AdtDef::Union(def) => sema.to_def(def)?.ty(sema.db),
     };
 
-    let impls = ImplDef::all_in_crate(sema.db, krate);
+    let impls = Impl::all_in_crate(sema.db, krate);
 
     Some(
         impls
             .into_iter()
             .filter(|impl_def| ty.is_equal_for_find_impls(&impl_def.target_ty(sema.db)))
-            .map(|imp| imp.to_nav(sema.db))
+            .filter_map(|imp| imp.try_to_nav(sema.db))
             .collect(),
     )
 }
@@ -67,21 +67,19 @@ fn impls_for_trait(
 ) -> Option<Vec<NavigationTarget>> {
     let tr = sema.to_def(node)?;
 
-    let impls = ImplDef::for_trait(sema.db, krate, tr);
+    let impls = Impl::for_trait(sema.db, krate, tr);
 
-    Some(impls.into_iter().map(|imp| imp.to_nav(sema.db)).collect())
+    Some(impls.into_iter().filter_map(|imp| imp.try_to_nav(sema.db)).collect())
 }
 
 #[cfg(test)]
 mod tests {
-    use base_db::FileRange;
+    use ide_db::base_db::FileRange;
 
-    use crate::mock_analysis::MockAnalysis;
+    use crate::fixture;
 
     fn check(ra_fixture: &str) {
-        let (mock, position) = MockAnalysis::with_files_and_position(ra_fixture);
-        let annotations = mock.annotations();
-        let analysis = mock.analysis();
+        let (analysis, position, annotations) = fixture::annotations(ra_fixture);
 
         let navs = analysis.goto_implementation(position).unwrap().unwrap().info;
 
@@ -109,7 +107,7 @@ mod tests {
     fn goto_implementation_works() {
         check(
             r#"
-struct Foo<|>;
+struct Foo$0;
 impl Foo {}
    //^^^
 "#,
@@ -120,7 +118,7 @@ impl Foo {}
     fn goto_implementation_works_multiple_blocks() {
         check(
             r#"
-struct Foo<|>;
+struct Foo$0;
 impl Foo {}
    //^^^
 impl Foo {}
@@ -133,7 +131,7 @@ impl Foo {}
     fn goto_implementation_works_multiple_mods() {
         check(
             r#"
-struct Foo<|>;
+struct Foo$0;
 mod a {
     impl super::Foo {}
        //^^^^^^^^^^
@@ -151,7 +149,7 @@ mod b {
         check(
             r#"
 //- /lib.rs
-struct Foo<|>;
+struct Foo$0;
 mod a;
 mod b;
 //- /a.rs
@@ -168,7 +166,7 @@ impl crate::Foo {}
     fn goto_implementation_for_trait() {
         check(
             r#"
-trait T<|> {}
+trait T$0 {}
 struct Foo;
 impl T for Foo {}
          //^^^
@@ -181,7 +179,7 @@ impl T for Foo {}
         check(
             r#"
 //- /lib.rs
-trait T<|> {};
+trait T$0 {};
 struct Foo;
 mod a;
 mod b;
@@ -201,7 +199,7 @@ impl crate::T for crate::Foo {}
             r#"
 //- /lib.rs
 trait T {}
-struct Foo<|>;
+struct Foo$0;
 impl Foo {}
    //^^^
 impl T for Foo {}
@@ -218,11 +216,13 @@ impl T for &Foo {}
             r#"
   #[derive(Copy)]
 //^^^^^^^^^^^^^^^
-struct Foo<|>;
+struct Foo$0;
 
 mod marker {
     trait Copy {}
 }
+#[rustc_builtin_macro]
+macro Copy {}
 "#,
         );
     }

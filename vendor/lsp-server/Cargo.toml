@@ -13,13 +13,13 @@
 [package]
 edition = "2018"
 name = "lsp-server"
-version = "0.3.4"
+version = "0.5.0"
 authors = ["rust-analyzer developers"]
 description = "Generic LSP server scaffold."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rust-analyzer/lsp-server"
 [dependencies.crossbeam-channel]
-version = "0.4"
+version = "0.5"
 
 [dependencies.log]
 version = "0.4.3"
@@ -30,8 +30,5 @@ features = ["derive"]
 
 [dependencies.serde_json]
 version = "1.0.34"
-[dev-dependencies.flexi_logger]
-version = "0.14.0"
-
 [dev-dependencies.lsp-types]
-version = "0.63.0"
+version = "0.83.1"

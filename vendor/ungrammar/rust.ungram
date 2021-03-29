@@ -21,17 +21,19 @@
 //*************************//
 
 Name =
-  'ident'
+  'ident' | 'self'
 
 NameRef =
-  'ident' | 'int_number'
+  'ident' | 'int_number' | 'self' | 'super' | 'crate'
+
+Lifetime =
+  'lifetime_ident'
 
 Path =
   (qualifier:Path '::')? segment:PathSegment
 
 PathSegment =
-  'crate' | 'self' | 'super'
-| '::'? NameRef
+  '::'? NameRef
 | NameRef GenericArgList?
 | NameRef ParamList RetType?
 | '<' PathType ('as' PathType)? '>'
@@ -52,13 +54,13 @@ AssocTypeArg =
   NameRef (':' TypeBoundList | '=' Type)
 
 LifetimeArg =
-  'lifetime'
+  Lifetime
 
 ConstArg =
   Expr
 
 MacroCall =
-  Attr* Path '!' Name? TokenTree ';'?
+  Attr* Path '!' TokenTree ';'?
 
 TokenTree =
   '(' ')'
@@ -89,6 +91,8 @@ Item =
 | Fn
 | Impl
 | MacroCall
+| MacroRules
+| MacroDef
 | Module
 | Static
 | Struct
@@ -96,6 +100,16 @@ Item =
 | TypeAlias
 | Union
 | Use
+
+MacroRules =
+  Attr* Visibility?
+  'macro_rules' '!' Name
+  TokenTree
+
+MacroDef =
+  Attr* Visibility?
+  'macro' Name args:TokenTree?
+  body:TokenTree
 
 Module =
   Attr* Visibility?
@@ -107,7 +121,7 @@ ItemList =
 
 ExternCrate =
   Attr* Visibility?
-  'extern' 'crate' (NameRef | 'self') Rename? ';'
+  'extern' 'crate' NameRef Rename? ';'
 
 Rename =
   'as' (Name | '_')
@@ -141,8 +155,8 @@ ParamList =
 
 SelfParam =
   Attr* (
-    ('&' 'lifetime'?)? 'mut'? 'self'
-  | 'mut'? 'self' ':' Type
+    ('&' Lifetime?)? 'mut'? Name
+  | 'mut'? Name ':' Type
   )
 
 Param =
@@ -164,7 +178,7 @@ TypeAlias =
 Struct =
   Attr* Visibility?
   'struct' Name GenericParamList? (
-    WhereClause?  (RecordFieldList | ';')
+    WhereClause? (RecordFieldList | ';')
   | TupleFieldList WhereClause? ';'
   )
 
@@ -237,7 +251,7 @@ AssocItem =
 Impl =
   Attr* Visibility?
   'default'? 'unsafe'?
-  'impl' 'const'? GenericParamList? ('!'? trait:Type 'for')? self_ty:Type WhereClause?
+  'impl' GenericParamList? ('const'? '!'? trait:Type 'for')? self_ty:Type WhereClause?
   AssocItemList
 
 ExternBlock =
@@ -269,21 +283,16 @@ ConstParam =
   ('=' default_val:Expr)?
 
 LifetimeParam =
-  Attr* 'lifetime' (':' TypeBoundList?)?
+  Attr* Lifetime (':' TypeBoundList?)?
 
 WhereClause =
   'where' predicates:(WherePred (',' WherePred)* ','?)
 
 WherePred =
-  ('for' GenericParamList)?  ('lifetime' | Type) ':' TypeBoundList
+  ('for' GenericParamList)?  (Lifetime | Type) ':' TypeBoundList
 
 Visibility =
-  'pub' ('('
-    'super'
-  | 'self'
-  | 'crate'
-  | 'in' Path
-  ')')?
+  'pub' ('(' 'in'? Path ')')?
 
 Attr =
   '#' '!'? '[' Path ('=' Literal | TokenTree)? ']'
@@ -336,6 +345,7 @@ Expr =
 | TryExpr
 | TupleExpr
 | WhileExpr
+| YieldExpr
 
 Literal =
   Attr* value:(
@@ -353,17 +363,17 @@ BlockExpr =
   '{'
     Attr*
     statements:Stmt*
-    Expr?
+    tail_expr:Expr?
   '}'
 
 RefExpr =
-  Attr* '&' ('raw' |'mut' | 'const') Expr
+  Attr* '&' ('raw' | 'mut' | 'const') Expr
 
 TryExpr =
   Attr* Expr '?'
 
 EffectExpr =
-  Attr* Label? ('try' | 'unsafe' | 'async') BlockExpr
+  Attr* Label? ('try' | 'unsafe' | 'async' | 'const') BlockExpr
 
 PrefixExpr =
   Attr* op:('-' | '!' | '*') Expr
@@ -408,7 +418,7 @@ RecordExprFieldList =
   '}'
 
 RecordExprField =
-  Attr* NameRef (':' Expr)?
+  Attr* (NameRef ':')? Expr
 
 CallExpr =
   Attr* Expr ArgList
@@ -447,13 +457,13 @@ WhileExpr =
   loop_body:BlockExpr
 
 Label =
-  'lifetime'
+  Lifetime ':'
 
 BreakExpr =
-  Attr* 'break' 'lifetime'? Expr?
+  Attr* 'break' Lifetime? Expr?
 
 ContinueExpr =
-  Attr* 'continue' 'lifetime'?
+  Attr* 'continue' Lifetime?
 
 RangeExpr =
   Attr* start:Expr? op:('..' | '..=') end:Expr?
@@ -476,6 +486,9 @@ MatchGuard =
 ReturnExpr =
   Attr* 'return' Expr?
 
+YieldExpr =
+  Attr* 'yield' Expr?
+
 AwaitExpr =
   Attr* Expr '.' 'await'
 
@@ -493,6 +506,7 @@ Type =
 | ForType
 | ImplTraitType
 | InferType
+| MacroType
 | NeverType
 | ParenType
 | PathType
@@ -507,6 +521,9 @@ ParenType =
 NeverType =
   '!'
 
+MacroType =
+  MacroCall
+
 PathType =
   Path
 
@@ -517,7 +534,7 @@ PtrType =
   '*' ('const' | 'mut') Type
 
 RefType =
-  '&' 'lifetime'? 'mut'? Type
+  '&' Lifetime? 'mut'? Type
 
 ArrayType =
   '[' Type ';' Expr ']'
@@ -544,7 +561,7 @@ TypeBoundList =
   bounds:(TypeBound ('+' TypeBound)* '+'?)
 
 TypeBound =
-  'lifetime'
+  Lifetime
 | '?'? Type
 
 //************************//
@@ -567,6 +584,7 @@ Pat =
 | SlicePat
 | TuplePat
 | TupleStructPat
+| ConstBlockPat
 
 LiteralPat =
   Literal
@@ -621,3 +639,6 @@ RestPat =
 
 MacroPat =
   MacroCall
+
+ConstBlockPat =
+  'const' BlockExpr

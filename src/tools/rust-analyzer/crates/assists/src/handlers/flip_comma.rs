@@ -8,7 +8,7 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 //
 // ```
 // fn main() {
-//     ((1, 2),<|> (3, 4));
+//     ((1, 2),$0 (3, 4));
 // }
 // ```
 // ->
@@ -18,7 +18,7 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 // }
 // ```
 pub(crate) fn flip_comma(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    let comma = ctx.find_token_at_offset(T![,])?;
+    let comma = ctx.find_token_syntax_at_offset(T![,])?;
     let prev = non_trivia_sibling(comma.clone().into(), Direction::Prev)?;
     let next = non_trivia_sibling(comma.clone().into(), Direction::Next)?;
 
@@ -49,14 +49,14 @@ mod tests {
     fn flip_comma_works_for_function_parameters() {
         check_assist(
             flip_comma,
-            "fn foo(x: i32,<|> y: Result<(), ()>) {}",
-            "fn foo(y: Result<(), ()>, x: i32) {}",
+            r#"fn foo(x: i32,$0 y: Result<(), ()>) {}"#,
+            r#"fn foo(y: Result<(), ()>, x: i32) {}"#,
         )
     }
 
     #[test]
     fn flip_comma_target() {
-        check_assist_target(flip_comma, "fn foo(x: i32,<|> y: Result<(), ()>) {}", ",")
+        check_assist_target(flip_comma, r#"fn foo(x: i32,$0 y: Result<(), ()>) {}"#, ",")
     }
 
     #[test]
@@ -68,7 +68,7 @@ mod tests {
         check_assist_target(
             flip_comma,
             "pub enum Test { \
-             A,<|> \
+             A,$0 \
              }",
             ",",
         );
@@ -76,7 +76,7 @@ mod tests {
         check_assist_target(
             flip_comma,
             "pub struct Test { \
-             foo: usize,<|> \
+             foo: usize,$0 \
              }",
             ",",
         );

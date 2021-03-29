@@ -1079,6 +1079,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad8 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "41004038",
         "ldurb w1, [x2]",
@@ -1087,6 +1088,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad8 {
             rd: writable_xreg(1),
             mem: AMode::UnsignedOffset(xreg(2), UImm12Scaled::zero(I8)),
+            flags: MemFlags::trusted(),
         },
         "41004039",
         "ldrb w1, [x2]",
@@ -1095,6 +1097,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad8 {
             rd: writable_xreg(1),
             mem: AMode::RegReg(xreg(2), xreg(5)),
+            flags: MemFlags::trusted(),
         },
         "41686538",
         "ldrb w1, [x2, x5]",
@@ -1103,6 +1106,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad8 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "41008038",
         "ldursb x1, [x2]",
@@ -1111,6 +1115,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad8 {
             rd: writable_xreg(1),
             mem: AMode::UnsignedOffset(xreg(2), UImm12Scaled::maybe_from_i64(63, I8).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41FC8039",
         "ldrsb x1, [x2, #63]",
@@ -1119,6 +1124,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad8 {
             rd: writable_xreg(1),
             mem: AMode::RegReg(xreg(2), xreg(5)),
+            flags: MemFlags::trusted(),
         },
         "4168A538",
         "ldrsb x1, [x2, x5]",
@@ -1127,6 +1133,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad16 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::maybe_from_i64(5).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41504078",
         "ldurh w1, [x2, #5]",
@@ -1135,6 +1142,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad16 {
             rd: writable_xreg(1),
             mem: AMode::UnsignedOffset(xreg(2), UImm12Scaled::maybe_from_i64(8, I16).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41104079",
         "ldrh w1, [x2, #8]",
@@ -1143,6 +1151,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad16 {
             rd: writable_xreg(1),
             mem: AMode::RegScaled(xreg(2), xreg(3), I16),
+            flags: MemFlags::trusted(),
         },
         "41786378",
         "ldrh w1, [x2, x3, LSL #1]",
@@ -1151,6 +1160,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad16 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "41008078",
         "ldursh x1, [x2]",
@@ -1159,6 +1169,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad16 {
             rd: writable_xreg(28),
             mem: AMode::UnsignedOffset(xreg(20), UImm12Scaled::maybe_from_i64(24, I16).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "9C328079",
         "ldrsh x28, [x20, #24]",
@@ -1167,6 +1178,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad16 {
             rd: writable_xreg(28),
             mem: AMode::RegScaled(xreg(20), xreg(20), I16),
+            flags: MemFlags::trusted(),
         },
         "9C7AB478",
         "ldrsh x28, [x20, x20, LSL #1]",
@@ -1175,6 +1187,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad32 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "410040B8",
         "ldur w1, [x2]",
@@ -1183,6 +1196,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad32 {
             rd: writable_xreg(12),
             mem: AMode::UnsignedOffset(xreg(0), UImm12Scaled::maybe_from_i64(204, I32).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "0CCC40B9",
         "ldr w12, [x0, #204]",
@@ -1191,6 +1205,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad32 {
             rd: writable_xreg(1),
             mem: AMode::RegScaled(xreg(2), xreg(12), I32),
+            flags: MemFlags::trusted(),
         },
         "41786CB8",
         "ldr w1, [x2, x12, LSL #2]",
@@ -1199,6 +1214,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad32 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "410080B8",
         "ldursw x1, [x2]",
@@ -1207,6 +1223,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad32 {
             rd: writable_xreg(12),
             mem: AMode::UnsignedOffset(xreg(1), UImm12Scaled::maybe_from_i64(16380, I32).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "2CFCBFB9",
         "ldrsw x12, [x1, #16380]",
@@ -1215,6 +1232,7 @@ fn test_aarch64_binemit() {
         Inst::SLoad32 {
             rd: writable_xreg(1),
             mem: AMode::RegScaled(xreg(5), xreg(1), I32),
+            flags: MemFlags::trusted(),
         },
         "A178A1B8",
         "ldrsw x1, [x5, x1, LSL #2]",
@@ -1223,6 +1241,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "410040F8",
         "ldur x1, [x2]",
@@ -1231,6 +1250,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::maybe_from_i64(-256).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "410050F8",
         "ldur x1, [x2, #-256]",
@@ -1239,6 +1259,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::maybe_from_i64(255).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41F04FF8",
         "ldur x1, [x2, #255]",
@@ -1247,6 +1268,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::UnsignedOffset(xreg(2), UImm12Scaled::maybe_from_i64(32760, I64).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41FC7FF9",
         "ldr x1, [x2, #32760]",
@@ -1255,6 +1277,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::RegReg(xreg(2), xreg(3)),
+            flags: MemFlags::trusted(),
         },
         "416863F8",
         "ldr x1, [x2, x3]",
@@ -1263,6 +1286,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::RegScaled(xreg(2), xreg(3), I64),
+            flags: MemFlags::trusted(),
         },
         "417863F8",
         "ldr x1, [x2, x3, LSL #3]",
@@ -1271,6 +1295,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::RegScaledExtended(xreg(2), xreg(3), I64, ExtendOp::SXTW),
+            flags: MemFlags::trusted(),
         },
         "41D863F8",
         "ldr x1, [x2, w3, SXTW #3]",
@@ -1279,6 +1304,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::RegExtended(xreg(2), xreg(3), ExtendOp::SXTW),
+            flags: MemFlags::trusted(),
         },
         "41C863F8",
         "ldr x1, [x2, w3, SXTW]",
@@ -1287,6 +1313,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::Label(MemLabel::PCRel(64)),
+            flags: MemFlags::trusted(),
         },
         "01020058",
         "ldr x1, pc+64",
@@ -1295,6 +1322,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::PreIndexed(writable_xreg(2), SImm9::maybe_from_i64(16).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "410C41F8",
         "ldr x1, [x2, #16]!",
@@ -1303,6 +1331,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::PostIndexed(writable_xreg(2), SImm9::maybe_from_i64(16).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "410441F8",
         "ldr x1, [x2], #16",
@@ -1311,6 +1340,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::FPOffset(32768, I8),
+            flags: MemFlags::trusted(),
         },
         "100090D2B063308B010240F9",
         "movz x16, #32768 ; add x16, fp, x16, UXTX ; ldr x1, [x16]",
@@ -1319,6 +1349,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::FPOffset(-32768, I8),
+            flags: MemFlags::trusted(),
         },
         "F0FF8F92B063308B010240F9",
         "movn x16, #32767 ; add x16, fp, x16, UXTX ; ldr x1, [x16]",
@@ -1327,6 +1358,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::FPOffset(1048576, I8), // 2^20
+            flags: MemFlags::trusted(),
         },
         "1002A0D2B063308B010240F9",
         "movz x16, #16, LSL #16 ; add x16, fp, x16, UXTX ; ldr x1, [x16]",
@@ -1335,6 +1367,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::FPOffset(1048576 + 1, I8), // 2^20 + 1
+            flags: MemFlags::trusted(),
         },
         "300080521002A072B063308B010240F9",
         "movz w16, #1 ; movk w16, #16, LSL #16 ; add x16, fp, x16, UXTX ; ldr x1, [x16]",
@@ -1344,6 +1377,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::RegOffset(xreg(7), 8, I64),
+            flags: MemFlags::trusted(),
         },
         "E18040F8",
         "ldur x1, [x7, #8]",
@@ -1353,6 +1387,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::RegOffset(xreg(7), 1024, I64),
+            flags: MemFlags::trusted(),
         },
         "E10042F9",
         "ldr x1, [x7, #1024]",
@@ -1362,6 +1397,7 @@ fn test_aarch64_binemit() {
         Inst::ULoad64 {
             rd: writable_xreg(1),
             mem: AMode::RegOffset(xreg(7), 1048576, I64),
+            flags: MemFlags::trusted(),
         },
         "1002A0D2F060308B010240F9",
         "movz x16, #16, LSL #16 ; add x16, x7, x16, UXTX ; ldr x1, [x16]",
@@ -1371,6 +1407,7 @@ fn test_aarch64_binemit() {
         Inst::Store8 {
             rd: xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "41000038",
         "sturb w1, [x2]",
@@ -1379,6 +1416,7 @@ fn test_aarch64_binemit() {
         Inst::Store8 {
             rd: xreg(1),
             mem: AMode::UnsignedOffset(xreg(2), UImm12Scaled::maybe_from_i64(4095, I8).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41FC3F39",
         "strb w1, [x2, #4095]",
@@ -1387,6 +1425,7 @@ fn test_aarch64_binemit() {
         Inst::Store16 {
             rd: xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "41000078",
         "sturh w1, [x2]",
@@ -1395,6 +1434,7 @@ fn test_aarch64_binemit() {
         Inst::Store16 {
             rd: xreg(1),
             mem: AMode::UnsignedOffset(xreg(2), UImm12Scaled::maybe_from_i64(8190, I16).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41FC3F79",
         "strh w1, [x2, #8190]",
@@ -1403,6 +1443,7 @@ fn test_aarch64_binemit() {
         Inst::Store32 {
             rd: xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "410000B8",
         "stur w1, [x2]",
@@ -1411,6 +1452,7 @@ fn test_aarch64_binemit() {
         Inst::Store32 {
             rd: xreg(1),
             mem: AMode::UnsignedOffset(xreg(2), UImm12Scaled::maybe_from_i64(16380, I32).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41FC3FB9",
         "str w1, [x2, #16380]",
@@ -1419,6 +1461,7 @@ fn test_aarch64_binemit() {
         Inst::Store64 {
             rd: xreg(1),
             mem: AMode::Unscaled(xreg(2), SImm9::zero()),
+            flags: MemFlags::trusted(),
         },
         "410000F8",
         "stur x1, [x2]",
@@ -1427,6 +1470,7 @@ fn test_aarch64_binemit() {
         Inst::Store64 {
             rd: xreg(1),
             mem: AMode::UnsignedOffset(xreg(2), UImm12Scaled::maybe_from_i64(32760, I64).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "41FC3FF9",
         "str x1, [x2, #32760]",
@@ -1435,6 +1479,7 @@ fn test_aarch64_binemit() {
         Inst::Store64 {
             rd: xreg(1),
             mem: AMode::RegReg(xreg(2), xreg(3)),
+            flags: MemFlags::trusted(),
         },
         "416823F8",
         "str x1, [x2, x3]",
@@ -1443,6 +1488,7 @@ fn test_aarch64_binemit() {
         Inst::Store64 {
             rd: xreg(1),
             mem: AMode::RegScaled(xreg(2), xreg(3), I64),
+            flags: MemFlags::trusted(),
         },
         "417823F8",
         "str x1, [x2, x3, LSL #3]",
@@ -1451,6 +1497,7 @@ fn test_aarch64_binemit() {
         Inst::Store64 {
             rd: xreg(1),
             mem: AMode::RegScaledExtended(xreg(2), xreg(3), I64, ExtendOp::UXTW),
+            flags: MemFlags::trusted(),
         },
         "415823F8",
         "str x1, [x2, w3, UXTW #3]",
@@ -1459,6 +1506,7 @@ fn test_aarch64_binemit() {
         Inst::Store64 {
             rd: xreg(1),
             mem: AMode::RegExtended(xreg(2), xreg(3), ExtendOp::UXTW),
+            flags: MemFlags::trusted(),
         },
         "414823F8",
         "str x1, [x2, w3, UXTW]",
@@ -1467,6 +1515,7 @@ fn test_aarch64_binemit() {
         Inst::Store64 {
             rd: xreg(1),
             mem: AMode::PreIndexed(writable_xreg(2), SImm9::maybe_from_i64(16).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "410C01F8",
         "str x1, [x2, #16]!",
@@ -1475,6 +1524,7 @@ fn test_aarch64_binemit() {
         Inst::Store64 {
             rd: xreg(1),
             mem: AMode::PostIndexed(writable_xreg(2), SImm9::maybe_from_i64(16).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "410401F8",
         "str x1, [x2], #16",
@@ -1485,6 +1535,7 @@ fn test_aarch64_binemit() {
             rt: xreg(8),
             rt2: xreg(9),
             mem: PairAMode::SignedOffset(xreg(10), SImm7Scaled::zero(I64)),
+            flags: MemFlags::trusted(),
         },
         "482500A9",
         "stp x8, x9, [x10]",
@@ -1494,6 +1545,7 @@ fn test_aarch64_binemit() {
             rt: xreg(8),
             rt2: xreg(9),
             mem: PairAMode::SignedOffset(xreg(10), SImm7Scaled::maybe_from_i64(504, I64).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "48A51FA9",
         "stp x8, x9, [x10, #504]",
@@ -1503,6 +1555,7 @@ fn test_aarch64_binemit() {
             rt: xreg(8),
             rt2: xreg(9),
             mem: PairAMode::SignedOffset(xreg(10), SImm7Scaled::maybe_from_i64(-64, I64).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "48253CA9",
         "stp x8, x9, [x10, #-64]",
@@ -1512,6 +1565,7 @@ fn test_aarch64_binemit() {
             rt: xreg(21),
             rt2: xreg(28),
             mem: PairAMode::SignedOffset(xreg(1), SImm7Scaled::maybe_from_i64(-512, I64).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "357020A9",
         "stp x21, x28, [x1, #-512]",
@@ -1524,6 +1578,7 @@ fn test_aarch64_binemit() {
                 writable_xreg(10),
                 SImm7Scaled::maybe_from_i64(-64, I64).unwrap(),
             ),
+            flags: MemFlags::trusted(),
         },
         "4825BCA9",
         "stp x8, x9, [x10, #-64]!",
@@ -1536,6 +1591,7 @@ fn test_aarch64_binemit() {
                 writable_xreg(20),
                 SImm7Scaled::maybe_from_i64(504, I64).unwrap(),
             ),
+            flags: MemFlags::trusted(),
         },
         "8FC29FA8",
         "stp x15, x16, [x20], #504",
@@ -1546,6 +1602,7 @@ fn test_aarch64_binemit() {
             rt: writable_xreg(8),
             rt2: writable_xreg(9),
             mem: PairAMode::SignedOffset(xreg(10), SImm7Scaled::zero(I64)),
+            flags: MemFlags::trusted(),
         },
         "482540A9",
         "ldp x8, x9, [x10]",
@@ -1555,6 +1612,7 @@ fn test_aarch64_binemit() {
             rt: writable_xreg(8),
             rt2: writable_xreg(9),
             mem: PairAMode::SignedOffset(xreg(10), SImm7Scaled::maybe_from_i64(504, I64).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "48A55FA9",
         "ldp x8, x9, [x10, #504]",
@@ -1564,6 +1622,7 @@ fn test_aarch64_binemit() {
             rt: writable_xreg(8),
             rt2: writable_xreg(9),
             mem: PairAMode::SignedOffset(xreg(10), SImm7Scaled::maybe_from_i64(-64, I64).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "48257CA9",
         "ldp x8, x9, [x10, #-64]",
@@ -1573,6 +1632,7 @@ fn test_aarch64_binemit() {
             rt: writable_xreg(8),
             rt2: writable_xreg(9),
             mem: PairAMode::SignedOffset(xreg(10), SImm7Scaled::maybe_from_i64(-512, I64).unwrap()),
+            flags: MemFlags::trusted(),
         },
         "482560A9",
         "ldp x8, x9, [x10, #-512]",
@@ -1585,6 +1645,7 @@ fn test_aarch64_binemit() {
                 writable_xreg(10),
                 SImm7Scaled::maybe_from_i64(-64, I64).unwrap(),
             ),
+            flags: MemFlags::trusted(),
         },
         "4825FCA9",
         "ldp x8, x9, [x10, #-64]!",
@@ -1597,6 +1658,7 @@ fn test_aarch64_binemit() {
                 writable_xreg(12),
                 SImm7Scaled::maybe_from_i64(504, I64).unwrap(),
             ),
+            flags: MemFlags::trusted(),
         },
         "88E5DFA8",
         "ldp x8, x25, [x12], #504",
@@ -1783,6 +1845,22 @@ fn test_aarch64_binemit() {
         },
         "EFB79F9A",
         "cset x15, ge",
+    ));
+    insns.push((
+        Inst::CSetm {
+            rd: writable_xreg(0),
+            cond: Cond::Eq,
+        },
+        "E0139FDA",
+        "csetm x0, eq",
+    ));
+    insns.push((
+        Inst::CSetm {
+            rd: writable_xreg(16),
+            cond: Cond::Vs,
+        },
+        "F0739FDA",
+        "csetm x16, vs",
     ));
     insns.push((
         Inst::CCmpImm {
@@ -1995,6 +2073,24 @@ fn test_aarch64_binemit() {
         "dup v18.2d, v10.d[0]",
     ));
     insns.push((
+        Inst::VecDupFPImm {
+            rd: writable_vreg(31),
+            imm: ASIMDFPModImm::maybe_from_u64(1_f32.to_bits() as u64, ScalarSize::Size32).unwrap(),
+            size: VectorSize::Size32x2,
+        },
+        "1FF6030F",
+        "fmov v31.2s, #1",
+    ));
+    insns.push((
+        Inst::VecDupFPImm {
+            rd: writable_vreg(0),
+            imm: ASIMDFPModImm::maybe_from_u64(2_f64.to_bits(), ScalarSize::Size64).unwrap(),
+            size: VectorSize::Size64x2,
+        },
+        "00F4006F",
+        "fmov v0.2d, #2",
+    ));
+    insns.push((
         Inst::VecDupImm {
             rd: writable_vreg(31),
             imm: ASIMDMovModImm::maybe_from_u64(255, ScalarSize::Size8).unwrap(),
@@ -2006,13 +2102,93 @@ fn test_aarch64_binemit() {
     ));
     insns.push((
         Inst::VecDupImm {
+            rd: writable_vreg(30),
+            imm: ASIMDMovModImm::maybe_from_u64(0, ScalarSize::Size16).unwrap(),
+            invert: false,
+            size: VectorSize::Size16x8,
+        },
+        "1E84004F",
+        "movi v30.8h, #0",
+    ));
+    insns.push((
+        Inst::VecDupImm {
             rd: writable_vreg(0),
-            imm: ASIMDMovModImm::zero(),
+            imm: ASIMDMovModImm::zero(ScalarSize::Size16),
             invert: true,
             size: VectorSize::Size16x4,
         },
         "0084002F",
         "mvni v0.4h, #0",
+    ));
+    insns.push((
+        Inst::VecDupImm {
+            rd: writable_vreg(0),
+            imm: ASIMDMovModImm::maybe_from_u64(256, ScalarSize::Size16).unwrap(),
+            invert: false,
+            size: VectorSize::Size16x8,
+        },
+        "20A4004F",
+        "movi v0.8h, #1, LSL #8",
+    ));
+    insns.push((
+        Inst::VecDupImm {
+            rd: writable_vreg(8),
+            imm: ASIMDMovModImm::maybe_from_u64(2228223, ScalarSize::Size32).unwrap(),
+            invert: false,
+            size: VectorSize::Size32x4,
+        },
+        "28D4014F",
+        "movi v8.4s, #33, MSL #16",
+    ));
+    insns.push((
+        Inst::VecDupImm {
+            rd: writable_vreg(16),
+            imm: ASIMDMovModImm::maybe_from_u64(35071, ScalarSize::Size32).unwrap(),
+            invert: true,
+            size: VectorSize::Size32x2,
+        },
+        "10C5042F",
+        "mvni v16.2s, #136, MSL #8",
+    ));
+    insns.push((
+        Inst::VecDupImm {
+            rd: writable_vreg(1),
+            imm: ASIMDMovModImm::maybe_from_u64(0, ScalarSize::Size32).unwrap(),
+            invert: false,
+            size: VectorSize::Size32x2,
+        },
+        "0104000F",
+        "movi v1.2s, #0",
+    ));
+    insns.push((
+        Inst::VecDupImm {
+            rd: writable_vreg(24),
+            imm: ASIMDMovModImm::maybe_from_u64(1107296256, ScalarSize::Size32).unwrap(),
+            invert: false,
+            size: VectorSize::Size32x4,
+        },
+        "5864024F",
+        "movi v24.4s, #66, LSL #24",
+    ));
+    insns.push((
+        Inst::VecDupImm {
+            rd: writable_vreg(8),
+            imm: ASIMDMovModImm::zero(ScalarSize::Size64),
+            invert: false,
+            size: VectorSize::Size64x2,
+        },
+        "08E4006F",
+        "movi v8.2d, #0",
+    ));
+    insns.push((
+        Inst::VecDupImm {
+            rd: writable_vreg(7),
+            imm: ASIMDMovModImm::maybe_from_u64(18374687574904995840, ScalarSize::Size64).unwrap(),
+            invert: false,
+            size: VectorSize::Size64x2,
+        },
+        "87E6046F",
+        "movi v7.2d, #18374687574904995840",
     ));
     insns.push((
         Inst::VecExtend {
@@ -3617,6 +3793,28 @@ fn test_aarch64_binemit() {
     ));
 
     insns.push((
+        Inst::VecMisc {
+            op: VecMisc2::Cnt,
+            rd: writable_vreg(23),
+            rn: vreg(5),
+            size: VectorSize::Size8x8,
+        },
+        "B758200E",
+        "cnt v23.8b, v5.8b",
+    ));
+
+    insns.push((
+        Inst::VecLanes {
+            op: VecLanesOp::Uminv,
+            rd: writable_vreg(0),
+            rn: vreg(31),
+            size: VectorSize::Size8x8,
+        },
+        "E0AB312E",
+        "uminv b0, v31.8b",
+    ));
+
+    insns.push((
         Inst::VecLanes {
             op: VecLanesOp::Uminv,
             rd: writable_vreg(2),
@@ -3658,6 +3856,17 @@ fn test_aarch64_binemit() {
         },
         "A2BB314E",
         "addv b2, v29.16b",
+    ));
+
+    insns.push((
+        Inst::VecLanes {
+            op: VecLanesOp::Addv,
+            rd: writable_vreg(15),
+            rn: vreg(7),
+            size: VectorSize::Size16x4,
+        },
+        "EFB8710E",
+        "addv h15, v7.4h",
     ));
 
     insns.push((
@@ -3892,6 +4101,50 @@ fn test_aarch64_binemit() {
 
     insns.push((
         Inst::Extend {
+            rd: writable_xreg(3),
+            rn: xreg(5),
+            signed: false,
+            from_bits: 1,
+            to_bits: 32,
+        },
+        "A3000012",
+        "and w3, w5, #1",
+    ));
+    insns.push((
+        Inst::Extend {
+            rd: writable_xreg(3),
+            rn: xreg(5),
+            signed: false,
+            from_bits: 1,
+            to_bits: 64,
+        },
+        "A3000012",
+        "and w3, w5, #1",
+    ));
+    insns.push((
+        Inst::Extend {
+            rd: writable_xreg(10),
+            rn: xreg(21),
+            signed: true,
+            from_bits: 1,
+            to_bits: 32,
+        },
+        "AA020013",
+        "sbfx w10, w21, #0, #1",
+    ));
+    insns.push((
+        Inst::Extend {
+            rd: writable_xreg(1),
+            rn: xreg(2),
+            signed: true,
+            from_bits: 1,
+            to_bits: 64,
+        },
+        "41004093",
+        "sbfx x1, x2, #0, #1",
+    ));
+    insns.push((
+        Inst::Extend {
             rd: writable_xreg(1),
             rn: xreg(2),
             signed: false,
@@ -3943,7 +4196,7 @@ fn test_aarch64_binemit() {
             to_bits: 64,
         },
         "411C0053",
-        "uxtb x1, w2",
+        "uxtb w1, w2",
     ));
     insns.push((
         Inst::Extend {
@@ -3965,7 +4218,7 @@ fn test_aarch64_binemit() {
             to_bits: 64,
         },
         "413C0053",
-        "uxth x1, w2",
+        "uxth w1, w2",
     ));
     insns.push((
         Inst::Extend {
@@ -4219,8 +4472,8 @@ fn test_aarch64_binemit() {
             rd: writable_vreg(8),
             rn: vreg(4),
         },
-        "881CA40E",
-        "mov v8.8b, v4.8b",
+        "8840601E",
+        "fmov d8, d4",
     ));
 
     insns.push((
@@ -4252,6 +4505,16 @@ fn test_aarch64_binemit() {
         },
         "7705085E",
         "mov d23, v11.d[0]",
+    ));
+
+    insns.push((
+        Inst::FpuExtend {
+            rd: writable_vreg(31),
+            rn: vreg(0),
+            size: ScalarSize::Size32,
+        },
+        "1F40201E",
+        "fmov s31, s0",
     ));
 
     insns.push((
@@ -4756,6 +5019,7 @@ fn test_aarch64_binemit() {
         Inst::FpuLoad32 {
             rd: writable_vreg(16),
             mem: AMode::RegScaled(xreg(8), xreg(9), F32),
+            flags: MemFlags::trusted(),
         },
         "107969BC",
         "ldr s16, [x8, x9, LSL #2]",
@@ -4765,6 +5029,7 @@ fn test_aarch64_binemit() {
         Inst::FpuLoad64 {
             rd: writable_vreg(16),
             mem: AMode::RegScaled(xreg(8), xreg(9), F64),
+            flags: MemFlags::trusted(),
         },
         "107969FC",
         "ldr d16, [x8, x9, LSL #3]",
@@ -4774,6 +5039,7 @@ fn test_aarch64_binemit() {
         Inst::FpuLoad128 {
             rd: writable_vreg(16),
             mem: AMode::RegScaled(xreg(8), xreg(9), I128),
+            flags: MemFlags::trusted(),
         },
         "1079E93C",
         "ldr q16, [x8, x9, LSL #4]",
@@ -4783,6 +5049,7 @@ fn test_aarch64_binemit() {
         Inst::FpuLoad32 {
             rd: writable_vreg(16),
             mem: AMode::Label(MemLabel::PCRel(8)),
+            flags: MemFlags::trusted(),
         },
         "5000001C",
         "ldr s16, pc+8",
@@ -4792,6 +5059,7 @@ fn test_aarch64_binemit() {
         Inst::FpuLoad64 {
             rd: writable_vreg(16),
             mem: AMode::Label(MemLabel::PCRel(8)),
+            flags: MemFlags::trusted(),
         },
         "5000005C",
         "ldr d16, pc+8",
@@ -4801,6 +5069,7 @@ fn test_aarch64_binemit() {
         Inst::FpuLoad128 {
             rd: writable_vreg(16),
             mem: AMode::Label(MemLabel::PCRel(8)),
+            flags: MemFlags::trusted(),
         },
         "5000009C",
         "ldr q16, pc+8",
@@ -4810,6 +5079,7 @@ fn test_aarch64_binemit() {
         Inst::FpuStore32 {
             rd: vreg(16),
             mem: AMode::RegScaled(xreg(8), xreg(9), F32),
+            flags: MemFlags::trusted(),
         },
         "107929BC",
         "str s16, [x8, x9, LSL #2]",
@@ -4819,6 +5089,7 @@ fn test_aarch64_binemit() {
         Inst::FpuStore64 {
             rd: vreg(16),
             mem: AMode::RegScaled(xreg(8), xreg(9), F64),
+            flags: MemFlags::trusted(),
         },
         "107929FC",
         "str d16, [x8, x9, LSL #3]",
@@ -4828,6 +5099,7 @@ fn test_aarch64_binemit() {
         Inst::FpuStore128 {
             rd: vreg(16),
             mem: AMode::RegScaled(xreg(8), xreg(9), I128),
+            flags: MemFlags::trusted(),
         },
         "1079A93C",
         "str q16, [x8, x9, LSL #4]",

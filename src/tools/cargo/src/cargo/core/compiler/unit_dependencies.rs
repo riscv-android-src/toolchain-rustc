@@ -231,37 +231,32 @@ fn compute_deps(
         return compute_deps_custom_build(unit, unit_for, state);
     } else if unit.mode.is_doc() {
         // Note: this does not include doc test.
-        return compute_deps_doc(unit, state);
+        return compute_deps_doc(unit, state, unit_for);
     }
 
     let id = unit.pkg.package_id();
-    let filtered_deps = state
-        .deps(unit, unit_for)
-        .into_iter()
-        .filter(|&(_id, deps)| {
-            deps.iter().any(|dep| {
-                // If this target is a build command, then we only want build
-                // dependencies, otherwise we want everything *other than* build
-                // dependencies.
-                if unit.target.is_custom_build() != dep.is_build() {
-                    return false;
-                }
+    let filtered_deps = state.deps(unit, unit_for, &|dep| {
+        // If this target is a build command, then we only want build
+        // dependencies, otherwise we want everything *other than* build
+        // dependencies.
+        if unit.target.is_custom_build() != dep.is_build() {
+            return false;
+        }
 
-                // If this dependency is **not** a transitive dependency, then it
-                // only applies to test/example targets.
-                if !dep.is_transitive()
-                    && !unit.target.is_test()
-                    && !unit.target.is_example()
-                    && !unit.mode.is_any_test()
-                {
-                    return false;
-                }
+        // If this dependency is **not** a transitive dependency, then it
+        // only applies to test/example targets.
+        if !dep.is_transitive()
+            && !unit.target.is_test()
+            && !unit.target.is_example()
+            && !unit.mode.is_any_test()
+        {
+            return false;
+        }
 
-                // If we've gotten past all that, then this dependency is
-                // actually used!
-                true
-            })
-        });
+        // If we've gotten past all that, then this dependency is
+        // actually used!
+        true
+    });
 
     let mut ret = Vec::new();
     let mut dev_deps = Vec::new();
@@ -272,10 +267,7 @@ fn compute_deps(
             None => continue,
         };
         let mode = check_or_build_mode(unit.mode, lib);
-        let dep_unit_for = unit_for
-            .with_for_host(lib.for_host())
-            // If it is a custom build script, then it *only* has build dependencies.
-            .with_host_features(unit.target.is_custom_build() || lib.proc_macro());
+        let dep_unit_for = unit_for.with_dependency(unit, lib);
 
         let start = ret.len();
         if state.config.cli_unstable().dual_proc_macros && lib.proc_macro() && !unit.kind.is_host()
@@ -417,11 +409,12 @@ fn compute_deps_custom_build(
 }
 
 /// Returns the dependencies necessary to document a package.
-fn compute_deps_doc(unit: &Unit, state: &mut State<'_, '_>) -> CargoResult<Vec<UnitDep>> {
-    let deps = state
-        .deps(unit, UnitFor::new_normal())
-        .into_iter()
-        .filter(|&(_id, deps)| deps.iter().any(|dep| dep.kind() == DepKind::Normal));
+fn compute_deps_doc(
+    unit: &Unit,
+    state: &mut State<'_, '_>,
+    unit_for: UnitFor,
+) -> CargoResult<Vec<UnitDep>> {
+    let deps = state.deps(unit, unit_for, &|dep| dep.kind() == DepKind::Normal);
 
     // To document a library, we depend on dependencies actually being
     // built. If we're documenting *all* libraries, then we also depend on
@@ -436,9 +429,7 @@ fn compute_deps_doc(unit: &Unit, state: &mut State<'_, '_>) -> CargoResult<Vec<U
         // Rustdoc only needs rmeta files for regular dependencies.
         // However, for plugins/proc macros, deps should be built like normal.
         let mode = check_or_build_mode(unit.mode, lib);
-        let dep_unit_for = UnitFor::new_normal()
-            .with_for_host(lib.for_host())
-            .with_host_features(lib.proc_macro());
+        let dep_unit_for = unit_for.with_dependency(unit, lib);
         let lib_unit_dep = new_unit_dep(
             state,
             unit,
@@ -465,11 +456,11 @@ fn compute_deps_doc(unit: &Unit, state: &mut State<'_, '_>) -> CargoResult<Vec<U
     }
 
     // Be sure to build/run the build script for documented libraries.
-    ret.extend(dep_build_script(unit, UnitFor::new_normal(), state)?);
+    ret.extend(dep_build_script(unit, unit_for, state)?);
 
     // If we document a binary/example, we need the library available.
     if unit.target.is_bin() || unit.target.is_example() {
-        ret.extend(maybe_lib(unit, state, UnitFor::new_normal())?);
+        ret.extend(maybe_lib(unit, state, unit_for)?);
     }
     Ok(ret)
 }
@@ -485,12 +476,13 @@ fn maybe_lib(
         .find(|t| t.is_linkable())
         .map(|t| {
             let mode = check_or_build_mode(unit.mode, t);
+            let dep_unit_for = unit_for.with_dependency(unit, t);
             new_unit_dep(
                 state,
                 unit,
                 &unit.pkg,
                 t,
-                unit_for,
+                dep_unit_for,
                 unit.kind.for_target(t),
                 mode,
             )
@@ -537,12 +529,12 @@ fn dep_build_script(
             // build.rs unit use the same features. This is because some
             // people use `cfg!` and `#[cfg]` expressions to check for enabled
             // features instead of just checking `CARGO_FEATURE_*` at runtime.
-            // In the case with `-Zfeatures=host_dep`, and a shared
-            // dependency has different features enabled for normal vs. build,
-            // then the build.rs script will get compiled twice. I believe it
-            // is not feasible to only build it once because it would break a
-            // large number of scripts (they would think they have the wrong
-            // set of features enabled).
+            // In the case with the new feature resolver (decoupled host
+            // deps), and a shared dependency has different features enabled
+            // for normal vs. build, then the build.rs script will get
+            // compiled twice. I believe it is not feasible to only build it
+            // once because it would break a large number of scripts (they
+            // would think they have the wrong set of features enabled).
             let script_unit_for = UnitFor::new_host(unit_for.is_for_host_features());
             new_unit_dep_with_profile(
                 state,
@@ -780,7 +772,12 @@ impl<'a, 'cfg> State<'a, 'cfg> {
     }
 
     /// Returns a filtered set of dependencies for the given unit.
-    fn deps(&self, unit: &Unit, unit_for: UnitFor) -> Vec<(PackageId, &HashSet<Dependency>)> {
+    fn deps(
+        &self,
+        unit: &Unit,
+        unit_for: UnitFor,
+        filter: &dyn Fn(&Dependency) -> bool,
+    ) -> Vec<(PackageId, &HashSet<Dependency>)> {
         let pkg_id = unit.pkg.package_id();
         let kind = unit.kind;
         self.resolve()
@@ -788,6 +785,9 @@ impl<'a, 'cfg> State<'a, 'cfg> {
             .filter(|&(_id, deps)| {
                 assert!(!deps.is_empty());
                 deps.iter().any(|dep| {
+                    if !filter(dep) {
+                        return false;
+                    }
                     // If this dependency is only available for certain platforms,
                     // make sure we're only enabling it for that platform.
                     if !self.target_data.dep_platform_activated(dep, kind) {

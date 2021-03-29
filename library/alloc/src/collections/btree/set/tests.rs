@@ -639,6 +639,26 @@ fn test_send() {
     }
 }
 
+#[allow(dead_code)]
+fn test_ord_absence() {
+    fn set<K>(set: BTreeSet<K>) {
+        set.is_empty();
+        set.len();
+        set.iter();
+        set.into_iter();
+    }
+
+    fn set_debug<K: Debug>(set: BTreeSet<K>) {
+        format!("{:?}", set);
+        format!("{:?}", set.iter());
+        format!("{:?}", set.into_iter());
+    }
+
+    fn set_clone<K: Clone>(mut set: BTreeSet<K>) {
+        set.clone_from(&set.clone());
+    }
+}
+
 #[test]
 fn test_append() {
     let mut a = BTreeSet::new();
@@ -696,8 +716,10 @@ fn test_first_last() {
     assert_eq!(a.pop_last(), None);
 }
 
+// Unlike the function with the same name in map/tests, returns no values.
+// Which also means it returns different predetermined pseudo-random keys,
+// and the test cases using this function explore slightly different trees.
 fn rand_data(len: usize) -> Vec<u32> {
-    assert!(len <= 70029); // from that point on numbers repeat
     let mut rng = DeterministicRng::new();
     Vec::from_iter((0..len).map(|_| rng.next()))
 }

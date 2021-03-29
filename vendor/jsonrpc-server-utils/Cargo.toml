@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "jsonrpc-server-utils"
-version = "14.2.0"
+version = "17.0.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 description = "Server utils for jsonrpc-core crate."
 homepage = "https://github.com/paritytech/jsonrpc"
@@ -22,13 +22,16 @@ keywords = ["jsonrpc", "json-rpc", "json", "rpc", "serde"]
 license = "MIT"
 repository = "https://github.com/paritytech/jsonrpc"
 [dependencies.bytes]
-version = "0.4"
+version = "0.5"
+
+[dependencies.futures]
+version = "0.3"
 
 [dependencies.globset]
 version = "0.4"
 
 [dependencies.jsonrpc-core]
-version = "14.2"
+version = "17.0"
 
 [dependencies.lazy_static]
 version = "1.1.0"
@@ -37,10 +40,12 @@ version = "1.1.0"
 version = "0.4"
 
 [dependencies.tokio]
-version = "0.1.15"
+version = "0.2"
+features = ["rt-threaded", "io-driver", "io-util", "time", "tcp"]
 
-[dependencies.tokio-codec]
-version = "0.1"
+[dependencies.tokio-util]
+version = "0.3"
+features = ["codec"]
 
 [dependencies.unicase]
 version = "2.0"

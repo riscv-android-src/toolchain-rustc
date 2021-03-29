@@ -88,6 +88,7 @@ pub enum FragmentKind {
     Path,
     Expr,
     Statement,
+    StatementOptionalSemi,
     Type,
     Pattern,
     Item,
@@ -99,6 +100,8 @@ pub enum FragmentKind {
     // FIXME: use separate fragment kinds for macro inputs and outputs?
     Items,
     Statements,
+
+    Attr,
 }
 
 pub fn parse_fragment(
@@ -110,14 +113,16 @@ pub fn parse_fragment(
         FragmentKind::Path => grammar::fragments::path,
         FragmentKind::Expr => grammar::fragments::expr,
         FragmentKind::Type => grammar::fragments::type_,
-        FragmentKind::Pattern => grammar::fragments::pattern,
+        FragmentKind::Pattern => grammar::fragments::pattern_single,
         FragmentKind::Item => grammar::fragments::item,
         FragmentKind::Block => grammar::fragments::block_expr,
         FragmentKind::Visibility => grammar::fragments::opt_visibility,
         FragmentKind::MetaItem => grammar::fragments::meta_item,
         FragmentKind::Statement => grammar::fragments::stmt,
+        FragmentKind::StatementOptionalSemi => grammar::fragments::stmt_optional_semi,
         FragmentKind::Items => grammar::fragments::macro_items,
         FragmentKind::Statements => grammar::fragments::macro_stmts,
+        FragmentKind::Attr => grammar::fragments::attr,
     };
     parse_from_tokens(token_source, tree_sink, parser)
 }

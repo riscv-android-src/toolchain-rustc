@@ -155,6 +155,7 @@ The following features are available:
 */
 
 #![deny(missing_docs)]
+#![warn(missing_debug_implementations)]
 #![forbid(unsafe_code)]
 
 pub use error::{Error, Result};
@@ -198,7 +199,7 @@ pub fn escape_into(text: &str, buf: &mut String) {
 ///
 /// These are the only characters that are allowed to be escaped, with one
 /// exception: an ASCII space character may be escaped when extended mode (with
-/// the `x` flag) is enabld. In particular, `is_meta_character(' ')` returns
+/// the `x` flag) is enabled. In particular, `is_meta_character(' ')` returns
 /// `false`.
 ///
 /// Note that the set of characters for which this function returns `true` or

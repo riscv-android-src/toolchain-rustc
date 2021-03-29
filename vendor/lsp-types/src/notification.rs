@@ -68,6 +68,15 @@ macro_rules! lsp_notification {
     ("textDocument/semanticHighlighting") => {
         $crate::notification::SemanticHighlighting
     };
+    ("workspace/didCreateFiles") => {
+        $crate::notification::DidCreateFiles
+    };
+    ("workspace/didRenameFiles") => {
+        $crate::notification::DidRenameFiles
+    };
+    ("workspace/didDeleteFiles") => {
+        $crate::notification::DidDeleteFiles
+    };
 }
 
 /// The base protocol now offers support for request cancellation. To cancel a request,
@@ -127,6 +136,8 @@ impl Notification for LogMessage {
 }
 
 /// The telemetry notification is sent from the server to the client to ask the client to log a telemetry event.
+/// The protocol doesn't specify the payload since no interpretation of the data happens in the protocol. Most clients even don't handle
+/// the event directly but forward them to the extensions owning the corresponding server issuing the event.
 #[derive(Debug)]
 pub enum TelemetryEvent {}
 
@@ -195,8 +206,10 @@ impl Notification for DidSaveTextDocument {
     const METHOD: &'static str = "textDocument/didSave";
 }
 
-/// The watched files notification is sent from the client to the server when the client detects changes to files
-/// watched by the language client.
+/// The watched files notification is sent from the client to the server when the client detects changes to files and folders
+/// watched by the language client (note although the name suggest that only file events are sent it is about file system events which include folders as well).
+/// It is recommended that servers register for these file system events using the registration mechanism.
+/// In former implementations clients pushed file events without the server actively asking for it.
 #[derive(Debug)]
 pub enum DidChangeWatchedFiles {}
 
@@ -255,6 +268,33 @@ impl Notification for SemanticHighlighting {
     const METHOD: &'static str = "textDocument/semanticHighlighting";
 }
 
+/// The did create files notification is sent from the client to the server when files were created from within the client.
+#[derive(Debug)]
+pub enum DidCreateFiles {}
+
+impl Notification for DidCreateFiles {
+    type Params = CreateFilesParams;
+    const METHOD: &'static str = "workspace/didCreateFiles";
+}
+
+/// The did rename files notification is sent from the client to the server when files were renamed from within the client.
+#[derive(Debug)]
+pub enum DidRenameFiles {}
+
+impl Notification for DidRenameFiles {
+    type Params = RenameFilesParams;
+    const METHOD: &'static str = "workspace/didRenameFiles";
+}
+
+/// The did delete files notification is sent from the client to the server when files were deleted from within the client.
+#[derive(Debug)]
+pub enum DidDeleteFiles {}
+
+impl Notification for DidDeleteFiles {
+    type Params = DeleteFilesParams;
+    const METHOD: &'static str = "workspace/didDeleteFiles";
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -294,6 +334,9 @@ mod test {
         check_macro!("workspace/didChangeConfiguration");
         check_macro!("workspace/didChangeWatchedFiles");
         check_macro!("workspace/didChangeWorkspaceFolders");
+        check_macro!("workspace/didCreateFiles");
+        check_macro!("workspace/didRenameFiles");
+        check_macro!("workspace/didDeleteFiles");
     }
 
     #[test]

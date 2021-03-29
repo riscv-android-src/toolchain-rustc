@@ -3,6 +3,26 @@
 // TODO: for the next breaking release rename `Error::LoadLibraryW` to `Error::LoadLibraryExW`.
 // TODO: for the next breaking release use `RTLD_LAZY | RTLD_LOCAL` by default  on unix.
 
+/// Release 0.6.7 (2021-01-14)
+///
+/// * Added a [`os::windows::Library::open_already_loaded`] to obtain a handle to a library that
+/// must already be loaded. There is no portable equivalent for all UNIX targets. Users who do not
+/// care about portability across UNIX platforms may use [`os::unix::Library::open`] with
+/// `libc::RTLD_NOLOAD`;
+///
+/// [`os::windows::Library::open_already_loaded`]: crate::os::windows::Library::open_already_loaded
+/// [`os::unix::Library::open`]: crate::os::unix::Library::open
+pub mod r0_6_7 {}
+
+/// Release 0.6.6 (2020-12-03)
+///
+/// * Fix a double-release of resources when [`Library::close`] or [`os::windows::Library::close`]
+///   is used on Windows.
+///
+/// [`Library::close`]: crate::Library::close
+/// [`os::windows::Library::close`]: crate::os::windows::Library::close
+pub mod r0_6_6 {}
+
 /// Release 0.6.5 (2020-10-23)
 ///
 /// * Upgrade cfg-if 0.1 to 1.0
@@ -11,7 +31,7 @@ pub mod r0_6_5 {}
 /// Release 0.6.4 (2020-10-10)
 ///
 /// * Remove use of `build.rs` making it easier to build `libloading` without cargo. It also
-/// almost halves the build time of this crate.
+///   almost halves the build time of this crate.
 pub mod r0_6_4 {}
 
 /// Release 0.6.3 (2020-08-22)

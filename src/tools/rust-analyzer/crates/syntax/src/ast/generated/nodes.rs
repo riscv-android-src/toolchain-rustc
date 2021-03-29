@@ -11,6 +11,7 @@ pub struct Name {
 }
 impl Name {
     pub fn ident_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![ident]) }
+    pub fn self_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![self]) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NameRef {
@@ -18,6 +19,18 @@ pub struct NameRef {
 }
 impl NameRef {
     pub fn ident_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![ident]) }
+    pub fn self_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![self]) }
+    pub fn super_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![super]) }
+    pub fn crate_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![crate]) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Lifetime {
+    pub(crate) syntax: SyntaxNode,
+}
+impl Lifetime {
+    pub fn lifetime_ident_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![lifetime_ident])
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Path {
@@ -33,9 +46,6 @@ pub struct PathSegment {
     pub(crate) syntax: SyntaxNode,
 }
 impl PathSegment {
-    pub fn crate_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![crate]) }
-    pub fn self_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![self]) }
-    pub fn super_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![super]) }
     pub fn coloncolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![::]) }
     pub fn name_ref(&self) -> Option<NameRef> { support::child(&self.syntax) }
     pub fn generic_arg_list(&self) -> Option<GenericArgList> { support::child(&self.syntax) }
@@ -105,9 +115,7 @@ pub struct LifetimeArg {
     pub(crate) syntax: SyntaxNode,
 }
 impl LifetimeArg {
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstArg {
@@ -128,7 +136,6 @@ pub struct MacroCall {
     pub(crate) syntax: SyntaxNode,
 }
 impl ast::AttrsOwner for MacroCall {}
-impl ast::NameOwner for MacroCall {}
 impl MacroCall {
     pub fn path(&self) -> Option<Path> { support::child(&self.syntax) }
     pub fn excl_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![!]) }
@@ -232,7 +239,6 @@ impl ExternCrate {
     pub fn extern_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![extern]) }
     pub fn crate_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![crate]) }
     pub fn name_ref(&self) -> Option<NameRef> { support::child(&self.syntax) }
-    pub fn self_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![self]) }
     pub fn rename(&self) -> Option<Rename> { support::child(&self.syntax) }
     pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
 }
@@ -271,6 +277,32 @@ impl Impl {
     pub fn excl_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![!]) }
     pub fn for_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![for]) }
     pub fn assoc_item_list(&self) -> Option<AssocItemList> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MacroRules {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for MacroRules {}
+impl ast::NameOwner for MacroRules {}
+impl ast::VisibilityOwner for MacroRules {}
+impl MacroRules {
+    pub fn macro_rules_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![macro_rules])
+    }
+    pub fn excl_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![!]) }
+    pub fn token_tree(&self) -> Option<TokenTree> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MacroDef {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for MacroDef {}
+impl ast::NameOwner for MacroDef {}
+impl ast::VisibilityOwner for MacroDef {}
+impl MacroDef {
+    pub fn macro_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![macro]) }
+    pub fn args(&self) -> Option<TokenTree> { support::child(&self.syntax) }
+    pub fn body(&self) -> Option<TokenTree> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Module {
@@ -374,9 +406,6 @@ pub struct Visibility {
 impl Visibility {
     pub fn pub_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![pub]) }
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
-    pub fn super_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![super]) }
-    pub fn self_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![self]) }
-    pub fn crate_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![crate]) }
     pub fn in_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![in]) }
     pub fn path(&self) -> Option<Path> { support::child(&self.syntax) }
     pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
@@ -452,7 +481,7 @@ impl ast::AttrsOwner for BlockExpr {}
 impl BlockExpr {
     pub fn l_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['{']) }
     pub fn statements(&self) -> AstChildren<Stmt> { support::children(&self.syntax) }
-    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
+    pub fn tail_expr(&self) -> Option<Expr> { support::child(&self.syntax) }
     pub fn r_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['}']) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -460,13 +489,11 @@ pub struct SelfParam {
     pub(crate) syntax: SyntaxNode,
 }
 impl ast::AttrsOwner for SelfParam {}
+impl ast::NameOwner for SelfParam {}
 impl SelfParam {
     pub fn amp_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![&]) }
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
     pub fn mut_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![mut]) }
-    pub fn self_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![self]) }
     pub fn colon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![:]) }
     pub fn ty(&self) -> Option<Type> { support::child(&self.syntax) }
 }
@@ -580,9 +607,7 @@ pub struct LifetimeParam {
 impl ast::AttrsOwner for LifetimeParam {}
 impl ast::TypeBoundsOwner for LifetimeParam {}
 impl LifetimeParam {
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeParam {
@@ -603,9 +628,7 @@ impl ast::TypeBoundsOwner for WherePred {}
 impl WherePred {
     pub fn for_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![for]) }
     pub fn generic_param_list(&self) -> Option<GenericParamList> { support::child(&self.syntax) }
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
     pub fn ty(&self) -> Option<Type> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -681,9 +704,7 @@ pub struct BreakExpr {
 impl ast::AttrsOwner for BreakExpr {}
 impl BreakExpr {
     pub fn break_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![break]) }
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
     pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -727,9 +748,7 @@ impl ContinueExpr {
     pub fn continue_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, T![continue])
     }
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EffectExpr {
@@ -741,6 +760,7 @@ impl EffectExpr {
     pub fn try_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![try]) }
     pub fn unsafe_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![unsafe]) }
     pub fn async_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![async]) }
+    pub fn const_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![const]) }
     pub fn block_expr(&self) -> Option<BlockExpr> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -908,13 +928,21 @@ impl WhileExpr {
     pub fn condition(&self) -> Option<Condition> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct YieldExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for YieldExpr {}
+impl YieldExpr {
+    pub fn yield_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![yield]) }
+    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Label {
     pub(crate) syntax: SyntaxNode,
 }
 impl Label {
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
+    pub fn colon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![:]) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RecordExprFieldList {
@@ -1044,6 +1072,13 @@ impl InferType {
     pub fn underscore_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![_]) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MacroType {
+    pub(crate) syntax: SyntaxNode,
+}
+impl MacroType {
+    pub fn macro_call(&self) -> Option<MacroCall> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NeverType {
     pub(crate) syntax: SyntaxNode,
 }
@@ -1075,9 +1110,7 @@ pub struct RefType {
 }
 impl RefType {
     pub fn amp_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![&]) }
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
     pub fn mut_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![mut]) }
     pub fn ty(&self) -> Option<Type> { support::child(&self.syntax) }
 }
@@ -1104,9 +1137,7 @@ pub struct TypeBound {
     pub(crate) syntax: SyntaxNode,
 }
 impl TypeBound {
-    pub fn lifetime_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![lifetime])
-    }
+    pub fn lifetime(&self) -> Option<Lifetime> { support::child(&self.syntax) }
     pub fn question_mark_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![?]) }
     pub fn ty(&self) -> Option<Type> { support::child(&self.syntax) }
 }
@@ -1234,6 +1265,14 @@ impl TupleStructPat {
     pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConstBlockPat {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ConstBlockPat {
+    pub fn const_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![const]) }
+    pub fn block_expr(&self) -> Option<BlockExpr> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RecordPatFieldList {
     pub(crate) syntax: SyntaxNode,
 }
@@ -1268,6 +1307,7 @@ pub enum Type {
     ForType(ForType),
     ImplTraitType(ImplTraitType),
     InferType(InferType),
+    MacroType(MacroType),
     NeverType(NeverType),
     ParenType(ParenType),
     PathType(PathType),
@@ -1308,6 +1348,7 @@ pub enum Expr {
     TryExpr(TryExpr),
     TupleExpr(TupleExpr),
     WhileExpr(WhileExpr),
+    YieldExpr(YieldExpr),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Item {
@@ -1318,6 +1359,8 @@ pub enum Item {
     Fn(Fn),
     Impl(Impl),
     MacroCall(MacroCall),
+    MacroRules(MacroRules),
+    MacroDef(MacroDef),
     Module(Module),
     Static(Static),
     Struct(Struct),
@@ -1350,6 +1393,7 @@ pub enum Pat {
     SlicePat(SlicePat),
     TuplePat(TuplePat),
     TupleStructPat(TupleStructPat),
+    ConstBlockPat(ConstBlockPat),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldList {
@@ -1374,7 +1418,6 @@ pub enum AssocItem {
     TypeAlias(TypeAlias),
 }
 impl ast::AttrsOwner for AssocItem {}
-impl ast::NameOwner for AssocItem {}
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ExternItem {
     Fn(Fn),
@@ -1383,7 +1426,6 @@ pub enum ExternItem {
     TypeAlias(TypeAlias),
 }
 impl ast::AttrsOwner for ExternItem {}
-impl ast::NameOwner for ExternItem {}
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GenericParam {
     ConstParam(ConstParam),
@@ -1404,6 +1446,17 @@ impl AstNode for Name {
 }
 impl AstNode for NameRef {
     fn can_cast(kind: SyntaxKind) -> bool { kind == NAME_REF }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for Lifetime {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == LIFETIME }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1657,6 +1710,28 @@ impl AstNode for Fn {
 }
 impl AstNode for Impl {
     fn can_cast(kind: SyntaxKind) -> bool { kind == IMPL }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for MacroRules {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == MACRO_RULES }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for MacroDef {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == MACRO_DEF }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -2326,6 +2401,17 @@ impl AstNode for WhileExpr {
     }
     fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
+impl AstNode for YieldExpr {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == YIELD_EXPR }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
 impl AstNode for Label {
     fn can_cast(kind: SyntaxKind) -> bool { kind == LABEL }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -2471,6 +2557,17 @@ impl AstNode for ImplTraitType {
 }
 impl AstNode for InferType {
     fn can_cast(kind: SyntaxKind) -> bool { kind == INFER_TYPE }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for MacroType {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == MACRO_TYPE }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -2722,6 +2819,17 @@ impl AstNode for TupleStructPat {
     }
     fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
+impl AstNode for ConstBlockPat {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == CONST_BLOCK_PAT }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
 impl AstNode for RecordPatFieldList {
     fn can_cast(kind: SyntaxKind) -> bool { kind == RECORD_PAT_FIELD_LIST }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -2800,6 +2908,9 @@ impl From<ImplTraitType> for Type {
 impl From<InferType> for Type {
     fn from(node: InferType) -> Type { Type::InferType(node) }
 }
+impl From<MacroType> for Type {
+    fn from(node: MacroType) -> Type { Type::MacroType(node) }
+}
 impl From<NeverType> for Type {
     fn from(node: NeverType) -> Type { Type::NeverType(node) }
 }
@@ -2825,8 +2936,8 @@ impl AstNode for Type {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
             ARRAY_TYPE | DYN_TRAIT_TYPE | FN_PTR_TYPE | FOR_TYPE | IMPL_TRAIT_TYPE | INFER_TYPE
-            | NEVER_TYPE | PAREN_TYPE | PATH_TYPE | PTR_TYPE | REF_TYPE | SLICE_TYPE
-            | TUPLE_TYPE => true,
+            | MACRO_TYPE | NEVER_TYPE | PAREN_TYPE | PATH_TYPE | PTR_TYPE | REF_TYPE
+            | SLICE_TYPE | TUPLE_TYPE => true,
             _ => false,
         }
     }
@@ -2838,6 +2949,7 @@ impl AstNode for Type {
             FOR_TYPE => Type::ForType(ForType { syntax }),
             IMPL_TRAIT_TYPE => Type::ImplTraitType(ImplTraitType { syntax }),
             INFER_TYPE => Type::InferType(InferType { syntax }),
+            MACRO_TYPE => Type::MacroType(MacroType { syntax }),
             NEVER_TYPE => Type::NeverType(NeverType { syntax }),
             PAREN_TYPE => Type::ParenType(ParenType { syntax }),
             PATH_TYPE => Type::PathType(PathType { syntax }),
@@ -2857,6 +2969,7 @@ impl AstNode for Type {
             Type::ForType(it) => &it.syntax,
             Type::ImplTraitType(it) => &it.syntax,
             Type::InferType(it) => &it.syntax,
+            Type::MacroType(it) => &it.syntax,
             Type::NeverType(it) => &it.syntax,
             Type::ParenType(it) => &it.syntax,
             Type::PathType(it) => &it.syntax,
@@ -2957,6 +3070,9 @@ impl From<TupleExpr> for Expr {
 impl From<WhileExpr> for Expr {
     fn from(node: WhileExpr) -> Expr { Expr::WhileExpr(node) }
 }
+impl From<YieldExpr> for Expr {
+    fn from(node: YieldExpr) -> Expr { Expr::YieldExpr(node) }
+}
 impl AstNode for Expr {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
@@ -2964,7 +3080,8 @@ impl AstNode for Expr {
             | CAST_EXPR | CLOSURE_EXPR | CONTINUE_EXPR | EFFECT_EXPR | FIELD_EXPR | FOR_EXPR
             | IF_EXPR | INDEX_EXPR | LITERAL | LOOP_EXPR | MACRO_CALL | MATCH_EXPR
             | METHOD_CALL_EXPR | PAREN_EXPR | PATH_EXPR | PREFIX_EXPR | RANGE_EXPR
-            | RECORD_EXPR | REF_EXPR | RETURN_EXPR | TRY_EXPR | TUPLE_EXPR | WHILE_EXPR => true,
+            | RECORD_EXPR | REF_EXPR | RETURN_EXPR | TRY_EXPR | TUPLE_EXPR | WHILE_EXPR
+            | YIELD_EXPR => true,
             _ => false,
         }
     }
@@ -3000,6 +3117,7 @@ impl AstNode for Expr {
             TRY_EXPR => Expr::TryExpr(TryExpr { syntax }),
             TUPLE_EXPR => Expr::TupleExpr(TupleExpr { syntax }),
             WHILE_EXPR => Expr::WhileExpr(WhileExpr { syntax }),
+            YIELD_EXPR => Expr::YieldExpr(YieldExpr { syntax }),
             _ => return None,
         };
         Some(res)
@@ -3036,6 +3154,7 @@ impl AstNode for Expr {
             Expr::TryExpr(it) => &it.syntax,
             Expr::TupleExpr(it) => &it.syntax,
             Expr::WhileExpr(it) => &it.syntax,
+            Expr::YieldExpr(it) => &it.syntax,
         }
     }
 }
@@ -3059,6 +3178,12 @@ impl From<Impl> for Item {
 }
 impl From<MacroCall> for Item {
     fn from(node: MacroCall) -> Item { Item::MacroCall(node) }
+}
+impl From<MacroRules> for Item {
+    fn from(node: MacroRules) -> Item { Item::MacroRules(node) }
+}
+impl From<MacroDef> for Item {
+    fn from(node: MacroDef) -> Item { Item::MacroDef(node) }
 }
 impl From<Module> for Item {
     fn from(node: Module) -> Item { Item::Module(node) }
@@ -3084,8 +3209,8 @@ impl From<Use> for Item {
 impl AstNode for Item {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
-            CONST | ENUM | EXTERN_BLOCK | EXTERN_CRATE | FN | IMPL | MACRO_CALL | MODULE
-            | STATIC | STRUCT | TRAIT | TYPE_ALIAS | UNION | USE => true,
+            CONST | ENUM | EXTERN_BLOCK | EXTERN_CRATE | FN | IMPL | MACRO_CALL | MACRO_RULES
+            | MACRO_DEF | MODULE | STATIC | STRUCT | TRAIT | TYPE_ALIAS | UNION | USE => true,
             _ => false,
         }
     }
@@ -3098,6 +3223,8 @@ impl AstNode for Item {
             FN => Item::Fn(Fn { syntax }),
             IMPL => Item::Impl(Impl { syntax }),
             MACRO_CALL => Item::MacroCall(MacroCall { syntax }),
+            MACRO_RULES => Item::MacroRules(MacroRules { syntax }),
+            MACRO_DEF => Item::MacroDef(MacroDef { syntax }),
             MODULE => Item::Module(Module { syntax }),
             STATIC => Item::Static(Static { syntax }),
             STRUCT => Item::Struct(Struct { syntax }),
@@ -3118,6 +3245,8 @@ impl AstNode for Item {
             Item::Fn(it) => &it.syntax,
             Item::Impl(it) => &it.syntax,
             Item::MacroCall(it) => &it.syntax,
+            Item::MacroRules(it) => &it.syntax,
+            Item::MacroDef(it) => &it.syntax,
             Item::Module(it) => &it.syntax,
             Item::Static(it) => &it.syntax,
             Item::Struct(it) => &it.syntax,
@@ -3182,12 +3311,15 @@ impl From<TuplePat> for Pat {
 impl From<TupleStructPat> for Pat {
     fn from(node: TupleStructPat) -> Pat { Pat::TupleStructPat(node) }
 }
+impl From<ConstBlockPat> for Pat {
+    fn from(node: ConstBlockPat) -> Pat { Pat::ConstBlockPat(node) }
+}
 impl AstNode for Pat {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
             IDENT_PAT | BOX_PAT | REST_PAT | LITERAL_PAT | MACRO_PAT | OR_PAT | PAREN_PAT
             | PATH_PAT | WILDCARD_PAT | RANGE_PAT | RECORD_PAT | REF_PAT | SLICE_PAT
-            | TUPLE_PAT | TUPLE_STRUCT_PAT => true,
+            | TUPLE_PAT | TUPLE_STRUCT_PAT | CONST_BLOCK_PAT => true,
             _ => false,
         }
     }
@@ -3208,6 +3340,7 @@ impl AstNode for Pat {
             SLICE_PAT => Pat::SlicePat(SlicePat { syntax }),
             TUPLE_PAT => Pat::TuplePat(TuplePat { syntax }),
             TUPLE_STRUCT_PAT => Pat::TupleStructPat(TupleStructPat { syntax }),
+            CONST_BLOCK_PAT => Pat::ConstBlockPat(ConstBlockPat { syntax }),
             _ => return None,
         };
         Some(res)
@@ -3229,6 +3362,7 @@ impl AstNode for Pat {
             Pat::SlicePat(it) => &it.syntax,
             Pat::TuplePat(it) => &it.syntax,
             Pat::TupleStructPat(it) => &it.syntax,
+            Pat::ConstBlockPat(it) => &it.syntax,
         }
     }
 }
@@ -3467,6 +3601,11 @@ impl std::fmt::Display for NameRef {
         std::fmt::Display::fmt(self.syntax(), f)
     }
 }
+impl std::fmt::Display for Lifetime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
 impl std::fmt::Display for Path {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
@@ -3578,6 +3717,16 @@ impl std::fmt::Display for Fn {
     }
 }
 impl std::fmt::Display for Impl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for MacroRules {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for MacroDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }
@@ -3882,6 +4031,11 @@ impl std::fmt::Display for WhileExpr {
         std::fmt::Display::fmt(self.syntax(), f)
     }
 }
+impl std::fmt::Display for YieldExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
 impl std::fmt::Display for Label {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
@@ -3948,6 +4102,11 @@ impl std::fmt::Display for ImplTraitType {
     }
 }
 impl std::fmt::Display for InferType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for MacroType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }
@@ -4058,6 +4217,11 @@ impl std::fmt::Display for TuplePat {
     }
 }
 impl std::fmt::Display for TupleStructPat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for ConstBlockPat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

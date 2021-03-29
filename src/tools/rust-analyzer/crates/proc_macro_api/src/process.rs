@@ -10,16 +10,15 @@ use std::{
 };
 
 use crossbeam_channel::{bounded, Receiver, Sender};
-use tt::Subtree;
 
 use crate::{
     msg::{ErrorCode, Message, Request, Response, ResponseError},
-    rpc::{ExpansionResult, ExpansionTask, ListMacrosResult, ListMacrosTask, ProcMacroKind},
+    rpc::{ListMacrosResult, ListMacrosTask, ProcMacroKind},
 };
 
 #[derive(Debug, Default)]
 pub(crate) struct ProcMacroProcessSrv {
-    inner: Option<Weak<Sender<Task>>>,
+    inner: Weak<Sender<Task>>,
 }
 
 #[derive(Debug)]
@@ -30,7 +29,7 @@ pub(crate) struct ProcMacroProcessThread {
 }
 
 impl ProcMacroProcessSrv {
-    pub fn run(
+    pub(crate) fn run(
         process_path: PathBuf,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> io::Result<(ProcMacroProcessThread, ProcMacroProcessSrv)> {
@@ -42,13 +41,13 @@ impl ProcMacroProcessSrv {
         });
 
         let task_tx = Arc::new(task_tx);
-        let srv = ProcMacroProcessSrv { inner: Some(Arc::downgrade(&task_tx)) };
+        let srv = ProcMacroProcessSrv { inner: Arc::downgrade(&task_tx) };
         let thread = ProcMacroProcessThread { handle, sender: task_tx };
 
         Ok((thread, srv))
     }
 
-    pub fn find_proc_macros(
+    pub(crate) fn find_proc_macros(
         &self,
         dylib_path: &Path,
     ) -> Result<Vec<(String, ProcMacroKind)>, tt::ExpansionError> {
@@ -58,43 +57,22 @@ impl ProcMacroProcessSrv {
         Ok(result.macros)
     }
 
-    pub fn custom_derive(
-        &self,
-        dylib_path: &Path,
-        subtree: &Subtree,
-        derive_name: &str,
-    ) -> Result<Subtree, tt::ExpansionError> {
-        let task = ExpansionTask {
-            macro_body: subtree.clone(),
-            macro_name: derive_name.to_string(),
-            attributes: None,
-            lib: dylib_path.to_path_buf(),
-        };
-
-        let result: ExpansionResult = self.send_task(Request::ExpansionMacro(task))?;
-        Ok(result.expansion)
-    }
-
-    pub fn send_task<R>(&self, req: Request) -> Result<R, tt::ExpansionError>
+    pub(crate) fn send_task<R>(&self, req: Request) -> Result<R, tt::ExpansionError>
     where
         R: TryFrom<Response, Error = &'static str>,
     {
-        let sender = match &self.inner {
-            None => return Err(tt::ExpansionError::Unknown("No sender is found.".to_string())),
-            Some(it) => it,
-        };
-
         let (result_tx, result_rx) = bounded(0);
-        let sender = match sender.upgrade() {
-            None => {
-                return Err(tt::ExpansionError::Unknown("Proc macro process is closed.".into()))
-            }
+        let sender = match self.inner.upgrade() {
+            None => return Err(tt::ExpansionError::Unknown("proc macro process is closed".into())),
             Some(it) => it,
         };
-        sender.send(Task { req, result_tx }).unwrap();
+        sender
+            .send(Task { req, result_tx })
+            .map_err(|_| tt::ExpansionError::Unknown("proc macro server crashed".into()))?;
+
         let res = result_rx
             .recv()
-            .map_err(|_| tt::ExpansionError::Unknown("Proc macro thread is closed.".into()))?;
+            .map_err(|_| tt::ExpansionError::Unknown("proc macro server crashed".into()))?;
 
         match res {
             Some(Response::Error(err)) => {
@@ -109,32 +87,24 @@ impl ProcMacroProcessSrv {
 }
 
 fn client_loop(task_rx: Receiver<Task>, mut process: Process) {
-    let (mut stdin, mut stdout) = match process.stdio() {
-        None => return,
-        Some(it) => it,
-    };
+    let (mut stdin, mut stdout) = process.stdio().expect("couldn't access child stdio");
 
-    for task in task_rx {
-        let Task { req, result_tx } = task;
-
+    for Task { req, result_tx } in task_rx {
         match send_request(&mut stdin, &mut stdout, req) {
             Ok(res) => result_tx.send(res).unwrap(),
-            Err(_err) => {
+            Err(err) => {
+                log::error!(
+                    "proc macro server crashed, server process state: {:?}, server request error: {:?}",
+                    process.child.try_wait(),
+                    err
+                );
                 let res = Response::Error(ResponseError {
                     code: ErrorCode::ServerErrorEnd,
-                    message: "Server closed".into(),
+                    message: "proc macro server crashed".into(),
                 });
                 result_tx.send(res.into()).unwrap();
-                // Restart the process
-                if process.restart().is_err() {
-                    break;
-                }
-                let stdio = match process.stdio() {
-                    None => break,
-                    Some(it) => it,
-                };
-                stdin = stdio.0;
-                stdout = stdio.1;
+                // Exit the thread.
+                break;
             }
         }
     }
@@ -146,8 +116,6 @@ struct Task {
 }
 
 struct Process {
-    path: PathBuf,
-    args: Vec<OsString>,
     child: Child,
 }
 
@@ -162,15 +130,9 @@ impl Process {
         path: PathBuf,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> io::Result<Process> {
-        let args = args.into_iter().map(|s| s.as_ref().into()).collect();
+        let args: Vec<OsString> = args.into_iter().map(|s| s.as_ref().into()).collect();
         let child = mk_child(&path, &args)?;
-        Ok(Process { path, args, child })
-    }
-
-    fn restart(&mut self) -> io::Result<()> {
-        let _ = self.child.kill();
-        self.child = mk_child(&self.path, &self.args)?;
-        Ok(())
+        Ok(Process { child })
     }
 
     fn stdio(&mut self) -> Option<(impl Write, impl BufRead)> {

@@ -112,7 +112,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
         mk_sp(self.last_pos, hi)
     }
 
-    fn visit_stmt(&mut self, stmt: &Stmt<'_>) {
+    fn visit_stmt(&mut self, stmt: &Stmt<'_>, include_empty_semi: bool) {
         debug!(
             "visit_stmt: {}",
             self.parse_sess.span_to_debug_info(stmt.span())
@@ -127,13 +127,23 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                 .map_or(false, |i| starts_with_newline(&snippet[i..]));
             let snippet = snippet.trim();
             if !snippet.is_empty() {
-                if original_starts_with_newline {
-                    self.push_str("\n");
-                }
-                self.push_str(&self.block_indent.to_string(self.config));
-                self.push_str(snippet);
-            }
+                // FIXME(calebcartwright 2021-01-03) - This exists strictly to maintain legacy
+                // formatting where rustfmt would preserve redundant semicolons on Items in a
+                // statement position.
+                // See comment within `walk_stmts` for more info
+                if include_empty_semi {
+                    self.format_missing(stmt.span().hi());
+                } else {
+                    if original_starts_with_newline {
+                        self.push_str("\n");
+                    }
 
+                    self.push_str(&self.block_indent.to_string(self.config));
+                    self.push_str(snippet);
+                }
+            } else if include_empty_semi {
+                self.push_str(";");
+            }
             self.last_pos = stmt.span().hi();
             return;
         }
@@ -141,8 +151,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
         match stmt.as_ast_node().kind {
             ast::StmtKind::Item(ref item) => {
                 self.visit_item(item);
-                // Handle potential `;` after the item.
-                self.format_missing(stmt.span().hi());
+                self.last_pos = stmt.span().hi();
             }
             ast::StmtKind::Local(..) | ast::StmtKind::Expr(..) | ast::StmtKind::Semi(..) => {
                 let attrs = get_attrs_from_stmt(stmt.as_ast_node());
@@ -472,6 +481,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
             }
         };
 
+        // TODO(calebcartwright): consider enabling box_patterns feature gate
         if should_visit_node_again {
             match item.kind {
                 ast::ItemKind::Use(ref tree) => self.format_import(item, tree),
@@ -529,66 +539,72 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                 ast::ItemKind::Static(..) | ast::ItemKind::Const(..) => {
                     self.visit_static(&StaticParts::from_item(item));
                 }
-                ast::ItemKind::Fn(defaultness, ref fn_signature, ref generics, Some(ref body)) => {
-                    let inner_attrs = inner_attributes(&item.attrs);
-                    let fn_ctxt = match fn_signature.header.ext {
-                        ast::Extern::None => visit::FnCtxt::Free,
-                        _ => visit::FnCtxt::Foreign,
-                    };
-                    self.visit_fn(
-                        visit::FnKind::Fn(
-                            fn_ctxt,
+                ast::ItemKind::Fn(ref fn_kind) => {
+                    let ast::FnKind(defaultness, ref fn_signature, ref generics, ref block) =
+                        **fn_kind;
+                    if let Some(ref body) = block {
+                        let inner_attrs = inner_attributes(&item.attrs);
+                        let fn_ctxt = match fn_signature.header.ext {
+                            ast::Extern::None => visit::FnCtxt::Free,
+                            _ => visit::FnCtxt::Foreign,
+                        };
+                        self.visit_fn(
+                            visit::FnKind::Fn(
+                                fn_ctxt,
+                                item.ident,
+                                &fn_signature,
+                                &item.vis,
+                                Some(body),
+                            ),
+                            generics,
+                            &fn_signature.decl,
+                            item.span,
+                            defaultness,
+                            Some(&inner_attrs),
+                        )
+                    } else {
+                        let indent = self.block_indent;
+                        let rewrite = self.rewrite_required_fn(
+                            indent,
                             item.ident,
                             &fn_signature,
-                            &item.vis,
-                            Some(body),
-                        ),
-                        generics,
-                        &fn_signature.decl,
-                        item.span,
-                        defaultness,
-                        Some(&inner_attrs),
-                    )
-                }
-                ast::ItemKind::Fn(_, ref fn_signature, ref generics, None) => {
-                    let indent = self.block_indent;
-                    let rewrite = self.rewrite_required_fn(
-                        indent,
-                        item.ident,
-                        &fn_signature,
-                        generics,
-                        item.span,
-                    );
-
-                    self.push_rewrite(item.span, rewrite);
-                }
-                ast::ItemKind::TyAlias(_, ref generics, ref generic_bounds, ref ty) => match ty {
-                    Some(ty) => {
-                        let rewrite = rewrite_type_alias(
-                            item.ident,
-                            Some(&*ty),
                             generics,
-                            Some(generic_bounds),
-                            &self.get_context(),
-                            self.block_indent,
-                            &item.vis,
                             item.span,
                         );
                         self.push_rewrite(item.span, rewrite);
                     }
-                    None => {
-                        let rewrite = rewrite_opaque_type(
-                            &self.get_context(),
-                            self.block_indent,
-                            item.ident,
-                            generic_bounds,
-                            generics,
-                            &item.vis,
-                            item.span,
-                        );
-                        self.push_rewrite(item.span, rewrite);
+                }
+                ast::ItemKind::TyAlias(ref alias_kind) => {
+                    let ast::TyAliasKind(_, ref generics, ref generic_bounds, ref ty) =
+                        **alias_kind;
+                    match ty {
+                        Some(ty) => {
+                            let rewrite = rewrite_type_alias(
+                                item.ident,
+                                Some(&*ty),
+                                generics,
+                                Some(generic_bounds),
+                                &self.get_context(),
+                                self.block_indent,
+                                &item.vis,
+                                item.span,
+                            );
+                            self.push_rewrite(item.span, rewrite);
+                        }
+                        None => {
+                            let rewrite = rewrite_opaque_type(
+                                &self.get_context(),
+                                self.block_indent,
+                                item.ident,
+                                generic_bounds,
+                                generics,
+                                &item.vis,
+                                item.span,
+                            );
+                            self.push_rewrite(item.span, rewrite);
+                        }
                     }
-                },
+                }
                 ast::ItemKind::GlobalAsm(..) => {
                     let snippet = Some(self.snippet(item.span).to_owned());
                     self.push_rewrite(item.span, snippet);
@@ -618,31 +634,37 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
             return;
         }
 
+        // TODO(calebcartwright): consider enabling box_patterns feature gate
         match ti.kind {
             ast::AssocItemKind::Const(..) => self.visit_static(&StaticParts::from_trait_item(ti)),
-            ast::AssocItemKind::Fn(_, ref sig, ref generics, None) => {
-                let indent = self.block_indent;
-                let rewrite = self.rewrite_required_fn(indent, ti.ident, sig, generics, ti.span);
-                self.push_rewrite(ti.span, rewrite);
+            ast::AssocItemKind::Fn(ref fn_kind) => {
+                let ast::FnKind(defaultness, ref sig, ref generics, ref block) = **fn_kind;
+                if let Some(ref body) = block {
+                    let inner_attrs = inner_attributes(&ti.attrs);
+                    let vis = ast::Visibility {
+                        kind: ast::VisibilityKind::Inherited,
+                        span: DUMMY_SP,
+                        tokens: None,
+                    };
+                    let fn_ctxt = visit::FnCtxt::Assoc(visit::AssocCtxt::Trait);
+                    self.visit_fn(
+                        visit::FnKind::Fn(fn_ctxt, ti.ident, sig, &vis, Some(body)),
+                        generics,
+                        &sig.decl,
+                        ti.span,
+                        defaultness,
+                        Some(&inner_attrs),
+                    );
+                } else {
+                    let indent = self.block_indent;
+                    let rewrite =
+                        self.rewrite_required_fn(indent, ti.ident, sig, generics, ti.span);
+                    self.push_rewrite(ti.span, rewrite);
+                }
             }
-            ast::AssocItemKind::Fn(defaultness, ref sig, ref generics, Some(ref body)) => {
-                let inner_attrs = inner_attributes(&ti.attrs);
-                let vis = ast::Visibility {
-                    kind: ast::VisibilityKind::Inherited,
-                    span: DUMMY_SP,
-                    tokens: None,
-                };
-                let fn_ctxt = visit::FnCtxt::Assoc(visit::AssocCtxt::Trait);
-                self.visit_fn(
-                    visit::FnKind::Fn(fn_ctxt, ti.ident, sig, &vis, Some(body)),
-                    generics,
-                    &sig.decl,
-                    ti.span,
-                    defaultness,
-                    Some(&inner_attrs),
-                );
-            }
-            ast::AssocItemKind::TyAlias(_, ref generics, ref generic_bounds, ref type_default) => {
+            ast::AssocItemKind::TyAlias(ref ty_alias_kind) => {
+                let ast::TyAliasKind(_, ref generics, ref generic_bounds, ref type_default) =
+                    **ty_alias_kind;
                 let rewrite = rewrite_type_alias(
                     ti.ident,
                     type_default.as_ref(),
@@ -670,25 +692,29 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
         }
 
         match ii.kind {
-            ast::AssocItemKind::Fn(defaultness, ref sig, ref generics, Some(ref body)) => {
-                let inner_attrs = inner_attributes(&ii.attrs);
-                let fn_ctxt = visit::FnCtxt::Assoc(visit::AssocCtxt::Impl);
-                self.visit_fn(
-                    visit::FnKind::Fn(fn_ctxt, ii.ident, sig, &ii.vis, Some(body)),
-                    generics,
-                    &sig.decl,
-                    ii.span,
-                    defaultness,
-                    Some(&inner_attrs),
-                );
-            }
-            ast::AssocItemKind::Fn(_, ref sig, ref generics, None) => {
-                let indent = self.block_indent;
-                let rewrite = self.rewrite_required_fn(indent, ii.ident, sig, generics, ii.span);
-                self.push_rewrite(ii.span, rewrite);
+            ast::AssocItemKind::Fn(ref fn_kind) => {
+                let ast::FnKind(defaultness, ref sig, ref generics, ref block) = **fn_kind;
+                if let Some(ref body) = block {
+                    let inner_attrs = inner_attributes(&ii.attrs);
+                    let fn_ctxt = visit::FnCtxt::Assoc(visit::AssocCtxt::Impl);
+                    self.visit_fn(
+                        visit::FnKind::Fn(fn_ctxt, ii.ident, sig, &ii.vis, Some(body)),
+                        generics,
+                        &sig.decl,
+                        ii.span,
+                        defaultness,
+                        Some(&inner_attrs),
+                    );
+                } else {
+                    let indent = self.block_indent;
+                    let rewrite =
+                        self.rewrite_required_fn(indent, ii.ident, sig, generics, ii.span);
+                    self.push_rewrite(ii.span, rewrite);
+                }
             }
             ast::AssocItemKind::Const(..) => self.visit_static(&StaticParts::from_impl_item(ii)),
-            ast::AssocItemKind::TyAlias(defaultness, ref generics, _, ref ty) => {
+            ast::AssocItemKind::TyAlias(ref ty_alias_kind) => {
+                let ast::TyAliasKind(defaultness, ref generics, _, ref ty) = **ty_alias_kind;
                 let rewrite_associated = || {
                     rewrite_associated_impl_type(
                         ii.ident,
@@ -899,7 +925,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
         self.visit_items_with_reordering(&ptr_vec_to_ref_vec(&m.items));
     }
 
-    fn walk_stmts(&mut self, stmts: &[Stmt<'_>]) {
+    fn walk_stmts(&mut self, stmts: &[Stmt<'_>], include_current_empty_semi: bool) {
         if stmts.is_empty() {
             return;
         }
@@ -912,16 +938,38 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
             .collect();
 
         if items.is_empty() {
-            self.visit_stmt(&stmts[0]);
-            self.walk_stmts(&stmts[1..]);
+            self.visit_stmt(&stmts[0], include_current_empty_semi);
+
+            // FIXME(calebcartwright 2021-01-03) - This exists strictly to maintain legacy
+            // formatting where rustfmt would preserve redundant semicolons on Items in a
+            // statement position.
+            //
+            // Starting in rustc-ap-* v692 (~2020-12-01) the rustc parser now parses this as
+            // two separate statements (Item and Empty kinds), whereas before it was parsed as
+            // a single statement with the statement's span including the redundant semicolon.
+            //
+            // rustfmt typically tosses unnecessary/redundant semicolons, and eventually we
+            // should toss these as well, but doing so at this time would
+            // break the Stability Guarantee
+            // N.B. This could be updated to utilize the version gates.
+            let include_next_empty = if stmts.len() > 1 {
+                match (&stmts[0].as_ast_node().kind, &stmts[1].as_ast_node().kind) {
+                    (ast::StmtKind::Item(_), ast::StmtKind::Empty) => true,
+                    _ => false,
+                }
+            } else {
+                false
+            };
+
+            self.walk_stmts(&stmts[1..], include_next_empty);
         } else {
             self.visit_items_with_reordering(&items);
-            self.walk_stmts(&stmts[items.len()..]);
+            self.walk_stmts(&stmts[items.len()..], false);
         }
     }
 
     fn walk_block_stmts(&mut self, b: &ast::Block) {
-        self.walk_stmts(&Stmt::from_ast_nodes(b.stmts.iter()))
+        self.walk_stmts(&Stmt::from_ast_nodes(b.stmts.iter()), false)
     }
 
     fn format_mod(

@@ -1,4 +1,4 @@
-use ide_db::defs::{classify_name_ref, Definition, NameRefClass};
+use ide_db::defs::{Definition, NameRefClass};
 use syntax::{ast, AstNode, SyntaxKind, T};
 use test_utils::mark;
 
@@ -14,7 +14,7 @@ use crate::{
 // ```
 // fn make<T>() -> T { todo!() }
 // fn main() {
-//     let x = make<|>();
+//     let x = make$0();
 // }
 // ```
 // ->
@@ -25,7 +25,7 @@ use crate::{
 // }
 // ```
 pub(crate) fn add_turbo_fish(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    let ident = ctx.find_token_at_offset(SyntaxKind::IDENT).or_else(|| {
+    let ident = ctx.find_token_syntax_at_offset(SyntaxKind::IDENT).or_else(|| {
         let arg_list = ctx.find_node_at_offset::<ast::ArgList>()?;
         if arg_list.args().count() > 0 {
             return None;
@@ -39,7 +39,7 @@ pub(crate) fn add_turbo_fish(acc: &mut Assists, ctx: &AssistContext) -> Option<(
         return None;
     }
     let name_ref = ast::NameRef::cast(ident.parent())?;
-    let def = match classify_name_ref(&ctx.sema, &name_ref)? {
+    let def = match NameRefClass::classify(&ctx.sema, &name_ref)? {
         NameRefClass::Definition(def) => def,
         NameRefClass::ExternCrate(_) | NameRefClass::FieldShorthand { .. } => return None,
     };
@@ -77,7 +77,7 @@ mod tests {
             r#"
 fn make<T>() -> T {}
 fn main() {
-    make<|>();
+    make$0();
 }
 "#,
             r#"
@@ -97,7 +97,7 @@ fn main() {
             r#"
 fn make<T>() -> T {}
 fn main() {
-    make()<|>;
+    make()$0;
 }
 "#,
             r#"
@@ -119,7 +119,7 @@ impl S {
     fn make<T>(&self) -> T {}
 }
 fn main() {
-    S.make<|>();
+    S.make$0();
 }
 "#,
             r#"
@@ -142,7 +142,7 @@ fn main() {
             r#"
 fn make<T>() -> T {}
 fn main() {
-    make<|>::<()>();
+    make$0::<()>();
 }
 "#,
         );
@@ -156,7 +156,7 @@ fn main() {
             r#"
 fn make() -> () {}
 fn main() {
-    make<|>();
+    make$0();
 }
 "#,
         );

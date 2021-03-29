@@ -1,5 +1,5 @@
-use base_db::FileId;
 use hir::HirDisplay;
+use ide_db::{base_db::FileId, helpers::SnippetCap};
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::{
     ast::{
@@ -11,7 +11,6 @@ use syntax::{
 };
 
 use crate::{
-    assist_config::SnippetCap,
     utils::{render_snippet, Cursor},
     AssistContext, AssistId, AssistKind, Assists,
 };
@@ -24,7 +23,7 @@ use crate::{
 // struct Baz;
 // fn baz() -> Baz { Baz }
 // fn foo() {
-//     bar<|>("", baz());
+//     bar$0("", baz());
 // }
 //
 // ```
@@ -36,8 +35,8 @@ use crate::{
 //     bar("", baz());
 // }
 //
-// fn bar(arg: &str, baz: Baz) {
-//     ${0:todo!()}
+// fn bar(arg: &str, baz: Baz) ${0:-> ()} {
+//     todo!()
 // }
 //
 // ```
@@ -80,9 +79,9 @@ pub(crate) fn generate_function(acc: &mut Assists, ctx: &AssistContext) -> Optio
 
 struct FunctionTemplate {
     insert_offset: TextSize,
-    placeholder_expr: ast::MacroCall,
     leading_ws: String,
     fn_def: ast::Fn,
+    ret_type: ast::RetType,
     trailing_ws: String,
     file: FileId,
 }
@@ -90,11 +89,9 @@ struct FunctionTemplate {
 impl FunctionTemplate {
     fn to_string(&self, cap: Option<SnippetCap>) -> String {
         let f = match cap {
-            Some(cap) => render_snippet(
-                cap,
-                self.fn_def.syntax(),
-                Cursor::Replace(self.placeholder_expr.syntax()),
-            ),
+            Some(cap) => {
+                render_snippet(cap, self.fn_def.syntax(), Cursor::Replace(self.ret_type.syntax()))
+            }
             None => self.fn_def.to_string(),
         };
         format!("{}{}{}", self.leading_ws, f, self.trailing_ws)
@@ -141,8 +138,14 @@ impl FunctionBuilder {
         let placeholder_expr = make::expr_todo();
         let fn_body = make::block_expr(vec![], Some(placeholder_expr));
         let visibility = if self.needs_pub { Some(make::visibility_pub_crate()) } else { None };
-        let mut fn_def =
-            make::fn_(visibility, self.fn_name, self.type_params, self.params, fn_body);
+        let mut fn_def = make::fn_(
+            visibility,
+            self.fn_name,
+            self.type_params,
+            self.params,
+            fn_body,
+            Some(make::ret_type(make::ty_unit())),
+        );
         let leading_ws;
         let trailing_ws;
 
@@ -155,20 +158,18 @@ impl FunctionBuilder {
                 it.text_range().end()
             }
             GeneratedFunctionTarget::InEmptyItemList(it) => {
-                let indent = IndentLevel::from_node(it.syntax());
+                let indent = IndentLevel::from_node(&it);
                 leading_ws = format!("\n{}", indent + 1);
                 fn_def = fn_def.indent(indent + 1);
                 trailing_ws = format!("\n{}", indent);
-                it.syntax().text_range().start() + TextSize::of('{')
+                it.text_range().start() + TextSize::of('{')
             }
         };
 
-        let placeholder_expr =
-            fn_def.syntax().descendants().find_map(ast::MacroCall::cast).unwrap();
         FunctionTemplate {
             insert_offset,
-            placeholder_expr,
             leading_ws,
+            ret_type: fn_def.ret_type().unwrap(),
             fn_def,
             trailing_ws,
             file: self.file,
@@ -178,14 +179,14 @@ impl FunctionBuilder {
 
 enum GeneratedFunctionTarget {
     BehindItem(SyntaxNode),
-    InEmptyItemList(ast::ItemList),
+    InEmptyItemList(SyntaxNode),
 }
 
 impl GeneratedFunctionTarget {
     fn syntax(&self) -> &SyntaxNode {
         match self {
             GeneratedFunctionTarget::BehindItem(it) => it,
-            GeneratedFunctionTarget::InEmptyItemList(it) => it.syntax(),
+            GeneratedFunctionTarget::InEmptyItemList(it) => it,
         }
     }
 }
@@ -322,7 +323,16 @@ fn next_space_for_fn_in_module(
             if let Some(last_item) = it.item_list().and_then(|it| it.items().last()) {
                 GeneratedFunctionTarget::BehindItem(last_item.syntax().clone())
             } else {
-                GeneratedFunctionTarget::InEmptyItemList(it.item_list()?)
+                GeneratedFunctionTarget::InEmptyItemList(it.item_list()?.syntax().clone())
+            }
+        }
+        hir::ModuleSource::BlockExpr(it) => {
+            if let Some(last_item) =
+                it.statements().take_while(|stmt| matches!(stmt, ast::Stmt::Item(_))).last()
+            {
+                GeneratedFunctionTarget::BehindItem(last_item.syntax().clone())
+            } else {
+                GeneratedFunctionTarget::InEmptyItemList(it.syntax().clone())
             }
         }
     };
@@ -341,7 +351,7 @@ mod tests {
             generate_function,
             r"
 fn foo() {
-    bar<|>();
+    bar$0();
 }
 ",
             r"
@@ -349,8 +359,8 @@ fn foo() {
     bar();
 }
 
-fn bar() {
-    ${0:todo!()}
+fn bar() ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -365,7 +375,7 @@ fn bar() {
             r"
 impl Foo {
     fn foo() {
-        bar<|>();
+        bar$0();
     }
 }
 ",
@@ -376,8 +386,8 @@ impl Foo {
     }
 }
 
-fn bar() {
-    ${0:todo!()}
+fn bar() ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -390,7 +400,7 @@ fn bar() {
             generate_function,
             r"
 fn foo1() {
-    bar<|>();
+    bar$0();
 }
 
 fn foo2() {}
@@ -400,8 +410,8 @@ fn foo1() {
     bar();
 }
 
-fn bar() {
-    ${0:todo!()}
+fn bar() ${0:-> ()} {
+    todo!()
 }
 
 fn foo2() {}
@@ -416,7 +426,7 @@ fn foo2() {}
             r"
 mod baz {
     fn foo() {
-        bar<|>();
+        bar$0();
     }
 }
 ",
@@ -426,8 +436,8 @@ mod baz {
         bar();
     }
 
-    fn bar() {
-        ${0:todo!()}
+    fn bar() ${0:-> ()} {
+        todo!()
     }
 }
 ",
@@ -442,7 +452,7 @@ mod baz {
 struct Baz;
 fn baz() -> Baz { todo!() }
 fn foo() {
-    bar<|>(baz());
+    bar$0(baz());
 }
 ",
             r"
@@ -452,8 +462,8 @@ fn foo() {
     bar(baz());
 }
 
-fn bar(baz: Baz) {
-    ${0:todo!()}
+fn bar(baz: Baz) ${0:-> ()} {
+    todo!()
 }
 ",
         );
@@ -467,7 +477,7 @@ fn bar(baz: Baz) {
 struct Baz;
 impl Baz {
     fn foo(&self) -> Baz {
-        ba<|>r(self.baz())
+        ba$0r(self.baz())
     }
     fn baz(&self) -> Baz {
         Baz
@@ -485,8 +495,8 @@ impl Baz {
     }
 }
 
-fn bar(baz: Baz) {
-    ${0:todo!()}
+fn bar(baz: Baz) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -498,7 +508,7 @@ fn bar(baz: Baz) {
             generate_function,
             r#"
 fn foo() {
-    <|>bar("bar")
+    $0bar("bar")
 }
 "#,
             r#"
@@ -506,8 +516,8 @@ fn foo() {
     bar("bar")
 }
 
-fn bar(arg: &str) {
-    ${0:todo!()}
+fn bar(arg: &str) ${0:-> ()} {
+    todo!()
 }
 "#,
         )
@@ -519,7 +529,7 @@ fn bar(arg: &str) {
             generate_function,
             r#"
 fn foo() {
-    <|>bar('x')
+    $0bar('x')
 }
 "#,
             r#"
@@ -527,8 +537,8 @@ fn foo() {
     bar('x')
 }
 
-fn bar(arg: char) {
-    ${0:todo!()}
+fn bar(arg: char) ${0:-> ()} {
+    todo!()
 }
 "#,
         )
@@ -540,7 +550,7 @@ fn bar(arg: char) {
             generate_function,
             r"
 fn foo() {
-    <|>bar(42)
+    $0bar(42)
 }
 ",
             r"
@@ -548,8 +558,8 @@ fn foo() {
     bar(42)
 }
 
-fn bar(arg: i32) {
-    ${0:todo!()}
+fn bar(arg: i32) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -561,7 +571,7 @@ fn bar(arg: i32) {
             generate_function,
             r"
 fn foo() {
-    <|>bar(42 as u8)
+    $0bar(42 as u8)
 }
 ",
             r"
@@ -569,8 +579,8 @@ fn foo() {
     bar(42 as u8)
 }
 
-fn bar(arg: u8) {
-    ${0:todo!()}
+fn bar(arg: u8) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -585,7 +595,7 @@ fn bar(arg: u8) {
             r"
 fn foo() {
     let x = 42;
-    bar<|>(x as u8)
+    bar$0(x as u8)
 }
 ",
             r"
@@ -594,8 +604,8 @@ fn foo() {
     bar(x as u8)
 }
 
-fn bar(x: u8) {
-    ${0:todo!()}
+fn bar(x: u8) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -608,7 +618,7 @@ fn bar(x: u8) {
             r"
 fn foo() {
     let worble = ();
-    <|>bar(worble)
+    $0bar(worble)
 }
 ",
             r"
@@ -617,8 +627,8 @@ fn foo() {
     bar(worble)
 }
 
-fn bar(worble: ()) {
-    ${0:todo!()}
+fn bar(worble: ()) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -634,7 +644,7 @@ fn foo() -> impl Foo {
     todo!()
 }
 fn baz() {
-    <|>bar(foo())
+    $0bar(foo())
 }
 ",
             r"
@@ -646,8 +656,8 @@ fn baz() {
     bar(foo())
 }
 
-fn bar(foo: impl Foo) {
-    ${0:todo!()}
+fn bar(foo: impl Foo) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -662,7 +672,7 @@ struct Baz;
 fn baz() -> Baz { todo!() }
 
 fn foo() {
-    bar<|>(&baz())
+    bar$0(&baz())
 }
 ",
             r"
@@ -673,8 +683,8 @@ fn foo() {
     bar(&baz())
 }
 
-fn bar(baz: &Baz) {
-    ${0:todo!()}
+fn bar(baz: &Baz) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -690,7 +700,7 @@ mod Baz {
     pub fn baz() -> Bof { Bof }
 }
 fn foo() {
-    <|>bar(Baz::baz())
+    $0bar(Baz::baz())
 }
 ",
             r"
@@ -702,8 +712,8 @@ fn foo() {
     bar(Baz::baz())
 }
 
-fn bar(baz: Baz::Bof) {
-    ${0:todo!()}
+fn bar(baz: Baz::Bof) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -717,7 +727,7 @@ fn bar(baz: Baz::Bof) {
             generate_function,
             r"
 fn foo<T>(t: T) {
-    <|>bar(t)
+    $0bar(t)
 }
 ",
             r"
@@ -725,8 +735,8 @@ fn foo<T>(t: T) {
     bar(t)
 }
 
-fn bar<T>(t: T) {
-    ${0:todo!()}
+fn bar<T>(t: T) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -744,7 +754,7 @@ impl Baz {
     fn new() -> Self { Baz }
 }
 fn foo() {
-    <|>bar(Baz::new);
+    $0bar(Baz::new);
 }
 ",
             r"
@@ -756,8 +766,8 @@ fn foo() {
     bar(Baz::new);
 }
 
-fn bar(arg: fn() -> Baz) {
-    ${0:todo!()}
+fn bar(arg: fn() -> Baz) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -772,7 +782,7 @@ fn bar(arg: fn() -> Baz) {
             r"
 fn foo() {
     let closure = |x: i64| x - 1;
-    <|>bar(closure)
+    $0bar(closure)
 }
 ",
             r"
@@ -781,8 +791,8 @@ fn foo() {
     bar(closure)
 }
 
-fn bar(closure: impl Fn(i64) -> i64) {
-    ${0:todo!()}
+fn bar(closure: impl Fn(i64) -> i64) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -794,7 +804,7 @@ fn bar(closure: impl Fn(i64) -> i64) {
             generate_function,
             r"
 fn foo() {
-    <|>bar(baz)
+    $0bar(baz)
 }
 ",
             r"
@@ -802,8 +812,8 @@ fn foo() {
     bar(baz)
 }
 
-fn bar(baz: ()) {
-    ${0:todo!()}
+fn bar(baz: ()) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -817,7 +827,7 @@ fn bar(baz: ()) {
 struct Baz;
 fn baz() -> Baz { Baz }
 fn foo() {
-    <|>bar(baz(), baz())
+    $0bar(baz(), baz())
 }
 ",
             r"
@@ -827,8 +837,8 @@ fn foo() {
     bar(baz(), baz())
 }
 
-fn bar(baz_1: Baz, baz_2: Baz) {
-    ${0:todo!()}
+fn bar(baz_1: Baz, baz_2: Baz) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -842,7 +852,7 @@ fn bar(baz_1: Baz, baz_2: Baz) {
 struct Baz;
 fn baz() -> Baz { Baz }
 fn foo() {
-    <|>bar(baz(), baz(), "foo", "bar")
+    $0bar(baz(), baz(), "foo", "bar")
 }
 "#,
             r#"
@@ -852,8 +862,8 @@ fn foo() {
     bar(baz(), baz(), "foo", "bar")
 }
 
-fn bar(baz_1: Baz, baz_2: Baz, arg_1: &str, arg_2: &str) {
-    ${0:todo!()}
+fn bar(baz_1: Baz, baz_2: Baz, arg_1: &str, arg_2: &str) ${0:-> ()} {
+    todo!()
 }
 "#,
         )
@@ -867,13 +877,13 @@ fn bar(baz_1: Baz, baz_2: Baz, arg_1: &str, arg_2: &str) {
 mod bar {}
 
 fn foo() {
-    bar::my_fn<|>()
+    bar::my_fn$0()
 }
 ",
             r"
 mod bar {
-    pub(crate) fn my_fn() {
-        ${0:todo!()}
+    pub(crate) fn my_fn() ${0:-> ()} {
+        todo!()
     }
 }
 
@@ -898,7 +908,7 @@ mod foo {
 fn bar() {
     use foo::Foo;
     let foo = Foo;
-    baz<|>(foo)
+    baz$0(foo)
 }
 ",
             "
@@ -911,8 +921,8 @@ fn bar() {
     baz(foo)
 }
 
-fn baz(foo: foo::Foo) {
-    ${0:todo!()}
+fn baz(foo: foo::Foo) ${0:-> ()} {
+    todo!()
 }
 ",
         )
@@ -928,15 +938,15 @@ mod bar {
 }
 
 fn foo() {
-    bar::my_fn<|>()
+    bar::my_fn$0()
 }
 ",
             r"
 mod bar {
     fn something_else() {}
 
-    pub(crate) fn my_fn() {
-        ${0:todo!()}
+    pub(crate) fn my_fn() ${0:-> ()} {
+        todo!()
     }
 }
 
@@ -957,14 +967,14 @@ mod bar {
 }
 
 fn foo() {
-    bar::baz::my_fn<|>()
+    bar::baz::my_fn$0()
 }
 ",
             r"
 mod bar {
     mod baz {
-        pub(crate) fn my_fn() {
-            ${0:todo!()}
+        pub(crate) fn my_fn() ${0:-> ()} {
+            todo!()
         }
     }
 }
@@ -985,15 +995,15 @@ fn foo() {
 mod foo;
 
 fn main() {
-    foo::bar<|>()
+    foo::bar$0()
 }
 //- /foo.rs
 ",
             r"
 
 
-pub(crate) fn bar() {
-    ${0:todo!()}
+pub(crate) fn bar() ${0:-> ()} {
+    todo!()
 }",
         )
     }
@@ -1004,7 +1014,7 @@ pub(crate) fn bar() {
             generate_function,
             r"
 fn foo() {
-    bar<|>();
+    bar$0();
 }
 
 fn bar() {}
@@ -1021,7 +1031,7 @@ fn bar() {}
             generate_function,
             r"
 fn foo() {
-    bar(b<|>az);
+    bar(b$0az);
 }
 
 fn bar(baz: ()) {}
@@ -1038,7 +1048,7 @@ fn bar(baz: ()) {}
 struct Foo;
 impl Foo {
     fn foo(&self) {
-        self.bar()<|>;
+        self.bar()$0;
     }
 }
         ",

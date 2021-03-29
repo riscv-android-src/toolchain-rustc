@@ -22,9 +22,13 @@ terms of the MIT license. A copy of the license can be found in the file
 
 #include <string.h>  // strerror
 
+#ifdef _MSC_VER
+#pragma warning(disable:4996)  // strerror
+#endif
+
 
 #if defined(_WIN32)
-#include <windows.h>
+#include <Windows.h>
 #elif defined(__wasi__)
 // stdlib.h is all we need, and has already been included in mimalloc.h
 #else
@@ -233,7 +237,6 @@ static bool mi_os_mem_free(void* addr, size_t size, bool was_committed, mi_stats
   if (was_committed) _mi_stat_decrease(&stats->committed, size);
   _mi_stat_decrease(&stats->reserved, size);
   if (err) {
-    #pragma warning(suppress:4996)
     _mi_warning_message("munmap failed: %s, addr 0x%8li, size %lu\n", strerror(errno), (size_t)addr, size);
     return false;
   }
@@ -277,15 +280,15 @@ static void* mi_win_virtual_allocx(void* addr, size_t size, size_t try_alignment
 
 static void* mi_win_virtual_alloc(void* addr, size_t size, size_t try_alignment, DWORD flags, bool large_only, bool allow_large, bool* is_large) {
   mi_assert_internal(!(large_only && !allow_large));
-  static volatile _Atomic(uintptr_t) large_page_try_ok; // = 0;
+  static _Atomic(uintptr_t) large_page_try_ok; // = 0;
   void* p = NULL;
   if ((large_only || use_large_os_page(size, try_alignment))
       && allow_large && (flags&MEM_COMMIT)!=0 && (flags&MEM_RESERVE)!=0) {
-    uintptr_t try_ok = mi_atomic_read(&large_page_try_ok);
+    uintptr_t try_ok = mi_atomic_load_acquire(&large_page_try_ok);
     if (!large_only && try_ok > 0) {
       // if a large page allocation fails, it seems the calls to VirtualAlloc get very expensive.
       // therefore, once a large page allocation failed, we don't try again for `large_page_try_ok` times.
-      mi_atomic_cas_weak(&large_page_try_ok, try_ok - 1, try_ok);
+      mi_atomic_cas_strong_acq_rel(&large_page_try_ok, &try_ok, try_ok - 1);
     }
     else {
       // large OS pages must always reserve and commit.
@@ -294,7 +297,7 @@ static void* mi_win_virtual_alloc(void* addr, size_t size, size_t try_alignment,
       if (large_only) return p;
       // fall back to non-large page allocation on error (`p == NULL`).
       if (p == NULL) {
-        mi_atomic_write(&large_page_try_ok,10);  // on error, don't try again for the next N allocations
+        mi_atomic_store_release(&large_page_try_ok,10UL);  // on error, don't try again for the next N allocations
       }
     }
   }
@@ -371,14 +374,14 @@ static void* mi_unix_mmap(void* addr, size_t size, size_t try_alignment, int pro
   fd = VM_MAKE_TAG(os_tag);
   #endif
   if ((large_only || use_large_os_page(size, try_alignment)) && allow_large) {
-    static volatile _Atomic(uintptr_t) large_page_try_ok; // = 0;
-    uintptr_t try_ok = mi_atomic_read(&large_page_try_ok);
+    static _Atomic(uintptr_t) large_page_try_ok; // = 0;
+    uintptr_t try_ok = mi_atomic_load_acquire(&large_page_try_ok);
     if (!large_only && try_ok > 0) {
       // If the OS is not configured for large OS pages, or the user does not have
       // enough permission, the `mmap` will always fail (but it might also fail for other reasons).
       // Therefore, once a large page allocation failed, we don't try again for `large_page_try_ok` times
       // to avoid too many failing calls to mmap.
-      mi_atomic_cas_weak(&large_page_try_ok, try_ok - 1, try_ok);
+      mi_atomic_cas_strong_acq_rel(&large_page_try_ok, &try_ok, try_ok - 1);
     }
     else {
       int lflags = flags & ~MAP_NORESERVE;  // using NORESERVE on huge pages seems to fail on Linux
@@ -418,7 +421,7 @@ static void* mi_unix_mmap(void* addr, size_t size, size_t try_alignment, int pro
         #endif
         if (large_only) return p;
         if (p == NULL) {
-          mi_atomic_write(&large_page_try_ok, 10);  // on error, don't try again for the next N allocations
+          mi_atomic_store_release(&large_page_try_ok, 10UL);  // on error, don't try again for the next N allocations
         }
       }
     }
@@ -460,21 +463,22 @@ static void* mi_unix_mmap(void* addr, size_t size, size_t try_alignment, int pro
 // On 64-bit systems, we can do efficient aligned allocation by using
 // the 4TiB to 30TiB area to allocate them.
 #if (MI_INTPTR_SIZE >= 8) && (defined(_WIN32) || (defined(MI_OS_USE_MMAP) && !defined(MAP_ALIGNED)))
-static volatile mi_decl_cache_align _Atomic(uintptr_t) aligned_base;
+static mi_decl_cache_align _Atomic(uintptr_t) aligned_base;
 
 // Return a 4MiB aligned address that is probably available
 static void* mi_os_get_aligned_hint(size_t try_alignment, size_t size) {
   if (try_alignment == 0 || try_alignment > MI_SEGMENT_SIZE) return NULL;
   if ((size%MI_SEGMENT_SIZE) != 0) return NULL;
-  uintptr_t hint = mi_atomic_add(&aligned_base, size);
+  uintptr_t hint = mi_atomic_add_acq_rel(&aligned_base, size);
   if (hint == 0 || hint > ((intptr_t)30<<40)) { // try to wrap around after 30TiB (area after 32TiB is used for huge OS pages)
     uintptr_t init = ((uintptr_t)4 << 40); // start at 4TiB area
     #if (MI_SECURE>0 || MI_DEBUG==0)     // security: randomize start of aligned allocations unless in debug mode
     uintptr_t r = _mi_heap_random_next(mi_get_default_heap());
     init = init + (MI_SEGMENT_SIZE * ((r>>17) & 0xFFFFF));  // (randomly 20 bits)*4MiB == 0 to 4TiB
     #endif
-    mi_atomic_cas_strong(&aligned_base, init, hint + size);
-    hint = mi_atomic_add(&aligned_base, size); // this may still give 0 or > 30TiB but that is ok, it is a hint after all
+    uintptr_t expected = hint + size;
+    mi_atomic_cas_strong_acq_rel(&aligned_base, &expected, init);
+    hint = mi_atomic_add_acq_rel(&aligned_base, size); // this may still give 0 or > 30TiB but that is ok, it is a hint after all
   }
   if (hint%try_alignment != 0) return NULL;
   return (void*)hint;
@@ -598,14 +602,18 @@ static void* mi_os_mem_alloc_aligned(size_t size, size_t alignment, bool commit,
   OS API: alloc, free, alloc_aligned
 ----------------------------------------------------------- */
 
-void* _mi_os_alloc(size_t size, mi_stats_t* stats) {
+void* _mi_os_alloc(size_t size, mi_stats_t* tld_stats) {
+  UNUSED(tld_stats);
+  mi_stats_t* stats = &_mi_stats_main;
   if (size == 0) return NULL;
   size = _mi_os_good_alloc_size(size);
   bool is_large = false;
   return mi_os_mem_alloc(size, 0, true, false, &is_large, stats);
 }
 
-void  _mi_os_free_ex(void* p, size_t size, bool was_committed, mi_stats_t* stats) {
+void  _mi_os_free_ex(void* p, size_t size, bool was_committed, mi_stats_t* tld_stats) {
+  UNUSED(tld_stats);
+  mi_stats_t* stats = &_mi_stats_main;
   if (size == 0 || p == NULL) return;
   size = _mi_os_good_alloc_size(size);
   mi_os_mem_free(p, size, was_committed, stats);
@@ -617,6 +625,7 @@ void  _mi_os_free(void* p, size_t size, mi_stats_t* stats) {
 
 void* _mi_os_alloc_aligned(size_t size, size_t alignment, bool commit, bool* large, mi_os_tld_t* tld)
 {
+  UNUSED(tld);
   if (size == 0) return NULL;
   size = _mi_os_good_alloc_size(size);
   alignment = _mi_align_up(alignment, _mi_os_page_size());
@@ -625,7 +634,7 @@ void* _mi_os_alloc_aligned(size_t size, size_t alignment, bool commit, bool* lar
     allow_large = *large;
     *large = false;
   }
-  return mi_os_mem_alloc_aligned(size, alignment, commit, allow_large, (large!=NULL?large:&allow_large), tld->stats);
+  return mi_os_mem_alloc_aligned(size, alignment, commit, allow_large, (large!=NULL?large:&allow_large), &_mi_stats_main /*tld->stats*/ );
 }
 
 
@@ -682,11 +691,11 @@ static bool mi_os_commitx(void* addr, size_t size, bool commit, bool conservativ
   if (csize == 0) return true;  // || _mi_os_is_huge_reserved(addr))
   int err = 0;
   if (commit) {
-    _mi_stat_increase(&stats->committed, csize);
+    _mi_stat_increase(&stats->committed, size);  // use size for precise commit vs. decommit
     _mi_stat_counter_increase(&stats->commit_calls, 1);
   }
   else {
-    _mi_stat_decrease(&stats->committed, csize);
+    _mi_stat_decrease(&stats->committed, size);
   }
 
   #if defined(_WIN32)
@@ -725,16 +734,20 @@ static bool mi_os_commitx(void* addr, size_t size, bool commit, bool conservativ
   return (err == 0);
 }
 
-bool _mi_os_commit(void* addr, size_t size, bool* is_zero, mi_stats_t* stats) {
+bool _mi_os_commit(void* addr, size_t size, bool* is_zero, mi_stats_t* tld_stats) {
+  UNUSED(tld_stats);
+  mi_stats_t* stats = &_mi_stats_main;
   return mi_os_commitx(addr, size, true, false /* liberal */, is_zero, stats);
 }
 
-bool _mi_os_decommit(void* addr, size_t size, mi_stats_t* stats) {
+bool _mi_os_decommit(void* addr, size_t size, mi_stats_t* tld_stats) {
+  UNUSED(tld_stats);
+  mi_stats_t* stats = &_mi_stats_main;
   bool is_zero;
   return mi_os_commitx(addr, size, false, true /* conservative */, &is_zero, stats);
 }
 
-bool _mi_os_commit_unreset(void* addr, size_t size, bool* is_zero, mi_stats_t* stats) {
+static bool mi_os_commit_unreset(void* addr, size_t size, bool* is_zero, mi_stats_t* stats) {  
   return mi_os_commitx(addr, size, true, true /* conservative */, is_zero, stats);
 }
 
@@ -769,12 +782,12 @@ static bool mi_os_resetx(void* addr, size_t size, bool reset, mi_stats_t* stats)
   if (p != start) return false;
 #else
 #if defined(MADV_FREE)
-  static int advice = MADV_FREE;
-  int err = madvise(start, csize, advice);
+  static _Atomic(uintptr_t) advice = ATOMIC_VAR_INIT(MADV_FREE);
+  int err = madvise(start, csize, (int)mi_atomic_load_relaxed(&advice));
   if (err != 0 && errno == EINVAL && advice == MADV_FREE) {
     // if MADV_FREE is not supported, fall back to MADV_DONTNEED from now on
-    advice = MADV_DONTNEED;
-    err = madvise(start, csize, advice);
+    mi_atomic_store_release(&advice, (uintptr_t)MADV_DONTNEED);
+    err = madvise(start, csize, MADV_DONTNEED);
   }
 #elif defined(__wasi__)
   int err = 0;
@@ -794,7 +807,9 @@ static bool mi_os_resetx(void* addr, size_t size, bool reset, mi_stats_t* stats)
 // but may be used later again. This will release physical memory
 // pages and reduce swapping while keeping the memory committed.
 // We page align to a conservative area inside the range to reset.
-bool _mi_os_reset(void* addr, size_t size, mi_stats_t* stats) {
+bool _mi_os_reset(void* addr, size_t size, mi_stats_t* tld_stats) {
+  UNUSED(tld_stats);
+  mi_stats_t* stats = &_mi_stats_main;
   if (mi_option_is_enabled(mi_option_reset_decommits)) {
     return _mi_os_decommit(addr, size, stats);
   }
@@ -803,9 +818,11 @@ bool _mi_os_reset(void* addr, size_t size, mi_stats_t* stats) {
   }
 }
 
-bool _mi_os_unreset(void* addr, size_t size, bool* is_zero, mi_stats_t* stats) {
+bool _mi_os_unreset(void* addr, size_t size, bool* is_zero, mi_stats_t* tld_stats) {
+  UNUSED(tld_stats);
+  mi_stats_t* stats = &_mi_stats_main;
   if (mi_option_is_enabled(mi_option_reset_decommits)) {
-    return _mi_os_commit_unreset(addr, size, is_zero, stats);  // re-commit it (conservatively!)
+    return mi_os_commit_unreset(addr, size, is_zero, stats);  // re-commit it (conservatively!)
   }
   else {
     *is_zero = false;
@@ -980,9 +997,9 @@ static uint8_t* mi_os_claim_huge_pages(size_t pages, size_t* total_size) {
 
   uintptr_t start = 0;
   uintptr_t end = 0;
-  uintptr_t expected;
+  uintptr_t huge_start = mi_atomic_load_relaxed(&mi_huge_start);
   do {
-    start = expected = mi_atomic_read_relaxed(&mi_huge_start);
+    start = huge_start;
     if (start == 0) {
       // Initialize the start address after the 32TiB area
       start = ((uintptr_t)32 << 40);  // 32TiB virtual start address
@@ -993,7 +1010,7 @@ static uint8_t* mi_os_claim_huge_pages(size_t pages, size_t* total_size) {
     }
     end = start + size;
     mi_assert_internal(end % MI_SEGMENT_SIZE == 0);
-  } while (!mi_atomic_cas_strong(&mi_huge_start, end, expected));
+  } while (!mi_atomic_cas_strong_acq_rel(&mi_huge_start, &huge_start, end));
 
   if (total_size != NULL) *total_size = size;
   return (uint8_t*)start;

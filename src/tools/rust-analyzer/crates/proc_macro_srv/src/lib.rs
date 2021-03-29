@@ -9,6 +9,7 @@
 //!   RA than `proc-macro2` token stream.
 //! * By **copying** the whole rustc `lib_proc_macro` code, we are able to build this with `stable`
 //!   rustc rather than `unstable`. (Although in general ABI compatibility is still an issue)…
+#![allow(unreachable_pub)]
 
 #[allow(dead_code)]
 #[doc(hidden)]
@@ -23,7 +24,7 @@ use proc_macro::bridge::client::TokenStream;
 use proc_macro_api::{ExpansionResult, ExpansionTask, ListMacrosResult, ListMacrosTask};
 use std::{
     collections::{hash_map::Entry, HashMap},
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -36,10 +37,27 @@ pub(crate) struct ProcMacroSrv {
 impl ProcMacroSrv {
     pub fn expand(&mut self, task: &ExpansionTask) -> Result<ExpansionResult, String> {
         let expander = self.expander(&task.lib)?;
-        match expander.expand(&task.macro_name, &task.macro_body, task.attributes.as_ref()) {
+
+        let mut prev_env = HashMap::new();
+        for (k, v) in &task.env {
+            prev_env.insert(k.as_str(), env::var_os(k));
+            env::set_var(k, v);
+        }
+
+        let result = expander.expand(&task.macro_name, &task.macro_body, task.attributes.as_ref());
+
+        for (k, _) in &task.env {
+            match &prev_env[k.as_str()] {
+                Some(v) => env::set_var(k, v),
+                None => env::remove_var(k),
+            }
+        }
+
+        match result {
             Ok(expansion) => Ok(ExpansionResult { expansion }),
             Err(msg) => {
-                Err(format!("Cannot perform expansion for {}: error {:?}", &task.macro_name, msg))
+                let msg = msg.as_str().unwrap_or("<unknown error>");
+                Err(format!("proc-macro panicked: {}", msg))
             }
         }
     }

@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "pulldown-cmark-to-cmark"
-version = "5.0.0"
+version = "6.0.0"
 authors = ["Sebastian Thiel <byronimo@gmail.com>", "Dylan Owen <dyltotheo@gmail.com>"]
 include = ["src/lib.rs", "README.md", "CHANGELOG.md"]
 description = "Convert pulldown-cmark Events back to the string they were parsed from"
@@ -24,10 +24,10 @@ keywords = ["markdown", "common-mark", "render", "converter"]
 license = "Apache-2.0"
 repository = "https://github.com/Byron/pulldown-cmark-to-cmark"
 [dependencies.pulldown-cmark]
-version = "0.7.0"
+version = "0.8.0"
 default-features = false
 [dev-dependencies.indoc]
-version = "0.3.4"
+version = "1.0.0"
 
 [dev-dependencies.pretty_assertions]
 version = "0.6.1"

@@ -4,16 +4,19 @@
 
 import * as lc from "vscode-languageclient";
 
-export const analyzerStatus = new lc.RequestType<null, string, void>("rust-analyzer/analyzerStatus");
-export const memoryUsage = new lc.RequestType<null, string, void>("rust-analyzer/memoryUsage");
+export interface AnalyzerStatusParams {
+    textDocument?: lc.TextDocumentIdentifier;
+}
+export const analyzerStatus = new lc.RequestType<AnalyzerStatusParams, string, void>("rust-analyzer/analyzerStatus");
+export const memoryUsage = new lc.RequestType0<string, void>("rust-analyzer/memoryUsage");
 
-export type Status = "loading" | "ready" | "invalid" | "needsReload";
+export type Status = "loading" | "ready" | "readyPartial" | "invalid" | "needsReload";
 export interface StatusParams {
     status: Status;
 }
 export const status = new lc.NotificationType<StatusParams>("rust-analyzer/status");
 
-export const reloadWorkspace = new lc.RequestType<null, null, void>("rust-analyzer/reloadWorkspace");
+export const reloadWorkspace = new lc.RequestType0<null, void>("rust-analyzer/reloadWorkspace");
 
 export interface SyntaxTreeParams {
     textDocument: lc.TextDocumentIdentifier;
@@ -21,6 +24,7 @@ export interface SyntaxTreeParams {
 }
 export const syntaxTree = new lc.RequestType<SyntaxTreeParams, string, void>("rust-analyzer/syntaxTree");
 
+export const viewHir = new lc.RequestType<lc.TextDocumentPositionParams, string, void>("rust-analyzer/viewHir");
 
 export interface ExpandMacroParams {
     textDocument: lc.TextDocumentIdentifier;
@@ -39,12 +43,6 @@ export interface MatchingBraceParams {
 export const matchingBrace = new lc.RequestType<MatchingBraceParams, lc.Position[], void>("experimental/matchingBrace");
 
 export const parentModule = new lc.RequestType<lc.TextDocumentPositionParams, lc.LocationLink[], void>("experimental/parentModule");
-
-export interface ResolveCodeActionParams {
-    id: string;
-    codeActionParams: lc.CodeActionParams;
-}
-export const resolveCodeAction = new lc.RequestType<ResolveCodeActionParams, lc.WorkspaceEdit, unknown>('experimental/resolveCodeAction');
 
 export interface JoinLinesParams {
     textDocument: lc.TextDocumentIdentifier;
@@ -66,8 +64,10 @@ export interface Runnable {
     args: {
         workspaceRoot?: string;
         cargoArgs: string[];
+        cargoExtraArgs: string[];
         executableArgs: string[];
         expectTest?: boolean;
+        overrideCargo?: string;
     };
 }
 export const runnables = new lc.RequestType<RunnablesParams, Runnable[], void>("experimental/runnables");
@@ -112,4 +112,12 @@ export interface CommandLink extends lc.Command {
 export interface CommandLinkGroup {
     title?: string;
     commands: CommandLink[];
+}
+
+export const openDocs = new lc.RequestType<lc.TextDocumentPositionParams, string | void, void>('experimental/externalDocs');
+
+export const openCargoToml = new lc.RequestType<OpenCargoTomlParams, lc.Location, void>("experimental/openCargoToml");
+
+export interface OpenCargoTomlParams {
+    textDocument: lc.TextDocumentIdentifier;
 }

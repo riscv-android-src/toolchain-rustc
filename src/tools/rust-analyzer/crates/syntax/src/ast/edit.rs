@@ -93,6 +93,22 @@ where
     }
 }
 
+impl ast::Impl {
+    #[must_use]
+    pub fn with_assoc_item_list(&self, items: ast::AssocItemList) -> ast::Impl {
+        let mut to_insert: ArrayVec<[SyntaxElement; 2]> = ArrayVec::new();
+        if let Some(old_items) = self.assoc_item_list() {
+            let to_replace: SyntaxElement = old_items.syntax().clone().into();
+            to_insert.push(items.syntax().clone().into());
+            self.replace_children(single_node(to_replace), to_insert)
+        } else {
+            to_insert.push(make::tokens::single_space().into());
+            to_insert.push(items.syntax().clone().into());
+            self.insert_children(InsertPosition::Last, to_insert)
+        }
+    }
+}
+
 impl ast::AssocItemList {
     #[must_use]
     pub fn append_items(
@@ -143,7 +159,7 @@ impl ast::AssocItemList {
         let whitespace =
             last_token_before_curly.clone().into_token().and_then(ast::Whitespace::cast)?;
         let text = whitespace.syntax().text();
-        let newline = text.rfind("\n")?;
+        let newline = text.rfind('\n')?;
         let keep = tokens::WsBuilder::new(&text[newline..]);
         Some(self.replace_children(
             first_token_after_items..=last_token_before_curly,
@@ -204,7 +220,7 @@ impl ast::RecordExprFieldList {
                     InsertPosition::After($anchor.syntax().clone().into())
                 }
             };
-        };
+        }
 
         let position = match position {
             InsertPosition::First => after_l_curly!(),
@@ -347,6 +363,7 @@ impl ast::UseTree {
         self.clone()
     }
 
+    /// Splits off the given prefix, making it the path component of the use tree, appending the rest of the path to all UseTreeList items.
     #[must_use]
     pub fn split_prefix(&self, prefix: &ast::Path) -> ast::UseTree {
         let suffix = if self.path().as_ref() == Some(prefix) && self.use_tree_list().is_none() {
@@ -516,7 +533,7 @@ impl ast::GenericParamList {
                     InsertPosition::After($anchor.syntax().clone().into())
                 }
             };
-        };
+        }
 
         let position = match self.generic_params().last() {
             Some(it) => after_field!(it),

@@ -1,10 +1,8 @@
 use alloc::boxed::Box;
 use core::fmt;
 use core::marker::PhantomData;
-use core::mem;
+use core::mem::{self, MaybeUninit};
 use core::ptr;
-
-use maybe_uninit::MaybeUninit;
 
 /// Number of words a piece of `Data` can hold.
 ///
@@ -25,7 +23,7 @@ pub struct Deferred {
 }
 
 impl fmt::Debug for Deferred {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.pad("Deferred { .. }")
     }
 }
@@ -57,6 +55,9 @@ impl Deferred {
                 ptr::write(data.as_mut_ptr() as *mut Box<F>, b);
 
                 unsafe fn call<F: FnOnce()>(raw: *mut u8) {
+                    // It's safe to cast `raw` from `*mut u8` to `*mut Box<F>`, because `raw` is
+                    // originally derived from `*mut Box<F>`.
+                    #[allow(clippy::cast_ptr_alignment)]
                     let b: Box<F> = ptr::read(raw as *mut Box<F>);
                     (*b)();
                 }

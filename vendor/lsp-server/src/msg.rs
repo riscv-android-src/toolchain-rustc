@@ -38,13 +38,13 @@ pub struct RequestId(IdRepr);
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(untagged)]
 enum IdRepr {
-    U64(u64),
+    I32(i32),
     String(String),
 }
 
-impl From<u64> for RequestId {
-    fn from(id: u64) -> RequestId {
-        RequestId(IdRepr::U64(id))
+impl From<i32> for RequestId {
+    fn from(id: i32) -> RequestId {
+        RequestId(IdRepr::I32(id))
     }
 }
 
@@ -57,7 +57,7 @@ impl From<String> for RequestId {
 impl fmt::Display for RequestId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
-            IdRepr::U64(it) => fmt::Display::fmt(it, f),
+            IdRepr::I32(it) => fmt::Display::fmt(it, f),
             // Use debug here, to make it clear that `92` and `"92"` are
             // different, and to reduce WTF factor if the sever uses `" "` as an
             // ID.
@@ -124,6 +124,9 @@ pub struct Notification {
 
 impl Message {
     pub fn read(r: &mut impl BufRead) -> io::Result<Option<Message>> {
+        Message::_read(r)
+    }
+    fn _read(r: &mut dyn BufRead) -> io::Result<Option<Message>> {
         let text = match read_msg_text(r)? {
             None => return Ok(None),
             Some(text) => text,
@@ -132,6 +135,9 @@ impl Message {
         Ok(Some(msg))
     }
     pub fn write(self, w: &mut impl Write) -> io::Result<()> {
+        self._write(w)
+    }
+    pub fn _write(self, w: &mut dyn Write) -> io::Result<()> {
         #[derive(Serialize)]
         struct JsonRpc {
             jsonrpc: &'static str,
@@ -198,7 +204,7 @@ impl Notification {
     }
 }
 
-fn read_msg_text(inp: &mut impl BufRead) -> io::Result<Option<String>> {
+fn read_msg_text(inp: &mut dyn BufRead) -> io::Result<Option<String>> {
     fn invalid_data(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
         io::Error::new(io::ErrorKind::InvalidData, error)
     }
@@ -237,7 +243,7 @@ fn read_msg_text(inp: &mut impl BufRead) -> io::Result<Option<String>> {
     Ok(Some(buf))
 }
 
-fn write_msg_text(out: &mut impl Write, msg: &str) -> io::Result<()> {
+fn write_msg_text(out: &mut dyn Write, msg: &str) -> io::Result<()> {
     log::debug!("> {}", msg);
     write!(out, "Content-Length: {}\r\n\r\n", msg.len())?;
     out.write_all(msg.as_bytes())?;

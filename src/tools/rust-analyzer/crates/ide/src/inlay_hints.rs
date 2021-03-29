@@ -1,14 +1,14 @@
-use hir::{Adt, Callable, HirDisplay, Semantics, Type};
+use either::Either;
+use hir::{known, Callable, HirDisplay, Semantics};
+use ide_db::helpers::FamousDefs;
 use ide_db::RootDatabase;
 use stdx::to_lower_snake_case;
 use syntax::{
-    ast::{self, ArgListOwner, AstNode},
+    ast::{self, ArgListOwner, AstNode, NameOwner},
     match_ast, Direction, NodeOrToken, SmolStr, SyntaxKind, TextRange, T,
 };
 
 use crate::FileId;
-use ast::NameOwner;
-use either::Either;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlayHintsConfig {
@@ -16,12 +16,6 @@ pub struct InlayHintsConfig {
     pub parameter_hints: bool,
     pub chaining_hints: bool,
     pub max_length: Option<usize>,
-}
-
-impl Default for InlayHintsConfig {
-    fn default() -> Self {
-        Self { type_hints: true, parameter_hints: true, chaining_hints: true, max_length: None }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +93,9 @@ fn get_chaining_hints(
         return None;
     }
 
+    let krate = sema.scope(expr.syntax()).module().map(|it| it.krate());
+    let famous_defs = FamousDefs(&sema, krate);
+
     let mut tokens = expr
         .syntax()
         .siblings_with_tokens(Direction::Next)
@@ -119,17 +116,18 @@ fn get_chaining_hints(
             return None;
         }
         if matches!(expr, ast::Expr::PathExpr(_)) {
-            if let Some(Adt::Struct(st)) = ty.as_adt() {
+            if let Some(hir::Adt::Struct(st)) = ty.as_adt() {
                 if st.fields(sema.db).is_empty() {
                     return None;
                 }
             }
         }
-        let label = ty.display_truncated(sema.db, config.max_length).to_string();
         acc.push(InlayHint {
             range: expr.syntax().text_range(),
             kind: InlayKind::ChainingHint,
-            label: label.into(),
+            label: hint_iterator(sema, &famous_defs, config, &ty).unwrap_or_else(|| {
+                ty.display_truncated(sema.db, config.max_length).to_string().into()
+            }),
         });
     }
     Some(())
@@ -158,7 +156,7 @@ fn get_param_name_hints(
         .zip(args)
         .filter_map(|((param, _ty), arg)| {
             let param_name = match param? {
-                Either::Left(self_param) => self_param.to_string(),
+                Either::Left(_) => "self".to_string(),
                 Either::Right(pat) => match pat {
                     ast::Pat::IdentPat(it) => it.name()?.to_string(),
                     _ => return None,
@@ -166,7 +164,7 @@ fn get_param_name_hints(
             };
             Some((param_name, arg))
         })
-        .filter(|(param_name, arg)| should_show_param_name_hint(sema, &callable, &param_name, &arg))
+        .filter(|(param_name, arg)| should_show_param_name_hint(sema, &callable, param_name, &arg))
         .map(|(param_name, arg)| InlayHint {
             range: arg.syntax().text_range(),
             kind: InlayKind::ParameterHint,
@@ -187,22 +185,72 @@ fn get_bind_pat_hints(
         return None;
     }
 
+    let krate = sema.scope(pat.syntax()).module().map(|it| it.krate());
+    let famous_defs = FamousDefs(&sema, krate);
+
     let ty = sema.type_of_pat(&pat.clone().into())?;
 
-    if should_not_display_type_hint(sema.db, &pat, &ty) {
+    if should_not_display_type_hint(sema, &pat, &ty) {
         return None;
     }
-
     acc.push(InlayHint {
         range: pat.syntax().text_range(),
         kind: InlayKind::TypeHint,
-        label: ty.display_truncated(sema.db, config.max_length).to_string().into(),
+        label: hint_iterator(sema, &famous_defs, config, &ty)
+            .unwrap_or_else(|| ty.display_truncated(sema.db, config.max_length).to_string().into()),
     });
+
     Some(())
 }
 
-fn pat_is_enum_variant(db: &RootDatabase, bind_pat: &ast::IdentPat, pat_ty: &Type) -> bool {
-    if let Some(Adt::Enum(enum_data)) = pat_ty.as_adt() {
+/// Checks if the type is an Iterator from std::iter and replaces its hint with an `impl Iterator<Item = Ty>`.
+fn hint_iterator(
+    sema: &Semantics<RootDatabase>,
+    famous_defs: &FamousDefs,
+    config: &InlayHintsConfig,
+    ty: &hir::Type,
+) -> Option<SmolStr> {
+    let db = sema.db;
+    let strukt = std::iter::successors(Some(ty.clone()), |ty| ty.remove_ref())
+        .last()
+        .and_then(|strukt| strukt.as_adt())?;
+    let krate = strukt.krate(db)?;
+    if krate != famous_defs.core()? {
+        return None;
+    }
+    let iter_trait = famous_defs.core_iter_Iterator()?;
+    let iter_mod = famous_defs.core_iter()?;
+    // assert this struct comes from `core::iter`
+    iter_mod.visibility_of(db, &strukt.into()).filter(|&vis| vis == hir::Visibility::Public)?;
+    if ty.impls_trait(db, iter_trait, &[]) {
+        let assoc_type_item = iter_trait.items(db).into_iter().find_map(|item| match item {
+            hir::AssocItem::TypeAlias(alias) if alias.name(db) == known::Item => Some(alias),
+            _ => None,
+        })?;
+        if let Some(ty) = ty.normalize_trait_assoc_type(db, iter_trait, &[], assoc_type_item) {
+            const LABEL_START: &str = "impl Iterator<Item = ";
+            const LABEL_END: &str = ">";
+
+            let ty_display = hint_iterator(sema, famous_defs, config, &ty)
+                .map(|assoc_type_impl| assoc_type_impl.to_string())
+                .unwrap_or_else(|| {
+                    ty.display_truncated(
+                        db,
+                        config
+                            .max_length
+                            .map(|len| len.saturating_sub(LABEL_START.len() + LABEL_END.len())),
+                    )
+                    .to_string()
+                });
+            return Some(format!("{}{}{}", LABEL_START, ty_display, LABEL_END).into());
+        }
+    }
+
+    None
+}
+
+fn pat_is_enum_variant(db: &RootDatabase, bind_pat: &ast::IdentPat, pat_ty: &hir::Type) -> bool {
+    if let Some(hir::Adt::Enum(enum_data)) = pat_ty.as_adt() {
         let pat_text = bind_pat.to_string();
         enum_data
             .variants(db)
@@ -215,15 +263,17 @@ fn pat_is_enum_variant(db: &RootDatabase, bind_pat: &ast::IdentPat, pat_ty: &Typ
 }
 
 fn should_not_display_type_hint(
-    db: &RootDatabase,
+    sema: &Semantics<RootDatabase>,
     bind_pat: &ast::IdentPat,
-    pat_ty: &Type,
+    pat_ty: &hir::Type,
 ) -> bool {
+    let db = sema.db;
+
     if pat_ty.is_unknown() {
         return true;
     }
 
-    if let Some(Adt::Struct(s)) = pat_ty.as_adt() {
+    if let Some(hir::Adt::Struct(s)) = pat_ty.as_adt() {
         if s.fields(db).is_empty() && s.name(db).to_string() == bind_pat.to_string() {
             return true;
         }
@@ -249,6 +299,15 @@ fn should_not_display_type_hint(
                     return it.condition().and_then(|condition| condition.pat()).is_some()
                         && pat_is_enum_variant(db, bind_pat, pat_ty);
                 },
+                ast::ForExpr(it) => {
+                    // We *should* display hint only if user provided "in {expr}" and we know the type of expr (and it's not unit).
+                    // Type of expr should be iterable.
+                    return it.in_token().is_none() ||
+                        it.iterable()
+                            .and_then(|iterable_expr|sema.type_of_expr(&iterable_expr))
+                            .map(|iterable_ty| iterable_ty.is_unknown() || iterable_ty.is_unit())
+                            .unwrap_or(true)
+                },
                 _ => (),
             }
         }
@@ -258,7 +317,7 @@ fn should_not_display_type_hint(
 
 fn should_show_param_name_hint(
     sema: &Semantics<RootDatabase>,
-    callable: &Callable,
+    callable: &hir::Callable,
     param_name: &str,
     argument: &ast::Expr,
 ) -> bool {
@@ -269,9 +328,11 @@ fn should_show_param_name_hint(
         | hir::CallableKind::TupleEnumVariant(_)
         | hir::CallableKind::Closure => None,
     };
+
     if param_name.is_empty()
         || Some(param_name) == fn_name.as_ref().map(|s| s.trim_start_matches('_'))
         || is_argument_similar_to_param_name(sema, argument, param_name)
+        || is_param_name_similar_to_fn_name(param_name, callable, fn_name.as_ref())
         || param_name.starts_with("ra_fixture")
     {
         return false;
@@ -292,10 +353,46 @@ fn is_argument_similar_to_param_name(
     }
     match get_string_representation(argument) {
         None => false,
-        Some(repr) => {
-            let argument_string = repr.trim_start_matches('_');
-            argument_string.starts_with(param_name) || argument_string.ends_with(param_name)
+        Some(argument_string) => {
+            let num_leading_underscores =
+                argument_string.bytes().take_while(|&c| c == b'_').count();
+
+            // Does the argument name begin with the parameter name? Ignore leading underscores.
+            let mut arg_bytes = argument_string.bytes().skip(num_leading_underscores);
+            let starts_with_pattern = param_name.bytes().all(
+                |expected| matches!(arg_bytes.next(), Some(actual) if expected.eq_ignore_ascii_case(&actual)),
+            );
+
+            if starts_with_pattern {
+                return true;
+            }
+
+            // Does the argument name end with the parameter name?
+            let mut arg_bytes = argument_string.bytes().skip(num_leading_underscores);
+            param_name.bytes().rev().all(
+                |expected| matches!(arg_bytes.next_back(), Some(actual) if expected.eq_ignore_ascii_case(&actual)),
+            )
         }
+    }
+}
+
+fn is_param_name_similar_to_fn_name(
+    param_name: &str,
+    callable: &Callable,
+    fn_name: Option<&String>,
+) -> bool {
+    // if it's the only parameter, don't show it if:
+    // - is the same as the function name, or
+    // - the function ends with '_' + param_name
+
+    match (callable.n_params(), fn_name) {
+        (1, Some(function)) => {
+            function == param_name
+                || (function.len() > param_name.len()
+                    && function.ends_with(param_name)
+                    && function[..function.len() - param_name.len()].ends_with('_'))
+        }
+        _ => false,
     }
 }
 
@@ -305,7 +402,7 @@ fn is_enum_name_similar_to_param_name(
     param_name: &str,
 ) -> bool {
     match sema.type_of_expr(argument).and_then(|t| t.as_adt()) {
-        Some(Adt::Enum(e)) => to_lower_snake_case(&e.name(sema.db).to_string()) == param_name,
+        Some(hir::Adt::Enum(e)) => to_lower_snake_case(&e.name(sema.db).to_string()) == param_name,
         _ => false,
     }
 }
@@ -313,10 +410,17 @@ fn is_enum_name_similar_to_param_name(
 fn get_string_representation(expr: &ast::Expr) -> Option<String> {
     match expr {
         ast::Expr::MethodCallExpr(method_call_expr) => {
-            Some(method_call_expr.name_ref()?.to_string())
+            let name_ref = method_call_expr.name_ref()?;
+            match name_ref.text() {
+                "clone" => method_call_expr.receiver().map(|rec| rec.to_string()),
+                name_ref => Some(name_ref.to_owned()),
+            }
         }
+        ast::Expr::FieldExpr(field_expr) => Some(field_expr.name_ref()?.to_string()),
+        ast::Expr::PathExpr(path_expr) => Some(path_expr.to_string()),
+        ast::Expr::PrefixExpr(prefix_expr) => get_string_representation(&prefix_expr.expr()?),
         ast::Expr::RefExpr(ref_expr) => get_string_representation(&ref_expr.expr()?),
-        _ => Some(expr.to_string()),
+        _ => None,
     }
 }
 
@@ -326,7 +430,7 @@ fn is_obvious_param(param_name: &str) -> bool {
     param_name.len() == 1 || is_obvious_param_name
 }
 
-fn get_callable(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Option<Callable> {
+fn get_callable(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Option<hir::Callable> {
     match expr {
         ast::Expr::CallExpr(expr) => sema.type_of_expr(&expr.expr()?)?.as_callable(sema.db),
         ast::Expr::MethodCallExpr(expr) => sema.resolve_method_call_as_callable(expr),
@@ -337,16 +441,26 @@ fn get_callable(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Option<Call
 #[cfg(test)]
 mod tests {
     use expect_test::{expect, Expect};
+    use ide_db::helpers::FamousDefs;
     use test_utils::extract_annotations;
 
-    use crate::{inlay_hints::InlayHintsConfig, mock_analysis::single_file};
+    use crate::{fixture, inlay_hints::InlayHintsConfig};
+
+    const TEST_CONFIG: InlayHintsConfig = InlayHintsConfig {
+        type_hints: true,
+        parameter_hints: true,
+        chaining_hints: true,
+        max_length: None,
+    };
 
     fn check(ra_fixture: &str) {
-        check_with_config(InlayHintsConfig::default(), ra_fixture);
+        check_with_config(TEST_CONFIG, ra_fixture);
     }
 
     fn check_with_config(config: InlayHintsConfig, ra_fixture: &str) {
-        let (analysis, file_id) = single_file(ra_fixture);
+        let ra_fixture =
+            format!("//- /main.rs crate:main deps:core\n{}\n{}", ra_fixture, FamousDefs::FIXTURE);
+        let (analysis, file_id) = fixture::file(&ra_fixture);
         let expected = extract_annotations(&*analysis.file_text(file_id).unwrap());
         let inlay_hints = analysis.inlay_hints(file_id, &config).unwrap();
         let actual =
@@ -355,7 +469,9 @@ mod tests {
     }
 
     fn check_expect(config: InlayHintsConfig, ra_fixture: &str, expect: Expect) {
-        let (analysis, file_id) = single_file(ra_fixture);
+        let ra_fixture =
+            format!("//- /main.rs crate:main deps:core\n{}\n{}", ra_fixture, FamousDefs::FIXTURE);
+        let (analysis, file_id) = fixture::file(&ra_fixture);
         let inlay_hints = analysis.inlay_hints(file_id, &config).unwrap();
         expect.assert_debug_eq(&inlay_hints)
     }
@@ -377,6 +493,88 @@ fn main() {
       //^ a
         4,
       //^ b
+    );
+}"#,
+        );
+    }
+
+    #[test]
+    fn param_name_similar_to_fn_name_still_hints() {
+        check_with_config(
+            InlayHintsConfig {
+                parameter_hints: true,
+                type_hints: false,
+                chaining_hints: false,
+                max_length: None,
+            },
+            r#"
+fn max(x: i32, y: i32) -> i32 { x + y }
+fn main() {
+    let _x = max(
+        4,
+      //^ x
+        4,
+      //^ y
+    );
+}"#,
+        );
+    }
+
+    #[test]
+    fn param_name_similar_to_fn_name() {
+        check_with_config(
+            InlayHintsConfig {
+                parameter_hints: true,
+                type_hints: false,
+                chaining_hints: false,
+                max_length: None,
+            },
+            r#"
+fn param_with_underscore(with_underscore: i32) -> i32 { with_underscore }
+fn main() {
+    let _x = param_with_underscore(
+        4,
+    );
+}"#,
+        );
+    }
+
+    #[test]
+    fn param_name_same_as_fn_name() {
+        check_with_config(
+            InlayHintsConfig {
+                parameter_hints: true,
+                type_hints: false,
+                chaining_hints: false,
+                max_length: None,
+            },
+            r#"
+fn foo(foo: i32) -> i32 { foo }
+fn main() {
+    let _x = foo(
+        4,
+    );
+}"#,
+        );
+    }
+
+    #[test]
+    fn never_hide_param_when_multiple_params() {
+        check_with_config(
+            InlayHintsConfig {
+                parameter_hints: true,
+                type_hints: false,
+                chaining_hints: false,
+                max_length: None,
+            },
+            r#"
+fn foo(bar: i32, baz: i32) -> i32 { bar + baz }
+fn main() {
+    let _x = foo(
+        4,
+      //^ bar
+        8,
+      //^ baz
     );
 }"#,
         );
@@ -496,19 +694,6 @@ fn main() {
     }
 
     #[test]
-    fn for_expression() {
-        check(
-            r#"
-fn main() {
-    let mut start = 0;
-      //^^^^^^^^^ i32
-    for increment in 0..2 { start += increment; }
-      //^^^^^^^^^ i32
-}"#,
-        );
-    }
-
-    #[test]
     fn if_expr() {
         check(
             r#"
@@ -583,7 +768,7 @@ fn main() {
     #[test]
     fn hint_truncation() {
         check_with_config(
-            InlayHintsConfig { max_length: Some(8), ..Default::default() },
+            InlayHintsConfig { max_length: Some(8), ..TEST_CONFIG },
             r#"
 struct Smol<T>(T);
 
@@ -644,7 +829,7 @@ fn main() {
     t.method(123);
            //^^^ param
     Test::method(&t,      3456);
-               //^^ &self ^^^^ param
+               //^^ self  ^^^^ param
     Test::from_syntax(
         FileId {},
       //^^^^^^^^^ file_id
@@ -666,7 +851,7 @@ fn main() {
     #[test]
     fn omitted_parameters_hints_heuristics() {
         check_with_config(
-            InlayHintsConfig { max_length: Some(8), ..Default::default() },
+            InlayHintsConfig { max_length: Some(8), ..TEST_CONFIG },
             r#"
 fn map(f: i32) {}
 fn filter(predicate: i32) {}
@@ -735,6 +920,9 @@ fn main() {
     twiddle(true);
     doo(true);
 
+    const TWIDDLE_UPPERCASE: bool = true;
+    twiddle(TWIDDLE_UPPERCASE);
+
     let mut param_begin: Param = Param {};
     different_order(&param_begin);
     different_order(&mut param_begin);
@@ -759,7 +947,7 @@ fn main() {
     #[test]
     fn unit_structs_have_no_type_hints() {
         check_with_config(
-            InlayHintsConfig { max_length: Some(8), ..Default::default() },
+            InlayHintsConfig { max_length: Some(8), ..TEST_CONFIG },
             r#"
 enum Result<T, E> { Ok(T), Err(E) }
 use Result::*;
@@ -800,12 +988,12 @@ fn main() {
             expect![[r#"
                 [
                     InlayHint {
-                        range: 147..172,
+                        range: 148..173,
                         kind: ChainingHint,
                         label: "B",
                     },
                     InlayHint {
-                        range: 147..154,
+                        range: 148..155,
                         kind: ChainingHint,
                         label: "A",
                     },
@@ -866,12 +1054,12 @@ fn main() {
             expect![[r#"
                 [
                     InlayHint {
-                        range: 143..190,
+                        range: 144..191,
                         kind: ChainingHint,
                         label: "C",
                     },
                     InlayHint {
-                        range: 143..179,
+                        range: 144..180,
                         kind: ChainingHint,
                         label: "B",
                     },
@@ -911,17 +1099,361 @@ fn main() {
             expect![[r#"
                 [
                     InlayHint {
-                        range: 246..283,
+                        range: 247..284,
                         kind: ChainingHint,
                         label: "B<X<i32, bool>>",
                     },
                     InlayHint {
-                        range: 246..265,
+                        range: 247..266,
                         kind: ChainingHint,
                         label: "A<X<i32, bool>>",
                     },
                 ]
             "#]],
         );
+    }
+
+    #[test]
+    fn incomplete_for_no_hint() {
+        check(
+            r#"
+fn main() {
+    let data = &[1i32, 2, 3];
+      //^^^^ &[i32; _]
+    for i
+}"#,
+        );
+        check(
+            r#"
+pub struct Vec<T> {}
+
+impl<T> Vec<T> {
+    pub fn new() -> Self { Vec {} }
+    pub fn push(&mut self, t: T) {}
+}
+
+impl<T> IntoIterator for Vec<T> {
+    type Item=T;
+}
+
+fn main() {
+    let mut data = Vec::new();
+      //^^^^^^^^ Vec<&str>
+    data.push("foo");
+    for i in
+
+    println!("Unit expr");
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn complete_for_hint() {
+        check(
+            r#"
+pub struct Vec<T> {}
+
+impl<T> Vec<T> {
+    pub fn new() -> Self { Vec {} }
+    pub fn push(&mut self, t: T) {}
+}
+
+impl<T> IntoIterator for Vec<T> {
+    type Item=T;
+}
+
+fn main() {
+    let mut data = Vec::new();
+      //^^^^^^^^ Vec<&str>
+    data.push("foo");
+    for i in data {
+      //^ &str
+      let z = i;
+        //^ &str
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn multi_dyn_trait_bounds() {
+        check_with_config(
+            InlayHintsConfig {
+                type_hints: true,
+                parameter_hints: false,
+                chaining_hints: false,
+                max_length: None,
+            },
+            r#"
+pub struct Vec<T> {}
+
+impl<T> Vec<T> {
+    pub fn new() -> Self { Vec {} }
+}
+
+pub struct Box<T> {}
+
+trait Display {}
+trait Sync {}
+
+fn main() {
+    let _v = Vec::<Box<&(dyn Display + Sync)>>::new();
+      //^^ Vec<Box<&(dyn Display + Sync)>>
+    let _v = Vec::<Box<*const (dyn Display + Sync)>>::new();
+      //^^ Vec<Box<*const (dyn Display + Sync)>>
+    let _v = Vec::<Box<dyn Display + Sync>>::new();
+      //^^ Vec<Box<dyn Display + Sync>>
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn shorten_iterator_hints() {
+        check_with_config(
+            InlayHintsConfig {
+                parameter_hints: false,
+                type_hints: true,
+                chaining_hints: false,
+                max_length: None,
+            },
+            r#"
+use core::iter;
+
+struct MyIter;
+
+impl Iterator for MyIter {
+    type Item = ();
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
+
+fn main() {
+    let _x = MyIter;
+      //^^ MyIter
+    let _x = iter::repeat(0);
+      //^^ impl Iterator<Item = i32>
+    fn generic<T: Clone>(t: T) {
+        let _x = iter::repeat(t);
+          //^^ impl Iterator<Item = T>
+        let _chained = iter::repeat(t).take(10);
+          //^^^^^^^^ impl Iterator<Item = T>
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn shorten_iterator_chaining_hints() {
+        check_expect(
+            InlayHintsConfig {
+                parameter_hints: false,
+                type_hints: false,
+                chaining_hints: true,
+                max_length: None,
+            },
+            r#"
+use core::iter;
+
+struct MyIter;
+
+impl Iterator for MyIter {
+    type Item = ();
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
+
+fn main() {
+    let _x = MyIter.by_ref()
+        .take(5)
+        .by_ref()
+        .take(5)
+        .by_ref();
+}
+"#,
+            expect![[r#"
+                [
+                    InlayHint {
+                        range: 175..242,
+                        kind: ChainingHint,
+                        label: "impl Iterator<Item = ()>",
+                    },
+                    InlayHint {
+                        range: 175..225,
+                        kind: ChainingHint,
+                        label: "impl Iterator<Item = ()>",
+                    },
+                    InlayHint {
+                        range: 175..207,
+                        kind: ChainingHint,
+                        label: "impl Iterator<Item = ()>",
+                    },
+                    InlayHint {
+                        range: 175..190,
+                        kind: ChainingHint,
+                        label: "&mut MyIter",
+                    },
+                ]
+            "#]],
+        );
+    }
+
+    #[test]
+    fn shorten_iterators_in_associated_params() {
+        check_with_config(
+            InlayHintsConfig {
+                parameter_hints: false,
+                type_hints: true,
+                chaining_hints: false,
+                max_length: None,
+            },
+            r#"
+use core::iter;
+
+pub struct SomeIter<T> {}
+
+impl<T> SomeIter<T> {
+    pub fn new() -> Self { SomeIter {} }
+    pub fn push(&mut self, t: T) {}
+}
+
+impl<T> Iterator for SomeIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
+
+fn main() {
+    let mut some_iter = SomeIter::new();
+      //^^^^^^^^^^^^^ SomeIter<Take<Repeat<i32>>>
+      some_iter.push(iter::repeat(2).take(2));
+    let iter_of_iters = some_iter.take(2);
+      //^^^^^^^^^^^^^ impl Iterator<Item = impl Iterator<Item = i32>>
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn hide_param_hints_for_clones() {
+        check_with_config(
+            InlayHintsConfig {
+                parameter_hints: true,
+                type_hints: false,
+                chaining_hints: false,
+                max_length: None,
+            },
+            r#"
+fn foo(bar: i32, baz: String, qux: f32) {}
+
+fn main() {
+    let bar = 3;
+    let baz = &"baz";
+    let fez = 1.0;
+    foo(bar.clone(), baz.clone(), fez.clone());
+                                //^^^^^^^^^^^ qux
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn infer_call_method_return_associated_types_with_generic() {
+        check(
+            r#"
+            pub trait Default {
+                fn default() -> Self;
+            }
+            pub trait Foo {
+                type Bar: Default;
+            }
+
+            pub fn quux<T: Foo>() -> T::Bar {
+                let y = Default::default();
+                  //^ <T as Foo>::Bar
+
+                y
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn self_param_hints() {
+        check(
+            r#"
+struct Foo;
+
+impl Foo {
+    fn foo(self: Self) {}
+    fn bar(self: &Self) {}
+}
+
+fn main() {
+    Foo::foo(Foo);
+           //^^^ self
+    Foo::bar(&Foo);
+           //^^^^ self
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn fn_hints() {
+        check(
+            r#"
+trait Sized {}
+
+fn foo() -> impl Fn() { loop {} }
+fn foo1() -> impl Fn(f64) { loop {} }
+fn foo2() -> impl Fn(f64, f64) { loop {} }
+fn foo3() -> impl Fn(f64, f64) -> u32 { loop {} }
+fn foo4() -> &'static dyn Fn(f64, f64) -> u32 { loop {} }
+fn foo5() -> &'static dyn Fn(&'static dyn Fn(f64, f64) -> u32, f64) -> u32 { loop {} }
+fn foo6() -> impl Fn(f64, f64) -> u32 + Sized { loop {} }
+fn foo7() -> *const (impl Fn(f64, f64) -> u32 + Sized) { loop {} }
+
+fn main() {
+    let foo = foo();
+     // ^^^ impl Fn()
+    let foo = foo1();
+     // ^^^ impl Fn(f64)
+    let foo = foo2();
+     // ^^^ impl Fn(f64, f64)
+    let foo = foo3();
+     // ^^^ impl Fn(f64, f64) -> u32
+    let foo = foo4();
+     // ^^^ &dyn Fn(f64, f64) -> u32
+    let foo = foo5();
+     // ^^^ &dyn Fn(&dyn Fn(f64, f64) -> u32, f64) -> u32
+    let foo = foo6();
+     // ^^^ impl Fn(f64, f64) -> u32 + Sized
+    let foo = foo7();
+     // ^^^ *const (impl Fn(f64, f64) -> u32 + Sized)
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn param_name_hints_show_for_literals() {
+        check(
+            r#"pub fn test(a: i32, b: i32) -> [i32; 2] { [a, b] }
+fn main() {
+    test(
+        0x0fab272b,
+      //^^^^^^^^^^ a
+        0x0fab272b
+      //^^^^^^^^^^ b
+    );
+}"#,
+        )
     }
 }

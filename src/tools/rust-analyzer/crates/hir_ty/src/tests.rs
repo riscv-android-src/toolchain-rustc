@@ -18,14 +18,15 @@ use hir_def::{
     db::DefDatabase,
     item_scope::ItemScope,
     keys,
-    nameres::CrateDefMap,
+    nameres::DefMap,
     AssocItemId, DefWithBodyId, LocalModuleId, Lookup, ModuleDefId,
 };
 use hir_expand::{db::AstDatabase, InFile};
-use stdx::{format_to, RacyFlag};
+use once_cell::race::OnceBool;
+use stdx::format_to;
 use syntax::{
     algo,
-    ast::{self, AstNode},
+    ast::{self, AstNode, NameOwner},
     SyntaxNode,
 };
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
@@ -40,8 +41,8 @@ use crate::{
 // `env UPDATE_EXPECT=1 cargo test -p hir_ty` to update the snapshots.
 
 fn setup_tracing() -> Option<tracing::subscriber::DefaultGuard> {
-    static ENABLE: RacyFlag = RacyFlag::new();
-    if !ENABLE.get(|| env::var("CHALK_DEBUG").is_ok()) {
+    static ENABLE: OnceBool = OnceBool::new();
+    if !ENABLE.get_or_init(|| env::var("CHALK_DEBUG").is_ok()) {
         return None;
     }
 
@@ -74,7 +75,7 @@ fn check_types_impl(ra_fixture: &str, display_source: bool) {
                 let module = db.module_for_file(file_id);
                 ty.display_source_code(&db, module).unwrap()
             } else {
-                ty.display(&db).to_string()
+                ty.display_test(&db).to_string()
             };
             assert_eq!(expected, actual);
             checked_one = true;
@@ -152,7 +153,7 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
         });
         for (node, ty) in &types {
             let (range, text) = if let Some(self_param) = ast::SelfParam::cast(node.value.clone()) {
-                (self_param.self_token().unwrap().text_range(), "self".to_string())
+                (self_param.name().unwrap().syntax().text_range(), "self".to_string())
             } else {
                 (node.value.text_range(), node.value.text().to_string().replace("\n", " "))
             };
@@ -163,7 +164,7 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
                 macro_prefix,
                 range,
                 ellipsize(text, 15),
-                ty.display(&db)
+                ty.display_test(&db)
             );
         }
         if include_mismatches {
@@ -179,18 +180,18 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
                     "{}{:?}: expected {}, got {}\n",
                     macro_prefix,
                     range,
-                    mismatch.expected.display(&db),
-                    mismatch.actual.display(&db),
+                    mismatch.expected.display_test(&db),
+                    mismatch.actual.display_test(&db),
                 );
             }
         }
     };
 
     let module = db.module_for_file(file_id);
-    let crate_def_map = db.crate_def_map(module.krate);
+    let def_map = module.def_map(&db);
 
     let mut defs: Vec<DefWithBodyId> = Vec::new();
-    visit_module(&db, &crate_def_map, module.local_id, &mut |it| defs.push(it));
+    visit_module(&db, &def_map, module.local_id, &mut |it| defs.push(it));
     defs.sort_by_key(|def| match def {
         DefWithBodyId::FunctionId(it) => {
             let loc = it.lookup(&db);
@@ -220,7 +221,7 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
 
 fn visit_module(
     db: &TestDB,
-    crate_def_map: &CrateDefMap,
+    crate_def_map: &DefMap,
     module_id: LocalModuleId,
     cb: &mut dyn FnMut(DefWithBodyId),
 ) {
@@ -248,7 +249,7 @@ fn visit_module(
 
     fn visit_scope(
         db: &TestDB,
-        crate_def_map: &CrateDefMap,
+        crate_def_map: &DefMap,
         scope: &ItemScope,
         cb: &mut dyn FnMut(DefWithBodyId),
     ) {
@@ -313,14 +314,14 @@ fn typing_whitespace_inside_a_function_should_not_invalidate_types() {
         "
         //- /lib.rs
         fn foo() -> i32 {
-            <|>1 + 1
+            $01 + 1
         }
     ",
     );
     {
         let events = db.log_executed(|| {
             let module = db.module_for_file(pos.file_id);
-            let crate_def_map = db.crate_def_map(module.krate);
+            let crate_def_map = module.def_map(&db);
             visit_module(&db, &crate_def_map, module.local_id, &mut |def| {
                 db.infer(def);
             });
@@ -342,7 +343,7 @@ fn typing_whitespace_inside_a_function_should_not_invalidate_types() {
     {
         let events = db.log_executed(|| {
             let module = db.module_for_file(pos.file_id);
-            let crate_def_map = db.crate_def_map(module.krate);
+            let crate_def_map = module.def_map(&db);
             visit_module(&db, &crate_def_map, module.local_id, &mut |def| {
                 db.infer(def);
             });

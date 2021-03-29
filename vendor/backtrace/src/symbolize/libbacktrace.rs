@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Symbolication strategy using the DWARF-parsing code in libbacktrace.
 //!
 //! The libbacktrace C library, typically distributed with gcc, supports not
@@ -148,6 +138,10 @@ impl Symbol<'_> {
             Symbol::Syminfo { .. } => None,
             Symbol::Pcinfo { lineno, .. } => Some(lineno as u32),
         }
+    }
+
+    pub fn colno(&self) -> Option<u32> {
+        None
     }
 }
 
@@ -462,3 +456,5 @@ pub unsafe fn resolve(what: ResolveWhat<'_>, cb: &mut dyn FnMut(&super::Symbol))
         &mut syminfo_state as *mut _ as *mut _,
     );
 }
+
+pub unsafe fn clear_symbol_cache() {}

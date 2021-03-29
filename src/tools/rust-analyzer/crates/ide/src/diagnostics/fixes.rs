@@ -1,28 +1,31 @@
 //! Provides a way to attach fixes to the diagnostics.
 //! The same module also has all curret custom fixes for the diagnostics implemented.
-use base_db::FileId;
 use hir::{
     db::AstDatabase,
-    diagnostics::{Diagnostic, MissingFields, MissingOkInTailExpr, NoSuchField, UnresolvedModule},
-    HasSource, HirDisplay, Semantics, VariantDef,
+    diagnostics::{
+        Diagnostic, IncorrectCase, MissingFields, MissingOkOrSomeInTailExpr, NoSuchField,
+        RemoveThisSemicolon, ReplaceFilterMapNextWithFindMap, UnresolvedModule,
+    },
+    HasSource, HirDisplay, InFile, Semantics, VariantDef,
 };
 use ide_db::{
-    source_change::{FileSystemEdit, SourceFileEdit},
+    base_db::{AnchoredPathBuf, FileId},
+    source_change::{FileSystemEdit, SourceChange},
     RootDatabase,
 };
 use syntax::{
     algo,
-    ast::{self, edit::IndentLevel, make},
-    AstNode,
+    ast::{self, edit::IndentLevel, make, ArgListOwner},
+    AstNode, TextRange,
 };
 use text_edit::TextEdit;
 
-use crate::diagnostics::Fix;
+use crate::{diagnostics::Fix, references::rename::rename_with_semantics, FilePosition};
 
 /// A [Diagnostic] that potentially has a fix available.
 ///
 /// [Diagnostic]: hir::diagnostics::Diagnostic
-pub trait DiagnosticWithFix: Diagnostic {
+pub(crate) trait DiagnosticWithFix: Diagnostic {
     fn fix(&self, sema: &Semantics<RootDatabase>) -> Option<Fix>;
 }
 
@@ -33,8 +36,11 @@ impl DiagnosticWithFix for UnresolvedModule {
         Some(Fix::new(
             "Create module",
             FileSystemEdit::CreateFile {
-                anchor: self.file.original_file(sema.db),
-                dst: self.candidate.clone(),
+                dst: AnchoredPathBuf {
+                    anchor: self.file.original_file(sema.db),
+                    path: self.candidate.clone(),
+                },
+                initial_contents: "".to_string(),
             }
             .into(),
             unresolved_module.syntax().text_range(),
@@ -65,7 +71,8 @@ impl DiagnosticWithFix for MissingFields {
         }
 
         let root = sema.db.parse_or_expand(self.file)?;
-        let old_field_list = self.field_list_parent.to_node(&root).record_expr_field_list()?;
+        let field_list_parent = self.field_list_parent.to_node(&root);
+        let old_field_list = field_list_parent.record_expr_field_list()?;
         let mut new_field_list = old_field_list.clone();
         for f in self.missed_fields.iter() {
             let field =
@@ -81,21 +88,86 @@ impl DiagnosticWithFix for MissingFields {
         };
         Some(Fix::new(
             "Fill struct fields",
-            SourceFileEdit { file_id: self.file.original_file(sema.db), edit }.into(),
-            sema.original_range(&old_field_list.syntax()).range,
+            SourceChange::from_text_edit(self.file.original_file(sema.db), edit),
+            sema.original_range(&field_list_parent.syntax()).range,
         ))
     }
 }
 
-impl DiagnosticWithFix for MissingOkInTailExpr {
+impl DiagnosticWithFix for MissingOkOrSomeInTailExpr {
     fn fix(&self, sema: &Semantics<RootDatabase>) -> Option<Fix> {
         let root = sema.db.parse_or_expand(self.file)?;
         let tail_expr = self.expr.to_node(&root);
         let tail_expr_range = tail_expr.syntax().text_range();
-        let edit = TextEdit::replace(tail_expr_range, format!("Ok({})", tail_expr.syntax()));
-        let source_change =
-            SourceFileEdit { file_id: self.file.original_file(sema.db), edit }.into();
-        Some(Fix::new("Wrap with ok", source_change, tail_expr_range))
+        let replacement = format!("{}({})", self.required, tail_expr.syntax());
+        let edit = TextEdit::replace(tail_expr_range, replacement);
+        let source_change = SourceChange::from_text_edit(self.file.original_file(sema.db), edit);
+        let name = if self.required == "Ok" { "Wrap with Ok" } else { "Wrap with Some" };
+        Some(Fix::new(name, source_change, tail_expr_range))
+    }
+}
+
+impl DiagnosticWithFix for RemoveThisSemicolon {
+    fn fix(&self, sema: &Semantics<RootDatabase>) -> Option<Fix> {
+        let root = sema.db.parse_or_expand(self.file)?;
+
+        let semicolon = self
+            .expr
+            .to_node(&root)
+            .syntax()
+            .parent()
+            .and_then(ast::ExprStmt::cast)
+            .and_then(|expr| expr.semicolon_token())?
+            .text_range();
+
+        let edit = TextEdit::delete(semicolon);
+        let source_change = SourceChange::from_text_edit(self.file.original_file(sema.db), edit);
+
+        Some(Fix::new("Remove this semicolon", source_change, semicolon))
+    }
+}
+
+impl DiagnosticWithFix for IncorrectCase {
+    fn fix(&self, sema: &Semantics<RootDatabase>) -> Option<Fix> {
+        let root = sema.db.parse_or_expand(self.file)?;
+        let name_node = self.ident.to_node(&root);
+
+        let name_node = InFile::new(self.file, name_node.syntax());
+        let frange = name_node.original_file_range(sema.db);
+        let file_position = FilePosition { file_id: frange.file_id, offset: frange.range.start() };
+
+        let rename_changes =
+            rename_with_semantics(sema, file_position, &self.suggested_text).ok()?;
+
+        let label = format!("Rename to {}", self.suggested_text);
+        Some(Fix::new(&label, rename_changes, frange.range))
+    }
+}
+
+impl DiagnosticWithFix for ReplaceFilterMapNextWithFindMap {
+    fn fix(&self, sema: &Semantics<RootDatabase>) -> Option<Fix> {
+        let root = sema.db.parse_or_expand(self.file)?;
+        let next_expr = self.next_expr.to_node(&root);
+        let next_call = ast::MethodCallExpr::cast(next_expr.syntax().clone())?;
+
+        let filter_map_call = ast::MethodCallExpr::cast(next_call.receiver()?.syntax().clone())?;
+        let filter_map_name_range = filter_map_call.name_ref()?.ident_token()?.text_range();
+        let filter_map_args = filter_map_call.arg_list()?;
+
+        let range_to_replace =
+            TextRange::new(filter_map_name_range.start(), next_expr.syntax().text_range().end());
+        let replacement = format!("find_map{}", filter_map_args.syntax().text());
+        let trigger_range = next_expr.syntax().text_range();
+
+        let edit = TextEdit::replace(range_to_replace, replacement);
+
+        let source_change = SourceChange::from_text_edit(self.file.original_file(sema.db), edit);
+
+        Some(Fix::new(
+            "Replace filter_map(..).next() with find_map()",
+            source_change,
+            trigger_range,
+        ))
     }
 }
 
@@ -111,20 +183,20 @@ fn missing_record_expr_field_fix(
     let record_fields = match VariantDef::from(def_id) {
         VariantDef::Struct(s) => {
             module = s.module(sema.db);
-            let source = s.source(sema.db);
+            let source = s.source(sema.db)?;
             def_file_id = source.file_id;
             let fields = source.value.field_list()?;
             record_field_list(fields)?
         }
         VariantDef::Union(u) => {
             module = u.module(sema.db);
-            let source = u.source(sema.db);
+            let source = u.source(sema.db)?;
             def_file_id = source.file_id;
             source.value.record_field_list()?
         }
-        VariantDef::EnumVariant(e) => {
+        VariantDef::Variant(e) => {
             module = e.module(sema.db);
-            let source = e.source(sema.db);
+            let source = e.source(sema.db)?;
             def_file_id = source.file_id;
             let fields = source.value.field_list()?;
             record_field_list(fields)?
@@ -137,7 +209,8 @@ fn missing_record_expr_field_fix(
         return None;
     }
     let new_field = make::record_field(
-        record_expr_field.field_name()?,
+        None,
+        make::name(record_expr_field.field_name()?.text()),
         make::ty(&new_field_type.display_source_code(sema.db, module.into()).ok()?),
     );
 
@@ -156,15 +229,11 @@ fn missing_record_expr_field_fix(
         new_field = format!(",{}", new_field);
     }
 
-    let source_change = SourceFileEdit {
-        file_id: def_file_id,
-        edit: TextEdit::insert(last_field_syntax.text_range().end(), new_field),
-    };
-    return Some(Fix::new(
-        "Create field",
-        source_change.into(),
-        record_expr_field.syntax().text_range(),
-    ));
+    let source_change = SourceChange::from_text_edit(
+        def_file_id,
+        TextEdit::insert(last_field_syntax.text_range().end(), new_field),
+    );
+    return Some(Fix::new("Create field", source_change, record_expr_field.syntax().text_range()));
 
     fn record_field_list(field_def_list: ast::FieldList) -> Option<ast::RecordFieldList> {
         match field_def_list {

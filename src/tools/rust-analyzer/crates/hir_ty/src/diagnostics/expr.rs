@@ -2,8 +2,10 @@
 
 use std::sync::Arc;
 
-use hir_def::{path::path, resolver::HasResolver, AdtId, DefWithBodyId};
-use hir_expand::diagnostics::DiagnosticSink;
+use hir_def::{
+    expr::Statement, path::path, resolver::HasResolver, AdtId, AssocItemId, DefWithBodyId,
+};
+use hir_expand::{diagnostics::DiagnosticSink, name};
 use rustc_hash::FxHashSet;
 use syntax::{ast, AstPtr};
 
@@ -11,24 +13,20 @@ use crate::{
     db::HirDatabase,
     diagnostics::{
         match_check::{is_useful, MatchCheckCtx, Matrix, PatStack, Usefulness},
-        MismatchedArgCount, MissingFields, MissingMatchArms, MissingOkInTailExpr, MissingPatFields,
+        MismatchedArgCount, MissingFields, MissingMatchArms, MissingOkOrSomeInTailExpr,
+        MissingPatFields, RemoveThisSemicolon,
     },
     utils::variant_data,
     ApplicationTy, InferenceResult, Ty, TypeCtor,
 };
 
-pub use hir_def::{
-    body::{
-        scope::{ExprScopes, ScopeEntry, ScopeId},
-        Body, BodySourceMap, ExprPtr, ExprSource, PatPtr, PatSource,
-    },
-    expr::{
-        ArithOp, Array, BinaryOp, BindingAnnotation, CmpOp, Expr, ExprId, Literal, LogicOp,
-        MatchArm, Ordering, Pat, PatId, RecordFieldPat, RecordLitField, Statement, UnaryOp,
-    },
-    src::HasSource,
-    LocalFieldId, Lookup, VariantId,
+pub(crate) use hir_def::{
+    body::{Body, BodySourceMap},
+    expr::{Expr, ExprId, MatchArm, Pat, PatId},
+    LocalFieldId, VariantId,
 };
+
+use super::ReplaceFilterMapNextWithFindMap;
 
 pub(super) struct ExprValidator<'a, 'b: 'a> {
     owner: DefWithBodyId,
@@ -46,6 +44,8 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
     }
 
     pub(super) fn validate_body(&mut self, db: &dyn HirDatabase) {
+        self.check_for_filter_map_next(db);
+
         let body = db.body(self.owner.into());
 
         for (id, expr) in body.exprs.iter() {
@@ -83,8 +83,12 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
             }
         }
         let body_expr = &body[body.body_expr];
-        if let Expr::Block { tail: Some(t), .. } = body_expr {
-            self.validate_results_in_tail_expr(body.body_expr, *t, db);
+        if let Expr::Block { statements, tail, .. } = body_expr {
+            if let Some(t) = tail {
+                self.validate_results_in_tail_expr(body.body_expr, *t, db);
+            } else if let Some(Statement::Expr(id)) = statements.last() {
+                self.validate_missing_tail_expr(body.body_expr, *id, db);
+            }
         }
     }
 
@@ -152,39 +156,106 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         }
     }
 
-    fn validate_call(&mut self, db: &dyn HirDatabase, call_id: ExprId, expr: &Expr) -> Option<()> {
+    fn check_for_filter_map_next(&mut self, db: &dyn HirDatabase) {
+        // Find the FunctionIds for Iterator::filter_map and Iterator::next
+        let iterator_path = path![core::iter::Iterator];
+        let resolver = self.owner.resolver(db.upcast());
+        let iterator_trait_id = match resolver.resolve_known_trait(db.upcast(), &iterator_path) {
+            Some(id) => id,
+            None => return,
+        };
+        let iterator_trait_items = &db.trait_data(iterator_trait_id).items;
+        let filter_map_function_id =
+            match iterator_trait_items.iter().find(|item| item.0 == name![filter_map]) {
+                Some((_, AssocItemId::FunctionId(id))) => id,
+                _ => return,
+            };
+        let next_function_id = match iterator_trait_items.iter().find(|item| item.0 == name![next])
+        {
+            Some((_, AssocItemId::FunctionId(id))) => id,
+            _ => return,
+        };
+
+        // Search function body for instances of .filter_map(..).next()
+        let body = db.body(self.owner.into());
+        let mut prev = None;
+        for (id, expr) in body.exprs.iter() {
+            if let Expr::MethodCall { receiver, .. } = expr {
+                let function_id = match self.infer.method_resolution(id) {
+                    Some(id) => id,
+                    None => continue,
+                };
+
+                if function_id == *filter_map_function_id {
+                    prev = Some(id);
+                    continue;
+                }
+
+                if function_id == *next_function_id {
+                    if let Some(filter_map_id) = prev {
+                        if *receiver == filter_map_id {
+                            let (_, source_map) = db.body_with_source_map(self.owner.into());
+                            if let Ok(next_source_ptr) = source_map.expr_syntax(id) {
+                                self.sink.push(ReplaceFilterMapNextWithFindMap {
+                                    file: next_source_ptr.file_id,
+                                    next_expr: next_source_ptr.value,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            prev = None;
+        }
+    }
+
+    fn validate_call(&mut self, db: &dyn HirDatabase, call_id: ExprId, expr: &Expr) {
         // Check that the number of arguments matches the number of parameters.
 
         // FIXME: Due to shortcomings in the current type system implementation, only emit this
         // diagnostic if there are no type mismatches in the containing function.
         if self.infer.type_mismatches.iter().next().is_some() {
-            return Some(());
+            return;
         }
 
         let is_method_call = matches!(expr, Expr::MethodCall { .. });
         let (sig, args) = match expr {
             Expr::Call { callee, args } => {
                 let callee = &self.infer.type_of_expr[*callee];
-                let sig = callee.callable_sig(db)?;
+                let sig = match callee.callable_sig(db) {
+                    Some(sig) => sig,
+                    None => return,
+                };
                 (sig, args.clone())
             }
             Expr::MethodCall { receiver, args, .. } => {
                 let mut args = args.clone();
                 args.insert(0, *receiver);
 
+                let receiver = &self.infer.type_of_expr[*receiver];
+                if receiver.strip_references().is_unknown() {
+                    // if the receiver is of unknown type, it's very likely we
+                    // don't know enough to correctly resolve the method call.
+                    // This is kind of a band-aid for #6975.
+                    return;
+                }
+
                 // FIXME: note that we erase information about substs here. This
                 // is not right, but, luckily, doesn't matter as we care only
                 // about the number of params
-                let callee = self.infer.method_resolution(call_id)?;
+                let callee = match self.infer.method_resolution(call_id) {
+                    Some(callee) => callee,
+                    None => return,
+                };
                 let sig = db.callable_item_signature(callee.into()).value;
 
                 (sig, args)
             }
-            _ => return None,
+            _ => return,
         };
 
         if sig.is_varargs {
-            return None;
+            return;
         }
 
         let params = sig.params();
@@ -207,8 +278,6 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
                 });
             }
         }
-
-        None
     }
 
     fn validate_match(
@@ -300,28 +369,69 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         };
 
         let core_result_path = path![core::result::Result];
+        let core_option_path = path![core::option::Option];
 
         let resolver = self.owner.resolver(db.upcast());
         let core_result_enum = match resolver.resolve_known_enum(db.upcast(), &core_result_path) {
             Some(it) => it,
             _ => return,
         };
+        let core_option_enum = match resolver.resolve_known_enum(db.upcast(), &core_option_path) {
+            Some(it) => it,
+            _ => return,
+        };
 
         let core_result_ctor = TypeCtor::Adt(AdtId::EnumId(core_result_enum));
-        let params = match &mismatch.expected {
+        let core_option_ctor = TypeCtor::Adt(AdtId::EnumId(core_option_enum));
+
+        let (params, required) = match &mismatch.expected {
             Ty::Apply(ApplicationTy { ctor, parameters }) if ctor == &core_result_ctor => {
-                parameters
+                (parameters, "Ok".to_string())
+            }
+            Ty::Apply(ApplicationTy { ctor, parameters }) if ctor == &core_option_ctor => {
+                (parameters, "Some".to_string())
             }
             _ => return,
         };
 
-        if params.len() == 2 && params[0] == mismatch.actual {
+        if params.len() > 0 && params[0] == mismatch.actual {
             let (_, source_map) = db.body_with_source_map(self.owner.into());
 
             if let Ok(source_ptr) = source_map.expr_syntax(id) {
-                self.sink
-                    .push(MissingOkInTailExpr { file: source_ptr.file_id, expr: source_ptr.value });
+                self.sink.push(MissingOkOrSomeInTailExpr {
+                    file: source_ptr.file_id,
+                    expr: source_ptr.value,
+                    required,
+                });
             }
+        }
+    }
+
+    fn validate_missing_tail_expr(
+        &mut self,
+        body_id: ExprId,
+        possible_tail_id: ExprId,
+        db: &dyn HirDatabase,
+    ) {
+        let mismatch = match self.infer.type_mismatch_for_expr(body_id) {
+            Some(m) => m,
+            None => return,
+        };
+
+        let possible_tail_ty = match self.infer.type_of_expr.get(possible_tail_id) {
+            Some(ty) => ty,
+            None => return,
+        };
+
+        if mismatch.actual != Ty::unit() || mismatch.expected != *possible_tail_ty {
+            return;
+        }
+
+        let (_, source_map) = db.body_with_source_map(self.owner.into());
+
+        if let Ok(source_ptr) = source_map.expr_syntax(possible_tail_id) {
+            self.sink
+                .push(RemoveThisSemicolon { file: source_ptr.file_id, expr: source_ptr.value });
         }
     }
 }
@@ -332,7 +442,7 @@ pub fn record_literal_missing_fields(
     id: ExprId,
     expr: &Expr,
 ) -> Option<(VariantId, Vec<LocalFieldId>, /*exhaustive*/ bool)> {
-    let (fields, exhausitve) = match expr {
+    let (fields, exhaustive) = match expr {
         Expr::RecordLit { path: _, fields, spread } => (fields, spread.is_none()),
         _ => return None,
     };
@@ -353,7 +463,7 @@ pub fn record_literal_missing_fields(
     if missed_fields.is_empty() {
         return None;
     }
-    Some((variant_def, missed_fields, exhausitve))
+    Some((variant_def, missed_fields, exhaustive))
 }
 
 pub fn record_pattern_missing_fields(
@@ -473,6 +583,22 @@ impl S { fn method(&self, arg: u8) {} }
 fn f() {
     S::method(&S, 0);
     S.method(1);
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn method_unknown_receiver() {
+        // note: this is incorrect code, so there might be errors on this in the
+        // future, but we shouldn't emit an argument count diagnostic here
+        check_diagnostics(
+            r#"
+trait Foo { fn method(&self, arg: usize) {} }
+
+fn f() {
+    let x;
+    x.method();
 }
 "#,
         );

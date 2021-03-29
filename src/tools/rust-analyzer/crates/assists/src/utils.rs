@@ -1,22 +1,21 @@
 //! Assorted functions shared by several assists.
-pub(crate) mod insert_use;
 
-use std::{iter, ops};
+use std::ops;
 
-use hir::{Adt, Crate, Enum, ScopeDef, Semantics, Trait, Type};
-use ide_db::RootDatabase;
+use hir::HasSource;
+use ide_db::{helpers::SnippetCap, RootDatabase};
 use itertools::Itertools;
-use rustc_hash::FxHashSet;
 use syntax::{
-    ast::{self, make, ArgListOwner, NameOwner},
+    ast::edit::AstNodeEdit,
+    ast::AttrsOwner,
+    ast::NameOwner,
+    ast::{self, edit, make, ArgListOwner},
     AstNode, Direction,
     SyntaxKind::*,
     SyntaxNode, TextSize, T,
 };
 
-use crate::assist_config::SnippetCap;
-
-pub(crate) use insert_use::{insert_use, ImportScope, MergeBehaviour};
+use crate::ast_transform::{self, AstTransform, QualifyPaths, SubstituteTypeParams};
 
 pub(crate) fn unwrap_trivial_block(block: ast::BlockExpr) -> ast::Expr {
     extract_trivial_expression(&block)
@@ -34,7 +33,7 @@ pub fn extract_trivial_expression(block: &ast::BlockExpr) -> Option<ast::Expr> {
         non_trivial_children.next().is_some()
     };
 
-    if let Some(expr) = block.expr() {
+    if let Some(expr) = block.tail_expr() {
         if has_anything_else(expr.syntax()) {
             return None;
         }
@@ -53,6 +52,108 @@ pub fn extract_trivial_expression(block: &ast::BlockExpr) -> Option<ast::Expr> {
         }
     }
     None
+}
+
+/// This is a method with a heuristics to support test methods annotated with custom test annotations, such as
+/// `#[test_case(...)]`, `#[tokio::test]` and similar.
+/// Also a regular `#[test]` annotation is supported.
+///
+/// It may produce false positives, for example, `#[wasm_bindgen_test]` requires a different command to run the test,
+/// but it's better than not to have the runnables for the tests at all.
+pub fn test_related_attribute(fn_def: &ast::Fn) -> Option<ast::Attr> {
+    fn_def.attrs().find_map(|attr| {
+        let path = attr.path()?;
+        if path.syntax().text().to_string().contains("test") {
+            Some(attr)
+        } else {
+            None
+        }
+    })
+}
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum DefaultMethods {
+    Only,
+    No,
+}
+
+pub fn filter_assoc_items(
+    db: &RootDatabase,
+    items: &[hir::AssocItem],
+    default_methods: DefaultMethods,
+) -> Vec<ast::AssocItem> {
+    fn has_def_name(item: &ast::AssocItem) -> bool {
+        match item {
+            ast::AssocItem::Fn(def) => def.name(),
+            ast::AssocItem::TypeAlias(def) => def.name(),
+            ast::AssocItem::Const(def) => def.name(),
+            ast::AssocItem::MacroCall(_) => None,
+        }
+        .is_some()
+    }
+
+    items
+        .iter()
+        // Note: This throws away items with no source.
+        .filter_map(|i| {
+            let item = match i {
+                hir::AssocItem::Function(i) => ast::AssocItem::Fn(i.source(db)?.value),
+                hir::AssocItem::TypeAlias(i) => ast::AssocItem::TypeAlias(i.source(db)?.value),
+                hir::AssocItem::Const(i) => ast::AssocItem::Const(i.source(db)?.value),
+            };
+            Some(item)
+        })
+        .filter(has_def_name)
+        .filter(|it| match it {
+            ast::AssocItem::Fn(def) => matches!(
+                (default_methods, def.body()),
+                (DefaultMethods::Only, Some(_)) | (DefaultMethods::No, None)
+            ),
+            _ => default_methods == DefaultMethods::No,
+        })
+        .collect::<Vec<_>>()
+}
+
+pub fn add_trait_assoc_items_to_impl(
+    sema: &hir::Semantics<ide_db::RootDatabase>,
+    items: Vec<ast::AssocItem>,
+    trait_: hir::Trait,
+    impl_def: ast::Impl,
+    target_scope: hir::SemanticsScope,
+) -> (ast::Impl, ast::AssocItem) {
+    let impl_item_list = impl_def.assoc_item_list().unwrap_or_else(make::assoc_item_list);
+
+    let n_existing_items = impl_item_list.assoc_items().count();
+    let source_scope = sema.scope_for_def(trait_);
+    let ast_transform = QualifyPaths::new(&target_scope, &source_scope)
+        .or(SubstituteTypeParams::for_trait_impl(&source_scope, trait_, impl_def.clone()));
+
+    let items = items
+        .into_iter()
+        .map(|it| ast_transform::apply(&*ast_transform, it))
+        .map(|it| match it {
+            ast::AssocItem::Fn(def) => ast::AssocItem::Fn(add_body(def)),
+            ast::AssocItem::TypeAlias(def) => ast::AssocItem::TypeAlias(def.remove_bounds()),
+            _ => it,
+        })
+        .map(|it| edit::remove_attrs_and_docs(&it));
+
+    let new_impl_item_list = impl_item_list.append_items(items);
+    let new_impl_def = impl_def.with_assoc_item_list(new_impl_item_list);
+    let first_new_item =
+        new_impl_def.assoc_item_list().unwrap().assoc_items().nth(n_existing_items).unwrap();
+    return (new_impl_def, first_new_item);
+
+    fn add_body(fn_def: ast::Fn) -> ast::Fn {
+        match fn_def.body() {
+            Some(_) => fn_def,
+            None => {
+                let body =
+                    make::block_expr(None, Some(make::expr_todo())).indent(edit::IndentLevel(1));
+                fn_def.with_body(body)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -92,72 +193,6 @@ pub(crate) fn render_snippet(_cap: SnippetCap, node: &SyntaxNode, cursor: Cursor
     }
 }
 
-pub fn get_missing_assoc_items(
-    sema: &Semantics<RootDatabase>,
-    impl_def: &ast::Impl,
-) -> Vec<hir::AssocItem> {
-    // Names must be unique between constants and functions. However, type aliases
-    // may share the same name as a function or constant.
-    let mut impl_fns_consts = FxHashSet::default();
-    let mut impl_type = FxHashSet::default();
-
-    if let Some(item_list) = impl_def.assoc_item_list() {
-        for item in item_list.assoc_items() {
-            match item {
-                ast::AssocItem::Fn(f) => {
-                    if let Some(n) = f.name() {
-                        impl_fns_consts.insert(n.syntax().to_string());
-                    }
-                }
-
-                ast::AssocItem::TypeAlias(t) => {
-                    if let Some(n) = t.name() {
-                        impl_type.insert(n.syntax().to_string());
-                    }
-                }
-
-                ast::AssocItem::Const(c) => {
-                    if let Some(n) = c.name() {
-                        impl_fns_consts.insert(n.syntax().to_string());
-                    }
-                }
-                ast::AssocItem::MacroCall(_) => (),
-            }
-        }
-    }
-
-    resolve_target_trait(sema, impl_def).map_or(vec![], |target_trait| {
-        target_trait
-            .items(sema.db)
-            .iter()
-            .filter(|i| match i {
-                hir::AssocItem::Function(f) => {
-                    !impl_fns_consts.contains(&f.name(sema.db).to_string())
-                }
-                hir::AssocItem::TypeAlias(t) => !impl_type.contains(&t.name(sema.db).to_string()),
-                hir::AssocItem::Const(c) => c
-                    .name(sema.db)
-                    .map(|n| !impl_fns_consts.contains(&n.to_string()))
-                    .unwrap_or_default(),
-            })
-            .cloned()
-            .collect()
-    })
-}
-
-pub(crate) fn resolve_target_trait(
-    sema: &Semantics<RootDatabase>,
-    impl_def: &ast::Impl,
-) -> Option<hir::Trait> {
-    let ast_path =
-        impl_def.trait_().map(|it| it.syntax().clone()).and_then(ast::PathType::cast)?.path()?;
-
-    match sema.resolve_path(&ast_path) {
-        Some(hir::PathResolution::Def(hir::ModuleDef::Trait(def))) => Some(def),
-        _ => None,
-    }
-}
-
 pub(crate) fn vis_offset(node: &SyntaxNode) -> TextSize {
     node.children_with_tokens()
         .find(|it| !matches!(it.kind(), WHITESPACE | COMMENT | ATTR))
@@ -177,6 +212,10 @@ fn invert_special_case(expr: &ast::Expr) -> Option<ast::Expr> {
         ast::Expr::BinExpr(bin) => match bin.op_kind()? {
             ast::BinOp::NegatedEqualityTest => bin.replace_op(T![==]).map(|it| it.into()),
             ast::BinOp::EqualityTest => bin.replace_op(T![!=]).map(|it| it.into()),
+            // Parenthesize composite boolean expressions before prefixing `!`
+            ast::BinOp::BooleanAnd | ast::BinOp::BooleanOr => {
+                Some(make::expr_prefix(T![!], make::expr_paren(expr.clone())))
+            }
             _ => None,
         },
         ast::Expr::MethodCallExpr(mce) => {
@@ -184,7 +223,7 @@ fn invert_special_case(expr: &ast::Expr) -> Option<ast::Expr> {
             let method = mce.name_ref()?;
             let arg_list = mce.arg_list()?;
 
-            let method = match method.text().as_str() {
+            let method = match method.text() {
                 "is_some" => "is_none",
                 "is_none" => "is_some",
                 "is_ok" => "is_err",
@@ -193,139 +232,38 @@ fn invert_special_case(expr: &ast::Expr) -> Option<ast::Expr> {
             };
             Some(make::expr_method_call(receiver, method, arg_list))
         }
-        ast::Expr::PrefixExpr(pe) if pe.op_kind()? == ast::PrefixOp::Not => pe.expr(),
+        ast::Expr::PrefixExpr(pe) if pe.op_kind()? == ast::PrefixOp::Not => {
+            if let ast::Expr::ParenExpr(parexpr) = pe.expr()? {
+                parexpr.expr()
+            } else {
+                pe.expr()
+            }
+        }
         // FIXME:
         // ast::Expr::Literal(true | false )
         _ => None,
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum TryEnum {
-    Result,
-    Option,
-}
-
-impl TryEnum {
-    const ALL: [TryEnum; 2] = [TryEnum::Option, TryEnum::Result];
-
-    pub fn from_ty(sema: &Semantics<RootDatabase>, ty: &Type) -> Option<TryEnum> {
-        let enum_ = match ty.as_adt() {
-            Some(Adt::Enum(it)) => it,
-            _ => return None,
-        };
-        TryEnum::ALL.iter().find_map(|&var| {
-            if &enum_.name(sema.db).to_string() == var.type_name() {
-                return Some(var);
-            }
-            None
-        })
-    }
-
-    pub(crate) fn happy_case(self) -> &'static str {
-        match self {
-            TryEnum::Result => "Ok",
-            TryEnum::Option => "Some",
-        }
-    }
-
-    pub(crate) fn sad_pattern(self) -> ast::Pat {
-        match self {
-            TryEnum::Result => make::tuple_struct_pat(
-                make::path_unqualified(make::path_segment(make::name_ref("Err"))),
-                iter::once(make::wildcard_pat().into()),
-            )
-            .into(),
-            TryEnum::Option => make::ident_pat(make::name("None")).into(),
-        }
-    }
-
-    fn type_name(self) -> &'static str {
-        match self {
-            TryEnum::Result => "Result",
-            TryEnum::Option => "Option",
-        }
-    }
-}
-
-/// Helps with finding well-know things inside the standard library. This is
-/// somewhat similar to the known paths infra inside hir, but it different; We
-/// want to make sure that IDE specific paths don't become interesting inside
-/// the compiler itself as well.
-pub(crate) struct FamousDefs<'a, 'b>(pub(crate) &'a Semantics<'b, RootDatabase>, pub(crate) Crate);
-
-#[allow(non_snake_case)]
-impl FamousDefs<'_, '_> {
-    #[cfg(test)]
-    pub(crate) const FIXTURE: &'static str = r#"//- /libcore.rs crate:core
-pub mod convert {
-    pub trait From<T> {
-        fn from(T) -> Self;
-    }
-}
-
-pub mod option {
-    pub enum Option<T> { None, Some(T)}
-}
-
-pub mod prelude {
-    pub use crate::{convert::From, option::Option::{self, *}};
-}
-#[prelude_import]
-pub use prelude::*;
-"#;
-
-    pub(crate) fn core_convert_From(&self) -> Option<Trait> {
-        self.find_trait("core:convert:From")
-    }
-
-    pub(crate) fn core_option_Option(&self) -> Option<Enum> {
-        self.find_enum("core:option:Option")
-    }
-
-    fn find_trait(&self, path: &str) -> Option<Trait> {
-        match self.find_def(path)? {
-            hir::ScopeDef::ModuleDef(hir::ModuleDef::Trait(it)) => Some(it),
-            _ => None,
-        }
-    }
-
-    fn find_enum(&self, path: &str) -> Option<Enum> {
-        match self.find_def(path)? {
-            hir::ScopeDef::ModuleDef(hir::ModuleDef::Adt(hir::Adt::Enum(it))) => Some(it),
-            _ => None,
-        }
-    }
-
-    fn find_def(&self, path: &str) -> Option<ScopeDef> {
-        let db = self.0.db;
-        let mut path = path.split(':');
-        let trait_ = path.next_back()?;
-        let std_crate = path.next()?;
-        let std_crate = self
-            .1
-            .dependencies(db)
-            .into_iter()
-            .find(|dep| &dep.name.to_string() == std_crate)?
-            .krate;
-
-        let mut module = std_crate.root_module(db);
-        for segment in path {
-            module = module.children(db).find_map(|child| {
-                let name = child.name(db)?;
-                if &name.to_string() == segment {
-                    Some(child)
-                } else {
-                    None
-                }
-            })?;
-        }
-        let def =
-            module.scope(db, None).into_iter().find(|(name, _def)| &name.to_string() == trait_)?.1;
-        Some(def)
-    }
-}
-
 pub(crate) fn next_prev() -> impl Iterator<Item = Direction> {
     [Direction::Next, Direction::Prev].iter().copied()
+}
+
+pub(crate) fn does_pat_match_variant(pat: &ast::Pat, var: &ast::Pat) -> bool {
+    let first_node_text = |pat: &ast::Pat| pat.syntax().first_child().map(|node| node.text());
+
+    let pat_head = match pat {
+        ast::Pat::IdentPat(bind_pat) => {
+            if let Some(p) = bind_pat.pat() {
+                first_node_text(&p)
+            } else {
+                return pat.syntax().text() == var.syntax().text();
+            }
+        }
+        pat => first_node_text(pat),
+    };
+
+    let var_head = first_node_text(var);
+
+    pat_head == var_head
 }

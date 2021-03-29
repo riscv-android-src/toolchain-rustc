@@ -8,19 +8,20 @@ use std::{convert::TryFrom, env, fs, path::PathBuf, process};
 
 use lsp_server::Connection;
 use project_model::ProjectManifest;
-use rust_analyzer::{
-    cli,
-    config::{Config, LinkedProject},
-    from_json, Result,
-};
+use rust_analyzer::{cli, config::Config, from_json, Result};
 use vfs::AbsPathBuf;
 
 #[cfg(all(feature = "mimalloc"))]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 fn main() {
     if let Err(err) = try_main() {
+        log::error!("Unexpected error: {}", err);
         eprintln!("{}", err);
         process::exit(101);
     }
@@ -28,9 +29,22 @@ fn main() {
 
 fn try_main() -> Result<()> {
     let args = args::Args::parse()?;
-    setup_logging(args.log_file)?;
+
+    #[cfg(debug_assertions)]
+    if args.wait_dbg || env::var("RA_WAIT_DBG").is_ok() {
+        #[allow(unused_mut)]
+        let mut d = 4;
+        while d == 4 {
+            d = 4;
+        }
+    }
+
+    setup_logging(args.log_file, args.no_buffering)?;
     match args.command {
         args::Command::RunServer => run_server()?,
+        args::Command::PrintConfigSchema => {
+            println!("{:#}", Config::json_schema());
+        }
         args::Command::ProcMacro => proc_macro_srv::cli::run()?,
 
         args::Command::Parse { no_dump } => cli::parse(no_dump)?,
@@ -53,7 +67,7 @@ fn try_main() -> Result<()> {
     Ok(())
 }
 
-fn setup_logging(log_file: Option<PathBuf>) -> Result<()> {
+fn setup_logging(log_file: Option<PathBuf>, no_buffering: bool) -> Result<()> {
     env::set_var("RUST_BACKTRACE", "short");
 
     let log_file = match log_file {
@@ -66,10 +80,33 @@ fn setup_logging(log_file: Option<PathBuf>) -> Result<()> {
         None => None,
     };
     let filter = env::var("RA_LOG").ok();
-    logger::Logger::new(log_file, filter.as_deref()).install();
+    logger::Logger::new(log_file, no_buffering, filter.as_deref()).install();
+
+    tracing_setup::setup_tracing()?;
 
     profile::init();
+
     Ok(())
+}
+
+mod tracing_setup {
+    use tracing::subscriber;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::Registry;
+    use tracing_tree::HierarchicalLayer;
+
+    pub(crate) fn setup_tracing() -> super::Result<()> {
+        let filter = EnvFilter::from_env("CHALK_DEBUG");
+        let layer = HierarchicalLayer::default()
+            .with_indent_lines(true)
+            .with_ansi(false)
+            .with_indent_amount(2)
+            .with_writer(std::io::stderr);
+        let subscriber = Registry::default().with(filter).with(layer);
+        subscriber::set_global_default(subscriber)?;
+        Ok(())
+    }
 }
 
 fn run_server() -> Result<()> {
@@ -113,13 +150,12 @@ fn run_server() -> Result<()> {
             }
         };
 
-        let mut config = Config::new(root_path);
+        let mut config = Config::new(root_path, initialize_params.capabilities);
         if let Some(json) = initialize_params.initialization_options {
             config.update(json);
         }
-        config.update_caps(&initialize_params.capabilities);
 
-        if config.linked_projects.is_empty() {
+        if config.linked_projects().is_empty() {
             let workspace_roots = initialize_params
                 .workspace_folders
                 .map(|workspaces| {
@@ -134,7 +170,11 @@ fn run_server() -> Result<()> {
 
             let discovered = ProjectManifest::discover_all(&workspace_roots);
             log::info!("discovered projects: {:?}", discovered);
-            config.linked_projects = discovered.into_iter().map(LinkedProject::from).collect();
+            if discovered.is_empty() {
+                log::error!("failed to find any projects in {:?}", workspace_roots);
+            }
+
+            config.discovered_projects = Some(discovered);
         }
 
         config

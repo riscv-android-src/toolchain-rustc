@@ -1,6 +1,6 @@
 //! Generates `assists.md` documentation.
 
-use std::{fmt, fs, path::PathBuf};
+use std::{fmt, path::PathBuf};
 
 use crate::{
     codegen::{self, extract_comment_blocks_with_empty_lines, Location, Mode, PREAMBLE},
@@ -26,19 +26,21 @@ struct Feature {
 impl Feature {
     fn collect() -> Result<Vec<Feature>> {
         let mut res = Vec::new();
-        for path in rust_files(&project_root()) {
+        for path in rust_files() {
             collect_file(&mut res, path)?;
         }
         res.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
         return Ok(res);
 
         fn collect_file(acc: &mut Vec<Feature>, path: PathBuf) -> Result<()> {
-            let text = fs::read_to_string(&path)?;
+            let text = xshell::read_file(&path)?;
             let comment_blocks = extract_comment_blocks_with_empty_lines("Feature", &text);
 
             for block in comment_blocks {
                 let id = block.id;
-                assert!(is_valid_feature_name(&id), "invalid feature name: {:?}", id);
+                if let Err(msg) = is_valid_feature_name(&id) {
+                    panic!("invalid feature name: {:?}:\n  {}", id, msg)
+                }
                 let doc = block.contents.join("\n");
                 let location = Location::new(path.clone(), block.line);
                 acc.push(Feature { id, location, doc })
@@ -49,7 +51,7 @@ impl Feature {
     }
 }
 
-fn is_valid_feature_name(feature: &str) -> bool {
+fn is_valid_feature_name(feature: &str) -> Result<(), String> {
     'word: for word in feature.split_whitespace() {
         for &short in ["to", "and"].iter() {
             if word == short {
@@ -58,14 +60,14 @@ fn is_valid_feature_name(feature: &str) -> bool {
         }
         for &short in ["To", "And"].iter() {
             if word == short {
-                return false;
+                return Err(format!("Don't capitalize {:?}", word));
             }
         }
         if !word.starts_with(char::is_uppercase) {
-            return false;
+            return Err(format!("Capitalize {:?}", word));
         }
     }
-    true
+    Ok(())
 }
 
 impl fmt::Display for Feature {

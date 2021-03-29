@@ -24,6 +24,7 @@ use rustc_middle::{
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::def_id::DefId;
 use rustc_target::abi::{LayoutOf, Size};
+use rustc_target::spec::abi::Abi;
 
 use crate::*;
 
@@ -134,6 +135,9 @@ pub struct MemoryExtra {
 
     /// Controls whether alignment of memory accesses is being checked.
     pub(crate) check_alignment: AlignmentCheck,
+
+    /// Failure rate of compare_exchange_weak, between 0.0 and 1.0
+    pub(crate) cmpxchg_weak_failure_rate: f64,
 }
 
 impl MemoryExtra {
@@ -161,6 +165,7 @@ impl MemoryExtra {
             rng: RefCell::new(rng),
             tracked_alloc_id: config.tracked_alloc_id,
             check_alignment: config.check_alignment,
+            cmpxchg_weak_failure_rate: config.cmpxchg_weak_failure_rate,
         }
     }
 
@@ -352,22 +357,24 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
     fn find_mir_or_eval_fn(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
+        abi: Abi,
         args: &[OpTy<'tcx, Tag>],
         ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
         unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>> {
-        ecx.find_mir_or_eval_fn(instance, args, ret, unwind)
+        ecx.find_mir_or_eval_fn(instance, abi, args, ret, unwind)
     }
 
     #[inline(always)]
     fn call_extra_fn(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         fn_val: Dlsym,
+        abi: Abi,
         args: &[OpTy<'tcx, Tag>],
         ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
         _unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
-        ecx.call_dlsym(fn_val, args, ret)
+        ecx.call_dlsym(fn_val, abi, args, ret)
     }
 
     #[inline(always)]
@@ -478,7 +485,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
                 (None, Tag::Untagged)
             };
         let race_alloc = if let Some(data_race) = &memory_extra.data_race {
-            Some(data_race::AllocExtra::new_allocation(&data_race, alloc.size))
+            Some(data_race::AllocExtra::new_allocation(&data_race, alloc.size, kind))
         } else {
             None
         };
@@ -507,6 +514,18 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
             register_diagnostic(NonHaltingDiagnostic::FreedAlloc(id));
         }
 
+        Ok(())
+    }
+
+    
+    fn after_static_mem_initialized(
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
+        ptr: Pointer<Self::PointerTag>,
+        size: Size,
+    ) -> InterpResult<'tcx> {
+        if ecx.memory.extra.data_race.is_some() {
+            ecx.reset_vector_clocks(ptr, size)?;
+        }
         Ok(())
     }
 

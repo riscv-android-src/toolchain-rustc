@@ -72,7 +72,8 @@ use crate::sources::registry::{RegistryData, RegistryPackage};
 use crate::util::interning::InternedString;
 use crate::util::paths;
 use crate::util::{internal, CargoResult, Config, Filesystem, ToSemver};
-use log::info;
+use anyhow::bail;
+use log::{debug, info};
 use semver::{Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -164,10 +165,28 @@ fn overflow_hyphen() {
     )
 }
 
+/// Manager for handling the on-disk index.
+///
+/// Note that local and remote registries store the index differently. Local
+/// is a simple on-disk tree of files of the raw index. Remote registries are
+/// stored as a raw git repository. The different means of access are handled
+/// via the [`RegistryData`] trait abstraction.
+///
+/// This transparently handles caching of the index in a more efficient format.
 pub struct RegistryIndex<'cfg> {
     source_id: SourceId,
+    /// Root directory of the index for the registry.
     path: Filesystem,
+    /// Cache of summary data.
+    ///
+    /// This is keyed off the package name. The [`Summaries`] value handles
+    /// loading the summary data. It keeps an optimized on-disk representation
+    /// of the JSON files, which is created in an as-needed fashion. If it
+    /// hasn't been cached already, it uses [`RegistryData::load`] to access
+    /// to JSON files from the index, and the creates the optimized on-disk
+    /// summary cache.
     summaries_cache: HashMap<InternedString, Summaries>,
+    /// [`Config`] reference for convenience.
     config: &'cfg Config,
 }
 
@@ -215,6 +234,8 @@ enum MaybeIndexSummary {
 pub struct IndexSummary {
     pub summary: Summary,
     pub yanked: bool,
+    /// Schema version, see [`RegistryPackage`].
+    v: u32,
 }
 
 /// A representation of the cache on disk that Cargo maintains of summaries.
@@ -287,6 +308,7 @@ impl<'cfg> RegistryIndex<'cfg> {
         // minimize the amount of work being done here and parse as little as
         // necessary.
         let raw_data = &summaries.raw_data;
+        let max_version = 1;
         Ok(summaries
             .versions
             .iter_mut()
@@ -300,6 +322,19 @@ impl<'cfg> RegistryIndex<'cfg> {
                     }
                 },
             )
+            .filter(move |is| {
+                if is.v > max_version {
+                    debug!(
+                        "unsupported schema version {} ({} {})",
+                        is.v,
+                        is.summary.name(),
+                        is.summary.version()
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
             .filter(move |is| {
                 is.summary
                     .unstable_gate(namespaced_features, weak_dep_features)
@@ -560,7 +595,14 @@ impl Summaries {
         // actually happens to verify that our cache is indeed fresh and
         // computes exactly the same value as before.
         if cfg!(debug_assertions) && cache_contents.is_some() {
-            assert_eq!(cache_bytes, cache_contents);
+            if cache_bytes != cache_contents {
+                panic!(
+                    "original cache contents:\n{:?}\n\
+                     does not equal new cache contents:\n{:?}\n",
+                    cache_contents.as_ref().map(|s| String::from_utf8_lossy(s)),
+                    cache_bytes.as_ref().map(|s| String::from_utf8_lossy(s)),
+                );
+            }
         }
 
         // Once we have our `cache_bytes` which represents the `Summaries` we're
@@ -641,19 +683,19 @@ impl<'a> SummariesCache<'a> {
             .split_first()
             .ok_or_else(|| anyhow::format_err!("malformed cache"))?;
         if *first_byte != CURRENT_CACHE_VERSION {
-            anyhow::bail!("looks like a different Cargo's cache, bailing out");
+            bail!("looks like a different Cargo's cache, bailing out");
         }
         let mut iter = split(rest, 0);
         if let Some(update) = iter.next() {
             if update != last_index_update.as_bytes() {
-                anyhow::bail!(
+                bail!(
                     "cache out of date: current index ({}) != cache ({})",
                     last_index_update,
                     str::from_utf8(update)?,
                 )
             }
         } else {
-            anyhow::bail!("malformed file");
+            bail!("malformed file");
         }
         let mut ret = SummariesCache::default();
         while let Some(version) = iter.next() {
@@ -731,7 +773,9 @@ impl IndexSummary {
             features,
             yanked,
             links,
+            v,
         } = serde_json::from_slice(line)?;
+        let v = v.unwrap_or(1);
         log::trace!("json parsed registry {}/{}", name, vers);
         let pkgid = PackageId::new(name, &vers, source_id)?;
         let deps = deps
@@ -743,6 +787,7 @@ impl IndexSummary {
         Ok(IndexSummary {
             summary,
             yanked: yanked.unwrap_or(false),
+            v,
         })
     }
 }

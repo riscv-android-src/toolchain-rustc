@@ -804,7 +804,7 @@ impl HandlerInner {
     }
 
     fn treat_err_as_bug(&self) -> bool {
-        self.flags.treat_err_as_bug.map(|c| self.err_count() >= c).unwrap_or(false)
+        self.flags.treat_err_as_bug.map_or(false, |c| self.err_count() >= c)
     }
 
     fn print_error_count(&mut self, registry: &Registry) {
@@ -901,7 +901,7 @@ impl HandlerInner {
 
     fn span_bug(&mut self, sp: impl Into<MultiSpan>, msg: &str) -> ! {
         self.emit_diag_at_span(Diagnostic::new(Bug, msg), sp);
-        panic!(ExplicitBug);
+        panic::panic_any(ExplicitBug);
     }
 
     fn emit_diag_at_span(&mut self, mut diag: Diagnostic, sp: impl Into<MultiSpan>) {
@@ -913,7 +913,7 @@ impl HandlerInner {
         // This is technically `self.treat_err_as_bug()` but `delay_span_bug` is called before
         // incrementing `err_count` by one, so we need to +1 the comparing.
         // FIXME: Would be nice to increment err_count in a more coherent way.
-        if self.flags.treat_err_as_bug.map(|c| self.err_count() + 1 >= c).unwrap_or(false) {
+        if self.flags.treat_err_as_bug.map_or(false, |c| self.err_count() + 1 >= c) {
             // FIXME: don't abort here if report_delayed_bugs is off
             self.span_bug(sp, msg);
         }
@@ -955,7 +955,7 @@ impl HandlerInner {
 
     fn bug(&mut self, msg: &str) -> ! {
         self.emit_diagnostic(&Diagnostic::new(Bug, msg));
-        panic!(ExplicitBug);
+        panic::panic_any(ExplicitBug);
     }
 
     fn delay_as_bug(&mut self, diagnostic: Diagnostic) {

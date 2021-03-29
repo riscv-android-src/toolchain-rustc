@@ -25,7 +25,7 @@ symbols! {
     Keywords {
         // Special reserved identifiers used internally for elided lifetimes,
         // unnamed method parameters, crate root module, error recovery etc.
-        Invalid:            "",
+        Empty:              "",
         PathRoot:           "{{root}}",
         DollarCrate:        "$crate",
         Underscore:         "_",
@@ -133,6 +133,8 @@ symbols! {
         Copy,
         Count,
         Debug,
+        DebugStruct,
+        DebugTuple,
         Decodable,
         Decoder,
         Default,
@@ -218,6 +220,7 @@ symbols! {
         abi,
         abi_amdgpu_kernel,
         abi_avr_interrupt,
+        abi_c_cmse_nonsecure_call,
         abi_efiapi,
         abi_msp430_interrupt,
         abi_ptx,
@@ -368,6 +371,7 @@ symbols! {
         const_fn_transmute,
         const_fn_union,
         const_generics,
+        const_generics_defaults,
         const_if_match,
         const_impl_trait,
         const_in_array_repeat_expressions,
@@ -380,6 +384,7 @@ symbols! {
         const_ptr,
         const_raw_ptr_deref,
         const_raw_ptr_to_usize_cast,
+        const_refs_to_cell,
         const_slice_ptr,
         const_trait_bound_opt_out,
         const_trait_impl,
@@ -396,6 +401,8 @@ symbols! {
         copysignf64,
         core,
         core_intrinsics,
+        core_panic,
+        core_panic_2015_macro,
         core_panic_macro,
         cosf32,
         cosf64,
@@ -470,6 +477,7 @@ symbols! {
         dropck_parametricity,
         dylib,
         dyn_trait,
+        edition_macro_pats,
         eh_catch_typeinfo,
         eh_personality,
         emit_enum,
@@ -619,6 +627,8 @@ symbols! {
         intel,
         into_iter,
         into_result,
+        into_trait,
+        intra_doc_pointers,
         intrinsics,
         irrefutable_let_patterns,
         isa_attribute,
@@ -713,7 +723,6 @@ symbols! {
         more_struct_aliases,
         movbe_target_feature,
         move_ref_pattern,
-        move_val_init,
         mul,
         mul_assign,
         mul_with_overflow,
@@ -791,6 +800,8 @@ symbols! {
         owned_box,
         packed,
         panic,
+        panic_2015,
+        panic_2021,
         panic_abort,
         panic_bounds_check,
         panic_handler,
@@ -808,6 +819,8 @@ symbols! {
         partial_ord,
         passes,
         pat,
+        pat2018,
+        pat2021,
         path,
         pattern_parentheses,
         phantom_data,
@@ -894,6 +907,7 @@ symbols! {
         register_attr,
         register_tool,
         relaxed_adts,
+        relaxed_struct_unsize,
         rem,
         rem_assign,
         repr,
@@ -920,6 +934,7 @@ symbols! {
         rust,
         rust_2015_preview,
         rust_2018_preview,
+        rust_2021_preview,
         rust_begin_unwind,
         rust_eh_catch_typeinfo,
         rust_eh_personality,
@@ -1089,6 +1104,8 @@ symbols! {
         staticlib,
         std,
         std_inject,
+        std_panic,
+        std_panic_2015_macro,
         std_panic_macro,
         stmt,
         stmt_expr_attributes,
@@ -1153,6 +1170,8 @@ symbols! {
         truncf32,
         truncf64,
         try_blocks,
+        try_from_trait,
+        try_into_trait,
         try_trait,
         tt,
         tuple,
@@ -1273,7 +1292,7 @@ impl Ident {
 
     #[inline]
     pub fn invalid() -> Ident {
-        Ident::with_dummy_span(kw::Invalid)
+        Ident::with_dummy_span(kw::Empty)
     }
 
     /// Maps a string to an identifier with a dummy span.
@@ -1451,12 +1470,6 @@ impl Symbol {
         with_interner(|interner| interner.intern(string))
     }
 
-    /// Access the symbol's chars. This is a slowish operation because it
-    /// requires locking the symbol interner.
-    pub fn with<F: FnOnce(&str) -> R, R>(self, f: F) -> R {
-        with_interner(|interner| f(interner.get(self)))
-    }
-
     /// Convert to a `SymbolStr`. This is a slowish operation because it
     /// requires locking the symbol interner.
     pub fn as_str(self) -> SymbolStr {
@@ -1470,7 +1483,7 @@ impl Symbol {
     }
 
     pub fn is_empty(self) -> bool {
-        self == kw::Invalid
+        self == kw::Empty
     }
 
     /// This method is supposed to be used in error messages, so it's expected to be
@@ -1484,19 +1497,19 @@ impl Symbol {
 
 impl fmt::Debug for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.with(|str| fmt::Debug::fmt(&str, f))
+        fmt::Debug::fmt(&self.as_str(), f)
     }
 }
 
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.with(|str| fmt::Display::fmt(&str, f))
+        fmt::Display::fmt(&self.as_str(), f)
     }
 }
 
 impl<S: Encoder> Encodable<S> for Symbol {
     fn encode(&self, s: &mut S) -> Result<(), S::Error> {
-        self.with(|string| s.emit_str(string))
+        s.emit_str(&self.as_str())
     }
 }
 
@@ -1654,7 +1667,7 @@ impl Symbol {
 
     /// Returns `true` if this symbol can be a raw identifier.
     pub fn can_be_raw(self) -> bool {
-        self != kw::Invalid && self != kw::Underscore && !self.is_path_segment_keyword()
+        self != kw::Empty && self != kw::Underscore && !self.is_path_segment_keyword()
     }
 }
 

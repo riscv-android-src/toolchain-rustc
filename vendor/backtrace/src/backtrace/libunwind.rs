@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Backtrace support using libunwind/gcc_s/etc APIs.
 //!
 //! This module contains the ability to unwind the stack using libunwind-style
@@ -25,6 +15,7 @@
 //!
 //! This is the default unwinding API for all non-Windows platforms currently.
 
+use super::super::Bomb;
 use core::ffi::c_void;
 
 pub enum Frame {
@@ -78,6 +69,10 @@ impl Frame {
             unsafe { uw::_Unwind_FindEnclosingFunction(self.ip()) }
         }
     }
+
+    pub fn module_base_address(&self) -> Option<*mut c_void> {
+        None
+    }
 }
 
 impl Clone for Frame {
@@ -103,7 +98,7 @@ pub unsafe fn trace(mut cb: &mut dyn FnMut(&super::Frame) -> bool) {
             inner: Frame::Raw(ctx),
         };
 
-        let mut bomb = crate::Bomb { enabled: true };
+        let mut bomb = Bomb { enabled: true };
         let keep_going = cb(&cx);
         bomb.enabled = false;
 
@@ -173,7 +168,8 @@ mod uw {
         #[cfg(all(
             not(all(target_os = "android", target_arch = "arm")),
             not(all(target_os = "freebsd", target_arch = "arm")),
-            not(all(target_os = "linux", target_arch = "arm"))
+            not(all(target_os = "linux", target_arch = "arm")),
+            not(all(target_os = "linux", target_arch = "s390x"))
         ))]
         // This function is a misnomer: rather than getting this frame's
         // Canonical Frame Address (aka the caller frame's SP) it
@@ -182,6 +178,17 @@ mod uw {
         // https://github.com/libunwind/libunwind/blob/d32956507cf29d9b1a98a8bce53c78623908f4fe/src/unwind/GetCFA.c#L28-L35
         #[link_name = "_Unwind_GetCFA"]
         pub fn get_sp(ctx: *mut _Unwind_Context) -> libc::uintptr_t;
+    }
+
+    // s390x uses a biased CFA value, therefore we need to use
+    // _Unwind_GetGR to get the stack pointer register (%r15)
+    // instead of relying on _Unwind_GetCFA.
+    #[cfg(all(target_os = "linux", target_arch = "s390x"))]
+    pub unsafe fn get_sp(ctx: *mut _Unwind_Context) -> libc::uintptr_t {
+        extern "C" {
+            pub fn _Unwind_GetGR(ctx: *mut _Unwind_Context, index: libc::c_int) -> libc::uintptr_t;
+        }
+        _Unwind_GetGR(ctx, 15)
     }
 
     // On android and arm, the function `_Unwind_GetIP` and a bunch of others

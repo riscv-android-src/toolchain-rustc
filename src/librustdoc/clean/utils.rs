@@ -8,7 +8,6 @@ use crate::clean::{
 };
 use crate::core::DocContext;
 
-use itertools::Itertools;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
@@ -43,7 +42,7 @@ crate fn krate(mut cx: &mut DocContext<'_>) -> Crate {
     let mut module = module.clean(cx);
     let mut masked_crates = FxHashSet::default();
 
-    match module.kind {
+    match *module.kind {
         ItemKind::ModuleItem(ref module) => {
             for it in &module.items {
                 // `compiler_builtins` should be masked too, but we can't apply
@@ -61,7 +60,7 @@ crate fn krate(mut cx: &mut DocContext<'_>) -> Crate {
 
     let ExternalCrate { name, src, primitives, keywords, .. } = LOCAL_CRATE.clean(cx);
     {
-        let m = match module.kind {
+        let m = match *module.kind {
             ItemKind::ModuleItem(ref mut m) => m,
             _ => unreachable!(),
         };
@@ -74,7 +73,7 @@ crate fn krate(mut cx: &mut DocContext<'_>) -> Crate {
             )
         }));
         m.items.extend(keywords.into_iter().map(|(def_id, kw)| {
-            Item::from_def_id_and_parts(def_id, Some(kw.clone()), ItemKind::KeywordItem(kw), cx)
+            Item::from_def_id_and_parts(def_id, Some(kw), ItemKind::KeywordItem(kw), cx)
         }));
     }
 
@@ -172,20 +171,29 @@ crate fn get_real_types(
     cx: &DocContext<'_>,
     recurse: i32,
 ) -> FxHashSet<(Type, TypeKind)> {
+    fn insert(res: &mut FxHashSet<(Type, TypeKind)>, cx: &DocContext<'_>, ty: Type) {
+        if let Some(kind) = ty.def_id().map(|did| cx.tcx.def_kind(did).clean(cx)) {
+            res.insert((ty, kind));
+        } else if ty.is_primitive() {
+            // This is a primitive, let's store it as such.
+            res.insert((ty, TypeKind::Primitive));
+        }
+    }
     let mut res = FxHashSet::default();
     if recurse >= 10 {
         // FIXME: remove this whole recurse thing when the recursion bug is fixed
         return res;
     }
+
     if arg.is_full_generic() {
-        let arg_s = Symbol::intern(&arg.print().to_string());
+        let arg_s = Symbol::intern(&arg.print(&cx.cache).to_string());
         if let Some(where_pred) = generics.where_predicates.iter().find(|g| match g {
-            &WherePredicate::BoundPredicate { ref ty, .. } => ty.def_id() == arg.def_id(),
+            WherePredicate::BoundPredicate { ty, .. } => ty.def_id() == arg.def_id(),
             _ => false,
         }) {
             let bounds = where_pred.get_bounds().unwrap_or_else(|| &[]);
             for bound in bounds.iter() {
-                if let GenericBound::TraitBound(ref poly_trait, _) = *bound {
+                if let GenericBound::TraitBound(poly_trait, _) = bound {
                     for x in poly_trait.generic_params.iter() {
                         if !x.is_type() {
                             continue;
@@ -195,11 +203,7 @@ crate fn get_real_types(
                             if !adds.is_empty() {
                                 res.extend(adds);
                             } else if !ty.is_full_generic() {
-                                if let Some(kind) =
-                                    ty.def_id().map(|did| cx.tcx.def_kind(did).clean(cx))
-                                {
-                                    res.insert((ty, kind));
-                                }
+                                insert(&mut res, cx, ty);
                             }
                         }
                     }
@@ -213,17 +217,13 @@ crate fn get_real_types(
                     if !adds.is_empty() {
                         res.extend(adds);
                     } else if !ty.is_full_generic() {
-                        if let Some(kind) = ty.def_id().map(|did| cx.tcx.def_kind(did).clean(cx)) {
-                            res.insert((ty.clone(), kind));
-                        }
+                        insert(&mut res, cx, ty);
                     }
                 }
             }
         }
     } else {
-        if let Some(kind) = arg.def_id().map(|did| cx.tcx.def_kind(did).clean(cx)) {
-            res.insert((arg.clone(), kind));
-        }
+        insert(&mut res, cx, arg.clone());
         if let Some(gens) = arg.generics() {
             for gen in gens.iter() {
                 if gen.is_full_generic() {
@@ -231,8 +231,8 @@ crate fn get_real_types(
                     if !adds.is_empty() {
                         res.extend(adds);
                     }
-                } else if let Some(kind) = gen.def_id().map(|did| cx.tcx.def_kind(did).clean(cx)) {
-                    res.insert((gen.clone(), kind));
+                } else {
+                    insert(&mut res, cx, gen.clone());
                 }
             }
         }
@@ -307,7 +307,7 @@ crate fn strip_path(path: &Path) -> Path {
         .segments
         .iter()
         .map(|s| PathSegment {
-            name: s.name.clone(),
+            name: s.name,
             args: GenericArgs::AngleBracketed { args: vec![], bindings: vec![] },
         })
         .collect();
@@ -338,24 +338,18 @@ crate fn build_deref_target_impls(cx: &DocContext<'_>, items: &[Item], ret: &mut
     let tcx = cx.tcx;
 
     for item in items {
-        let target = match item.kind {
+        let target = match *item.kind {
             ItemKind::TypedefItem(ref t, true) => &t.type_,
             _ => continue,
         };
-        let primitive = match *target {
-            ResolvedPath { did, .. } if did.is_local() => continue,
-            ResolvedPath { did, .. } => {
-                ret.extend(inline::build_impls(cx, None, did, None));
-                continue;
-            }
-            _ => match target.primitive_type() {
-                Some(prim) => prim,
-                None => continue,
-            },
-        };
-        for &did in primitive.impls(tcx) {
-            if !did.is_local() {
+
+        if let Some(prim) = target.primitive_type() {
+            for &did in prim.impls(tcx).iter().filter(|did| !did.is_local()) {
                 inline::build_impl(cx, None, did, None, ret);
+            }
+        } else if let ResolvedPath { did, .. } = *target {
+            if !did.is_local() {
+                inline::build_impls(cx, None, did, None, ret);
             }
         }
     }
@@ -415,10 +409,7 @@ crate fn name_from_pat(p: &hir::Pat<'_>) -> Symbol {
             );
             return Symbol::intern("()");
         }
-        PatKind::Range(..) => panic!(
-            "tried to get argument name from PatKind::Range, \
-             which is not allowed in function arguments"
-        ),
+        PatKind::Range(..) => return kw::Underscore,
         PatKind::Slice(ref begin, ref mid, ref end) => {
             let begin = begin.iter().map(|p| name_from_pat(&**p).to_string());
             let mid = mid.as_ref().map(|p| format!("..{}", name_from_pat(&**p))).into_iter();
@@ -544,7 +535,7 @@ crate fn resolve_type(cx: &DocContext<'_>, path: Path, id: hir::HirId) -> Type {
             return Generic(kw::SelfUpper);
         }
         Res::Def(DefKind::TyParam, _) if path.segments.len() == 1 => {
-            return Generic(Symbol::intern(&format!("{:#}", path.print())));
+            return Generic(Symbol::intern(&format!("{:#}", path.print(&cx.cache))));
         }
         Res::SelfTy(..) | Res::Def(DefKind::TyParam | DefKind::AssocTy, _) => true,
         _ => false,
@@ -558,12 +549,16 @@ crate fn get_auto_trait_and_blanket_impls(
     ty: Ty<'tcx>,
     param_env_def_id: DefId,
 ) -> impl Iterator<Item = Item> {
-    let auto_impls = cx.sess().time("get_auto_trait_impls", || {
-        AutoTraitFinder::new(cx).get_auto_trait_impls(ty, param_env_def_id)
-    });
-    let blanket_impls = cx.sess().time("get_blanket_impls", || {
-        BlanketImplFinder::new(cx).get_blanket_impls(ty, param_env_def_id)
-    });
+    let auto_impls = cx
+        .sess()
+        .prof
+        .generic_activity("get_auto_trait_impls")
+        .run(|| AutoTraitFinder::new(cx).get_auto_trait_impls(ty, param_env_def_id));
+    let blanket_impls = cx
+        .sess()
+        .prof
+        .generic_activity("get_blanket_impls")
+        .run(|| BlanketImplFinder::new(cx).get_blanket_impls(ty, param_env_def_id));
     auto_impls.into_iter().chain(blanket_impls)
 }
 

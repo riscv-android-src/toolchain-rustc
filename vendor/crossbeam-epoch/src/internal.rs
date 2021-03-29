@@ -29,7 +29,7 @@
 //! Whenever a bag is pushed into a queue, the objects in some bags in the queue are collected and
 //! destroyed along the way. This design reduces contention on data structures. The global queue
 //! cannot be explicitly accessed: the only way to interact with it is by calling functions
-//! `defer()` that adds an object tothe thread-local bag, or `collect()` that manually triggers
+//! `defer()` that adds an object to the thread-local bag, or `collect()` that manually triggers
 //! garbage collection.
 //!
 //! Ideally each instance of concurrent data structure may have its own queue that gets fully
@@ -43,18 +43,19 @@ use core::sync::atomic::Ordering;
 use core::{fmt, ptr};
 
 use crossbeam_utils::CachePadded;
+use memoffset::offset_of;
 
-use atomic::{Owned, Shared};
-use collector::{Collector, LocalHandle};
-use deferred::Deferred;
-use epoch::{AtomicEpoch, Epoch};
-use guard::{unprotected, Guard};
-use sync::list::{Entry, IsElement, IterError, List};
-use sync::queue::Queue;
+use crate::atomic::{Owned, Shared};
+use crate::collector::{Collector, LocalHandle};
+use crate::deferred::Deferred;
+use crate::epoch::{AtomicEpoch, Epoch};
+use crate::guard::{unprotected, Guard};
+use crate::sync::list::{Entry, IsElement, IterError, List};
+use crate::sync::queue::Queue;
 
 /// Maximum number of objects a bag can contain.
 #[cfg(not(feature = "sanitize"))]
-const MAX_OBJECTS: usize = 64;
+const MAX_OBJECTS: usize = 62;
 #[cfg(feature = "sanitize")]
 const MAX_OBJECTS: usize = 4;
 
@@ -104,17 +105,13 @@ impl Bag {
 }
 
 impl Default for Bag {
-    // TODO(taiki-e): when the minimum supported Rust version is bumped to 1.31+,
-    // replace this with `#[rustfmt::skip]`.
-    #[cfg_attr(rustfmt, rustfmt_skip)]
+    #[rustfmt::skip]
     fn default() -> Self {
         // TODO: [no_op; MAX_OBJECTS] syntax blocked by https://github.com/rust-lang/rust/issues/49147
         #[cfg(not(feature = "sanitize"))]
         return Bag {
             len: 0,
             deferreds: [
-                Deferred::new(no_op_func),
-                Deferred::new(no_op_func),
                 Deferred::new(no_op_func),
                 Deferred::new(no_op_func),
                 Deferred::new(no_op_func),
@@ -205,7 +202,7 @@ impl Drop for Bag {
 
 // can't #[derive(Debug)] because Debug is not implemented for arrays 64 items long
 impl fmt::Debug for Bag {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Bag")
             .field("deferreds", &&self.deferreds[..self.len])
             .finish()
@@ -371,8 +368,15 @@ pub struct Local {
 
     /// Total number of pinnings performed.
     ///
-    /// This is just an auxilliary counter that sometimes kicks off collection.
+    /// This is just an auxiliary counter that sometimes kicks off collection.
     pin_count: Cell<Wrapping<usize>>,
+}
+
+// Make sure `Local` is less than or equal to 2048 bytes.
+// https://github.com/crossbeam-rs/crossbeam/issues/551
+#[test]
+fn local_size() {
+    assert!(core::mem::size_of::<Local>() <= 2048, "An allocation of `Local` should be <= 2048 bytes.");
 }
 
 impl Local {
@@ -394,8 +398,8 @@ impl Local {
                 handle_count: Cell::new(1),
                 pin_count: Cell::new(Wrapping(0)),
             })
-            .into_shared(&unprotected());
-            collector.global.locals.insert(local, &unprotected());
+            .into_shared(unprotected());
+            collector.global.locals.insert(local, unprotected());
             LocalHandle {
                 local: local.as_raw(),
             }
@@ -585,7 +589,7 @@ impl Local {
             let collector: Collector = ptr::read(&*(*self.collector.get()));
 
             // Mark this node in the linked list as deleted.
-            self.entry.delete(&unprotected());
+            self.entry.delete(unprotected());
 
             // Finally, drop the reference to the global. Note that this might be the last reference
             // to the `Global`. If so, the global data will be destroyed and all deferred functions

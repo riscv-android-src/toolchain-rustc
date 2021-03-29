@@ -13,10 +13,9 @@
 [package]
 edition = "2018"
 name = "salsa-macros"
-version = "0.15.2"
+version = "0.16.0"
 authors = ["Salsa developers"]
 description = "Procedural macros for the salsa crate"
-readme = "README.md"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/salsa-rs/salsa"
 

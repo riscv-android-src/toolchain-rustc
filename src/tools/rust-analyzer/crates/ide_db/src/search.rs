@@ -12,14 +12,49 @@ use once_cell::unsync::Lazy;
 use rustc_hash::FxHashMap;
 use syntax::{ast, match_ast, AstNode, TextRange, TextSize};
 
+use crate::defs::NameClass;
 use crate::{
-    defs::{classify_name_ref, Definition, NameRefClass},
+    defs::{Definition, NameRefClass},
     RootDatabase,
 };
 
+#[derive(Debug, Default, Clone)]
+pub struct UsageSearchResult {
+    pub references: FxHashMap<FileId, Vec<FileReference>>,
+}
+
+impl UsageSearchResult {
+    pub fn is_empty(&self) -> bool {
+        self.references.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.references.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&FileId, &Vec<FileReference>)> + '_ {
+        self.references.iter()
+    }
+
+    pub fn file_ranges(&self) -> impl Iterator<Item = FileRange> + '_ {
+        self.references.iter().flat_map(|(&file_id, refs)| {
+            refs.iter().map(move |&FileReference { range, .. }| FileRange { file_id, range })
+        })
+    }
+}
+
+impl IntoIterator for UsageSearchResult {
+    type Item = (FileId, Vec<FileReference>);
+    type IntoIter = <FxHashMap<FileId, Vec<FileReference>> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.references.into_iter()
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct Reference {
-    pub file_range: FileRange,
+pub struct FileReference {
+    pub range: TextRange,
     pub kind: ReferenceKind,
     pub access: Option<ReferenceAccess>,
 }
@@ -29,6 +64,10 @@ pub enum ReferenceKind {
     FieldShorthandForField,
     FieldShorthandForLocal,
     StructLiteral,
+    RecordFieldExprOrPat,
+    SelfParam,
+    EnumLiteral,
+    Lifetime,
     Other,
 }
 
@@ -116,12 +155,55 @@ impl Definition {
 
         if let Definition::Local(var) = self {
             let range = match var.parent(db) {
-                DefWithBody::Function(f) => f.source(db).value.syntax().text_range(),
-                DefWithBody::Const(c) => c.source(db).value.syntax().text_range(),
-                DefWithBody::Static(s) => s.source(db).value.syntax().text_range(),
+                DefWithBody::Function(f) => {
+                    f.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
+                DefWithBody::Const(c) => {
+                    c.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
+                DefWithBody::Static(s) => {
+                    s.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
             };
             let mut res = FxHashMap::default();
-            res.insert(file_id, Some(range));
+            res.insert(file_id, range);
+            return SearchScope::new(res);
+        }
+
+        if let Definition::GenericParam(hir::GenericParam::LifetimeParam(param)) = self {
+            let range = match param.parent(db) {
+                hir::GenericDef::Function(it) => {
+                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
+                hir::GenericDef::Adt(it) => match it {
+                    hir::Adt::Struct(it) => {
+                        it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    }
+                    hir::Adt::Union(it) => {
+                        it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    }
+                    hir::Adt::Enum(it) => {
+                        it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    }
+                },
+                hir::GenericDef::Trait(it) => {
+                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
+                hir::GenericDef::TypeAlias(it) => {
+                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
+                hir::GenericDef::Impl(it) => {
+                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
+                hir::GenericDef::Variant(it) => {
+                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
+                hir::GenericDef::Const(it) => {
+                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                }
+            };
+            let mut res = FxHashMap::default();
+            res.insert(file_id, range);
             return SearchScope::new(res);
         }
 
@@ -140,6 +222,15 @@ impl Definition {
                     ModuleSource::Module(m) => {
                         if is_first {
                             let range = Some(m.syntax().text_range());
+                            res.insert(file_id, range);
+                        } else {
+                            // We have already added the enclosing file to the search scope,
+                            // so do nothing.
+                        }
+                    }
+                    ModuleSource::BlockExpr(b) => {
+                        if is_first {
+                            let range = Some(b.syntax().text_range());
                             res.insert(file_id, range);
                         } else {
                             // We have already added the enclosing file to the search scope,
@@ -175,6 +266,7 @@ impl Definition {
         let mut res = FxHashMap::default();
         let range = match module_src.value {
             ModuleSource::Module(m) => Some(m.syntax().text_range()),
+            ModuleSource::BlockExpr(b) => Some(b.syntax().text_range()),
             ModuleSource::SourceFile(_) => None,
         };
         res.insert(file_id, range);
@@ -204,31 +296,31 @@ impl<'a> FindUsages<'a> {
 
     pub fn at_least_one(self) -> bool {
         let mut found = false;
-        self.search(&mut |_reference| {
+        self.search(&mut |_, _| {
             found = true;
             true
         });
         found
     }
 
-    pub fn all(self) -> Vec<Reference> {
-        let mut res = Vec::new();
-        self.search(&mut |reference| {
-            res.push(reference);
+    pub fn all(self) -> UsageSearchResult {
+        let mut res = UsageSearchResult::default();
+        self.search(&mut |file_id, reference| {
+            res.references.entry(file_id).or_default().push(reference);
             false
         });
         res
     }
 
-    fn search(self, sink: &mut dyn FnMut(Reference) -> bool) {
+    fn search(self, sink: &mut dyn FnMut(FileId, FileReference) -> bool) {
         let _p = profile::span("FindUsages:search");
         let sema = self.sema;
 
         let search_scope = {
             let base = self.def.search_scope(sema.db);
-            match self.scope {
+            match &self.scope {
                 None => base,
-                Some(scope) => base.intersection(&scope),
+                Some(scope) => base.intersection(scope),
             }
         };
 
@@ -251,52 +343,103 @@ impl<'a> FindUsages<'a> {
                     continue;
                 }
 
-                let name_ref: ast::NameRef =
-                    match sema.find_node_at_offset_with_descend(&tree, offset) {
-                        Some(it) => it,
-                        None => continue,
-                    };
-
-                match classify_name_ref(&sema, &name_ref) {
-                    Some(NameRefClass::Definition(def)) if &def == self.def => {
-                        let kind = if is_record_lit_name_ref(&name_ref)
-                            || is_call_expr_name_ref(&name_ref)
-                        {
-                            ReferenceKind::StructLiteral
-                        } else {
-                            ReferenceKind::Other
-                        };
-
-                        let reference = Reference {
-                            file_range: sema.original_range(name_ref.syntax()),
-                            kind,
-                            access: reference_access(&def, &name_ref),
-                        };
-                        if sink(reference) {
-                            return;
-                        }
+                if let Some(name_ref) = sema.find_node_at_offset_with_descend(&tree, offset) {
+                    if self.found_name_ref(&name_ref, sink) {
+                        return;
                     }
-                    Some(NameRefClass::FieldShorthand { local, field }) => {
-                        let reference = match self.def {
-                            Definition::Field(_) if &field == self.def => Reference {
-                                file_range: self.sema.original_range(name_ref.syntax()),
-                                kind: ReferenceKind::FieldShorthandForField,
-                                access: reference_access(&field, &name_ref),
-                            },
-                            Definition::Local(l) if &local == l => Reference {
-                                file_range: self.sema.original_range(name_ref.syntax()),
-                                kind: ReferenceKind::FieldShorthandForLocal,
-                                access: reference_access(&Definition::Local(local), &name_ref),
-                            },
-                            _ => continue, // not a usage
-                        };
-                        if sink(reference) {
-                            return;
-                        }
+                } else if let Some(name) = sema.find_node_at_offset_with_descend(&tree, offset) {
+                    if self.found_name(&name, sink) {
+                        return;
                     }
-                    _ => {} // not a usage
+                } else if let Some(lifetime) = sema.find_node_at_offset_with_descend(&tree, offset)
+                {
+                    if self.found_lifetime(&lifetime, sink) {
+                        return;
+                    }
                 }
             }
+        }
+    }
+
+    fn found_lifetime(
+        &self,
+        lifetime: &ast::Lifetime,
+        sink: &mut dyn FnMut(FileId, FileReference) -> bool,
+    ) -> bool {
+        match NameRefClass::classify_lifetime(self.sema, lifetime) {
+            Some(NameRefClass::Definition(def)) if &def == self.def => {
+                let FileRange { file_id, range } = self.sema.original_range(lifetime.syntax());
+                let reference =
+                    FileReference { range, kind: ReferenceKind::Lifetime, access: None };
+                sink(file_id, reference)
+            }
+            _ => false, // not a usage
+        }
+    }
+
+    fn found_name_ref(
+        &self,
+        name_ref: &ast::NameRef,
+        sink: &mut dyn FnMut(FileId, FileReference) -> bool,
+    ) -> bool {
+        match NameRefClass::classify(self.sema, &name_ref) {
+            Some(NameRefClass::Definition(def)) if &def == self.def => {
+                let kind = if is_record_field_expr_or_pat(&name_ref) {
+                    ReferenceKind::RecordFieldExprOrPat
+                } else if is_record_lit_name_ref(&name_ref) || is_call_expr_name_ref(&name_ref) {
+                    ReferenceKind::StructLiteral
+                } else if is_enum_lit_name_ref(&name_ref) {
+                    ReferenceKind::EnumLiteral
+                } else {
+                    ReferenceKind::Other
+                };
+
+                let FileRange { file_id, range } = self.sema.original_range(name_ref.syntax());
+                let reference =
+                    FileReference { range, kind, access: reference_access(&def, &name_ref) };
+                sink(file_id, reference)
+            }
+            Some(NameRefClass::FieldShorthand { local_ref: local, field_ref: field }) => {
+                let FileRange { file_id, range } = self.sema.original_range(name_ref.syntax());
+                let reference = match self.def {
+                    Definition::Field(_) if &field == self.def => FileReference {
+                        range,
+                        kind: ReferenceKind::FieldShorthandForField,
+                        access: reference_access(&field, &name_ref),
+                    },
+                    Definition::Local(l) if &local == l => FileReference {
+                        range,
+                        kind: ReferenceKind::FieldShorthandForLocal,
+                        access: reference_access(&Definition::Local(local), &name_ref),
+                    },
+                    _ => return false, // not a usage
+                };
+                sink(file_id, reference)
+            }
+            _ => false, // not a usage
+        }
+    }
+
+    fn found_name(
+        &self,
+        name: &ast::Name,
+        sink: &mut dyn FnMut(FileId, FileReference) -> bool,
+    ) -> bool {
+        match NameClass::classify(self.sema, name) {
+            Some(NameClass::PatFieldShorthand { local_def: _, field_ref }) => {
+                if !matches!(self.def, Definition::Field(_) if &field_ref == self.def) {
+                    return false;
+                }
+                let FileRange { file_id, range } = self.sema.original_range(name.syntax());
+                let reference = FileReference {
+                    range,
+                    kind: ReferenceKind::FieldShorthandForField,
+                    // FIXME: mutable patterns should have `Write` access
+                    access: Some(ReferenceAccess::Read),
+                };
+                sink(file_id, reference)
+            }
+            _ => false, // not a usage
         }
     }
 }
@@ -351,6 +494,32 @@ fn is_record_lit_name_ref(name_ref: &ast::NameRef) -> bool {
         .ancestors()
         .find_map(ast::RecordExpr::cast)
         .and_then(|l| l.path())
+        .and_then(|p| p.segment())
+        .map(|p| p.name_ref().as_ref() == Some(name_ref))
+        .unwrap_or(false)
+}
+
+fn is_record_field_expr_or_pat(name_ref: &ast::NameRef) -> bool {
+    if let Some(parent) = name_ref.syntax().parent() {
+        match_ast! {
+            match parent {
+                ast::RecordExprField(it) => true,
+                ast::RecordPatField(_it) => true,
+                _ => false,
+            }
+        }
+    } else {
+        false
+    }
+}
+
+fn is_enum_lit_name_ref(name_ref: &ast::NameRef) -> bool {
+    name_ref
+        .syntax()
+        .ancestors()
+        .find_map(ast::PathExpr::cast)
+        .and_then(|p| p.path())
+        .and_then(|p| p.qualifier())
         .and_then(|p| p.segment())
         .map(|p| p.name_ref().as_ref() == Some(name_ref))
         .unwrap_or(false)

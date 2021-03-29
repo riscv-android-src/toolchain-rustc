@@ -89,6 +89,8 @@ public:
   void emitJumpTableEntry(const MachineJumpTableInfo *MJTI,
                           const MachineBasicBlock *MBB, unsigned JTI);
 
+  void emitFunctionEntryLabel() override;
+
   void LowerJumpTableDestSmall(MCStreamer &OutStreamer, const MachineInstr &MI);
 
   void LowerSTACKMAP(MCStreamer &OutStreamer, StackMaps &SM,
@@ -822,6 +824,19 @@ void AArch64AsmPrinter::emitJumpTableEntry(const MachineJumpTableInfo *MJTI,
   OutStreamer->emitValue(Value, Size);
 }
 
+void AArch64AsmPrinter::emitFunctionEntryLabel() {
+  if (MF->getFunction().getCallingConv() == CallingConv::AArch64_VectorCall ||
+      MF->getFunction().getCallingConv() ==
+          CallingConv::AArch64_SVE_VectorCall ||
+      STI->getRegisterInfo()->hasSVEArgsOrReturn(MF)) {
+    auto *TS =
+        static_cast<AArch64TargetStreamer *>(OutStreamer->getTargetStreamer());
+    TS->emitDirectiveVariantPCS(CurrentFnSym);
+  }
+
+  return AsmPrinter::emitFunctionEntryLabel();
+}
+
 /// Small jump tables contain an unsigned byte or half, representing the offset
 /// from the lowest-addressed possible destination to the desired basic
 /// block. Since all instructions are 4-byte aligned, this is further compressed
@@ -1157,17 +1172,28 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(*OutStreamer, Adrp);
 
     MCInst Ldr;
-    Ldr.setOpcode(AArch64::LDRXui);
-    Ldr.addOperand(MCOperand::createReg(AArch64::X1));
+    if (STI->isTargetILP32()) {
+      Ldr.setOpcode(AArch64::LDRWui);
+      Ldr.addOperand(MCOperand::createReg(AArch64::W1));
+    } else {
+      Ldr.setOpcode(AArch64::LDRXui);
+      Ldr.addOperand(MCOperand::createReg(AArch64::X1));
+    }
     Ldr.addOperand(MCOperand::createReg(AArch64::X0));
     Ldr.addOperand(SymTLSDescLo12);
     Ldr.addOperand(MCOperand::createImm(0));
     EmitToStreamer(*OutStreamer, Ldr);
 
     MCInst Add;
-    Add.setOpcode(AArch64::ADDXri);
-    Add.addOperand(MCOperand::createReg(AArch64::X0));
-    Add.addOperand(MCOperand::createReg(AArch64::X0));
+    if (STI->isTargetILP32()) {
+      Add.setOpcode(AArch64::ADDWri);
+      Add.addOperand(MCOperand::createReg(AArch64::W0));
+      Add.addOperand(MCOperand::createReg(AArch64::W0));
+    } else {
+      Add.setOpcode(AArch64::ADDXri);
+      Add.addOperand(MCOperand::createReg(AArch64::X0));
+      Add.addOperand(MCOperand::createReg(AArch64::X0));
+    }
     Add.addOperand(SymTLSDescLo12);
     Add.addOperand(MCOperand::createImm(AArch64_AM::getShiftValue(0)));
     EmitToStreamer(*OutStreamer, Add);

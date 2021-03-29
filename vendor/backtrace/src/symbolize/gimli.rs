@@ -1,40 +1,56 @@
 //! Support for symbolication using the `gimli` crate on crates.io
 //!
-//! This implementation is largely a work in progress and is off by default for
-//! all platforms, but it's hoped to be developed over time! Long-term this is
-//! intended to wholesale replace the `libbacktrace.rs` implementation.
+//! This is the default symbolication implementation for Rust.
 
 use self::gimli::read::EndianSlice;
-use self::gimli::LittleEndian as Endian;
+use self::gimli::NativeEndian as Endian;
 use self::mmap::Mmap;
 use self::stash::Stash;
-use crate::symbolize::ResolveWhat;
-use crate::types::BytesOrWideString;
-use crate::SymbolName;
+use super::BytesOrWideString;
+use super::ResolveWhat;
+use super::SymbolName;
 use addr2line::gimli;
 use core::convert::TryInto;
 use core::mem;
 use core::u32;
 use libc::c_void;
-use std::ffi::OsString;
-use std::fs::File;
-use std::path::Path;
-use std::prelude::v1::*;
+use mystd::ffi::OsString;
+use mystd::fs::File;
+use mystd::path::Path;
+use mystd::prelude::v1::*;
 
-#[cfg(windows)]
-#[path = "gimli/mmap_windows.rs"]
-mod mmap;
-#[cfg(unix)]
-#[path = "gimli/mmap_unix.rs"]
-mod mmap;
+#[cfg(backtrace_in_libstd)]
+mod mystd {
+    pub use crate::*;
+}
+#[cfg(not(backtrace_in_libstd))]
+extern crate std as mystd;
+
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        #[path = "gimli/mmap_windows.rs"]
+        mod mmap;
+    } else if #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "fuchsia",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "openbsd",
+        target_os = "solaris",
+    ))] {
+        #[path = "gimli/mmap_unix.rs"]
+        mod mmap;
+    } else {
+        #[path = "gimli/mmap_fake.rs"]
+        mod mmap;
+    }
+}
+
 mod stash;
 
 const MAPPINGS_CACHE_SIZE: usize = 4;
-
-struct Context<'a> {
-    dwarf: addr2line::Context<EndianSlice<'a, Endian>>,
-    object: Object<'a>,
-}
 
 struct Mapping {
     // 'static lifetime is a lie to hack around lack of support for self-referential structs.
@@ -43,45 +59,53 @@ struct Mapping {
     _stash: Stash,
 }
 
-fn cx<'data>(stash: &'data Stash, object: Object<'data>) -> Option<Context<'data>> {
-    fn load_section<'data, S>(stash: &'data Stash, obj: &Object<'data>) -> S
+impl Mapping {
+    fn mk<F>(data: Mmap, mk: F) -> Option<Mapping>
     where
-        S: gimli::Section<gimli::EndianSlice<'data, Endian>>,
+        F: for<'a> Fn(&'a [u8], &'a Stash) -> Option<Context<'a>>,
     {
-        let data = obj.section(stash, S::section_name()).unwrap_or(&[]);
-        S::from(EndianSlice::new(data, Endian))
-    }
-
-    let dwarf = addr2line::Context::from_sections(
-        load_section(stash, &object),
-        load_section(stash, &object),
-        load_section(stash, &object),
-        load_section(stash, &object),
-        load_section(stash, &object),
-        load_section(stash, &object),
-        load_section(stash, &object),
-        load_section(stash, &object),
-        load_section(stash, &object),
-        gimli::EndianSlice::new(&[], Endian),
-    )
-    .ok()?;
-    Some(Context { dwarf, object })
-}
-
-macro_rules! mk {
-    (Mapping { $map:expr, $inner:expr, $stash:expr }) => {{
-        use crate::symbolize::gimli::{Context, Mapping, Mmap};
-
-        fn assert_lifetimes<'a>(_: &'a Mmap, _: &Context<'a>, _: &'a Stash) {}
-        assert_lifetimes(&$map, &$inner, &$stash);
-        Mapping {
+        let stash = Stash::new();
+        let cx = mk(&data, &stash)?;
+        Some(Mapping {
             // Convert to 'static lifetimes since the symbols should
             // only borrow `map` and `stash` and we're preserving them below.
-            cx: unsafe { core::mem::transmute::<Context<'_>, Context<'static>>($inner) },
-            _map: $map,
-            _stash: $stash,
+            cx: unsafe { core::mem::transmute::<Context<'_>, Context<'static>>(cx) },
+            _map: data,
+            _stash: stash,
+        })
+    }
+}
+
+struct Context<'a> {
+    dwarf: addr2line::Context<EndianSlice<'a, Endian>>,
+    object: Object<'a>,
+}
+
+impl<'data> Context<'data> {
+    fn new(stash: &'data Stash, object: Object<'data>) -> Option<Context<'data>> {
+        fn load_section<'data, S>(stash: &'data Stash, obj: &Object<'data>) -> S
+        where
+            S: gimli::Section<gimli::EndianSlice<'data, Endian>>,
+        {
+            let data = obj.section(stash, S::section_name()).unwrap_or(&[]);
+            S::from(EndianSlice::new(data, Endian))
         }
-    }};
+
+        let dwarf = addr2line::Context::from_sections(
+            load_section(stash, &object),
+            load_section(stash, &object),
+            load_section(stash, &object),
+            load_section(stash, &object),
+            load_section(stash, &object),
+            load_section(stash, &object),
+            load_section(stash, &object),
+            load_section(stash, &object),
+            load_section(stash, &object),
+            gimli::EndianSlice::new(&[], Endian),
+        )
+        .ok()?;
+        Some(Context { dwarf, object })
+    }
 }
 
 fn mmap(path: &Path) -> Option<Mmap> {
@@ -93,8 +117,9 @@ fn mmap(path: &Path) -> Option<Mmap> {
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
         use core::mem::MaybeUninit;
-        use crate::windows::*;
-        use std::os::windows::prelude::*;
+        use super::super::windows::*;
+        use mystd::os::windows::prelude::*;
+        use alloc::vec;
 
         mod coff;
         use self::coff::Object;
@@ -179,12 +204,17 @@ cfg_if::cfg_if! {
                 }],
             })
         }
-    } else if #[cfg(target_os = "macos")] {
+    } else if #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+    ))] {
         // macOS uses the Mach-O file format and uses DYLD-specific APIs to
-        // load a list of native libraries that are part of the appplication.
+        // load a list of native libraries that are part of the application.
 
-        use std::os::unix::prelude::*;
-        use std::ffi::{OsStr, CStr};
+        use mystd::os::unix::prelude::*;
+        use mystd::ffi::{OsStr, CStr};
 
         mod macho;
         use self::macho::Object;
@@ -328,16 +358,20 @@ cfg_if::cfg_if! {
                 bias: slide,
             })
         }
-    } else if #[cfg(any(
-        target_os = "linux",
-        target_os = "fuchsia",
+    } else if #[cfg(all(
+        any(
+            target_os = "linux",
+            target_os = "fuchsia",
+            target_os = "freebsd",
+        ),
+        not(target_env = "uclibc"),
     ))] {
         // Other Unix (e.g. Linux) platforms use ELF as an object file format
         // and typically implement an API called `dl_iterate_phdr` to load
         // native libraries.
 
-        use std::os::unix::prelude::*;
-        use std::ffi::{OsStr, CStr};
+        use mystd::os::unix::prelude::*;
+        use mystd::ffi::{OsStr, CStr};
 
         mod elf;
         use self::elf::Object;
@@ -345,28 +379,32 @@ cfg_if::cfg_if! {
         fn native_libraries() -> Vec<Library> {
             let mut ret = Vec::new();
             unsafe {
-                libc::dl_iterate_phdr(Some(callback), &mut ret as *mut _ as *mut _);
+                libc::dl_iterate_phdr(Some(callback), &mut ret as *mut Vec<_> as *mut _);
             }
             return ret;
         }
 
+        // `info` should be a valid pointers.
+        // `vec` should be a valid pointer to a `std::Vec`.
         unsafe extern "C" fn callback(
             info: *mut libc::dl_phdr_info,
             _size: libc::size_t,
             vec: *mut libc::c_void,
         ) -> libc::c_int {
+            let info = &*info;
             let libs = &mut *(vec as *mut Vec<Library>);
-            let name = if (*info).dlpi_name.is_null() || *(*info).dlpi_name == 0{
+            let is_main_prog = info.dlpi_name.is_null() || *info.dlpi_name == 0;
+            let name = if is_main_prog {
                 if libs.is_empty() {
-                    std::env::current_exe().map(|e| e.into()).unwrap_or_default()
+                    mystd::env::current_exe().map(|e| e.into()).unwrap_or_default()
                 } else {
                     OsString::new()
                 }
             } else {
-                let bytes = CStr::from_ptr((*info).dlpi_name).to_bytes();
+                let bytes = CStr::from_ptr(info.dlpi_name).to_bytes();
                 OsStr::from_bytes(bytes).to_owned()
             };
-            let headers = core::slice::from_raw_parts((*info).dlpi_phdr, (*info).dlpi_phnum as usize);
+            let headers = core::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize);
             libs.push(Library {
                 name,
                 segments: headers
@@ -376,14 +414,44 @@ cfg_if::cfg_if! {
                         stated_virtual_memory_address: (*header).p_vaddr as usize,
                     })
                     .collect(),
-                bias: (*info).dlpi_addr as usize,
+                bias: info.dlpi_addr as usize,
             });
             0
+        }
+    } else if #[cfg(target_env = "libnx")] {
+        // DevkitA64 doesn't natively support debug info, but the build system will place debug
+        // info at the path `romfs:/debug_info.elf`.
+        mod elf;
+        use self::elf::Object;
+
+        fn native_libraries() -> Vec<Library> {
+            extern "C" {
+                static __start__: u8;
+            }
+
+            let bias = unsafe { &__start__ } as *const u8 as usize;
+
+            let mut ret = Vec::new();
+            let mut segments = Vec::new();
+            segments.push(LibrarySegment {
+                stated_virtual_memory_address: 0,
+                len: usize::max_value() - bias,
+            });
+
+            let path = "romfs:/debug_info.elf";
+            ret.push(Library {
+                name: path.into(),
+                segments,
+                bias,
+            });
+
+            ret
         }
     } else {
         // Everything else should use ELF, but doesn't know how to load native
         // libraries.
 
+        use mystd::os::unix::prelude::*;
         mod elf;
         use self::elf::Object;
 
@@ -495,7 +563,7 @@ impl Cache {
             .next()
     }
 
-    fn mapping_for_lib<'a>(&'a mut self, lib: usize) -> Option<&'a Context<'a>> {
+    fn mapping_for_lib<'a>(&'a mut self, lib: usize) -> Option<&'a mut Context<'a>> {
         let idx = self.mappings.iter().position(|(idx, _)| *idx == lib);
 
         // Invariant: after this conditional completes without early returning
@@ -521,10 +589,10 @@ impl Cache {
             self.mappings.insert(0, (lib, mapping));
         }
 
-        let cx: &'a Context<'static> = &self.mappings[0].1.cx;
+        let cx: &'a mut Context<'static> = &mut self.mappings[0].1.cx;
         // don't leak the `'static` lifetime, make sure it's scoped to just
         // ourselves
-        Some(unsafe { mem::transmute::<&'a Context<'static>, &'a Context<'a>>(cx) })
+        Some(unsafe { mem::transmute::<&'a mut Context<'static>, &'a mut Context<'a>>(cx) })
     }
 }
 
@@ -554,14 +622,31 @@ pub unsafe fn resolve(what: ResolveWhat<'_>, cb: &mut dyn FnMut(&super::Symbol))
         if let Ok(mut frames) = cx.dwarf.find_frames(addr as u64) {
             while let Ok(Some(frame)) = frames.next() {
                 any_frames = true;
+                let name = match frame.function {
+                    Some(f) => Some(f.name.slice()),
+                    None => cx.object.search_symtab(addr as u64),
+                };
                 call(Symbol::Frame {
                     addr: addr as *mut c_void,
                     location: frame.location,
-                    name: frame.function.map(|f| f.name.slice()),
+                    name,
                 });
             }
         }
-
+        if !any_frames {
+            if let Some((object_cx, object_addr)) = cx.object.search_object_map(addr as u64) {
+                if let Ok(mut frames) = object_cx.dwarf.find_frames(object_addr) {
+                    while let Ok(Some(frame)) = frames.next() {
+                        any_frames = true;
+                        call(Symbol::Frame {
+                            addr: addr as *mut c_void,
+                            location: frame.location,
+                            name: frame.function.map(|f| f.name.slice()),
+                        });
+                    }
+                }
+            }
+        }
         if !any_frames {
             if let Some(name) = cx.object.search_symtab(addr as u64) {
                 call(Symbol::Symtab {
@@ -627,6 +712,13 @@ impl Symbol<'_> {
     pub fn lineno(&self) -> Option<u32> {
         match self {
             Symbol::Frame { location, .. } => location.as_ref()?.line,
+            Symbol::Symtab { .. } => None,
+        }
+    }
+
+    pub fn colno(&self) -> Option<u32> {
+        match self {
+            Symbol::Frame { location, .. } => location.as_ref()?.column,
             Symbol::Symtab { .. } => None,
         }
     }

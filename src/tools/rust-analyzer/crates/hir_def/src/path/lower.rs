@@ -15,7 +15,7 @@ use super::AssociatedTypeBinding;
 use crate::{
     body::LowerCtx,
     path::{GenericArg, GenericArgs, ModPath, Path, PathKind},
-    type_ref::{TypeBound, TypeRef},
+    type_ref::{LifetimeRef, TypeBound, TypeRef},
 };
 
 pub(super) use lower_use::lower_use_tree;
@@ -122,11 +122,9 @@ pub(super) fn lower_path(mut path: ast::Path, hygiene: &Hygiene) -> Option<Path>
     // https://github.com/rust-lang/rust/blob/614f273e9388ddd7804d5cbc80b8865068a3744e/src/librustc_resolve/macros.rs#L456
     // We follow what it did anyway :)
     if segments.len() == 1 && kind == PathKind::Plain {
-        if let Some(macro_call) = path.syntax().parent().and_then(ast::MacroCall::cast) {
-            if macro_call.is_bang() {
-                if let Some(crate_id) = hygiene.local_inner_macros() {
-                    kind = PathKind::DollarCrate(crate_id);
-                }
+        if let Some(_macro_call) = path.syntax().parent().and_then(ast::MacroCall::cast) {
+            if let Some(crate_id) = hygiene.local_inner_macros(path) {
+                kind = PathKind::DollarCrate(crate_id);
             }
         }
     }
@@ -170,8 +168,14 @@ pub(super) fn lower_generic_args(
                     bindings.push(AssociatedTypeBinding { name, type_ref, bounds });
                 }
             }
-            // Lifetimes and constants are ignored for now.
-            ast::GenericArg::LifetimeArg(_) | ast::GenericArg::ConstArg(_) => (),
+            ast::GenericArg::LifetimeArg(lifetime_arg) => {
+                if let Some(lifetime) = lifetime_arg.lifetime() {
+                    let lifetime_ref = LifetimeRef::new(&lifetime);
+                    args.push(GenericArg::Lifetime(lifetime_ref))
+                }
+            }
+            // constants are ignored for now.
+            ast::GenericArg::ConstArg(_) => (),
         }
     }
 

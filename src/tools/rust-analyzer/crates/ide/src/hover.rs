@@ -1,10 +1,10 @@
-use base_db::SourceDatabase;
 use hir::{
-    Adt, AsAssocItem, AssocItemContainer, Documentation, FieldSource, HasSource, HirDisplay,
-    Module, ModuleDef, ModuleSource, Semantics,
+    Adt, AsAssocItem, AssocItemContainer, FieldSource, GenericParam, HasAttrs, HasSource,
+    HirDisplay, Module, ModuleDef, ModuleSource, Semantics,
 };
+use ide_db::base_db::SourceDatabase;
 use ide_db::{
-    defs::{classify_name, classify_name_ref, Definition},
+    defs::{Definition, NameClass, NameRefClass},
     RootDatabase,
 };
 use itertools::Itertools;
@@ -13,10 +13,11 @@ use syntax::{ast, match_ast, AstNode, SyntaxKind::*, SyntaxToken, TokenAtOffset,
 use test_utils::mark;
 
 use crate::{
-    display::{macro_label, ShortLabel, ToNav, TryToNav},
-    link_rewrite::rewrite_links,
+    display::{macro_label, ShortLabel, TryToNav},
+    doc_links::{remove_links, rewrite_links},
+    markdown_remove::remove_markdown,
     markup::Markup,
-    runnables::runnable,
+    runnables::{runnable_fn, runnable_mod},
     FileId, FilePosition, NavigationTarget, RangeInfo, Runnable,
 };
 
@@ -26,17 +27,19 @@ pub struct HoverConfig {
     pub run: bool,
     pub debug: bool,
     pub goto_type_def: bool,
-}
-
-impl Default for HoverConfig {
-    fn default() -> Self {
-        Self { implementations: true, run: true, debug: true, goto_type_def: true }
-    }
+    pub links_in_hover: bool,
+    pub markdown: bool,
 }
 
 impl HoverConfig {
-    pub const NO_ACTIONS: Self =
-        Self { implementations: false, run: false, debug: false, goto_type_def: false };
+    pub const NO_ACTIONS: Self = Self {
+        implementations: false,
+        run: false,
+        debug: false,
+        goto_type_def: false,
+        links_in_hover: true,
+        markdown: true,
+    };
 
     pub fn any(&self) -> bool {
         self.implementations || self.runnable() || self.goto_type_def
@@ -54,7 +57,7 @@ impl HoverConfig {
 #[derive(Debug, Clone)]
 pub enum HoverAction {
     Runnable(Runnable),
-    Implementaion(FilePosition),
+    Implementation(FilePosition),
     GoToType(Vec<HoverGotoTypeData>),
 }
 
@@ -75,7 +78,12 @@ pub struct HoverResult {
 //
 // Shows additional information, like type of an expression or documentation for definition when "focusing" code.
 // Focusing is usually hovering with a mouse, but can also be triggered with a shortcut.
-pub(crate) fn hover(db: &RootDatabase, position: FilePosition) -> Option<RangeInfo<HoverResult>> {
+pub(crate) fn hover(
+    db: &RootDatabase,
+    position: FilePosition,
+    links_in_hover: bool,
+    markdown: bool,
+) -> Option<RangeInfo<HoverResult>> {
     let sema = Semantics::new(db);
     let file = sema.parse(position.file_id).syntax().clone();
     let token = pick_best(file.token_at_offset(position.offset))?;
@@ -86,14 +94,23 @@ pub(crate) fn hover(db: &RootDatabase, position: FilePosition) -> Option<RangeIn
     let node = token.parent();
     let definition = match_ast! {
         match node {
-            ast::NameRef(name_ref) => classify_name_ref(&sema, &name_ref).map(|d| d.definition(sema.db)),
-            ast::Name(name) => classify_name(&sema, &name).map(|d| d.definition(sema.db)),
+            ast::Name(name) => NameClass::classify(&sema, &name).and_then(|d| d.defined(sema.db)),
+            ast::NameRef(name_ref) => NameRefClass::classify(&sema, &name_ref).map(|d| d.referenced(sema.db)),
+            ast::Lifetime(lifetime) => NameClass::classify_lifetime(&sema, &lifetime)
+                .map_or_else(|| NameRefClass::classify_lifetime(&sema, &lifetime).map(|d| d.referenced(sema.db)), |d| d.defined(sema.db)),
             _ => None,
         }
     };
     if let Some(definition) = definition {
         if let Some(markup) = hover_for_definition(db, definition) {
-            let markup = rewrite_links(db, &markup.as_str(), &definition);
+            let markup = markup.as_str();
+            let markup = if !markdown {
+                remove_markdown(markup)
+            } else if links_in_hover {
+                rewrite_links(db, markup, &definition)
+            } else {
+                remove_links(markup)
+            };
             res.markup = Markup::from(markup);
             if let Some(action) = show_implementations_action(db, definition) {
                 res.actions.push(action);
@@ -112,9 +129,14 @@ pub(crate) fn hover(db: &RootDatabase, position: FilePosition) -> Option<RangeIn
         }
     }
 
+    if token.kind() == syntax::SyntaxKind::COMMENT {
+        // don't highlight the entire parent node on comment hover
+        return None;
+    }
+
     let node = token
         .ancestors()
-        .find(|n| ast::Expr::cast(n.clone()).is_some() || ast::Pat::cast(n.clone()).is_some())?;
+        .find(|n| ast::Expr::can_cast(n.kind()) || ast::Pat::can_cast(n.kind()))?;
 
     let ty = match_ast! {
         match node {
@@ -127,29 +149,30 @@ pub(crate) fn hover(db: &RootDatabase, position: FilePosition) -> Option<RangeIn
         }
     };
 
-    res.markup = Markup::fenced_block(&ty.display(db));
+    res.markup = if markdown {
+        Markup::fenced_block(&ty.display(db))
+    } else {
+        ty.display(db).to_string().into()
+    };
     let range = sema.original_range(&node).range;
     Some(RangeInfo::new(range, res))
 }
 
 fn show_implementations_action(db: &RootDatabase, def: Definition) -> Option<HoverAction> {
     fn to_action(nav_target: NavigationTarget) -> HoverAction {
-        HoverAction::Implementaion(FilePosition {
+        HoverAction::Implementation(FilePosition {
             file_id: nav_target.file_id,
             offset: nav_target.focus_or_full_range().start(),
         })
     }
 
-    match def {
-        Definition::ModuleDef(it) => match it {
-            ModuleDef::Adt(Adt::Struct(it)) => Some(to_action(it.to_nav(db))),
-            ModuleDef::Adt(Adt::Union(it)) => Some(to_action(it.to_nav(db))),
-            ModuleDef::Adt(Adt::Enum(it)) => Some(to_action(it.to_nav(db))),
-            ModuleDef::Trait(it) => Some(to_action(it.to_nav(db))),
-            _ => None,
-        },
+    let adt = match def {
+        Definition::ModuleDef(ModuleDef::Trait(it)) => return it.try_to_nav(db).map(to_action),
+        Definition::ModuleDef(ModuleDef::Adt(it)) => Some(it),
+        Definition::SelfType(it) => it.target_ty(db).as_adt(),
         _ => None,
-    }
+    }?;
+    adt.try_to_nav(db).map(to_action)
 }
 
 fn runnable_action(
@@ -159,22 +182,16 @@ fn runnable_action(
 ) -> Option<HoverAction> {
     match def {
         Definition::ModuleDef(it) => match it {
-            ModuleDef::Module(it) => match it.definition_source(sema.db).value {
-                ModuleSource::Module(it) => runnable(&sema, it.syntax().clone(), file_id)
-                    .map(|it| HoverAction::Runnable(it)),
-                _ => None,
-            },
-            ModuleDef::Function(it) => {
-                let src = it.source(sema.db);
+            ModuleDef::Module(it) => runnable_mod(&sema, it).map(|it| HoverAction::Runnable(it)),
+            ModuleDef::Function(func) => {
+                let src = func.source(sema.db)?;
                 if src.file_id != file_id.into() {
                     mark::hit!(hover_macro_generated_struct_fn_doc_comment);
                     mark::hit!(hover_macro_generated_struct_fn_doc_attr);
-
                     return None;
                 }
 
-                runnable(&sema, src.value.syntax().clone(), file_id)
-                    .map(|it| HoverAction::Runnable(it))
+                runnable_fn(&sema, func).map(HoverAction::Runnable)
             }
             _ => None,
         },
@@ -183,45 +200,46 @@ fn runnable_action(
 }
 
 fn goto_type_action(db: &RootDatabase, def: Definition) -> Option<HoverAction> {
-    match def {
-        Definition::Local(it) => {
-            let mut targets: Vec<ModuleDef> = Vec::new();
-            let mut push_new_def = |item: ModuleDef| {
-                if !targets.contains(&item) {
-                    targets.push(item);
-                }
-            };
-
-            it.ty(db).walk(db, |t| {
-                if let Some(adt) = t.as_adt() {
-                    push_new_def(adt.into());
-                } else if let Some(trait_) = t.as_dyn_trait() {
-                    push_new_def(trait_.into());
-                } else if let Some(traits) = t.as_impl_traits(db) {
-                    traits.into_iter().for_each(|it| push_new_def(it.into()));
-                } else if let Some(trait_) = t.as_associated_type_parent_trait(db) {
-                    push_new_def(trait_.into());
-                }
-            });
-
-            let targets = targets
-                .into_iter()
-                .filter_map(|it| {
-                    Some(HoverGotoTypeData {
-                        mod_path: render_path(
-                            db,
-                            it.module(db)?,
-                            it.name(db).map(|name| name.to_string()),
-                        ),
-                        nav: it.try_to_nav(db)?,
-                    })
-                })
-                .collect();
-
-            Some(HoverAction::GoToType(targets))
+    let mut targets: Vec<ModuleDef> = Vec::new();
+    let mut push_new_def = |item: ModuleDef| {
+        if !targets.contains(&item) {
+            targets.push(item);
         }
-        _ => None,
+    };
+
+    if let Definition::GenericParam(GenericParam::TypeParam(it)) = def {
+        it.trait_bounds(db).into_iter().for_each(|it| push_new_def(it.into()));
+    } else {
+        let ty = match def {
+            Definition::Local(it) => it.ty(db),
+            Definition::GenericParam(GenericParam::ConstParam(it)) => it.ty(db),
+            _ => return None,
+        };
+
+        ty.walk(db, |t| {
+            if let Some(adt) = t.as_adt() {
+                push_new_def(adt.into());
+            } else if let Some(trait_) = t.as_dyn_trait() {
+                push_new_def(trait_.into());
+            } else if let Some(traits) = t.as_impl_traits(db) {
+                traits.into_iter().for_each(|it| push_new_def(it.into()));
+            } else if let Some(trait_) = t.as_associated_type_parent_trait(db) {
+                push_new_def(trait_.into());
+            }
+        });
     }
+
+    let targets = targets
+        .into_iter()
+        .filter_map(|it| {
+            Some(HoverGotoTypeData {
+                mod_path: render_path(db, it.module(db)?, it.name(db).map(|name| name.to_string())),
+                nav: it.try_to_nav(db)?,
+            })
+        })
+        .collect();
+
+    Some(HoverAction::GoToType(targets))
 }
 
 fn hover_markup(
@@ -256,12 +274,11 @@ fn definition_owner_name(db: &RootDatabase, def: &Definition) -> Option<String> 
         Definition::ModuleDef(md) => match md {
             ModuleDef::Function(f) => match f.as_assoc_item(db)?.container(db) {
                 AssocItemContainer::Trait(t) => Some(t.name(db)),
-                AssocItemContainer::ImplDef(i) => i.target_ty(db).as_adt().map(|adt| adt.name(db)),
+                AssocItemContainer::Impl(i) => i.target_ty(db).as_adt().map(|adt| adt.name(db)),
             },
-            ModuleDef::EnumVariant(e) => Some(e.parent_enum(db).name(db)),
+            ModuleDef::Variant(e) => Some(e.parent_enum(db).name(db)),
             _ => None,
         },
-        Definition::SelfType(i) => i.target_ty(db).as_adt().map(|adt| adt.name(db)),
         _ => None,
     }
     .map(|name| name.to_string())
@@ -269,7 +286,7 @@ fn definition_owner_name(db: &RootDatabase, def: &Definition) -> Option<String> 
 
 fn render_path(db: &RootDatabase, module: Module, item_name: Option<String>) -> String {
     let crate_name =
-        db.crate_graph()[module.krate().into()].display_name.as_ref().map(ToString::to_string);
+        db.crate_graph()[module.krate().into()].display_name.as_ref().map(|it| it.to_string());
     let module_path = module
         .path_to_root(db)
         .into_iter()
@@ -286,57 +303,75 @@ fn hover_for_definition(db: &RootDatabase, def: Definition) -> Option<Markup> {
     let mod_path = definition_mod_path(db, &def);
     return match def {
         Definition::Macro(it) => {
-            let src = it.source(db);
-            let docs = Documentation::from_ast(&src.value).map(Into::into);
-            hover_markup(docs, Some(macro_label(&src.value)), mod_path)
+            let label = macro_label(&it.source(db)?.value);
+            from_def_source_labeled(db, it, Some(label), mod_path)
         }
-        Definition::Field(it) => {
-            let src = it.source(db);
-            match src.value {
-                FieldSource::Named(it) => {
-                    let docs = Documentation::from_ast(&it).map(Into::into);
-                    hover_markup(docs, it.short_label(), mod_path)
-                }
-                _ => None,
+        Definition::Field(def) => {
+            let src = def.source(db)?.value;
+            if let FieldSource::Named(it) = src {
+                from_def_source_labeled(db, def, it.short_label(), mod_path)
+            } else {
+                None
             }
         }
         Definition::ModuleDef(it) => match it {
-            ModuleDef::Module(it) => match it.definition_source(db).value {
-                ModuleSource::Module(it) => {
-                    let docs = Documentation::from_ast(&it).map(Into::into);
-                    hover_markup(docs, it.short_label(), mod_path)
-                }
-                ModuleSource::SourceFile(it) => {
-                    let docs = Documentation::from_ast(&it).map(Into::into);
-                    hover_markup(docs, it.short_label(), mod_path)
-                }
-            },
+            ModuleDef::Module(it) => from_def_source_labeled(
+                db,
+                it,
+                match it.definition_source(db).value {
+                    ModuleSource::Module(it) => it.short_label(),
+                    ModuleSource::SourceFile(it) => it.short_label(),
+                    ModuleSource::BlockExpr(it) => it.short_label(),
+                },
+                mod_path,
+            ),
             ModuleDef::Function(it) => from_def_source(db, it, mod_path),
             ModuleDef::Adt(Adt::Struct(it)) => from_def_source(db, it, mod_path),
             ModuleDef::Adt(Adt::Union(it)) => from_def_source(db, it, mod_path),
             ModuleDef::Adt(Adt::Enum(it)) => from_def_source(db, it, mod_path),
-            ModuleDef::EnumVariant(it) => from_def_source(db, it, mod_path),
+            ModuleDef::Variant(it) => from_def_source(db, it, mod_path),
             ModuleDef::Const(it) => from_def_source(db, it, mod_path),
             ModuleDef::Static(it) => from_def_source(db, it, mod_path),
             ModuleDef::Trait(it) => from_def_source(db, it, mod_path),
             ModuleDef::TypeAlias(it) => from_def_source(db, it, mod_path),
-            ModuleDef::BuiltinType(it) => return Some(it.to_string().into()),
+            ModuleDef::BuiltinType(it) => Some(Markup::fenced_block(&it)),
         },
-        Definition::Local(it) => return Some(Markup::fenced_block(&it.ty(db).display(db))),
-        Definition::TypeParam(_) | Definition::SelfType(_) => {
-            // FIXME: Hover for generic param
-            None
+        Definition::Local(it) => Some(Markup::fenced_block(&it.ty(db).display(db))),
+        Definition::SelfType(impl_def) => {
+            impl_def.target_ty(db).as_adt().and_then(|adt| match adt {
+                Adt::Struct(it) => from_def_source(db, it, mod_path),
+                Adt::Union(it) => from_def_source(db, it, mod_path),
+                Adt::Enum(it) => from_def_source(db, it, mod_path),
+            })
         }
+        Definition::Label(it) => Some(Markup::fenced_block(&it.name(db))),
+        Definition::GenericParam(it) => match it {
+            GenericParam::TypeParam(it) => Some(Markup::fenced_block(&it.display(db))),
+            GenericParam::LifetimeParam(it) => Some(Markup::fenced_block(&it.name(db))),
+            GenericParam::ConstParam(it) => from_def_source(db, it, None),
+        },
     };
 
     fn from_def_source<A, D>(db: &RootDatabase, def: D, mod_path: Option<String>) -> Option<Markup>
     where
-        D: HasSource<Ast = A>,
-        A: ast::DocCommentsOwner + ast::NameOwner + ShortLabel + ast::AttrsOwner,
+        D: HasSource<Ast = A> + HasAttrs + Copy,
+        A: ShortLabel,
     {
-        let src = def.source(db);
-        let docs = Documentation::from_ast(&src.value).map(Into::into);
-        hover_markup(docs, src.value.short_label(), mod_path)
+        let short_label = def.source(db)?.value.short_label();
+        from_def_source_labeled(db, def, short_label, mod_path)
+    }
+
+    fn from_def_source_labeled<D>(
+        db: &RootDatabase,
+        def: D,
+        short_label: Option<String>,
+        mod_path: Option<String>,
+    ) -> Option<Markup>
+    where
+        D: HasAttrs,
+    {
+        let docs = def.attrs(db).docs().map(Into::into);
+        hover_markup(docs, short_label, mod_path)
     }
 }
 
@@ -344,7 +379,7 @@ fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
     return tokens.max_by_key(priority);
     fn priority(n: &SyntaxToken) -> usize {
         match n.kind() {
-            IDENT | INT_NUMBER => 3,
+            IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] => 3,
             T!['('] | T![')'] => 2,
             kind if kind.is_trivia() => 0,
             _ => 1,
@@ -354,21 +389,43 @@ fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
 
 #[cfg(test)]
 mod tests {
-    use base_db::FileLoader;
     use expect_test::{expect, Expect};
+    use ide_db::base_db::FileLoader;
 
-    use crate::mock_analysis::analysis_and_position;
+    use crate::fixture;
 
     use super::*;
 
     fn check_hover_no_result(ra_fixture: &str) {
-        let (analysis, position) = analysis_and_position(ra_fixture);
-        assert!(analysis.hover(position).unwrap().is_none());
+        let (analysis, position) = fixture::position(ra_fixture);
+        assert!(analysis.hover(position, true, true).unwrap().is_none());
     }
 
     fn check(ra_fixture: &str, expect: Expect) {
-        let (analysis, position) = analysis_and_position(ra_fixture);
-        let hover = analysis.hover(position).unwrap().unwrap();
+        let (analysis, position) = fixture::position(ra_fixture);
+        let hover = analysis.hover(position, true, true).unwrap().unwrap();
+
+        let content = analysis.db.file_text(position.file_id);
+        let hovered_element = &content[hover.range];
+
+        let actual = format!("*{}*\n{}\n", hovered_element, hover.info.markup);
+        expect.assert_eq(&actual)
+    }
+
+    fn check_hover_no_links(ra_fixture: &str, expect: Expect) {
+        let (analysis, position) = fixture::position(ra_fixture);
+        let hover = analysis.hover(position, false, true).unwrap().unwrap();
+
+        let content = analysis.db.file_text(position.file_id);
+        let hovered_element = &content[hover.range];
+
+        let actual = format!("*{}*\n{}\n", hovered_element, hover.info.markup);
+        expect.assert_eq(&actual)
+    }
+
+    fn check_hover_no_markdown(ra_fixture: &str, expect: Expect) {
+        let (analysis, position) = fixture::position(ra_fixture);
+        let hover = analysis.hover(position, true, false).unwrap().unwrap();
 
         let content = analysis.db.file_text(position.file_id);
         let hovered_element = &content[hover.range];
@@ -378,8 +435,8 @@ mod tests {
     }
 
     fn check_actions(ra_fixture: &str, expect: Expect) {
-        let (analysis, position) = analysis_and_position(ra_fixture);
-        let hover = analysis.hover(position).unwrap().unwrap();
+        let (analysis, position) = fixture::position(ra_fixture);
+        let hover = analysis.hover(position, true, true).unwrap().unwrap();
         expect.assert_debug_eq(&hover.info.actions)
     }
 
@@ -390,7 +447,7 @@ mod tests {
 pub fn foo() -> u32 { 1 }
 
 fn main() {
-    let foo_test = foo()<|>;
+    let foo_test = foo()$0;
 }
 "#,
             expect![[r#"
@@ -398,6 +455,23 @@ fn main() {
                 ```rust
                 u32
                 ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_remove_markdown_if_configured() {
+        check_hover_no_markdown(
+            r#"
+pub fn foo() -> u32 { 1 }
+
+fn main() {
+    let foo_test = foo()$0;
+}
+"#,
+            expect![[r#"
+                *foo()*
+                u32
             "#]],
         );
     }
@@ -422,7 +496,7 @@ fn main() {
         Option::Some(*memo + value)
     };
     let number = 5u32;
-    let mut iter<|> = scan(OtherStruct { i: num }, closure, number);
+    let mut iter$0 = scan(OtherStruct { i: num }, closure, number);
 }
 "#,
             expect![[r#"
@@ -442,7 +516,7 @@ fn main() {
             r#"
 pub fn foo() -> u32 { 1 }
 
-fn main() { let foo_test = fo<|>o(); }
+fn main() { let foo_test = fo$0o(); }
 "#,
             expect![[r#"
                 *foo*
@@ -474,7 +548,7 @@ mod a;
 mod b;
 mod c;
 
-fn main() { let foo_test = fo<|>o(); }
+fn main() { let foo_test = fo$0o(); }
         "#,
             expect![[r#"
                 *foo*
@@ -491,7 +565,7 @@ fn main() { let foo_test = fo<|>o(); }
             r#"
 pub fn foo<'a, T: AsRef<str>>(b: &'a T) -> &'a str { }
 
-fn main() { let foo_test = fo<|>o(); }
+fn main() { let foo_test = fo$0o(); }
         "#,
             expect![[r#"
                 *foo*
@@ -511,7 +585,7 @@ fn main() { let foo_test = fo<|>o(); }
     fn hover_shows_fn_signature_on_fn_name() {
         check(
             r#"
-pub fn foo<|>(a: u32, b: u32) -> u32 {}
+pub fn foo$0(a: u32, b: u32) -> u32 {}
 
 fn main() { }
 "#,
@@ -539,7 +613,7 @@ fn main() { }
 /// #
 /// foo(Path::new("hello, world!"))
 /// ```
-pub fn foo<|>(_: &Path) {}
+pub fn foo$0(_: &Path) {}
 
 fn main() { }
 "#,
@@ -568,6 +642,33 @@ fn main() { }
     }
 
     #[test]
+    fn hover_shows_fn_doc_attr_raw_string() {
+        check(
+            r##"
+#[doc = r#"Raw string doc attr"#]
+pub fn foo$0(_: &Path) {}
+
+fn main() { }
+"##,
+            expect![[r##"
+                *foo*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                pub fn foo(_: &Path)
+                ```
+
+                ---
+
+                Raw string doc attr
+            "##]],
+        );
+    }
+
+    #[test]
     fn hover_shows_struct_field_info() {
         // Hovering over the field when instantiating
         check(
@@ -575,7 +676,7 @@ fn main() { }
 struct Foo { field_a: u32 }
 
 fn main() {
-    let foo = Foo { field_a<|>: 0, };
+    let foo = Foo { field_a$0: 0, };
 }
 "#,
             expect![[r#"
@@ -594,7 +695,7 @@ fn main() {
         // Hovering over the field in the definition
         check(
             r#"
-struct Foo { field_a<|>: u32 }
+struct Foo { field_a$0: u32 }
 
 fn main() {
     let foo = Foo { field_a: 0 };
@@ -617,7 +718,7 @@ fn main() {
     #[test]
     fn hover_const_static() {
         check(
-            r#"const foo<|>: u32 = 123;"#,
+            r#"const foo$0: u32 = 123;"#,
             expect![[r#"
                 *foo*
 
@@ -631,7 +732,7 @@ fn main() {
             "#]],
         );
         check(
-            r#"static foo<|>: u32 = 456;"#,
+            r#"static foo$0: u32 = 456;"#,
             expect![[r#"
                 *foo*
 
@@ -653,7 +754,7 @@ fn main() {
 struct Test<K, T = u8> { k: K, t: T }
 
 fn main() {
-    let zz<|> = Test { t: 23u8, k: 33 };
+    let zz$0 = Test { t: 23u8, k: 33 };
 }"#,
             expect![[r#"
                 *zz*
@@ -672,7 +773,7 @@ fn main() {
 enum Option<T> { Some(T) }
 use Option::Some;
 
-fn main() { So<|>me(12); }
+fn main() { So$0me(12); }
 "#,
             expect![[r#"
                 *Some*
@@ -692,7 +793,7 @@ fn main() { So<|>me(12); }
 enum Option<T> { Some(T) }
 use Option::Some;
 
-fn main() { let b<|>ar = Some(12); }
+fn main() { let b$0ar = Some(12); }
 "#,
             expect![[r#"
                 *bar*
@@ -710,7 +811,7 @@ fn main() { let b<|>ar = Some(12); }
             r#"
 enum Option<T> {
     /// The None variant
-    Non<|>e
+    Non$0e
 }
 "#,
             expect![[r#"
@@ -737,7 +838,7 @@ enum Option<T> {
     Some(T)
 }
 fn main() {
-    let s = Option::Som<|>e(12);
+    let s = Option::Som$0e(12);
 }
 "#,
             expect![[r#"
@@ -761,7 +862,7 @@ fn main() {
     #[test]
     fn hover_for_local_variable() {
         check(
-            r#"fn func(foo: i32) { fo<|>o; }"#,
+            r#"fn func(foo: i32) { fo$0o; }"#,
             expect![[r#"
                 *foo*
 
@@ -775,7 +876,7 @@ fn main() {
     #[test]
     fn hover_for_local_variable_pat() {
         check(
-            r#"fn func(fo<|>o: i32) {}"#,
+            r#"fn func(fo$0o: i32) {}"#,
             expect![[r#"
                 *foo*
 
@@ -789,7 +890,7 @@ fn main() {
     #[test]
     fn hover_local_var_edge() {
         check(
-            r#"fn func(foo: i32) { if true { <|>foo; }; }"#,
+            r#"fn func(foo: i32) { if true { $0foo; }; }"#,
             expect![[r#"
                 *foo*
 
@@ -803,7 +904,7 @@ fn main() {
     #[test]
     fn hover_for_param_edge() {
         check(
-            r#"fn func(<|>foo: i32) {}"#,
+            r#"fn func($0foo: i32) {}"#,
             expect![[r#"
                 *foo*
 
@@ -823,7 +924,7 @@ fn main() {
             trait DerefMut {
                 type Target: ?Sized;
             }
-            fn f(_x<|>: impl Deref<Target=u8> + DerefMut<Target=u8>) {}"#,
+            fn f(_x$0: impl Deref<Target=u8> + DerefMut<Target=u8>) {}"#,
             expect![[r#"
                 *_x*
 
@@ -844,7 +945,7 @@ impl Thing {
     fn new() -> Thing { Thing { x: 0 } }
 }
 
-fn main() { let foo_<|>test = Thing::new(); }
+fn main() { let foo_$0test = Thing::new(); }
             "#,
             expect![[r#"
                 *foo_test*
@@ -868,7 +969,7 @@ mod wrapper {
     }
 }
 
-fn main() { let foo_test = wrapper::Thing::new<|>(); }
+fn main() { let foo_test = wrapper::Thing::new$0(); }
 "#,
             expect![[r#"
                 *new*
@@ -895,7 +996,7 @@ impl X {
 
 fn main() {
     match 1 {
-        X::C<|> => {},
+        X::C$0 => {},
         2 => {},
         _ => {}
     };
@@ -921,56 +1022,79 @@ fn main() {
             r#"
 struct Thing { x: u32 }
 impl Thing {
-    fn new() -> Self { Self<|> { x: 0 } }
+    fn new() -> Self { Self$0 { x: 0 } }
 }
 "#,
             expect![[r#"
-                *Self { x: 0 }*
+                *Self*
+
                 ```rust
-                Thing
+                test
+                ```
+
+                ```rust
+                struct Thing
                 ```
             "#]],
-        )
-    } /* FIXME: revive these tests
-              let (analysis, position) = analysis_and_position(
-                  "
-                  struct Thing { x: u32 }
-                  impl Thing {
-                      fn new() -> Self<|> {
-                          Self { x: 0 }
-                      }
-                  }
-                  ",
-              );
+        );
+        check(
+            r#"
+struct Thing { x: u32 }
+impl Thing {
+    fn new() -> Self$0 { Self { x: 0 } }
+}
+"#,
+            expect![[r#"
+                *Self*
 
-              let hover = analysis.hover(position).unwrap().unwrap();
-              assert_eq!(trim_markup(&hover.info.markup.as_str()), ("Thing"));
+                ```rust
+                test
+                ```
 
-              let (analysis, position) = analysis_and_position(
-                  "
-                  enum Thing { A }
-                  impl Thing {
-                      pub fn new() -> Self<|> {
-                          Thing::A
-                      }
-                  }
-                  ",
-              );
-              let hover = analysis.hover(position).unwrap().unwrap();
-              assert_eq!(trim_markup(&hover.info.markup.as_str()), ("enum Thing"));
+                ```rust
+                struct Thing
+                ```
+            "#]],
+        );
+        check(
+            r#"
+enum Thing { A }
+impl Thing {
+    pub fn new() -> Self$0 { Thing::A }
+}
+"#,
+            expect![[r#"
+                *Self*
 
-              let (analysis, position) = analysis_and_position(
-                  "
-                  enum Thing { A }
-                  impl Thing {
-                      pub fn thing(a: Self<|>) {
-                      }
-                  }
-                  ",
-              );
-              let hover = analysis.hover(position).unwrap().unwrap();
-              assert_eq!(trim_markup(&hover.info.markup.as_str()), ("enum Thing"));
-      */
+                ```rust
+                test
+                ```
+
+                ```rust
+                enum Thing
+                ```
+            "#]],
+        );
+        check(
+            r#"
+        enum Thing { A }
+        impl Thing {
+            pub fn thing(a: Self$0) {}
+        }
+        "#,
+            expect![[r#"
+                *Self*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                enum Thing
+                ```
+            "#]],
+        );
+    }
 
     #[test]
     fn test_hover_shadowing_pat() {
@@ -980,7 +1104,7 @@ fn x() {}
 
 fn y() {
     let x = 0i32;
-    x<|>;
+    x$0;
 }
 "#,
             expect![[r#"
@@ -999,7 +1123,7 @@ fn y() {
             r#"
 macro_rules! foo { () => {} }
 
-fn f() { fo<|>o!(); }
+fn f() { fo$0o!(); }
 "#,
             expect![[r#"
                 *foo*
@@ -1018,10 +1142,13 @@ fn f() { fo<|>o!(); }
     #[test]
     fn test_hover_tuple_field() {
         check(
-            r#"struct TS(String, i32<|>);"#,
+            r#"struct TS(String, i32$0);"#,
             expect![[r#"
                 *i32*
+
+                ```rust
                 i32
+                ```
             "#]],
         )
     }
@@ -1033,7 +1160,7 @@ fn f() { fo<|>o!(); }
 macro_rules! id { ($($tt:tt)*) => { $($tt)* } }
 fn foo() {}
 id! {
-    fn bar() { fo<|>o(); }
+    fn bar() { fo$0o(); }
 }
 "#,
             expect![[r#"
@@ -1055,7 +1182,7 @@ id! {
         check(
             r#"
 macro_rules! id { ($($tt:tt)*) => { $($tt)* } }
-fn foo(bar:u32) { let a = id!(ba<|>r); }
+fn foo(bar:u32) { let a = id!(ba$0r); }
 "#,
             expect![[r#"
                 *bar*
@@ -1073,7 +1200,7 @@ fn foo(bar:u32) { let a = id!(ba<|>r); }
             r#"
 macro_rules! id_deep { ($($tt:tt)*) => { $($tt)* } }
 macro_rules! id { ($($tt:tt)*) => { id_deep!($($tt)*) } }
-fn foo(bar:u32) { let a = id!(ba<|>r); }
+fn foo(bar:u32) { let a = id!(ba$0r); }
 "#,
             expect![[r#"
                 *bar*
@@ -1092,7 +1219,7 @@ fn foo(bar:u32) { let a = id!(ba<|>r); }
 macro_rules! id_deep { ($($tt:tt)*) => { $($tt)* } }
 macro_rules! id { ($($tt:tt)*) => { id_deep!($($tt)*) } }
 fn bar() -> u32 { 0 }
-fn foo() { let a = id!([0u32, bar(<|>)] ); }
+fn foo() { let a = id!([0u32, bar($0)] ); }
 "#,
             expect![[r#"
                 *bar()*
@@ -1110,7 +1237,7 @@ fn foo() { let a = id!([0u32, bar(<|>)] ); }
 macro_rules! arr { ($($tt:tt)*) => { [$($tt)*)] } }
 fn foo() {
     let mastered_for_itunes = "";
-    let _ = arr!("Tr<|>acks", &mastered_for_itunes);
+    let _ = arr!("Tr$0acks", &mastered_for_itunes);
 }
 "#,
             expect![[r#"
@@ -1131,7 +1258,7 @@ macro_rules! assert {}
 
 fn bar() -> bool { true }
 fn foo() {
-    assert!(ba<|>r());
+    assert!(ba$0r());
 }
 "#,
             expect![[r#"
@@ -1156,7 +1283,7 @@ fn foo() {
             macro_rules! format {}
 
             fn foo() {
-                format!("hel<|>lo {}", 0);
+                format!("hel$0lo {}", 0);
             }
             "#,
         );
@@ -1169,7 +1296,7 @@ fn foo() {
 ///　<- `\u{3000}` here
 fn foo() { }
 
-fn bar() { fo<|>o(); }
+fn bar() { fo$0o(); }
 ",
             expect![[r#"
                 *foo*
@@ -1192,7 +1319,7 @@ fn bar() { fo<|>o(); }
     #[test]
     fn test_hover_function_show_qualifiers() {
         check(
-            r#"async fn foo<|>() {}"#,
+            r#"async fn foo$0() {}"#,
             expect![[r#"
                 *foo*
 
@@ -1206,7 +1333,7 @@ fn bar() { fo<|>o(); }
             "#]],
         );
         check(
-            r#"pub const unsafe fn foo<|>() {}"#,
+            r#"pub const unsafe fn foo$0() {}"#,
             expect![[r#"
                 *foo*
 
@@ -1220,7 +1347,7 @@ fn bar() { fo<|>o(); }
             "#]],
         );
         check(
-            r#"pub(crate) async unsafe extern "C" fn foo<|>() {}"#,
+            r#"pub(crate) async unsafe extern "C" fn foo$0() {}"#,
             expect![[r#"
                 *foo*
 
@@ -1238,13 +1365,13 @@ fn bar() { fo<|>o(); }
     #[test]
     fn test_hover_trait_show_qualifiers() {
         check_actions(
-            r"unsafe trait foo<|>() {}",
+            r"unsafe trait foo$0() {}",
             expect![[r#"
                 [
-                    Implementaion(
+                    Implementation(
                         FilePosition {
                             file_id: FileId(
-                                1,
+                                0,
                             ),
                             offset: 13,
                         },
@@ -1258,9 +1385,9 @@ fn bar() { fo<|>o(); }
     fn test_hover_extern_crate() {
         check(
             r#"
-//- /main.rs
-extern crate st<|>d;
-//- /std/lib.rs
+//- /main.rs crate:main deps:std
+extern crate st$0d;
+//- /std/lib.rs crate:std
 //! Standard library for this test
 //!
 //! Printed?
@@ -1276,9 +1403,9 @@ extern crate st<|>d;
         );
         check(
             r#"
-//- /main.rs
-extern crate std as ab<|>c;
-//- /std/lib.rs
+//- /main.rs crate:main deps:std
+extern crate std as ab$0c;
+//- /std/lib.rs crate:std
 //! Standard library for this test
 //!
 //! Printed?
@@ -1298,7 +1425,7 @@ extern crate std as ab<|>c;
     fn test_hover_mod_with_same_name_as_function() {
         check(
             r#"
-use self::m<|>y::Bar;
+use self::m$0y::Bar;
 mod my { pub struct Bar; }
 
 fn my() {}
@@ -1324,7 +1451,7 @@ fn my() {}
 /// bar docs
 struct Bar;
 
-fn foo() { let bar = Ba<|>r; }
+fn foo() { let bar = Ba$0r; }
 "#,
             expect![[r#"
                 *Bar*
@@ -1351,7 +1478,7 @@ fn foo() { let bar = Ba<|>r; }
 #[doc = "bar docs"]
 struct Bar;
 
-fn foo() { let bar = Ba<|>r; }
+fn foo() { let bar = Ba$0r; }
 "#,
             expect![[r#"
                 *Bar*
@@ -1380,7 +1507,7 @@ fn foo() { let bar = Ba<|>r; }
 #[doc = "bar docs 2"]
 struct Bar;
 
-fn foo() { let bar = Ba<|>r; }
+fn foo() { let bar = Ba$0r; }
 "#,
             expect![[r#"
                 *Bar*
@@ -1396,9 +1523,7 @@ fn foo() { let bar = Ba<|>r; }
                 ---
 
                 bar docs 0
-
                 bar docs 1
-
                 bar docs 2
             "#]],
         );
@@ -1410,7 +1535,7 @@ fn foo() { let bar = Ba<|>r; }
             r#"
 pub struct Foo;
 /// [Foo](struct.Foo.html)
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1436,7 +1561,7 @@ pub struct B<|>ar
             r#"
 pub struct Foo;
 /// [struct Foo](struct.Foo.html)
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1464,7 +1589,7 @@ pub struct B<|>ar
 pub struct Foo;
 pub struct Bar {
     /// [Foo](struct.Foo.html)
-    fie<|>ld: ()
+    fie$0ld: ()
 }
 "#,
             expect![[r#"
@@ -1493,7 +1618,7 @@ pub mod foo {
     pub struct Foo;
 }
 /// [Foo](foo::Foo)
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1523,7 +1648,7 @@ pub mod foo {
     pub struct Foo;
 }
 /// [Foo](foo::Foo)
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1549,7 +1674,7 @@ pub struct B<|>ar
             r#"
 pub struct Foo;
 /// [Foo]
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1575,7 +1700,7 @@ pub struct B<|>ar
             r#"
 pub struct Foo;
 /// [`Foo`]
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1602,7 +1727,7 @@ pub struct B<|>ar
 pub struct Foo;
 fn Foo() {}
 /// [Foo()]
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1628,7 +1753,7 @@ pub struct B<|>ar
             r#"
 pub struct Foo;
 /// [`struct Foo`]
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1654,7 +1779,7 @@ pub struct B<|>ar
             r#"
 pub struct Foo;
 /// [`struct@Foo`]
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1682,7 +1807,7 @@ pub struct Foo;
 /// [my Foo][foo]
 ///
 /// [foo]: Foo
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1701,6 +1826,35 @@ pub struct B<|>ar
             "#]],
         );
     }
+    #[test]
+    fn test_hover_intra_link_reference_to_trait_method() {
+        check(
+            r#"
+pub trait Foo {
+    fn buzz() -> usize;
+}
+/// [Foo][buzz]
+///
+/// [buzz]: Foo::buzz
+pub struct B$0ar
+"#,
+            expect![[r#"
+                *Bar*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                pub struct Bar
+                ```
+
+                ---
+
+                [Foo](https://docs.rs/test/*/test/trait.Foo.html#tymethod.buzz)
+            "#]],
+        );
+    }
 
     #[test]
     fn test_hover_external_url() {
@@ -1708,7 +1862,7 @@ pub struct B<|>ar
             r#"
 pub struct Foo;
 /// [external](https://www.google.com)
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1735,7 +1889,7 @@ pub struct B<|>ar
             r#"
 pub struct Foo;
 /// [baz](Baz)
-pub struct B<|>ar
+pub struct B$0ar
 "#,
             expect![[r#"
                 *Bar*
@@ -1761,7 +1915,7 @@ pub struct B<|>ar
             r#"
 enum E {
     /// [E]
-    V<|> { field: i32 }
+    V$0 { field: i32 }
 }
 "#,
             expect![[r#"
@@ -1788,7 +1942,7 @@ enum E {
             r#"
 struct S {
     /// [`S`]
-    field<|>: i32
+    field$0: i32
 }
 "#,
             expect![[r#"
@@ -1805,6 +1959,70 @@ struct S {
                 ---
 
                 [`S`](https://docs.rs/test/*/test/struct.S.html)
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_hover_no_links() {
+        check_hover_no_links(
+            r#"
+/// Test cases:
+/// case 1.  bare URL: https://www.example.com/
+/// case 2.  inline URL with title: [example](https://www.example.com/)
+/// case 3.  code reference: [`Result`]
+/// case 4.  code reference but miss footnote: [`String`]
+/// case 5.  autolink: <http://www.example.com/>
+/// case 6.  email address: <test@example.com>
+/// case 7.  reference: [example][example]
+/// case 8.  collapsed link: [example][]
+/// case 9.  shortcut link: [example]
+/// case 10. inline without URL: [example]()
+/// case 11. reference: [foo][foo]
+/// case 12. reference: [foo][bar]
+/// case 13. collapsed link: [foo][]
+/// case 14. shortcut link: [foo]
+/// case 15. inline without URL: [foo]()
+/// case 16. just escaped text: \[foo]
+/// case 17. inline link: [Foo](foo::Foo)
+///
+/// [`Result`]: ../../std/result/enum.Result.html
+/// [^example]: https://www.example.com/
+pub fn fo$0o() {}
+"#,
+            expect![[r#"
+                *foo*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                pub fn foo()
+                ```
+
+                ---
+
+                Test cases:
+                case 1.  bare URL: https://www.example.com/
+                case 2.  inline URL with title: [example](https://www.example.com/)
+                case 3.  code reference: `Result`
+                case 4.  code reference but miss footnote: `String`
+                case 5.  autolink: http://www.example.com/
+                case 6.  email address: test@example.com
+                case 7.  reference: example
+                case 8.  collapsed link: example
+                case 9.  shortcut link: example
+                case 10. inline without URL: example
+                case 11. reference: foo
+                case 12. reference: foo
+                case 13. collapsed link: foo
+                case 14. shortcut link: foo
+                case 15. inline without URL: foo
+                case 16. just escaped text: \[foo]
+                case 17. inline link: Foo
+
+                [^example]: https://www.example.com/
             "#]],
         );
     }
@@ -1827,7 +2045,7 @@ macro_rules! bar {
 
 bar!();
 
-fn foo() { let bar = Bar; bar.fo<|>o(); }
+fn foo() { let bar = Bar; bar.fo$0o(); }
 "#,
             expect![[r#"
                 *foo*
@@ -1865,7 +2083,7 @@ macro_rules! bar {
 
 bar!();
 
-fn foo() { let bar = Bar; bar.fo<|>o(); }
+fn foo() { let bar = Bar; bar.fo$0o(); }
 "#,
             expect![[r#"
                 *foo*
@@ -1888,13 +2106,13 @@ fn foo() { let bar = Bar; bar.fo<|>o(); }
     #[test]
     fn test_hover_trait_has_impl_action() {
         check_actions(
-            r#"trait foo<|>() {}"#,
+            r#"trait foo$0() {}"#,
             expect![[r#"
                 [
-                    Implementaion(
+                    Implementation(
                         FilePosition {
                             file_id: FileId(
-                                1,
+                                0,
                             ),
                             offset: 6,
                         },
@@ -1907,13 +2125,13 @@ fn foo() { let bar = Bar; bar.fo<|>o(); }
     #[test]
     fn test_hover_struct_has_impl_action() {
         check_actions(
-            r"struct foo<|>() {}",
+            r"struct foo$0() {}",
             expect![[r#"
                 [
-                    Implementaion(
+                    Implementation(
                         FilePosition {
                             file_id: FileId(
-                                1,
+                                0,
                             ),
                             offset: 7,
                         },
@@ -1926,13 +2144,13 @@ fn foo() { let bar = Bar; bar.fo<|>o(); }
     #[test]
     fn test_hover_union_has_impl_action() {
         check_actions(
-            r#"union foo<|>() {}"#,
+            r#"union foo$0() {}"#,
             expect![[r#"
                 [
-                    Implementaion(
+                    Implementation(
                         FilePosition {
                             file_id: FileId(
-                                1,
+                                0,
                             ),
                             offset: 6,
                         },
@@ -1945,15 +2163,34 @@ fn foo() { let bar = Bar; bar.fo<|>o(); }
     #[test]
     fn test_hover_enum_has_impl_action() {
         check_actions(
-            r"enum foo<|>() { A, B }",
+            r"enum foo$0() { A, B }",
             expect![[r#"
                 [
-                    Implementaion(
+                    Implementation(
                         FilePosition {
                             file_id: FileId(
-                                1,
+                                0,
                             ),
                             offset: 5,
+                        },
+                    ),
+                ]
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_hover_self_has_impl_action() {
+        check_actions(
+            r#"struct foo where Self$0:;"#,
+            expect![[r#"
+                [
+                    Implementation(
+                        FilePosition {
+                            file_id: FileId(
+                                0,
+                            ),
+                            offset: 7,
                         },
                     ),
                 ]
@@ -1966,7 +2203,7 @@ fn foo() { let bar = Bar; bar.fo<|>o(); }
         check_actions(
             r#"
 #[test]
-fn foo_<|>test() {}
+fn foo_$0test() {}
 "#,
             expect![[r#"
                 [
@@ -1974,17 +2211,12 @@ fn foo_<|>test() {}
                         Runnable {
                             nav: NavigationTarget {
                                 file_id: FileId(
-                                    1,
+                                    0,
                                 ),
                                 full_range: 0..24,
-                                focus_range: Some(
-                                    11..19,
-                                ),
+                                focus_range: 11..19,
                                 name: "foo_test",
-                                kind: FN,
-                                container_name: None,
-                                description: None,
-                                docs: None,
+                                kind: Function,
                             },
                             kind: Test {
                                 test_id: Path(
@@ -1994,7 +2226,7 @@ fn foo_<|>test() {}
                                     ignore: false,
                                 },
                             },
-                            cfg_exprs: [],
+                            cfg: None,
                         },
                     ),
                 ]
@@ -2006,7 +2238,7 @@ fn foo_<|>test() {}
     fn test_hover_test_mod_has_action() {
         check_actions(
             r#"
-mod tests<|> {
+mod tests$0 {
     #[test]
     fn foo_test() {}
 }
@@ -2017,22 +2249,17 @@ mod tests<|> {
                         Runnable {
                             nav: NavigationTarget {
                                 file_id: FileId(
-                                    1,
+                                    0,
                                 ),
                                 full_range: 0..46,
-                                focus_range: Some(
-                                    4..9,
-                                ),
+                                focus_range: 4..9,
                                 name: "tests",
-                                kind: MODULE,
-                                container_name: None,
-                                description: None,
-                                docs: None,
+                                kind: Module,
                             },
                             kind: TestMod {
                                 path: "tests",
                             },
-                            cfg_exprs: [],
+                            cfg: None,
                         },
                     ),
                 ]
@@ -2046,7 +2273,7 @@ mod tests<|> {
             r#"
 struct S{ f1: u32 }
 
-fn main() { let s<|>t = S{ f1:0 }; }
+fn main() { let s$0t = S{ f1:0 }; }
             "#,
             expect![[r#"
                 [
@@ -2056,19 +2283,13 @@ fn main() { let s<|>t = S{ f1:0 }; }
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..19,
-                                    focus_range: Some(
-                                        7..8,
-                                    ),
+                                    focus_range: 7..8,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                         ],
@@ -2085,7 +2306,7 @@ fn main() { let s<|>t = S{ f1:0 }; }
 struct Arg(u32);
 struct S<T>{ f1: T }
 
-fn main() { let s<|>t = S{ f1:Arg(0) }; }
+fn main() { let s$0t = S{ f1:Arg(0) }; }
 "#,
             expect![[r#"
                 [
@@ -2095,38 +2316,26 @@ fn main() { let s<|>t = S{ f1:Arg(0) }; }
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 17..37,
-                                    focus_range: Some(
-                                        24..25,
-                                    ),
+                                    focus_range: 24..25,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::Arg",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..16,
-                                    focus_range: Some(
-                                        7..10,
-                                    ),
+                                    focus_range: 7..10,
                                     name: "Arg",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct Arg",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct Arg",
                                 },
                             },
                         ],
@@ -2143,7 +2352,7 @@ fn main() { let s<|>t = S{ f1:Arg(0) }; }
 struct Arg(u32);
 struct S<T>{ f1: T }
 
-fn main() { let s<|>t = S{ f1: S{ f1: Arg(0) } }; }
+fn main() { let s$0t = S{ f1: S{ f1: Arg(0) } }; }
             "#,
             expect![[r#"
                 [
@@ -2153,38 +2362,26 @@ fn main() { let s<|>t = S{ f1: S{ f1: Arg(0) } }; }
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 17..37,
-                                    focus_range: Some(
-                                        24..25,
-                                    ),
+                                    focus_range: 24..25,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::Arg",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..16,
-                                    focus_range: Some(
-                                        7..10,
-                                    ),
+                                    focus_range: 7..10,
                                     name: "Arg",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct Arg",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct Arg",
                                 },
                             },
                         ],
@@ -2204,7 +2401,7 @@ mod M {
     pub struct C(u32);
 }
 
-fn main() { let s<|>t = (A(1), B(2), M::C(3) ); }
+fn main() { let s$0t = (A(1), B(2), M::C(3) ); }
 "#,
             expect![[r#"
                 [
@@ -2214,57 +2411,39 @@ fn main() { let s<|>t = (A(1), B(2), M::C(3) ); }
                                 mod_path: "test::A",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..14,
-                                    focus_range: Some(
-                                        7..8,
-                                    ),
+                                    focus_range: 7..8,
                                     name: "A",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct A",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct A",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::B",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 15..29,
-                                    focus_range: Some(
-                                        22..23,
-                                    ),
+                                    focus_range: 22..23,
                                     name: "B",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct B",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct B",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::M::C",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 42..60,
-                                    focus_range: Some(
-                                        53..54,
-                                    ),
+                                    focus_range: 53..54,
                                     name: "C",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "pub struct C",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "pub struct C",
                                 },
                             },
                         ],
@@ -2281,7 +2460,7 @@ fn main() { let s<|>t = (A(1), B(2), M::C(3) ); }
 trait Foo {}
 fn foo() -> impl Foo {}
 
-fn main() { let s<|>t = foo(); }
+fn main() { let s$0t = foo(); }
 "#,
             expect![[r#"
                 [
@@ -2291,19 +2470,13 @@ fn main() { let s<|>t = foo(); }
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..12,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                         ],
@@ -2321,7 +2494,7 @@ trait Foo<T> {}
 struct S;
 fn foo() -> impl Foo<S> {}
 
-fn main() { let s<|>t = foo(); }
+fn main() { let s$0t = foo(); }
 "#,
             expect![[r#"
                 [
@@ -2331,38 +2504,26 @@ fn main() { let s<|>t = foo(); }
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..15,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 16..25,
-                                    focus_range: Some(
-                                        23..24,
-                                    ),
+                                    focus_range: 23..24,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                         ],
@@ -2380,7 +2541,7 @@ trait Foo {}
 trait Bar {}
 fn foo() -> impl Foo + Bar {}
 
-fn main() { let s<|>t = foo(); }
+fn main() { let s$0t = foo(); }
             "#,
             expect![[r#"
                 [
@@ -2390,38 +2551,26 @@ fn main() { let s<|>t = foo(); }
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..12,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::Bar",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 13..25,
-                                    focus_range: Some(
-                                        19..22,
-                                    ),
+                                    focus_range: 19..22,
                                     name: "Bar",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Bar",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Bar",
                                 },
                             },
                         ],
@@ -2442,7 +2591,7 @@ struct S2 {}
 
 fn foo() -> impl Foo<S1> + Bar<S2> {}
 
-fn main() { let s<|>t = foo(); }
+fn main() { let s$0t = foo(); }
 "#,
             expect![[r#"
                 [
@@ -2452,76 +2601,52 @@ fn main() { let s<|>t = foo(); }
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..15,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::Bar",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 16..31,
-                                    focus_range: Some(
-                                        22..25,
-                                    ),
+                                    focus_range: 22..25,
                                     name: "Bar",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Bar",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Bar",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::S1",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 32..44,
-                                    focus_range: Some(
-                                        39..41,
-                                    ),
+                                    focus_range: 39..41,
                                     name: "S1",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S1",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S1",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::S2",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 45..57,
-                                    focus_range: Some(
-                                        52..54,
-                                    ),
+                                    focus_range: 52..54,
                                     name: "S2",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S2",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S2",
                                 },
                             },
                         ],
@@ -2536,7 +2661,7 @@ fn main() { let s<|>t = foo(); }
         check_actions(
             r#"
 trait Foo {}
-fn foo(ar<|>g: &impl Foo) {}
+fn foo(ar$0g: &impl Foo) {}
 "#,
             expect![[r#"
                 [
@@ -2546,19 +2671,13 @@ fn foo(ar<|>g: &impl Foo) {}
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..12,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                         ],
@@ -2576,7 +2695,7 @@ trait Foo {}
 trait Bar<T> {}
 struct S{}
 
-fn foo(ar<|>g: &impl Foo + Bar<S>) {}
+fn foo(ar$0g: &impl Foo + Bar<S>) {}
 "#,
             expect![[r#"
                 [
@@ -2586,57 +2705,39 @@ fn foo(ar<|>g: &impl Foo + Bar<S>) {}
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..12,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::Bar",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 13..28,
-                                    focus_range: Some(
-                                        19..22,
-                                    ),
+                                    focus_range: 19..22,
                                     name: "Bar",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Bar",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Bar",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 29..39,
-                                    focus_range: Some(
-                                        36..37,
-                                    ),
+                                    focus_range: 36..37,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                         ],
@@ -2652,7 +2753,7 @@ fn foo(ar<|>g: &impl Foo + Bar<S>) {}
             r#"
 struct S;
 fn foo() {
-    let fo<|>o = async { S };
+    let fo$0o = async { S };
 }
 
 #[prelude_import] use future::*;
@@ -2669,38 +2770,26 @@ mod future {
                                 mod_path: "test::future::Future",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 101..163,
-                                    focus_range: Some(
-                                        140..146,
-                                    ),
+                                    focus_range: 140..146,
                                     name: "Future",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "pub trait Future",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "pub trait Future",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..9,
-                                    focus_range: Some(
-                                        7..8,
-                                    ),
+                                    focus_range: 7..8,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                         ],
@@ -2716,7 +2805,7 @@ mod future {
             r#"
 trait Foo<T> {}
 struct S {}
-fn foo(ar<|>g: &impl Foo<S>) {}
+fn foo(ar$0g: &impl Foo<S>) {}
 "#,
             expect![[r#"
                 [
@@ -2726,38 +2815,26 @@ fn foo(ar<|>g: &impl Foo<S>) {}
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..15,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 16..27,
-                                    focus_range: Some(
-                                        23..24,
-                                    ),
+                                    focus_range: 23..24,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                         ],
@@ -2778,7 +2855,7 @@ impl Foo for S {}
 struct B<T>{}
 fn foo() -> B<dyn Foo> {}
 
-fn main() { let s<|>t = foo(); }
+fn main() { let s$0t = foo(); }
 "#,
             expect![[r#"
                 [
@@ -2788,38 +2865,26 @@ fn main() { let s<|>t = foo(); }
                                 mod_path: "test::B",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 42..55,
-                                    focus_range: Some(
-                                        49..50,
-                                    ),
+                                    focus_range: 49..50,
                                     name: "B",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct B",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct B",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..12,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                         ],
@@ -2834,7 +2899,7 @@ fn main() { let s<|>t = foo(); }
         check_actions(
             r#"
 trait Foo {}
-fn foo(ar<|>g: &dyn Foo) {}
+fn foo(ar$0g: &dyn Foo) {}
 "#,
             expect![[r#"
                 [
@@ -2844,19 +2909,13 @@ fn foo(ar<|>g: &dyn Foo) {}
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..12,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                         ],
@@ -2872,7 +2931,7 @@ fn foo(ar<|>g: &dyn Foo) {}
             r#"
 trait Foo<T> {}
 struct S {}
-fn foo(ar<|>g: &dyn Foo<S>) {}
+fn foo(ar$0g: &dyn Foo<S>) {}
 "#,
             expect![[r#"
                 [
@@ -2882,38 +2941,26 @@ fn foo(ar<|>g: &dyn Foo<S>) {}
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..15,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 16..27,
-                                    focus_range: Some(
-                                        23..24,
-                                    ),
+                                    focus_range: 23..24,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                         ],
@@ -2932,7 +2979,7 @@ trait DynTrait<T> {}
 struct B<T> {}
 struct S {}
 
-fn foo(a<|>rg: &impl ImplTrait<B<dyn DynTrait<B<S>>>>) {}
+fn foo(a$0rg: &impl ImplTrait<B<dyn DynTrait<B<S>>>>) {}
             "#,
             expect![[r#"
                 [
@@ -2942,76 +2989,52 @@ fn foo(a<|>rg: &impl ImplTrait<B<dyn DynTrait<B<S>>>>) {}
                                 mod_path: "test::ImplTrait",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..21,
-                                    focus_range: Some(
-                                        6..15,
-                                    ),
+                                    focus_range: 6..15,
                                     name: "ImplTrait",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait ImplTrait",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait ImplTrait",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::B",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 43..57,
-                                    focus_range: Some(
-                                        50..51,
-                                    ),
+                                    focus_range: 50..51,
                                     name: "B",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct B",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct B",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::DynTrait",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 22..42,
-                                    focus_range: Some(
-                                        28..36,
-                                    ),
+                                    focus_range: 28..36,
                                     name: "DynTrait",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait DynTrait",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait DynTrait",
                                 },
                             },
                             HoverGotoTypeData {
                                 mod_path: "test::S",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 58..69,
-                                    focus_range: Some(
-                                        65..66,
-                                    ),
+                                    focus_range: 65..66,
                                     name: "S",
-                                    kind: STRUCT,
-                                    container_name: None,
-                                    description: Some(
-                                        "struct S",
-                                    ),
-                                    docs: None,
+                                    kind: Struct,
+                                    description: "struct S",
                                 },
                             },
                         ],
@@ -3037,7 +3060,7 @@ impl Foo for S { type Item = Bar; }
 
 fn test() -> impl Foo { S {} }
 
-fn main() { let s<|>t = test().get(); }
+fn main() { let s$0t = test().get(); }
 "#,
             expect![[r#"
                 [
@@ -3047,24 +3070,393 @@ fn main() { let s<|>t = test().get(); }
                                 mod_path: "test::Foo",
                                 nav: NavigationTarget {
                                     file_id: FileId(
-                                        1,
+                                        0,
                                     ),
                                     full_range: 0..62,
-                                    focus_range: Some(
-                                        6..9,
-                                    ),
+                                    focus_range: 6..9,
                                     name: "Foo",
-                                    kind: TRAIT,
-                                    container_name: None,
-                                    description: Some(
-                                        "trait Foo",
-                                    ),
-                                    docs: None,
+                                    kind: Trait,
+                                    description: "trait Foo",
                                 },
                             },
                         ],
                     ),
                 ]
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_hover_const_param_has_goto_type_action() {
+        check_actions(
+            r#"
+struct Bar;
+struct Foo<const BAR: Bar>;
+
+impl<const BAR: Bar> Foo<BAR$0> {}
+"#,
+            expect![[r#"
+                [
+                    GoToType(
+                        [
+                            HoverGotoTypeData {
+                                mod_path: "test::Bar",
+                                nav: NavigationTarget {
+                                    file_id: FileId(
+                                        0,
+                                    ),
+                                    full_range: 0..11,
+                                    focus_range: 7..10,
+                                    name: "Bar",
+                                    kind: Struct,
+                                    description: "struct Bar",
+                                },
+                            },
+                        ],
+                    ),
+                ]
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_hover_type_param_has_goto_type_action() {
+        check_actions(
+            r#"
+trait Foo {}
+
+fn foo<T: Foo>(t: T$0){}
+"#,
+            expect![[r#"
+                [
+                    GoToType(
+                        [
+                            HoverGotoTypeData {
+                                mod_path: "test::Foo",
+                                nav: NavigationTarget {
+                                    file_id: FileId(
+                                        0,
+                                    ),
+                                    full_range: 0..12,
+                                    focus_range: 6..9,
+                                    name: "Foo",
+                                    kind: Trait,
+                                    description: "trait Foo",
+                                },
+                            },
+                        ],
+                    ),
+                ]
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_hover_self_has_go_to_type() {
+        check_actions(
+            r#"
+struct Foo;
+impl Foo {
+    fn foo(&self$0) {}
+}
+"#,
+            expect![[r#"
+                [
+                    GoToType(
+                        [
+                            HoverGotoTypeData {
+                                mod_path: "test::Foo",
+                                nav: NavigationTarget {
+                                    file_id: FileId(
+                                        0,
+                                    ),
+                                    full_range: 0..11,
+                                    focus_range: 7..10,
+                                    name: "Foo",
+                                    kind: Struct,
+                                    description: "struct Foo",
+                                },
+                            },
+                        ],
+                    ),
+                ]
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_displays_normalized_crate_names() {
+        check(
+            r#"
+//- /lib.rs crate:name-with-dashes
+pub mod wrapper {
+    pub struct Thing { x: u32 }
+
+    impl Thing {
+        pub fn new() -> Thing { Thing { x: 0 } }
+    }
+}
+
+//- /main.rs crate:main deps:name-with-dashes
+fn main() { let foo_test = name_with_dashes::wrapper::Thing::new$0(); }
+"#,
+            expect![[r#"
+            *new*
+
+            ```rust
+            name_with_dashes::wrapper::Thing
+            ```
+
+            ```rust
+            pub fn new() -> Thing
+            ```
+            "#]],
+        )
+    }
+
+    #[test]
+    fn hover_field_pat_shorthand_ref_match_ergonomics() {
+        check(
+            r#"
+struct S {
+    f: i32,
+}
+
+fn main() {
+    let s = S { f: 0 };
+    let S { f$0 } = &s;
+}
+"#,
+            expect![[r#"
+                *f*
+
+                ```rust
+                &i32
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_self_param_shows_type() {
+        check(
+            r#"
+struct Foo {}
+impl Foo {
+    fn bar(&sel$0f) {}
+}
+"#,
+            expect![[r#"
+                *self*
+
+                ```rust
+                &Foo
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_self_param_shows_type_for_arbitrary_self_type() {
+        check(
+            r#"
+struct Arc<T>(T);
+struct Foo {}
+impl Foo {
+    fn bar(sel$0f: Arc<Foo>) {}
+}
+"#,
+            expect![[r#"
+                *self*
+
+                ```rust
+                Arc<Foo>
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_doc_outer_inner() {
+        check(
+            r#"
+/// Be quick;
+mod Foo$0 {
+    //! time is mana
+
+    /// This comment belongs to the function
+    fn foo() {}
+}
+"#,
+            expect![[r#"
+                *Foo*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                mod Foo
+                ```
+
+                ---
+
+                Be quick;
+                time is mana
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_doc_outer_inner_attribue() {
+        check(
+            r#"
+#[doc = "Be quick;"]
+mod Foo$0 {
+    #![doc = "time is mana"]
+
+    #[doc = "This comment belongs to the function"]
+    fn foo() {}
+}
+"#,
+            expect![[r#"
+                *Foo*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                mod Foo
+                ```
+
+                ---
+
+                Be quick;
+                time is mana
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_comments_dont_highlight_parent() {
+        check_hover_no_result(
+            r#"
+fn no_hover() {
+    // no$0hover
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn hover_label() {
+        check(
+            r#"
+fn foo() {
+    'label$0: loop {}
+}
+"#,
+            expect![[r#"
+            *'label*
+
+            ```rust
+            'label
+            ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_lifetime() {
+        check(
+            r#"fn foo<'lifetime>(_: &'lifetime$0 ()) {}"#,
+            expect![[r#"
+            *'lifetime*
+
+            ```rust
+            'lifetime
+            ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_type_param() {
+        check(
+            r#"
+struct Foo<T>(T);
+trait Copy {}
+trait Clone {}
+trait Sized {}
+impl<T: Copy + Clone> Foo<T$0> where T: Sized {}
+"#,
+            expect![[r#"
+                *T*
+
+                ```rust
+                T: Copy + Clone + Sized
+                ```
+            "#]],
+        );
+        check(
+            r#"
+struct Foo<T>(T);
+impl<T> Foo<T$0> {}
+"#,
+            expect![[r#"
+                *T*
+
+                ```rust
+                T
+                ```
+                "#]],
+        );
+        // lifetimes aren't being substituted yet
+        check(
+            r#"
+struct Foo<T>(T);
+impl<T: 'static> Foo<T$0> {}
+"#,
+            expect![[r#"
+                *T*
+
+                ```rust
+                T: {error}
+                ```
+                "#]],
+        );
+    }
+
+    #[test]
+    fn hover_const_param() {
+        check(
+            r#"
+struct Foo<const LEN: usize>;
+impl<const LEN: usize> Foo<LEN$0> {}
+"#,
+            expect![[r#"
+                *LEN*
+
+                ```rust
+                const LEN: usize
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_mod_def() {
+        check(
+            r#"
+//- /main.rs
+mod foo$0;
+//- /foo.rs
+//! For the horde!
+"#,
+            expect![[r#"
+                *foo*
+                For the horde!
             "#]],
         );
     }

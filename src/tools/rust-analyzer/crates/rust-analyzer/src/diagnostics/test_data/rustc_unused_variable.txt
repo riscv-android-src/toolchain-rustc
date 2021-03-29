@@ -1,6 +1,13 @@
 [
     MappedRustDiagnostic {
-        url: "file:///test/driver/subcommand/repl.rs",
+        url: Url {
+            scheme: "file",
+            host: None,
+            port: None,
+            path: "/test/driver/subcommand/repl.rs",
+            query: None,
+            fragment: None,
+        },
         diagnostic: Diagnostic {
             range: Range {
                 start: Position {
@@ -20,21 +27,113 @@
                     "unused_variables",
                 ),
             ),
+            code_description: None,
             source: Some(
                 "rustc",
             ),
             message: "unused variable: `foo`\n#[warn(unused_variables)] on by default",
-            related_information: None,
+            related_information: Some(
+                [
+                    DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: Url {
+                                scheme: "file",
+                                host: None,
+                                port: None,
+                                path: "/test/driver/subcommand/repl.rs",
+                                query: None,
+                                fragment: None,
+                            },
+                            range: Range {
+                                start: Position {
+                                    line: 290,
+                                    character: 8,
+                                },
+                                end: Position {
+                                    line: 290,
+                                    character: 11,
+                                },
+                            },
+                        },
+                        message: "consider prefixing with an underscore",
+                    },
+                ],
+            ),
             tags: Some(
                 [
                     Unnecessary,
                 ],
             ),
+            data: None,
+        },
+        fixes: [],
+    },
+    MappedRustDiagnostic {
+        url: Url {
+            scheme: "file",
+            host: None,
+            port: None,
+            path: "/test/driver/subcommand/repl.rs",
+            query: None,
+            fragment: None,
+        },
+        diagnostic: Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 290,
+                    character: 8,
+                },
+                end: Position {
+                    line: 290,
+                    character: 11,
+                },
+            },
+            severity: Some(
+                Hint,
+            ),
+            code: Some(
+                String(
+                    "unused_variables",
+                ),
+            ),
+            code_description: None,
+            source: Some(
+                "rustc",
+            ),
+            message: "consider prefixing with an underscore",
+            related_information: Some(
+                [
+                    DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: Url {
+                                scheme: "file",
+                                host: None,
+                                port: None,
+                                path: "/test/driver/subcommand/repl.rs",
+                                query: None,
+                                fragment: None,
+                            },
+                            range: Range {
+                                start: Position {
+                                    line: 290,
+                                    character: 8,
+                                },
+                                end: Position {
+                                    line: 290,
+                                    character: 11,
+                                },
+                            },
+                        },
+                        message: "original diagnostic",
+                    },
+                ],
+            ),
+            tags: None,
+            data: None,
         },
         fixes: [
             CodeAction {
                 title: "consider prefixing with an underscore",
-                id: None,
                 group: None,
                 kind: Some(
                     CodeActionKind(
@@ -45,7 +144,14 @@
                     SnippetWorkspaceEdit {
                         changes: Some(
                             {
-                                "file:///test/driver/subcommand/repl.rs": [
+                                Url {
+                                    scheme: "file",
+                                    host: None,
+                                    port: None,
+                                    path: "/test/driver/subcommand/repl.rs",
+                                    query: None,
+                                    fragment: None,
+                                }: [
                                     TextEdit {
                                         range: Range {
                                             start: Position {
@@ -68,6 +174,7 @@
                 is_preferred: Some(
                     true,
                 ),
+                data: None,
             },
         ],
     },

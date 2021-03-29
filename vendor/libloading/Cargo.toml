@@ -12,7 +12,7 @@
 
 [package]
 name = "libloading"
-version = "0.6.5"
+version = "0.6.7"
 authors = ["Simonas Kazlauskas <libloading@kazlauskas.me>"]
 description = "A safer binding to platform’s dynamic library loading utilities"
 documentation = "https://docs.rs/libloading/"

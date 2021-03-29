@@ -1,10 +1,9 @@
-use std::fmt;
 use std::error::Error as StdError;
-use std::io::ErrorKind as IoErrorKind;
-use std::io::Error as IoError;
-use std::path::StripPrefixError;
 use std::ffi::OsString;
-
+use std::fmt;
+use std::io::Error as IoError;
+use std::io::ErrorKind as IoErrorKind;
+use std::path::StripPrefixError;
 
 /// A list specifying general categories of fs_extra error.
 #[derive(Debug)]
@@ -88,7 +87,6 @@ pub struct Error {
     message: String,
 }
 
-
 impl Error {
     /// Create a new fs_extra error from a kind of error error as well as an arbitrary error payload.
     ///
@@ -141,7 +139,6 @@ impl From<OsString> for Error {
     }
 }
 
-
 impl From<IoError> for Error {
     fn from(err: IoError) -> Error {
         let err_kind: ErrorKind;
@@ -156,6 +153,6 @@ impl From<IoError> for Error {
                 return Error::new(err_kind, "Io error. Look inside err_kind for more details.");
             }
         }
-        Error::new(err_kind, err.description())
+        Error::new(err_kind, &err.to_string())
     }
 }

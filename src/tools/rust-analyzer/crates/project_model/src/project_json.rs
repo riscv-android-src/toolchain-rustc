@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use base_db::{CrateId, CrateName, Dependency, Edition};
+use base_db::{CrateDisplayName, CrateId, CrateName, Dependency, Edition};
 use paths::{AbsPath, AbsPathBuf};
 use rustc_hash::FxHashMap;
 use serde::{de, Deserialize};
@@ -13,6 +13,7 @@ use crate::cfg_flag::CfgFlag;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectJson {
     pub(crate) sysroot_src: Option<AbsPathBuf>,
+    project_root: AbsPathBuf,
     crates: Vec<Crate>,
 }
 
@@ -20,6 +21,7 @@ pub struct ProjectJson {
 /// useful in creating the crate graph.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Crate {
+    pub(crate) display_name: Option<CrateDisplayName>,
     pub(crate) root_module: AbsPathBuf,
     pub(crate) edition: Edition,
     pub(crate) deps: Vec<Dependency>,
@@ -33,9 +35,17 @@ pub struct Crate {
 }
 
 impl ProjectJson {
+    /// Create a new ProjectJson instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `base` - The path to the workspace root (i.e. the folder containing `rust-project.json`)
+    /// * `data` - The parsed contents of `rust-project.json`, or project json that's passed via
+    ///            configuration.
     pub fn new(base: &AbsPath, data: ProjectJsonData) -> ProjectJson {
         ProjectJson {
             sysroot_src: data.sysroot_src.map(|it| base.join(it)),
+            project_root: base.to_path_buf(),
             crates: data
                 .crates
                 .into_iter()
@@ -59,6 +69,9 @@ impl ProjectJson {
                     };
 
                     Crate {
+                        display_name: crate_data
+                            .display_name
+                            .map(CrateDisplayName::from_canonical_name),
                         root_module,
                         edition: crate_data.edition.into(),
                         deps: crate_data
@@ -83,22 +96,29 @@ impl ProjectJson {
                 .collect::<Vec<_>>(),
         }
     }
+    /// Returns the number of crates in the project.
     pub fn n_crates(&self) -> usize {
         self.crates.len()
     }
+    /// Returns an iterator over the crates in the project.
     pub fn crates(&self) -> impl Iterator<Item = (CrateId, &Crate)> + '_ {
         self.crates.iter().enumerate().map(|(idx, krate)| (CrateId(idx as u32), krate))
     }
+    /// Returns the path to the project's root folder.
+    pub fn path(&self) -> &AbsPath {
+        &self.project_root
+    }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct ProjectJsonData {
     sysroot_src: Option<PathBuf>,
     crates: Vec<CrateData>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 struct CrateData {
+    display_name: Option<String>,
     root_module: PathBuf,
     edition: EditionData,
     deps: Vec<DepData>,
@@ -112,13 +132,15 @@ struct CrateData {
     source: Option<CrateSource>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename = "edition")]
 enum EditionData {
     #[serde(rename = "2015")]
     Edition2015,
     #[serde(rename = "2018")]
     Edition2018,
+    #[serde(rename = "2021")]
+    Edition2021,
 }
 
 impl From<EditionData> for Edition {
@@ -126,11 +148,12 @@ impl From<EditionData> for Edition {
         match data {
             EditionData::Edition2015 => Edition::Edition2015,
             EditionData::Edition2018 => Edition::Edition2018,
+            EditionData::Edition2021 => Edition::Edition2021,
         }
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 struct DepData {
     /// Identifies a crate by position in the crates array.
     #[serde(rename = "crate")]
@@ -139,7 +162,7 @@ struct DepData {
     name: CrateName,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 struct CrateSource {
     include_dirs: Vec<PathBuf>,
     exclude_dirs: Vec<PathBuf>,

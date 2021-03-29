@@ -9,6 +9,9 @@
 //! Relaxed stores now unconditionally block all currently active release sequences and so per-thread tracking of release
 //! sequences is not needed.
 //!
+//! The implementation also models races with memory allocation and deallocation via treating allocation and
+//! deallocation as a type of write internally for detecting data-races.
+//!
 //! This does not explore weak memory orders and so can still miss data-races
 //! but should not report false-positives
 //!
@@ -72,8 +75,8 @@ use rustc_target::abi::Size;
 
 use crate::{
     ImmTy, Immediate, InterpResult, MPlaceTy, MemPlaceMeta, MiriEvalContext, MiriEvalContextExt,
-    OpTy, Pointer, RangeMap, ScalarMaybeUninit, Tag, ThreadId, VClock, VTimestamp,
-    VectorIdx,
+    OpTy, Pointer, RangeMap, Scalar, ScalarMaybeUninit, Tag, ThreadId, VClock, VTimestamp,
+    VectorIdx, MemoryKind, MiriMemoryKind
 };
 
 pub type AllocExtra = VClockAlloc;
@@ -192,6 +195,34 @@ struct AtomicMemoryCellClocks {
     sync_vector: VClock,
 }
 
+/// Type of write operation: allocating memory
+/// non-atomic writes and deallocating memory
+/// are all treated as writes for the purpose
+/// of the data-race detector.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum WriteType {
+    /// Allocate memory.
+    Allocate,
+
+    /// Standard unsynchronized write.
+    Write,
+
+    /// Deallocate memory.
+    /// Note that when memory is deallocated first, later non-atomic accesses
+    /// will be reported as use-after-free, not as data races.
+    /// (Same for `Allocate` above.)
+    Deallocate,
+}
+impl WriteType {
+    fn get_descriptor(self) -> &'static str {
+        match self {
+            WriteType::Allocate => "Allocate",
+            WriteType::Write => "Write",
+            WriteType::Deallocate => "Deallocate",
+        }
+    }
+}
+
 /// Memory Cell vector clock metadata
 /// for data-race detection.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -204,6 +235,11 @@ struct MemoryCellClocks {
     /// that performed the last write operation.
     write_index: VectorIdx,
 
+    /// The type of operation that the write index represents,
+    /// either newly allocated memory, a non-atomic write or
+    /// a deallocation of memory.
+    write_type: WriteType,
+
     /// The vector-clock of the timestamp of the last read operation
     /// performed by a thread since the last write operation occurred.
     /// It is reset to zero on each write operation.
@@ -215,20 +251,18 @@ struct MemoryCellClocks {
     atomic_ops: Option<Box<AtomicMemoryCellClocks>>,
 }
 
-/// Create a default memory cell clocks instance
-/// for uninitialized memory.
-impl Default for MemoryCellClocks {
-    fn default() -> Self {
+impl MemoryCellClocks {
+    /// Create a new set of clocks representing memory allocated
+    ///  at a given vector timestamp and index.
+    fn new(alloc: VTimestamp, alloc_index: VectorIdx) -> Self {
         MemoryCellClocks {
             read: VClock::default(),
-            write: 0,
-            write_index: VectorIdx::MAX_INDEX,
+            write: alloc,
+            write_index: alloc_index,
+            write_type: WriteType::Allocate,
             atomic_ops: None,
         }
     }
-}
-
-impl MemoryCellClocks {
     
     /// Load the internal atomic memory cells if they exist.
     #[inline]
@@ -382,6 +416,7 @@ impl MemoryCellClocks {
         &mut self,
         clocks: &ThreadClockSet,
         index: VectorIdx,
+        write_type: WriteType,
     ) -> Result<(), DataRace> {
         log::trace!("Unsynchronized write with vectors: {:#?} :: {:#?}", self, clocks);
         if self.write <= clocks.clock[self.write_index] && self.read <= clocks.clock {
@@ -393,6 +428,7 @@ impl MemoryCellClocks {
             if race_free {
                 self.write = clocks.clock[index];
                 self.write_index = index;
+                self.write_type = write_type;
                 self.read.set_zero_vector();
                 Ok(())
             } else {
@@ -508,7 +544,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
 
     /// Perform an atomic compare and exchange at a given memory location.
     /// On success an atomic RMW operation is performed and on failure
-    /// only an atomic read occurs.
+    /// only an atomic read occurs. If `can_fail_spuriously` is true,
+    /// then we treat it as a "compare_exchange_weak" operation, and
+    /// some portion of the time fail even when the values are actually
+    /// identical.
     fn atomic_compare_exchange_scalar(
         &mut self,
         place: MPlaceTy<'tcx, Tag>,
@@ -516,7 +555,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
         new: ScalarMaybeUninit<Tag>,
         success: AtomicRwOp,
         fail: AtomicReadOp,
+        can_fail_spuriously: bool,
     ) -> InterpResult<'tcx, Immediate<Tag>> {
+        use rand::Rng as _;
         let this = self.eval_context_mut();
 
         // Failure ordering cannot be stronger than success ordering, therefore first attempt
@@ -524,15 +565,22 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
         // read ordering and write in the success case.
         // Read as immediate for the sake of `binary_op()`
         let old = this.allow_data_races_mut(|this| this.read_immediate(place.into()))?;
-
         // `binary_op` will bail if either of them is not a scalar.
         let eq = this.overflowing_binary_op(mir::BinOp::Eq, old, expect_old)?.0;
-        let res = Immediate::ScalarPair(old.to_scalar_or_uninit(), eq.into());
+        // If the operation would succeed, but is "weak", fail some portion
+        // of the time, based on `rate`.
+        let rate = this.memory.extra.cmpxchg_weak_failure_rate;
+        let cmpxchg_success = eq.to_bool()?
+            && (!can_fail_spuriously || this.memory.extra.rng.borrow_mut().gen::<f64>() < rate);
+        let res = Immediate::ScalarPair(
+            old.to_scalar_or_uninit(),
+            Scalar::from_bool(cmpxchg_success).into(),
+        );
 
         // Update ptr depending on comparison.
         // if successful, perform a full rw-atomic validation
         // otherwise treat this as an atomic load with the fail ordering.
-        if eq.to_bool()? {
+        if cmpxchg_success {
             this.allow_data_races_mut(|this| this.write_scalar(new, place.into()))?;
             this.validate_atomic_rmw(place, success)?;
         } else {
@@ -638,6 +686,21 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
             Ok(())
         }
     }
+
+    fn reset_vector_clocks(
+        &mut self,
+        ptr: Pointer<Tag>,
+        size: Size
+    ) -> InterpResult<'tcx> {
+        let this = self.eval_context_mut();
+        if let Some(data_race) = &mut this.memory.extra.data_race {
+            if data_race.multi_threaded.get() {
+                let alloc_meta = this.memory.get_raw_mut(ptr.alloc_id)?.extra.data_race.as_mut().unwrap();
+                alloc_meta.reset_clocks(ptr.offset, size);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Vector clock metadata for a logical memory allocation.
@@ -646,22 +709,50 @@ pub struct VClockAlloc {
     /// Assigning each byte a MemoryCellClocks.
     alloc_ranges: RefCell<RangeMap<MemoryCellClocks>>,
 
-    // Pointer to global state.
+    /// Pointer to global state.
     global: MemoryExtra,
 }
 
 impl VClockAlloc {
-    /// Create a new data-race allocation detector.
-    pub fn new_allocation(global: &MemoryExtra, len: Size) -> VClockAlloc {
+    /// Create a new data-race detector for newly allocated memory.
+    pub fn new_allocation(global: &MemoryExtra, len: Size, kind: MemoryKind<MiriMemoryKind>) -> VClockAlloc {
+        let (alloc_timestamp, alloc_index) = match kind {
+            // User allocated and stack memory should track allocation.
+            MemoryKind::Machine(
+                MiriMemoryKind::Rust | MiriMemoryKind::C | MiriMemoryKind::WinHeap
+            ) | MemoryKind::Stack => {
+                let (alloc_index, clocks) = global.current_thread_state();
+                let alloc_timestamp = clocks.clock[alloc_index];
+                (alloc_timestamp, alloc_index)
+            }
+            // Other global memory should trace races but be allocated at the 0 timestamp.
+            MemoryKind::Machine(
+                MiriMemoryKind::Global | MiriMemoryKind::Machine | MiriMemoryKind::Env |
+                MiriMemoryKind::ExternStatic | MiriMemoryKind::Tls
+            ) | MemoryKind::CallerLocation | MemoryKind::Vtable => {
+                (0, VectorIdx::MAX_INDEX)
+            }
+        };
         VClockAlloc {
             global: Rc::clone(global),
-            alloc_ranges: RefCell::new(RangeMap::new(len, MemoryCellClocks::default())),
+            alloc_ranges: RefCell::new(RangeMap::new(
+                len, MemoryCellClocks::new(alloc_timestamp, alloc_index)
+            )),
+        }
+    }
+
+    fn reset_clocks(&mut self, offset: Size, len: Size) {
+        let mut alloc_ranges = self.alloc_ranges.borrow_mut();
+        for (_, range) in alloc_ranges.iter_mut(offset, len) {
+            // Reset the portion of the range
+            *range = MemoryCellClocks::new(0, VectorIdx::MAX_INDEX);
         }
     }
 
     // Find an index, if one exists where the value
     // in `l` is greater than the value in `r`.
     fn find_gt_index(l: &VClock, r: &VClock) -> Option<VectorIdx> {
+        log::trace!("Find index where not {:?} <= {:?}", l, r);
         let l_slice = l.as_slice();
         let r_slice = r.as_slice();
         l_slice
@@ -681,7 +772,7 @@ impl VClockAlloc {
                         .enumerate()
                         .find_map(|(idx, &r)| if r == 0 { None } else { Some(idx) })
                         .expect("Invalid VClock Invariant");
-                    Some(idx)
+                    Some(idx + r_slice.len())
                 } else {
                     None
                 }
@@ -712,18 +803,18 @@ impl VClockAlloc {
             // Convert the write action into the vector clock it
             // represents for diagnostic purposes.
             write_clock = VClock::new_with_index(range.write_index, range.write);
-            ("WRITE", range.write_index, &write_clock)
+            (range.write_type.get_descriptor(), range.write_index, &write_clock)
         } else if let Some(idx) = Self::find_gt_index(&range.read, &current_clocks.clock) {
-            ("READ", idx, &range.read)
+            ("Read", idx, &range.read)
         } else if !is_atomic {
             if let Some(atomic) = range.atomic() {
                 if let Some(idx) = Self::find_gt_index(&atomic.write_vector, &current_clocks.clock)
                 {
-                    ("ATOMIC_STORE", idx, &atomic.write_vector)
+                    ("Atomic Store", idx, &atomic.write_vector)
                 } else if let Some(idx) =
                     Self::find_gt_index(&atomic.read_vector, &current_clocks.clock)
                 {
-                    ("ATOMIC_LOAD", idx, &atomic.read_vector)
+                    ("Atomic Load", idx, &atomic.read_vector)
                 } else {
                     unreachable!(
                         "Failed to report data-race for non-atomic operation: no race found"
@@ -745,8 +836,7 @@ impl VClockAlloc {
         // Throw the data-race detection.
         throw_ub_format!(
             "Data race detected between {} on {} and {} on {}, memory({:?},offset={},size={})\
-            \n\t\t -current vector clock = {:?}\
-            \n\t\t -conflicting timestamp = {:?}",
+            \n(current vector clock = {:?}, conflicting timestamp = {:?})",
             action,
             current_thread_info,
             other_action,
@@ -774,7 +864,7 @@ impl VClockAlloc {
                     return Self::report_data_race(
                         &self.global,
                         range,
-                        "READ",
+                        "Read",
                         false,
                         pointer,
                         len,
@@ -792,17 +882,17 @@ impl VClockAlloc {
         &mut self,
         pointer: Pointer<Tag>,
         len: Size,
-        action: &str,
+        write_type: WriteType,
     ) -> InterpResult<'tcx> {
         if self.global.multi_threaded.get() {
             let (index, clocks) = self.global.current_thread_state();
             for (_, range) in self.alloc_ranges.get_mut().iter_mut(pointer.offset, len) {
-                if let Err(DataRace) = range.write_race_detect(&*clocks, index) {
+                if let Err(DataRace) = range.write_race_detect(&*clocks, index, write_type) {
                     // Report data-race
                     return Self::report_data_race(
                         &self.global,
                         range,
-                        action,
+                        write_type.get_descriptor(),
                         false,
                         pointer,
                         len,
@@ -820,7 +910,7 @@ impl VClockAlloc {
     /// being created or if it is temporarily disabled during a racy read or write
     /// operation
     pub fn write<'tcx>(&mut self, pointer: Pointer<Tag>, len: Size) -> InterpResult<'tcx> {
-        self.unique_access(pointer, len, "Write")
+        self.unique_access(pointer, len, WriteType::Write)
     }
 
     /// Detect data-races for an unsynchronized deallocate operation, will not perform
@@ -828,7 +918,7 @@ impl VClockAlloc {
     /// being created or if it is temporarily disabled during a racy read or write
     /// operation
     pub fn deallocate<'tcx>(&mut self, pointer: Pointer<Tag>, len: Size) -> InterpResult<'tcx> {
-        self.unique_access(pointer, len, "Deallocate")
+        self.unique_access(pointer, len, WriteType::Deallocate)
     }
 }
 
@@ -1133,6 +1223,8 @@ impl GlobalState {
             let mut vector_info = self.vector_info.borrow_mut();
             vector_info.push(thread)
         };
+
+        log::trace!("Creating thread = {:?} with vector index = {:?}", thread, created_index);
 
         // Mark the chosen vector index as in use by the thread.
         thread_info[thread].vector_index = Some(created_index);

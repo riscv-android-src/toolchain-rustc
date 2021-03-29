@@ -1,4 +1,4 @@
-use crate::spec::{LinkerFlavor, Target};
+use crate::spec::{LinkerFlavor, StackProbeType, Target};
 
 pub fn target() -> Target {
     let mut base = super::openbsd_base::opts();
@@ -6,7 +6,8 @@ pub fn target() -> Target {
     base.max_atomic_width = Some(64);
     base.pre_link_args.get_mut(&LinkerFlavor::Gcc).unwrap().push("-m32".to_string());
     base.pre_link_args.get_mut(&LinkerFlavor::Gcc).unwrap().push("-fuse-ld=lld".to_string());
-    base.stack_probes = true;
+    // don't use probe-stack=inline-asm until rust-lang/rust#83139 is resolved.
+    base.stack_probes = StackProbeType::Call;
 
     Target {
         llvm_target: "i686-unknown-openbsd".to_string(),

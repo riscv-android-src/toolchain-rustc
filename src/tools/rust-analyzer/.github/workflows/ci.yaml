@@ -12,7 +12,7 @@ env:
   CARGO_NET_RETRY: 10
   CI: 1
   RUST_BACKTRACE: short
-  RUSTFLAGS: -D warnings
+  RUSTFLAGS: "-D warnings -W unreachable-pub"
   RUSTUP_MAX_RETRIES: 10
 
 jobs:
@@ -41,6 +41,14 @@ jobs:
     - name: Rename existing rust toolchain (Windows)
       if: matrix.os == 'windows-latest'
       run: Rename-Item C:\Users\runneradmin\.rustup\toolchains\stable-x86_64-pc-windows-msvc C:\Users\runneradmin\.rustup\toolchains\stable-x86_64-pc-windows-msvc.old
+
+    # Work around https://github.com/actions/cache/issues/403 by using GNU tar
+    # instead of BSD tar.
+    - name: Install GNU tar
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install gnu-tar
+        echo PATH="/usr/local/opt/gnu-tar/libexec/gnubin:$PATH" >> $GITHUB_ENV
 
     - name: Install Rust toolchain
       uses: actions-rs/toolchain@v1

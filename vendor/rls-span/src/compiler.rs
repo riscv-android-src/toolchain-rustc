@@ -1,7 +1,10 @@
 ///! These are the structures emitted by the compiler as part of JSON errors.
 ///! The original source can be found at
-///! https://github.com/rust-lang/rust/blob/master/src/libsyntax/json.rs
+///! https://github.com/rust-lang/rust/blob/master/src/librustc_errors/json.rs
 use std::path::PathBuf;
+
+#[cfg(feature = "derive")]
+use serde::Deserialize;
 
 use crate::{Column, OneIndexed, Row, Span};
 

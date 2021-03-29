@@ -3,7 +3,7 @@
 //! Most notable things are:
 //!
 //! * Rich text comparison, which outputs a diff.
-//! * Extracting markup (mainly, `<|>` markers) out of fixture strings.
+//! * Extracting markup (mainly, `$0` markers) out of fixture strings.
 //! * marks (see the eponymous module).
 
 #[macro_use]
@@ -20,12 +20,13 @@ use serde_json::Value;
 use stdx::lines_with_ends;
 use text_size::{TextRange, TextSize};
 
-pub use difference::Changeset as __Changeset;
+pub use dissimilar::diff as __diff;
 pub use rustc_hash::FxHashMap;
 
 pub use crate::fixture::Fixture;
 
-pub const CURSOR_MARKER: &str = "<|>";
+pub const CURSOR_MARKER: &str = "$0";
+pub const ESCAPED_CURSOR_MARKER: &str = "\\$0";
 
 /// Asserts that two strings are equal, otherwise displays a rich diff between them.
 ///
@@ -43,12 +44,12 @@ macro_rules! assert_eq_text {
         let right = $right;
         if left != right {
             if left.trim() == right.trim() {
-                eprintln!("Left:\n{:?}\n\nRight:\n{:?}\n\nWhitespace difference\n", left, right);
+                std::eprintln!("Left:\n{:?}\n\nRight:\n{:?}\n\nWhitespace difference\n", left, right);
             } else {
-                let changeset = $crate::__Changeset::new(left, right, "\n");
-                eprintln!("Left:\n{}\n\nRight:\n{}\n\nDiff:\n{}\n", left, right, changeset);
+                let diff = $crate::__diff(left, right);
+                std::eprintln!("Left:\n{}\n\nRight:\n{}\n\nDiff:\n{}\n", left, right, $crate::format_diff(diff));
             }
-            eprintln!($($tt)*);
+            std::eprintln!($($tt)*);
             panic!("text differs");
         }
     }};
@@ -62,7 +63,7 @@ pub fn extract_offset(text: &str) -> (TextSize, String) {
     }
 }
 
-/// Returns the offset of the first occurence of `<|>` marker and the copy of `text`
+/// Returns the offset of the first occurrence of `$0` marker and the copy of `text`
 /// without the marker.
 fn try_extract_offset(text: &str) -> Option<(TextSize, String)> {
     let cursor_pos = text.find(CURSOR_MARKER)?;
@@ -81,7 +82,7 @@ pub fn extract_range(text: &str) -> (TextRange, String) {
     }
 }
 
-/// Returns `TextRange` between the first two markers `<|>...<|>` and the copy
+/// Returns `TextRange` between the first two markers `$0...$0` and the copy
 /// of `text` without both of these markers.
 fn try_extract_range(text: &str) -> Option<(TextRange, String)> {
     let (start, text) = try_extract_offset(text)?;
@@ -104,11 +105,11 @@ impl From<RangeOrOffset> for TextRange {
     }
 }
 
-/// Extracts `TextRange` or `TextSize` depending on the amount of `<|>` markers
+/// Extracts `TextRange` or `TextSize` depending on the amount of `$0` markers
 /// found in `text`.
 ///
 /// # Panics
-/// Panics if no `<|>` marker is present in the `text`.
+/// Panics if no `$0` marker is present in the `text`.
 pub fn extract_range_or_offset(text: &str) -> (RangeOrOffset, String) {
     if let Some((range, text)) = try_extract_range(text) {
         return (RangeOrOffset::Range(range), text);
@@ -164,12 +165,12 @@ fn test_extract_tags() {
     assert_eq!(actual, vec![("fn main() {}", Some("fn".into())), ("main", None),]);
 }
 
-/// Inserts `<|>` marker into the `text` at `offset`.
+/// Inserts `$0` marker into the `text` at `offset`.
 pub fn add_cursor(text: &str, offset: TextSize) -> String {
     let offset: usize = offset.into();
     let mut res = String::new();
     res.push_str(&text[..offset]);
-    res.push_str("<|>");
+    res.push_str("$0");
     res.push_str(&text[offset..]);
     res
 }
@@ -321,12 +322,11 @@ fn lines_match_works() {
 /// as paths). You can use a `"{...}"` string literal as a wildcard for
 /// arbitrary nested JSON. Arrays are sorted before comparison.
 pub fn find_mismatch<'a>(expected: &'a Value, actual: &'a Value) -> Option<(&'a Value, &'a Value)> {
-    use serde_json::Value::*;
     match (expected, actual) {
-        (&Number(ref l), &Number(ref r)) if l == r => None,
-        (&Bool(l), &Bool(r)) if l == r => None,
-        (&String(ref l), &String(ref r)) if lines_match(l, r) => None,
-        (&Array(ref l), &Array(ref r)) => {
+        (Value::Number(l), Value::Number(r)) if l == r => None,
+        (Value::Bool(l), Value::Bool(r)) if l == r => None,
+        (Value::String(l), Value::String(r)) if lines_match(l, r) => None,
+        (Value::Array(l), Value::Array(r)) => {
             if l.len() != r.len() {
                 return Some((expected, actual));
             }
@@ -350,17 +350,26 @@ pub fn find_mismatch<'a>(expected: &'a Value, actual: &'a Value) -> Option<(&'a 
                 None
             }
         }
-        (&Object(ref l), &Object(ref r)) => {
+        (Value::Object(l), Value::Object(r)) => {
+            fn sorted_values(obj: &serde_json::Map<String, Value>) -> Vec<&Value> {
+                let mut entries = obj.iter().collect::<Vec<_>>();
+                entries.sort_by_key(|it| it.0);
+                entries.into_iter().map(|(_k, v)| v).collect::<Vec<_>>()
+            }
+
             let same_keys = l.len() == r.len() && l.keys().all(|k| r.contains_key(k));
             if !same_keys {
                 return Some((expected, actual));
             }
 
-            l.values().zip(r.values()).filter_map(|(l, r)| find_mismatch(l, r)).next()
+            let l = sorted_values(l);
+            let r = sorted_values(r);
+
+            l.into_iter().zip(r).filter_map(|(l, r)| find_mismatch(l, r)).next()
         }
-        (&Null, &Null) => None,
+        (Value::Null, Value::Null) => None,
         // magic string literal "{...}" acts as wildcard for any sub-JSON
-        (&String(ref l), _) if l == "{...}" => None,
+        (Value::String(l), _) if l == "{...}" => None,
         _ => Some((expected, actual)),
     }
 }
@@ -383,4 +392,17 @@ pub fn skip_slow_tests() -> bool {
 pub fn project_dir() -> PathBuf {
     let dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(dir).parent().unwrap().parent().unwrap().to_owned()
+}
+
+pub fn format_diff(chunks: Vec<dissimilar::Chunk>) -> String {
+    let mut buf = String::new();
+    for chunk in chunks {
+        let formatted = match chunk {
+            dissimilar::Chunk::Equal(text) => text.into(),
+            dissimilar::Chunk::Delete(text) => format!("\x1b[41m{}\x1b[0m", text),
+            dissimilar::Chunk::Insert(text) => format!("\x1b[42m{}\x1b[0m", text),
+        };
+        buf.push_str(&formatted);
+    }
+    buf
 }

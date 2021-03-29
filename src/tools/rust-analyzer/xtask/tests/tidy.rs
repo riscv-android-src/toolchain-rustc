@@ -3,9 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use xshell::{cmd, read_file};
 use xtask::{
     codegen::{self, Mode},
-    not_bash::{fs2, run},
     project_root, run_rustfmt, rust_files,
 };
 
@@ -38,11 +38,54 @@ fn check_code_formatting() {
 }
 
 #[test]
+fn smoke_test_docs_generation() {
+    // We don't commit docs to the repo, so we can just overwrite in tests.
+    codegen::generate_assists_docs(Mode::Overwrite).unwrap();
+    codegen::generate_feature_docs(Mode::Overwrite).unwrap();
+    codegen::generate_diagnostic_docs(Mode::Overwrite).unwrap();
+}
+
+#[test]
+fn check_lsp_extensions_docs() {
+    let expected_hash = {
+        let lsp_ext_rs =
+            read_file(project_root().join("crates/rust-analyzer/src/lsp_ext.rs")).unwrap();
+        stable_hash(lsp_ext_rs.as_str())
+    };
+
+    let actual_hash = {
+        let lsp_extensions_md =
+            read_file(project_root().join("docs/dev/lsp-extensions.md")).unwrap();
+        let text = lsp_extensions_md
+            .lines()
+            .find_map(|line| line.strip_prefix("lsp_ext.rs hash:"))
+            .unwrap()
+            .trim();
+        u64::from_str_radix(text, 16).unwrap()
+    };
+
+    if actual_hash != expected_hash {
+        panic!(
+            "
+lsp_ext.rs was changed without touching lsp-extensions.md.
+
+Expected hash: {:x}
+Actual hash:   {:x}
+
+Please adjust docs/dev/lsp-extensions.md.
+",
+            expected_hash, actual_hash
+        )
+    }
+}
+
+#[test]
 fn rust_files_are_tidy() {
     let mut tidy_docs = TidyDocs::default();
-    for path in rust_files(&project_root().join("crates")) {
-        let text = fs2::read_to_string(&path).unwrap();
+    for path in rust_files() {
+        let text = read_file(&path).unwrap();
         check_todo(&path, &text);
+        check_dbg(&path, &text);
         check_trailing_ws(&path, &text);
         deny_clippy(&path, &text);
         tidy_docs.visit(&path, &text);
@@ -52,7 +95,8 @@ fn rust_files_are_tidy() {
 
 #[test]
 fn check_merge_commits() {
-    let stdout = run!("git rev-list --merges --invert-grep --author 'bors\\[bot\\]' HEAD~19.."; echo = false)
+    let stdout = cmd!("git rev-list --merges --invert-grep --author 'bors\\[bot\\]' HEAD~19..")
+        .read()
         .unwrap();
     if !stdout.is_empty() {
         panic!(
@@ -63,8 +107,13 @@ When updating a pull-request, please rebase your feature branch
 on top of master by running `git rebase master`. If rebase fails,
 you can re-apply your changes like this:
 
-  # Abort in-progress rebase, if any.
+  # Just look around to see the current state.
+  $ git status
+  $ git log
+
+  # Abort in-progress rebase and merges, if any.
   $ git rebase --abort
+  $ git merge --abort
 
   # Make the branch point to the latest commit from master,
   # while maintaining your local changes uncommited.
@@ -73,9 +122,16 @@ you can re-apply your changes like this:
   # Commit all changes in a single batch.
   $ git commit -am'My changes'
 
+  # Verify that everything looks alright.
+  $ git status
+  $ git log
+
   # Push the changes. We did a rebase, so we need `--force` option.
   # `--force-with-lease` is a more safe (Rusty) version of `--force`.
   $ git push --force-with-lease
+
+  # Verify that both local and remote branch point to the same commit.
+  $ git log
 
 And don't fear to mess something up during a rebase -- you can
 always restore the previous state using `git ref-log`:
@@ -87,7 +143,15 @@ https://github.blog/2015-06-08-how-to-undo-almost-anything-with-git/#redo-after-
 }
 
 fn deny_clippy(path: &PathBuf, text: &String) {
-    if text.contains("[\u{61}llow(clippy") {
+    let ignore = &[
+        // The documentation in string literals may contain anything for its own purposes
+        "completion/src/generated_lint_completions.rs",
+    ];
+    if ignore.iter().any(|p| path.ends_with(p)) {
+        return;
+    }
+
+    if text.contains("\u{61}llow(clippy") {
         panic!(
             "\n\nallowing lints is forbidden: {}.
 rust-analyzer intentionally doesn't check clippy on CI.
@@ -109,13 +173,14 @@ Apache-2.0 OR BSL-1.0
 Apache-2.0 OR MIT
 Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 Apache-2.0/MIT
-BSD-2-Clause
 BSD-3-Clause
 CC0-1.0
 ISC
 MIT
 MIT / Apache-2.0
 MIT OR Apache-2.0
+MIT OR Apache-2.0 OR Zlib
+MIT OR Zlib OR Apache-2.0
 MIT/Apache-2.0
 Unlicense OR MIT
 Unlicense/MIT
@@ -125,7 +190,7 @@ Zlib OR Apache-2.0 OR MIT
     .filter(|it| !it.is_empty())
     .collect::<Vec<_>>();
 
-    let meta = run!("cargo metadata --format-version 1"; echo = false).unwrap();
+    let meta = cmd!("cargo metadata --format-version 1").read().unwrap();
     let mut licenses = meta
         .split(|c| c == ',' || c == '{' || c == '}')
         .filter(|it| it.contains(r#""license""#))
@@ -134,31 +199,79 @@ Zlib OR Apache-2.0 OR MIT
         .collect::<Vec<_>>();
     licenses.sort();
     licenses.dedup();
+    if licenses != expected {
+        let mut diff = String::new();
+
+        diff += &format!("New Licenses:\n");
+        for &l in licenses.iter() {
+            if !expected.contains(&l) {
+                diff += &format!("  {}\n", l)
+            }
+        }
+
+        diff += &format!("\nMissing Licenses:\n");
+        for &l in expected.iter() {
+            if !licenses.contains(&l) {
+                diff += &format!("  {}\n", l)
+            }
+        }
+
+        panic!("different set of licenses!\n{}", diff);
+    }
     assert_eq!(licenses, expected);
 }
 
 fn check_todo(path: &Path, text: &str) {
     let need_todo = &[
         // This file itself obviously needs to use todo (<- like this!).
-        "tests/cli.rs",
+        "tests/tidy.rs",
         // Some of our assists generate `todo!()`.
-        "tests/generated.rs",
-        "handlers/add_missing_impl_members.rs",
         "handlers/add_turbo_fish.rs",
         "handlers/generate_function.rs",
         // To support generating `todo!()` in assists, we have `expr_todo()` in
         // `ast::make`.
         "ast/make.rs",
         // The documentation in string literals may contain anything for its own purposes
-        "completion/generated_features.rs",
+        "completion/src/generated_lint_completions.rs",
     ];
     if need_todo.iter().any(|p| path.ends_with(p)) {
         return;
     }
     if text.contains("TODO") || text.contains("TOOD") || text.contains("todo!") {
+        // Generated by an assist
+        if text.contains("${0:todo!()}") {
+            return;
+        }
+
         panic!(
             "\nTODO markers or todo! macros should not be committed to the master branch,\n\
              use FIXME instead\n\
+             {}\n",
+            path.display(),
+        )
+    }
+}
+
+fn check_dbg(path: &Path, text: &str) {
+    let need_dbg = &[
+        // This file itself obviously needs to use dbg.
+        "tests/tidy.rs",
+        // Assists to remove `dbg!()`
+        "handlers/remove_dbg.rs",
+        // We have .dbg postfix
+        "completion/src/completions/postfix.rs",
+        // The documentation in string literals may contain anything for its own purposes
+        "completion/src/lib.rs",
+        "completion/src/generated_lint_completions.rs",
+        // test for doc test for remove_dbg
+        "src/tests/generated.rs",
+    ];
+    if need_dbg.iter().any(|p| path.ends_with(p)) {
+        return;
+    }
+    if text.contains("dbg!") {
+        panic!(
+            "\ndbg! macros should not be committed to the master branch,\n\
              {}\n",
             path.display(),
         )
@@ -211,7 +324,7 @@ impl TidyDocs {
         }
 
         fn is_exclude_file(d: &Path) -> bool {
-            let file_names = ["tests.rs"];
+            let file_names = ["tests.rs", "famous_defs_fixture.rs"];
 
             d.file_name()
                 .unwrap_or_default()
@@ -271,4 +384,14 @@ fn is_exclude_dir(p: &Path, dirs_to_exclude: &[&str]) -> bool {
         .skip(1)
         .filter_map(|it| it.as_os_str().to_str())
         .any(|it| dirs_to_exclude.contains(&it))
+}
+
+#[allow(deprecated)]
+fn stable_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher, SipHasher};
+
+    let text = text.replace('\r', "");
+    let mut hasher = SipHasher::default();
+    text.hash(&mut hasher);
+    hasher.finish()
 }

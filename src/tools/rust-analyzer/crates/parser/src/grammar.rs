@@ -55,15 +55,19 @@ pub(crate) mod fragments {
     use super::*;
 
     pub(crate) use super::{
-        expressions::block_expr, paths::type_path as path, patterns::pattern, types::type_,
+        expressions::block_expr, paths::type_path as path, patterns::pattern_single, types::type_,
     };
 
     pub(crate) fn expr(p: &mut Parser) {
-        let _ = expressions::expr(p);
+        let _ = expressions::expr_with_attrs(p);
     }
 
     pub(crate) fn stmt(p: &mut Parser) {
         expressions::stmt(p, expressions::StmtWithSemi::No)
+    }
+
+    pub(crate) fn stmt_optional_semi(p: &mut Parser) {
+        expressions::stmt(p, expressions::StmtWithSemi::Optional)
     }
 
     pub(crate) fn opt_visibility(p: &mut Parser) {
@@ -133,6 +137,10 @@ pub(crate) mod fragments {
 
         m.complete(p, MACRO_STMTS);
     }
+
+    pub(crate) fn attr(p: &mut Parser) {
+        attributes::outer_attrs(p)
+    }
 }
 
 pub(crate) fn reparser(
@@ -182,13 +190,25 @@ fn opt_visibility(p: &mut Parser) -> bool {
                     // test crate_visibility
                     // pub(crate) struct S;
                     // pub(self) struct S;
-                    // pub(self) struct S;
-                    // pub(self) struct S;
-                    T![crate] | T![self] | T![super] => {
+                    // pub(super) struct S;
+
+                    // test pub_parens_typepath
+                    // struct B(pub (super::A));
+                    // struct B(pub (crate::A,));
+                    T![crate] | T![self] | T![super] if p.nth(2) != T![:] => {
                         p.bump_any();
+                        let path_m = p.start();
+                        let path_segment_m = p.start();
+                        let name_ref_m = p.start();
                         p.bump_any();
+                        name_ref_m.complete(p, NAME_REF);
+                        path_segment_m.complete(p, PATH_SEGMENT);
+                        path_m.complete(p, PATH);
                         p.expect(T![')']);
                     }
+                    // test crate_visibility_in
+                    // pub(in super::A) struct S;
+                    // pub(in crate) struct S;
                     T![in] => {
                         p.bump_any();
                         p.bump_any();
@@ -232,10 +252,7 @@ fn abi(p: &mut Parser) {
     assert!(p.at(T![extern]));
     let abi = p.start();
     p.bump(T![extern]);
-    match p.current() {
-        STRING | RAW_STRING => p.bump_any(),
-        _ => (),
-    }
+    p.eat(STRING);
     abi.complete(p, ABI);
 }
 
@@ -280,6 +297,13 @@ fn name_ref_or_index(p: &mut Parser) {
     let m = p.start();
     p.bump_any();
     m.complete(p, NAME_REF);
+}
+
+fn lifetime(p: &mut Parser) {
+    assert!(p.at(LIFETIME_IDENT));
+    let m = p.start();
+    p.bump(LIFETIME_IDENT);
+    m.complete(p, LIFETIME);
 }
 
 fn error_block(p: &mut Parser, message: &str) {

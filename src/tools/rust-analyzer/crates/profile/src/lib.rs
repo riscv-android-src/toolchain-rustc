@@ -15,20 +15,12 @@ pub use crate::{
     stop_watch::{StopWatch, StopWatchSpan},
 };
 
-/// Prints backtrace to stderr, useful for debugging.
-#[cfg(feature = "backtrace")]
-pub fn print_backtrace() {
-    let bt = backtrace::Backtrace::new();
-    eprintln!("{:?}", bt);
-}
-#[cfg(not(feature = "backtrace"))]
-pub fn print_backtrace() {
-    eprintln!(
-        r#"enable the backtrace feature:
-    profile = {{ path = "../profile", features = [ "backtrace"] }}
-"#
-    );
-}
+pub use countme;
+/// Include `_c: Count<Self>` field in important structs to count them.
+///
+/// To view the counts, run with `RA_COUNT=1`. The overhead of disabled count is
+/// almost zero.
+pub use countme::Count;
 
 thread_local!(static IN_SCOPE: RefCell<bool> = RefCell::new(false));
 

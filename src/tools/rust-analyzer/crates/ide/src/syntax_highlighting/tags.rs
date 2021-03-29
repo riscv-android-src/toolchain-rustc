@@ -3,55 +3,43 @@
 
 use std::{fmt, ops};
 
+use ide_db::SymbolKind;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Highlight {
-    pub tag: HighlightTag,
-    pub modifiers: HighlightModifiers,
+    pub tag: HlTag,
+    pub mods: HlMods,
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct HighlightModifiers(u32);
+pub struct HlMods(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum HighlightTag {
-    Attribute,
+pub enum HlTag {
+    Symbol(SymbolKind),
+
     BoolLiteral,
     BuiltinType,
     ByteLiteral,
     CharLiteral,
-    Comment,
-    Constant,
-    Enum,
-    EnumVariant,
-    EscapeSequence,
-    Field,
-    Function,
-    Generic,
-    Keyword,
-    Lifetime,
-    Macro,
-    Module,
     NumericLiteral,
-    Punctuation,
-    SelfKeyword,
-    SelfType,
-    Static,
     StringLiteral,
-    Struct,
-    Trait,
-    TypeAlias,
-    TypeParam,
-    Union,
-    ValueParam,
-    Local,
-    UnresolvedReference,
+    Attribute,
+    Comment,
+    EscapeSequence,
     FormatSpecifier,
+    Keyword,
+    Punctuation(HlPunct),
     Operator,
+    UnresolvedReference,
+
+    // For things which don't have a specific highlight.
+    None,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
-pub enum HighlightModifier {
+pub enum HlMod {
     /// Used to differentiate individual elements within attributes.
     Attribute = 0,
     /// Used with keywords like `if` and `break`.
@@ -63,77 +51,126 @@ pub enum HighlightModifier {
     Injected,
     Mutable,
     Consuming,
+    Callable,
+    /// Used for associated functions
+    Static,
+    /// Used for items in impls&traits.
+    Associated,
+
+    /// Keep this last!
     Unsafe,
 }
 
-impl HighlightTag {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum HlPunct {
+    /// []
+    Bracket,
+    /// {}
+    Brace,
+    /// ()
+    Parenthesis,
+    /// <>
+    Angle,
+    /// ,
+    Comma,
+    /// .
+    Dot,
+    /// :
+    Colon,
+    /// ;
+    Semi,
+    ///
+    Other,
+}
+
+impl HlTag {
     fn as_str(self) -> &'static str {
         match self {
-            HighlightTag::Attribute => "attribute",
-            HighlightTag::BoolLiteral => "bool_literal",
-            HighlightTag::BuiltinType => "builtin_type",
-            HighlightTag::ByteLiteral => "byte_literal",
-            HighlightTag::CharLiteral => "char_literal",
-            HighlightTag::Comment => "comment",
-            HighlightTag::Constant => "constant",
-            HighlightTag::Enum => "enum",
-            HighlightTag::EnumVariant => "enum_variant",
-            HighlightTag::EscapeSequence => "escape_sequence",
-            HighlightTag::Field => "field",
-            HighlightTag::FormatSpecifier => "format_specifier",
-            HighlightTag::Function => "function",
-            HighlightTag::Generic => "generic",
-            HighlightTag::Keyword => "keyword",
-            HighlightTag::Lifetime => "lifetime",
-            HighlightTag::Punctuation => "punctuation",
-            HighlightTag::Macro => "macro",
-            HighlightTag::Module => "module",
-            HighlightTag::NumericLiteral => "numeric_literal",
-            HighlightTag::Operator => "operator",
-            HighlightTag::SelfKeyword => "self_keyword",
-            HighlightTag::SelfType => "self_type",
-            HighlightTag::Static => "static",
-            HighlightTag::StringLiteral => "string_literal",
-            HighlightTag::Struct => "struct",
-            HighlightTag::Trait => "trait",
-            HighlightTag::TypeAlias => "type_alias",
-            HighlightTag::TypeParam => "type_param",
-            HighlightTag::Union => "union",
-            HighlightTag::ValueParam => "value_param",
-            HighlightTag::Local => "variable",
-            HighlightTag::UnresolvedReference => "unresolved_reference",
+            HlTag::Symbol(symbol) => match symbol {
+                SymbolKind::Const => "constant",
+                SymbolKind::Static => "static",
+                SymbolKind::Enum => "enum",
+                SymbolKind::Variant => "enum_variant",
+                SymbolKind::Struct => "struct",
+                SymbolKind::Union => "union",
+                SymbolKind::Field => "field",
+                SymbolKind::Module => "module",
+                SymbolKind::Trait => "trait",
+                SymbolKind::Function => "function",
+                SymbolKind::TypeAlias => "type_alias",
+                SymbolKind::TypeParam => "type_param",
+                SymbolKind::ConstParam => "const_param",
+                SymbolKind::LifetimeParam => "lifetime",
+                SymbolKind::Macro => "macro",
+                SymbolKind::Local => "variable",
+                SymbolKind::Label => "label",
+                SymbolKind::ValueParam => "value_param",
+                SymbolKind::SelfParam => "self_keyword",
+                SymbolKind::Impl => "self_type",
+            },
+            HlTag::Attribute => "attribute",
+            HlTag::BoolLiteral => "bool_literal",
+            HlTag::BuiltinType => "builtin_type",
+            HlTag::ByteLiteral => "byte_literal",
+            HlTag::CharLiteral => "char_literal",
+            HlTag::Comment => "comment",
+            HlTag::EscapeSequence => "escape_sequence",
+            HlTag::FormatSpecifier => "format_specifier",
+            HlTag::Keyword => "keyword",
+            HlTag::Punctuation(punct) => match punct {
+                HlPunct::Bracket => "bracket",
+                HlPunct::Brace => "brace",
+                HlPunct::Parenthesis => "parenthesis",
+                HlPunct::Angle => "angle",
+                HlPunct::Comma => "comma",
+                HlPunct::Dot => "dot",
+                HlPunct::Colon => "colon",
+                HlPunct::Semi => "semicolon",
+                HlPunct::Other => "punctuation",
+            },
+            HlTag::NumericLiteral => "numeric_literal",
+            HlTag::Operator => "operator",
+            HlTag::StringLiteral => "string_literal",
+            HlTag::UnresolvedReference => "unresolved_reference",
+            HlTag::None => "none",
         }
     }
 }
 
-impl fmt::Display for HighlightTag {
+impl fmt::Display for HlTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.as_str(), f)
     }
 }
 
-impl HighlightModifier {
-    const ALL: &'static [HighlightModifier] = &[
-        HighlightModifier::Attribute,
-        HighlightModifier::ControlFlow,
-        HighlightModifier::Definition,
-        HighlightModifier::Documentation,
-        HighlightModifier::Injected,
-        HighlightModifier::Mutable,
-        HighlightModifier::Consuming,
-        HighlightModifier::Unsafe,
+impl HlMod {
+    const ALL: &'static [HlMod; HlMod::Unsafe as u8 as usize + 1] = &[
+        HlMod::Attribute,
+        HlMod::ControlFlow,
+        HlMod::Definition,
+        HlMod::Documentation,
+        HlMod::Injected,
+        HlMod::Mutable,
+        HlMod::Consuming,
+        HlMod::Callable,
+        HlMod::Static,
+        HlMod::Associated,
+        HlMod::Unsafe,
     ];
 
     fn as_str(self) -> &'static str {
         match self {
-            HighlightModifier::Attribute => "attribute",
-            HighlightModifier::ControlFlow => "control",
-            HighlightModifier::Definition => "declaration",
-            HighlightModifier::Documentation => "documentation",
-            HighlightModifier::Injected => "injected",
-            HighlightModifier::Mutable => "mutable",
-            HighlightModifier::Consuming => "consuming",
-            HighlightModifier::Unsafe => "unsafe",
+            HlMod::Attribute => "attribute",
+            HlMod::ControlFlow => "control",
+            HlMod::Definition => "declaration",
+            HlMod::Documentation => "documentation",
+            HlMod::Injected => "injected",
+            HlMod::Mutable => "mutable",
+            HlMod::Consuming => "consuming",
+            HlMod::Unsafe => "unsafe",
+            HlMod::Callable => "callable",
+            HlMod::Static => "static",
+            HlMod::Associated => "associated",
         }
     }
 
@@ -142,7 +179,7 @@ impl HighlightModifier {
     }
 }
 
-impl fmt::Display for HighlightModifier {
+impl fmt::Display for HlMod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.as_str(), f)
     }
@@ -151,56 +188,63 @@ impl fmt::Display for HighlightModifier {
 impl fmt::Display for Highlight {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.tag)?;
-        for modifier in self.modifiers.iter() {
+        for modifier in self.mods.iter() {
             write!(f, ".{}", modifier)?
         }
         Ok(())
     }
 }
 
-impl From<HighlightTag> for Highlight {
-    fn from(tag: HighlightTag) -> Highlight {
+impl From<HlTag> for Highlight {
+    fn from(tag: HlTag) -> Highlight {
         Highlight::new(tag)
     }
 }
 
 impl Highlight {
-    pub(crate) fn new(tag: HighlightTag) -> Highlight {
-        Highlight { tag, modifiers: HighlightModifiers::default() }
+    pub(crate) fn new(tag: HlTag) -> Highlight {
+        Highlight { tag, mods: HlMods::default() }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.tag == HlTag::None && self.mods == HlMods::default()
     }
 }
 
-impl ops::BitOr<HighlightModifier> for HighlightTag {
+impl ops::BitOr<HlMod> for HlTag {
     type Output = Highlight;
 
-    fn bitor(self, rhs: HighlightModifier) -> Highlight {
+    fn bitor(self, rhs: HlMod) -> Highlight {
         Highlight::new(self) | rhs
     }
 }
 
-impl ops::BitOrAssign<HighlightModifier> for HighlightModifiers {
-    fn bitor_assign(&mut self, rhs: HighlightModifier) {
+impl ops::BitOrAssign<HlMod> for HlMods {
+    fn bitor_assign(&mut self, rhs: HlMod) {
         self.0 |= rhs.mask();
     }
 }
 
-impl ops::BitOrAssign<HighlightModifier> for Highlight {
-    fn bitor_assign(&mut self, rhs: HighlightModifier) {
-        self.modifiers |= rhs;
+impl ops::BitOrAssign<HlMod> for Highlight {
+    fn bitor_assign(&mut self, rhs: HlMod) {
+        self.mods |= rhs;
     }
 }
 
-impl ops::BitOr<HighlightModifier> for Highlight {
+impl ops::BitOr<HlMod> for Highlight {
     type Output = Highlight;
 
-    fn bitor(mut self, rhs: HighlightModifier) -> Highlight {
+    fn bitor(mut self, rhs: HlMod) -> Highlight {
         self |= rhs;
         self
     }
 }
 
-impl HighlightModifiers {
-    pub fn iter(self) -> impl Iterator<Item = HighlightModifier> {
-        HighlightModifier::ALL.iter().copied().filter(move |it| self.0 & it.mask() == it.mask())
+impl HlMods {
+    pub fn contains(self, m: HlMod) -> bool {
+        self.0 & m.mask() == m.mask()
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = HlMod> {
+        HlMod::ALL.iter().copied().filter(move |it| self.0 & it.mask() == it.mask())
     }
 }

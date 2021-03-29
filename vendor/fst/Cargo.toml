@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "fst"
-version = "0.4.4"
+version = "0.4.5"
 authors = ["Andrew Gallant <jamslam@gmail.com>"]
 description = "Use finite state transducers to compactly represents sets or maps of many\nstrings (> 1 billion is possible).\n"
 homepage = "https://github.com/BurntSushi/fst"

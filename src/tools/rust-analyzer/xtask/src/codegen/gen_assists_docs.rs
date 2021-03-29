@@ -1,10 +1,10 @@
 //! Generates `assists.md` documentation.
 
-use std::{fmt, fs, path::Path};
+use std::{fmt, path::Path};
 
 use crate::{
     codegen::{self, extract_comment_blocks_with_empty_lines, reformat, Location, Mode, PREAMBLE},
-    project_root, rust_files, Result,
+    project_root, rust_files_in, Result,
 };
 
 pub fn generate_assists_tests(mode: Mode) -> Result<()> {
@@ -32,14 +32,14 @@ struct Assist {
 impl Assist {
     fn collect() -> Result<Vec<Assist>> {
         let mut res = Vec::new();
-        for path in rust_files(&project_root().join("crates/assists/src/handlers")) {
+        for path in rust_files_in(&project_root().join("crates/assists/src/handlers")) {
             collect_file(&mut res, path.as_path())?;
         }
         res.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
         return Ok(res);
 
         fn collect_file(acc: &mut Vec<Assist>, path: &Path) -> Result<()> {
-            let text = fs::read_to_string(path)?;
+            let text = xshell::read_file(path)?;
             let comment_blocks = extract_comment_blocks_with_empty_lines("Assist", &text);
 
             for block in comment_blocks {
@@ -86,8 +86,8 @@ impl Assist {
 
 impl fmt::Display for Assist {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let before = self.before.replace("<|>", "┃"); // Unicode pseudo-graphics bar
-        let after = self.after.replace("<|>", "┃");
+        let before = self.before.replace("$0", "┃"); // Unicode pseudo-graphics bar
+        let after = self.after.replace("$0", "┃");
         writeln!(
             f,
             "[discrete]\n=== `{}`
@@ -134,7 +134,7 @@ r#####"
 
         buf.push_str(&test)
     }
-    let buf = reformat(buf)?;
+    let buf = reformat(&buf)?;
     codegen::update(&project_root().join("crates/assists/src/tests/generated.rs"), &buf, mode)
 }
 

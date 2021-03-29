@@ -181,7 +181,7 @@ impl Rand64 {
     }
 
     /// Same as `Rand32::new_inc()`
-    fn new_inc(seed: u128, increment: u128) -> Self {
+    pub fn new_inc(seed: u128, increment: u128) -> Self {
         let mut rng = Self {
             state: 0,
             inc: increment.wrapping_shl(1) | 1,

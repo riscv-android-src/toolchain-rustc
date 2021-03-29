@@ -32,6 +32,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         if self.suggest_calling_boxed_future_when_appropriate(err, expr, expected, expr_ty) {
             return;
         }
+        self.suggest_no_capture_closure(err, expected, expr_ty);
         self.suggest_boxing_when_appropriate(err, expr, expected, expr_ty);
         self.suggest_missing_parentheses(err, expr);
         self.note_need_for_fn_pointer(err, expected, expr_ty);
@@ -815,6 +816,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             |err: &mut DiagnosticBuilder<'_>,
              found_to_exp_is_fallible: bool,
              exp_to_found_is_fallible: bool| {
+                let exp_is_lhs =
+                    expected_ty_expr.map(|e| self.tcx.hir().is_lhs(e.hir_id)).unwrap_or(false);
+
+                if exp_is_lhs {
+                    return;
+                }
+
                 let always_fallible = found_to_exp_is_fallible
                     && (exp_to_found_is_fallible || expected_ty_expr.is_none());
                 let msg = if literal_is_ty_suffixed(expr) {

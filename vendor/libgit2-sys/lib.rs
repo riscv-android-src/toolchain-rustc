@@ -704,6 +704,21 @@ pub type git_treebuilder_filter_cb =
 
 pub type git_revwalk_hide_cb = Option<extern "C" fn(*const git_oid, *mut c_void) -> c_int>;
 
+git_enum! {
+    pub enum git_tree_update_t {
+        GIT_TREE_UPDATE_UPSERT = 0,
+        GIT_TREE_UPDATE_REMOVE = 1,
+    }
+}
+
+#[repr(C)]
+pub struct git_tree_update {
+    pub action: git_tree_update_t,
+    pub id: git_oid,
+    pub filemode: git_filemode_t,
+    pub path: *const c_char,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct git_buf {
@@ -2531,6 +2546,13 @@ extern "C" {
         callback: git_treewalk_cb,
         payload: *mut c_void,
     ) -> c_int;
+    pub fn git_tree_create_updated(
+        out: *mut git_oid,
+        repo: *mut git_repository,
+        baseline: *mut git_tree,
+        nupdates: usize,
+        updates: *const git_tree_update,
+    ) -> c_int;
 
     // treebuilder
     pub fn git_treebuilder_new(
@@ -3090,6 +3112,15 @@ extern "C" {
         analysis_out: *mut git_merge_analysis_t,
         pref_out: *mut git_merge_preference_t,
         repo: *mut git_repository,
+        their_heads: *mut *const git_annotated_commit,
+        their_heads_len: usize,
+    ) -> c_int;
+
+    pub fn git_merge_analysis_for_ref(
+        analysis_out: *mut git_merge_analysis_t,
+        pref_out: *mut git_merge_preference_t,
+        repo: *mut git_repository,
+        git_reference: *mut git_reference,
         their_heads: *mut *const git_annotated_commit,
         their_heads_len: usize,
     ) -> c_int;

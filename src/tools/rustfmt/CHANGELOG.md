@@ -2,6 +2,93 @@
 
 ## [Unreleased]
 
+## [1.4.36] 2021-02-07
+
+### Changed
+
+- `rustc-ap-*` crates updated to v705.0.0
+
+### Install/Download Options
+- **crates.io package** - *pending*
+- **rustup (nightly)** - *pending*
+- **GitHub Release Binaries** - [Release v1.4.36](https://github.com/rust-lang/rustfmt/releases/tag/v1.4.36)
+- **Build from source** - [Tag v1.4.36](https://github.com/rust-lang/rustfmt/tree/v1.4.36), see instructions for how to [install rustfmt from source][install-from-source]
+
+## [1.4.35] 2021-02-03
+
+### Changed
+
+- `rustc-ap-*` crates updated to v702.0.0
+
+### Install/Download Options
+- **crates.io package** - *pending*
+- **rustup (nightly)** - *n/a (superseded by [v1.4.36](#1436-2021-02-07))
+- **GitHub Release Binaries** - [Release v1.4.35](https://github.com/rust-lang/rustfmt/releases/tag/v1.4.35)
+- **Build from source** - [Tag v1.4.35](https://github.com/rust-lang/rustfmt/tree/v1.4.35), see instructions for how to [install rustfmt from source][install-from-source]
+
+## [1.4.34] 2021-01-28
+
+### Fixed
+- Don't insert trailing comma on (base-less) rest in struct literals within macros ([#4675](https://github.com/rust-lang/rustfmt/issues/4675))
+
+### Install/Download Options
+- **crates.io package** - *pending*
+- **rustup (nightly)** - Starting in `2021-01-31`
+- **GitHub Release Binaries** - [Release v1.4.34](https://github.com/rust-lang/rustfmt/releases/tag/v1.4.34)
+- **Build from source** - [Tag v1.4.34](https://github.com/rust-lang/rustfmt/tree/v1.4.34), see instructions for how to [install rustfmt from source][install-from-source]
+
+## [1.4.33] 2021-01-27
+
+### Changed
+- `merge_imports` configuration has been deprecated in favor of the new `imports_granularity` option. Any existing usage of `merge_imports` will be automatically mapped to the corresponding value on `imports_granularity` with a warning message printed to encourage users to update their config files.
+
+### Added
+- New `imports_granularity` option has been added which succeeds `merge_imports`. This new option supports several additional variants which allow users to merge imports at different levels (crate or module), and even flatten imports to have a single use statement per item. ([PR #4634](https://github.com/rust-lang/rustfmt/pull/4634), [PR #4639](https://github.com/rust-lang/rustfmt/pull/4639))
+
+See the section on the configuration site for more information
+https://rust-lang.github.io/rustfmt/?version=v1.4.33&search=#imports_granularity
+
+### Fixed
+- Fix erroneous removal of `const` keyword on const trait impl ([#4084](https://github.com/rust-lang/rustfmt/issues/4084))
+- Fix incorrect span usage wit const generics in supertraits ([#4204](https://github.com/rust-lang/rustfmt/issues/4204))
+- Use correct span for const generic params ([#4263](https://github.com/rust-lang/rustfmt/issues/4263))
+- Correct span on const generics to include type bounds ([#4310](https://github.com/rust-lang/rustfmt/issues/4310))
+- Idempotence issue on blocks containing only empty statements ([#4627](https://github.com/rust-lang/rustfmt/issues/4627) and [#3868](https://github.com/rust-lang/rustfmt/issues/3868))
+- Fix issue with semicolon placement on required functions that have a trailing comment that ends in a line-style comment before the semicolon ([#4646](https://github.com/rust-lang/rustfmt/issues/4646))
+- Avoid shared interned cfg_if symbol since rustfmt can re-initialize the rustc_ast globals on multiple inputs ([#4656](https://github.com/rust-lang/rustfmt/issues/4656))
+
+### Install/Download Options
+- **crates.io package** - *pending*
+- **rustup (nightly)** - n/a (superseded by [v1.4.34](#1434-2021-01-28))
+- **GitHub Release Binaries** - [Release v1.4.33](https://github.com/rust-lang/rustfmt/releases/tag/v1.4.33)
+- **Build from source** - [Tag v1.4.33](https://github.com/rust-lang/rustfmt/tree/v1.4.33), see instructions for how to [install rustfmt from source][install-from-source]
+
+## [1.4.32] 2021-01-16
+
+### Fixed
+- Indentation now correct on first bound in cases where the generic bounds are multiline formatted and the first bound itself is multiline formatted ([#4636](https://github.com/rust-lang/rustfmt/issues/4636))
+
+### Install/Download Options
+- **crates.io package** - *pending*
+- **rustup (nightly)** - Starting in `2021-01-18`
+- **GitHub Release Binaries** - [Release v1.4.32](https://github.com/rust-lang/rustfmt/releases/tag/v1.4.32)
+- **Build from source** - [Tag v1.4.32](https://github.com/rust-lang/rustfmt/tree/v1.4.32), see instructions for how to [install rustfmt from source][install-from-source]
+
+## [1.4.31] 2021-01-09
+
+### Changed
+
+- `rustc-ap-*` crates updated to v697.0.0
+
+### Added
+- Support for 2021 Edition [#4618](https://github.com/rust-lang/rustfmt/pull/4618))
+
+### Install/Download Options
+- **crates.io package** - *pending*
+- **rustup (nightly)** - Starting in `2021-01-16`
+- **GitHub Release Binaries** - [Release v1.4.31](https://github.com/rust-lang/rustfmt/releases/tag/v1.4.31)
+- **Build from source** - [Tag v1.4.31](https://github.com/rust-lang/rustfmt/tree/v1.4.31), see instructions for how to [install rustfmt from source][install-from-source]
+
 ## [1.4.30] 2020-12-20
 
 ### Fixed
@@ -11,7 +98,7 @@
 
 ### Install/Download Options
 - **crates.io package** - *pending*
-- **rustup (nightly)** - *pending*
+- **rustup (nightly)** - Starting in `2020-12-25`
 - **GitHub Release Binaries** - [Release v1.4.30](https://github.com/rust-lang/rustfmt/releases/tag/v1.4.30)
 - **Build from source** - [Tag v1.4.30](https://github.com/rust-lang/rustfmt/tree/v1.4.30), see instructions for how to [install rustfmt from source][install-from-source]
 

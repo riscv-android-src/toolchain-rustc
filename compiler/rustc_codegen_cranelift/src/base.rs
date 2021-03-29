@@ -2,6 +2,8 @@
 
 use rustc_index::vec::IndexVec;
 use rustc_middle::ty::adjustment::PointerCast;
+use rustc_middle::ty::layout::FnAbiExt;
+use rustc_target::abi::call::FnAbi;
 
 use crate::prelude::*;
 
@@ -19,7 +21,8 @@ pub(crate) fn codegen_fn<'tcx>(
     let mir = tcx.instance_mir(instance.def);
 
     // Declare function
-    let (name, sig) = get_function_name_and_sig(tcx, cx.module.isa().triple(), instance, false);
+    let name = tcx.symbol_name(instance).name.to_string();
+    let sig = get_function_sig(tcx, cx.module.isa().triple(), instance);
     let func_id = cx.module.declare_function(&name, linkage, &sig).unwrap();
 
     cx.cached_context.clear();
@@ -50,6 +53,7 @@ pub(crate) fn codegen_fn<'tcx>(
 
         instance,
         mir,
+        fn_abi: Some(FnAbi::of_instance(&RevealAllLayoutCx(tcx), instance, &[])),
 
         bcx,
         block_map,
@@ -117,6 +121,11 @@ pub(crate) fn codegen_fn<'tcx>(
     context.compute_domtree();
     context.eliminate_unreachable_code(cx.module.isa()).unwrap();
     context.dce(cx.module.isa()).unwrap();
+    // Some Cranelift optimizations expect the domtree to not yet be computed and as such don't
+    // invalidate it when it would change.
+    context.domtree.clear();
+
+    context.want_disasm = crate::pretty_clif::should_write_ir(tcx);
 
     // Define function
     let module = &mut cx.module;
@@ -139,6 +148,16 @@ pub(crate) fn codegen_fn<'tcx>(
         &context,
         &clif_comments,
     );
+
+    if let Some(mach_compile_result) = &context.mach_compile_result {
+        if let Some(disasm) = &mach_compile_result.disasm {
+            crate::pretty_clif::write_ir_file(
+                tcx,
+                &format!("{}.vcode", tcx.symbol_name(instance).name),
+                |file| file.write_all(disasm.as_bytes()),
+            )
+        }
+    }
 
     // Define debuginfo for function
     let isa = cx.module.isa();
@@ -307,7 +326,9 @@ fn codegen_fn_content(fx: &mut FunctionCx<'_, '_, impl Module>) {
             } => {
                 let discr = codegen_operand(fx, discr).load_scalar(fx);
 
-                if switch_ty.kind() == fx.tcx.types.bool.kind() {
+                let use_bool_opt = switch_ty.kind() == fx.tcx.types.bool.kind()
+                    || (targets.iter().count() == 1 && targets.iter().next().unwrap().0 == 0);
+                if use_bool_opt {
                     assert_eq!(targets.iter().count(), 1);
                     let (then_value, then_block) = targets.iter().next().unwrap();
                     let then_block = fx.get_block(then_block);
@@ -325,12 +346,22 @@ fn codegen_fn_content(fx: &mut FunctionCx<'_, '_, impl Module>) {
                     let discr = crate::optimize::peephole::maybe_unwrap_bint(&mut fx.bcx, discr);
                     let discr =
                         crate::optimize::peephole::make_branchable_value(&mut fx.bcx, discr);
-                    if test_zero {
-                        fx.bcx.ins().brz(discr, then_block, &[]);
-                        fx.bcx.ins().jump(else_block, &[]);
+                    if let Some(taken) = crate::optimize::peephole::maybe_known_branch_taken(
+                        &fx.bcx, discr, test_zero,
+                    ) {
+                        if taken {
+                            fx.bcx.ins().jump(then_block, &[]);
+                        } else {
+                            fx.bcx.ins().jump(else_block, &[]);
+                        }
                     } else {
-                        fx.bcx.ins().brnz(discr, then_block, &[]);
-                        fx.bcx.ins().jump(else_block, &[]);
+                        if test_zero {
+                            fx.bcx.ins().brz(discr, then_block, &[]);
+                            fx.bcx.ins().jump(else_block, &[]);
+                        } else {
+                            fx.bcx.ins().brnz(discr, then_block, &[]);
+                            fx.bcx.ins().jump(else_block, &[]);
+                        }
                     }
                 } else {
                     let mut switch = ::cranelift_frontend::Switch::new();
@@ -1029,7 +1060,11 @@ pub(crate) fn codegen_panic_inner<'tcx>(
 
     fx.lib_call(
         &*symbol_name,
-        vec![fx.pointer_type, fx.pointer_type, fx.pointer_type],
+        vec![
+            AbiParam::new(fx.pointer_type),
+            AbiParam::new(fx.pointer_type),
+            AbiParam::new(fx.pointer_type),
+        ],
         vec![],
         args,
     );

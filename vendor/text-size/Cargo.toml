@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "text-size"
-version = "1.0.0"
+version = "1.1.0"
 authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>", "Christopher Durham (CAD97) <cad97@cad97.com>"]
 description = "Newtypes for text offsets"
 documentation = "https://docs.rs/text-size"

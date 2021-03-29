@@ -1,14 +1,9 @@
-use crate::normalize_deep::DeepNormalizer;
-use crate::{ExClause, Literal};
+use crate::ExClause;
 
 use chalk_derive::HasInterner;
-use chalk_ir::cast::Caster;
 use chalk_ir::interner::Interner;
 use chalk_ir::*;
-use chalk_solve::infer::ucanonicalize::UCanonicalized;
-use chalk_solve::infer::unify::UnificationResult;
 use chalk_solve::infer::InferenceTable;
-use chalk_solve::solve::truncate;
 use chalk_solve::RustIrDatabase;
 
 use std::fmt::Debug;
@@ -61,12 +56,12 @@ impl<I: Interner> SlgContextOps<'_, I> {
         let (mut infer, subst, _) = InferenceTable::from_canonical(
             self.program.interner(),
             goal.universes,
-            &goal.canonical,
+            goal.canonical.clone(),
         );
         infer
             .canonicalize(
                 self.program.interner(),
-                &ConstrainedSubst {
+                ConstrainedSubst {
                     subst,
                     constraints: Constraints::empty(self.program.interner()),
                 },
@@ -81,26 +76,10 @@ impl<I: Interner> SlgContextOps<'_, I> {
     pub(crate) fn max_size(&self) -> usize {
         self.max_size
     }
-}
 
-/// "Truncation" (called "abstraction" in the papers referenced below)
-/// refers to the act of modifying a goal or answer that has become
-/// too large in order to guarantee termination.
-///
-/// Currently we don't perform truncation (but it might me readded later).
-///
-/// Citations:
-///
-/// - Terminating Evaluation of Logic Programs with Finite Three-Valued Models
-///   - Riguzzi and Swift; ACM Transactions on Computational Logic 2013
-/// - Radial Restraint
-///   - Grosof and Swift; 2013
-pub trait TruncateOps<I: Interner> {
-    /// Check if `subgoal` is too large
-    fn goal_needs_truncation(&mut self, interner: &I, subgoal: &InEnvironment<Goal<I>>) -> bool;
-
-    /// Check if `subst` is too large
-    fn answer_needs_truncation(&mut self, interner: &I, subst: &Substitution<I>) -> bool;
+    pub(crate) fn unification_database(&self) -> &dyn UnificationDatabase<I> {
+        self.program.unification_database()
+    }
 }
 
 pub trait ResolventOps<I: Interner> {
@@ -111,6 +90,7 @@ pub trait ResolventOps<I: Interner> {
     /// The bindings in `infer` are unaffected by this operation.
     fn resolvent_clause(
         &mut self,
+        ops: &dyn UnificationDatabase<I>,
         interner: &I,
         environment: &Environment<I>,
         goal: &DomainGoal<I>,
@@ -121,216 +101,12 @@ pub trait ResolventOps<I: Interner> {
     fn apply_answer_subst(
         &mut self,
         interner: &I,
+        unification_database: &dyn UnificationDatabase<I>,
         ex_clause: &mut ExClause<I>,
         selected_goal: &InEnvironment<Goal<I>>,
         answer_table_goal: &Canonical<InEnvironment<Goal<I>>>,
-        canonical_answer_subst: &Canonical<AnswerSubst<I>>,
+        canonical_answer_subst: Canonical<AnswerSubst<I>>,
     ) -> Fallible<()>;
-}
-
-/// Methods for unifying and manipulating terms and binders.
-pub trait UnificationOps<I: Interner> {
-    // Used by: simplify
-    fn instantiate_binders_universally(&mut self, interner: &I, arg: &Binders<Goal<I>>) -> Goal<I>;
-
-    // Used by: simplify
-    fn instantiate_binders_existentially(
-        &mut self,
-        interner: &I,
-        arg: &Binders<Goal<I>>,
-    ) -> Goal<I>;
-
-    // Used by: logic (but for debugging only)
-    fn debug_ex_clause<'v>(&mut self, interner: &I, value: &'v ExClause<I>) -> Box<dyn Debug + 'v>;
-
-    // Used by: logic
-    fn fully_canonicalize_goal(
-        &mut self,
-        interner: &I,
-        value: &InEnvironment<Goal<I>>,
-    ) -> (UCanonical<InEnvironment<Goal<I>>>, UniverseMap);
-
-    // Used by: logic
-    fn canonicalize_ex_clause(
-        &mut self,
-        interner: &I,
-        value: &ExClause<I>,
-    ) -> Canonical<ExClause<I>>;
-
-    // Used by: logic
-    fn canonicalize_constrained_subst(
-        &mut self,
-        interner: &I,
-        subst: Substitution<I>,
-        constraints: Vec<InEnvironment<Constraint<I>>>,
-    ) -> Canonical<ConstrainedSubst<I>>;
-
-    // Used by: logic
-    fn canonicalize_answer_subst(
-        &mut self,
-        interner: &I,
-        subst: Substitution<I>,
-        constraints: Vec<InEnvironment<Constraint<I>>>,
-        delayed_subgoals: Vec<InEnvironment<Goal<I>>>,
-    ) -> Canonical<AnswerSubst<I>>;
-
-    // Used by: logic
-    fn invert_goal(
-        &mut self,
-        interner: &I,
-        value: &InEnvironment<Goal<I>>,
-    ) -> Option<InEnvironment<Goal<I>>>;
-
-    /// First unify the parameters, then add the residual subgoals
-    /// as new subgoals of the ex-clause.
-    /// Also add region constraints.
-    ///
-    /// If the parameters fail to unify, then `Error` is returned
-    // Used by: simplify
-    fn unify_generic_args_into_ex_clause(
-        &mut self,
-        interner: &I,
-        environment: &Environment<I>,
-        a: &GenericArg<I>,
-        b: &GenericArg<I>,
-        ex_clause: &mut ExClause<I>,
-    ) -> Fallible<()>;
-}
-
-#[derive(Clone)]
-pub struct TruncatingInferenceTable<I: Interner> {
-    max_size: usize,
-    infer: InferenceTable<I>,
-}
-
-impl<I: Interner> TruncatingInferenceTable<I> {
-    pub(crate) fn new(max_size: usize, infer: InferenceTable<I>) -> Self {
-        Self { max_size, infer }
-    }
-}
-
-impl<I: Interner> TruncateOps<I> for TruncatingInferenceTable<I> {
-    fn goal_needs_truncation(&mut self, interner: &I, subgoal: &InEnvironment<Goal<I>>) -> bool {
-        truncate::needs_truncation(interner, &mut self.infer, self.max_size, &subgoal)
-    }
-
-    fn answer_needs_truncation(&mut self, interner: &I, subst: &Substitution<I>) -> bool {
-        truncate::needs_truncation(interner, &mut self.infer, self.max_size, subst)
-    }
-}
-
-impl<I: Interner> UnificationOps<I> for TruncatingInferenceTable<I> {
-    fn instantiate_binders_universally(&mut self, interner: &I, arg: &Binders<Goal<I>>) -> Goal<I> {
-        self.infer.instantiate_binders_universally(interner, arg)
-    }
-
-    fn instantiate_binders_existentially(
-        &mut self,
-        interner: &I,
-        arg: &Binders<Goal<I>>,
-    ) -> Goal<I> {
-        self.infer.instantiate_binders_existentially(interner, arg)
-    }
-
-    fn debug_ex_clause<'v>(&mut self, interner: &I, value: &'v ExClause<I>) -> Box<dyn Debug + 'v> {
-        Box::new(DeepNormalizer::normalize_deep(
-            &mut self.infer,
-            interner,
-            value,
-        ))
-    }
-
-    fn fully_canonicalize_goal(
-        &mut self,
-        interner: &I,
-        value: &InEnvironment<Goal<I>>,
-    ) -> (UCanonical<InEnvironment<Goal<I>>>, UniverseMap) {
-        let canonicalized_goal = self.infer.canonicalize(interner, value).quantified;
-        let UCanonicalized {
-            quantified,
-            universes,
-        } = self.infer.u_canonicalize(interner, &canonicalized_goal);
-        (quantified, universes)
-    }
-
-    fn canonicalize_ex_clause(
-        &mut self,
-        interner: &I,
-        value: &ExClause<I>,
-    ) -> Canonical<ExClause<I>> {
-        self.infer.canonicalize(interner, value).quantified
-    }
-
-    fn canonicalize_constrained_subst(
-        &mut self,
-        interner: &I,
-        subst: Substitution<I>,
-        constraints: Vec<InEnvironment<Constraint<I>>>,
-    ) -> Canonical<ConstrainedSubst<I>> {
-        self.infer
-            .canonicalize(
-                interner,
-                &ConstrainedSubst {
-                    subst,
-                    constraints: Constraints::from_iter(interner, constraints),
-                },
-            )
-            .quantified
-    }
-
-    fn canonicalize_answer_subst(
-        &mut self,
-        interner: &I,
-        subst: Substitution<I>,
-        constraints: Vec<InEnvironment<Constraint<I>>>,
-        delayed_subgoals: Vec<InEnvironment<Goal<I>>>,
-    ) -> Canonical<AnswerSubst<I>> {
-        self.infer
-            .canonicalize(
-                interner,
-                &AnswerSubst {
-                    subst,
-                    constraints: Constraints::from_iter(interner, constraints),
-                    delayed_subgoals,
-                },
-            )
-            .quantified
-    }
-
-    fn invert_goal(
-        &mut self,
-        interner: &I,
-        value: &InEnvironment<Goal<I>>,
-    ) -> Option<InEnvironment<Goal<I>>> {
-        self.infer.invert(interner, value)
-    }
-
-    fn unify_generic_args_into_ex_clause(
-        &mut self,
-        interner: &I,
-        environment: &Environment<I>,
-        a: &GenericArg<I>,
-        b: &GenericArg<I>,
-        ex_clause: &mut ExClause<I>,
-    ) -> Fallible<()> {
-        let result = self.infer.unify(interner, environment, a, b)?;
-        Ok(into_ex_clause(interner, result, ex_clause))
-    }
-}
-
-/// Helper function
-fn into_ex_clause<I: Interner>(
-    interner: &I,
-    result: UnificationResult<I>,
-    ex_clause: &mut ExClause<I>,
-) {
-    ex_clause.subgoals.extend(
-        result
-            .goals
-            .into_iter()
-            .casted(interner)
-            .map(Literal::Positive),
-    );
 }
 
 trait SubstitutionExt<I: Interner> {
@@ -468,7 +244,7 @@ impl<I: Interner> MayInvalidate<'_, I> {
         }
     }
 
-    /// Returns true if the two consts could be unequal.    
+    /// Returns true if the two consts could be unequal.
     fn aggregate_lifetimes(&mut self, _: &Lifetime<I>, _: &Lifetime<I>) -> bool {
         true
     }

@@ -5,7 +5,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use base_db::{salsa, CrateId, FileId, FileLoader, FileLoaderDelegate, SourceDatabase, Upcast};
+use base_db::{
+    salsa, AnchoredPath, CrateId, FileId, FileLoader, FileLoaderDelegate, SourceDatabase, Upcast,
+};
 use hir_def::{db::DefDatabase, ModuleId};
 use hir_expand::db::AstDatabase;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -21,7 +23,7 @@ use test_utils::extract_annotations;
     crate::db::HirDatabaseStorage
 )]
 #[derive(Default)]
-pub struct TestDB {
+pub(crate) struct TestDB {
     storage: salsa::Storage<TestDB>,
     events: Mutex<Option<Vec<salsa::Event>>>,
 }
@@ -67,8 +69,8 @@ impl FileLoader for TestDB {
     fn file_text(&self, file_id: FileId) -> Arc<String> {
         FileLoaderDelegate(self).file_text(file_id)
     }
-    fn resolve_path(&self, anchor: FileId, path: &str) -> Option<FileId> {
-        FileLoaderDelegate(self).resolve_path(anchor, path)
+    fn resolve_path(&self, path: AnchoredPath) -> Option<FileId> {
+        FileLoaderDelegate(self).resolve_path(path)
     }
     fn relevant_crates(&self, file_id: FileId) -> Arc<FxHashSet<CrateId>> {
         FileLoaderDelegate(self).relevant_crates(file_id)
@@ -79,9 +81,9 @@ impl TestDB {
     pub(crate) fn module_for_file(&self, file_id: FileId) -> ModuleId {
         for &krate in self.relevant_crates(file_id).iter() {
             let crate_def_map = self.crate_def_map(krate);
-            for (local_id, data) in crate_def_map.modules.iter() {
+            for (local_id, data) in crate_def_map.modules() {
                 if data.origin.file_id() == Some(file_id) {
-                    return ModuleId { krate, local_id };
+                    return crate_def_map.module_id(local_id);
                 }
             }
         }
@@ -93,7 +95,7 @@ impl TestDB {
         let crate_graph = self.crate_graph();
         for krate in crate_graph.iter() {
             let crate_def_map = self.crate_def_map(krate);
-            for (module_id, _) in crate_def_map.modules.iter() {
+            for (module_id, _) in crate_def_map.modules() {
                 let file_id = crate_def_map[module_id].origin.file_id();
                 files.extend(file_id)
             }
@@ -113,13 +115,13 @@ impl TestDB {
 }
 
 impl TestDB {
-    pub fn log(&self, f: impl FnOnce()) -> Vec<salsa::Event> {
+    pub(crate) fn log(&self, f: impl FnOnce()) -> Vec<salsa::Event> {
         *self.events.lock().unwrap() = Some(Vec::new());
         f();
         self.events.lock().unwrap().take().unwrap()
     }
 
-    pub fn log_executed(&self, f: impl FnOnce()) -> Vec<String> {
+    pub(crate) fn log_executed(&self, f: impl FnOnce()) -> Vec<String> {
         let events = self.log(f);
         events
             .into_iter()

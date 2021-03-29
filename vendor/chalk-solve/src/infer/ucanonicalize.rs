@@ -1,19 +1,15 @@
 use crate::debug_span;
 use chalk_ir::fold::{Fold, Folder};
 use chalk_ir::interner::{HasInterner, Interner};
-use chalk_ir::visit::{Visit, Visitor};
+use chalk_ir::visit::{ControlFlow, Visit, Visitor};
 use chalk_ir::*;
 
 use super::InferenceTable;
 
 impl<I: Interner> InferenceTable<I> {
-    pub fn u_canonicalize<T>(
-        &mut self,
-        interner: &I,
-        value0: &Canonical<T>,
-    ) -> UCanonicalized<T::Result>
+    pub fn u_canonicalize<T>(interner: &I, value0: &Canonical<T>) -> UCanonicalized<T::Result>
     where
-        T: HasInterner<Interner = I> + Fold<I> + Visit<I>,
+        T: Clone + HasInterner<Interner = I> + Fold<I> + Visit<I>,
         T::Result: HasInterner<Interner = I>,
     {
         debug_span!("u_canonicalize", "{:#?}", value0);
@@ -38,6 +34,7 @@ impl<I: Interner> InferenceTable<I> {
         // full set of universes found in the original value.
         let value1 = value0
             .value
+            .clone()
             .fold_with(
                 &mut UMapToCanonical {
                     universes: &universes,
@@ -86,7 +83,7 @@ pub trait UniverseMapExt {
         canonical_value: &Canonical<T>,
     ) -> Canonical<T::Result>
     where
-        T: Fold<I> + HasInterner<Interner = I>,
+        T: Clone + Fold<I> + HasInterner<Interner = I>,
         T::Result: HasInterner<Interner = I>,
         I: Interner;
 }
@@ -165,7 +162,7 @@ impl UniverseMapExt for UniverseMap {
         canonical_value: &Canonical<T>,
     ) -> Canonical<T::Result>
     where
-        T: Fold<I> + HasInterner<Interner = I>,
+        T: Clone + Fold<I> + HasInterner<Interner = I>,
         T::Result: HasInterner<Interner = I>,
         I: Interner,
     {
@@ -178,6 +175,7 @@ impl UniverseMapExt for UniverseMap {
 
         let value = canonical_value
             .value
+            .clone()
             .fold_with(
                 &mut UMapFromCanonical {
                     interner,
@@ -205,14 +203,19 @@ impl<'i, I: Interner> Visitor<'i, I> for UCollector<'_, 'i, I>
 where
     I: 'i,
 {
-    type Result = ();
+    type BreakTy = ();
 
-    fn as_dyn(&mut self) -> &mut dyn Visitor<'i, I, Result = ()> {
+    fn as_dyn(&mut self) -> &mut dyn Visitor<'i, I, BreakTy = Self::BreakTy> {
         self
     }
 
-    fn visit_free_placeholder(&mut self, universe: PlaceholderIndex, _outer_binder: DebruijnIndex) {
+    fn visit_free_placeholder(
+        &mut self,
+        universe: PlaceholderIndex,
+        _outer_binder: DebruijnIndex,
+    ) -> ControlFlow<()> {
         self.universes.add(universe.ui);
+        ControlFlow::CONTINUE
     }
 
     fn forbid_inference_vars(&self) -> bool {
@@ -276,7 +279,7 @@ where
 
     fn fold_free_placeholder_const(
         &mut self,
-        ty: &Ty<I>,
+        ty: Ty<I>,
         universe0: PlaceholderIndex,
         _outer_binder: DebruijnIndex,
     ) -> Fallible<Const<I>> {
@@ -294,10 +297,6 @@ where
 
     fn interner(&self) -> &'i I {
         self.interner
-    }
-
-    fn target_interner(&self) -> &'i I {
-        self.interner()
     }
 }
 
@@ -346,9 +345,5 @@ where
 
     fn interner(&self) -> &'i I {
         self.interner
-    }
-
-    fn target_interner(&self) -> &'i I {
-        self.interner()
     }
 }

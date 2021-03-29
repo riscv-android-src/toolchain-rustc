@@ -2,11 +2,12 @@
 //! query, but can't be computed directly from `*Data` (ie, which need a `db`).
 use std::sync::Arc;
 
-use hir_def::generics::WherePredicateTarget;
 use hir_def::{
     adt::VariantData,
     db::DefDatabase,
-    generics::{GenericParams, TypeParamData, TypeParamProvenance},
+    generics::{
+        GenericParams, TypeParamData, TypeParamProvenance, WherePredicate, WherePredicateTypeTarget,
+    },
     path::Path,
     resolver::{HasResolver, TypeNs},
     type_ref::TypeRef,
@@ -27,14 +28,20 @@ fn direct_super_traits(db: &dyn DefDatabase, trait_: TraitId) -> Vec<TraitId> {
     generic_params
         .where_predicates
         .iter()
-        .filter_map(|pred| match &pred.target {
-            WherePredicateTarget::TypeRef(TypeRef::Path(p)) if p == &Path::from(name![Self]) => {
-                pred.bound.as_path()
-            }
-            WherePredicateTarget::TypeParam(local_id) if Some(*local_id) == trait_self => {
-                pred.bound.as_path()
-            }
-            _ => None,
+        .filter_map(|pred| match pred {
+            WherePredicate::ForLifetime { target, bound, .. }
+            | WherePredicate::TypeBound { target, bound } => match target {
+                WherePredicateTypeTarget::TypeRef(TypeRef::Path(p))
+                    if p == &Path::from(name![Self]) =>
+                {
+                    bound.as_path()
+                }
+                WherePredicateTypeTarget::TypeParam(local_id) if Some(*local_id) == trait_self => {
+                    bound.as_path()
+                }
+                _ => None,
+            },
+            WherePredicate::Lifetime { .. } => None,
         })
         .filter_map(|path| match resolver.resolve_path_in_type_ns_fully(db, path.mod_path()) {
             Some(TypeNs::TraitId(t)) => Some(t),

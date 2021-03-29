@@ -4,7 +4,7 @@
 //! The lib-proc-macro server backend is `TokenStream`-agnostic, such that
 //! we could provide any TokenStream implementation.
 //! The original idea from fedochet is using proc-macro2 as backend,
-//! we use tt instead for better intergation with RA.
+//! we use tt instead for better integration with RA.
 //!
 //! FIXME: No span and source file information is implemented yet
 
@@ -184,8 +184,7 @@ pub mod token_stream {
             let (subtree, _token_map) =
                 mbe::parse_to_token_tree(src).ok_or("Failed to parse from mbe")?;
 
-            let tt: tt::TokenTree = subtree.into();
-            Ok(tt.into())
+            Ok(TokenStream { subtree })
         }
     }
 
@@ -205,17 +204,18 @@ pub mod token_stream {
                 let content = subtree
                     .token_trees
                     .iter()
-                    .map(|tkn| {
-                        let s = to_text(tkn);
+                    .fold((String::new(), true), |(last, last_to_joint), tkn| {
+                        let s = [last, to_text(tkn)].join(if last_to_joint { "" } else { " " });
+                        let mut is_joint = false;
                         if let tt::TokenTree::Leaf(tt::Leaf::Punct(punct)) = tkn {
-                            if punct.spacing == tt::Spacing::Alone {
-                                return s + " ";
+                            if punct.spacing == tt::Spacing::Joint {
+                                is_joint = true;
                             }
                         }
-                        s
+                        (s, is_joint)
                     })
-                    .collect::<Vec<_>>()
-                    .concat();
+                    .0;
+
                 let (open, close) = match subtree.delimiter.map(|it| it.kind) {
                     None => ("", ""),
                     Some(tt::DelimiterKind::Brace) => ("{", "}"),
@@ -242,6 +242,8 @@ impl TokenStreamBuilder {
     }
 }
 
+pub struct FreeFunctions;
+
 #[derive(Clone)]
 pub struct TokenStreamIter {
     trees: IntoIter<TokenTree>,
@@ -254,6 +256,7 @@ pub struct Rustc {
 }
 
 impl server::Types for Rustc {
+    type FreeFunctions = FreeFunctions;
     type TokenStream = TokenStream;
     type TokenStreamBuilder = TokenStreamBuilder;
     type TokenStreamIter = TokenStreamIter;
@@ -265,6 +268,13 @@ impl server::Types for Rustc {
     type Diagnostic = Diagnostic;
     type Span = Span;
     type MultiSpan = Vec<Span>;
+}
+
+impl server::FreeFunctions for Rustc {
+    fn track_env_var(&mut self, _var: &str, _value: Option<&str>) {
+        // FIXME: track env var accesses
+        // https://github.com/rust-lang/rust/pull/71858
+    }
 }
 
 impl server::TokenStream for Rustc {
@@ -700,5 +710,33 @@ mod tests {
         assert_eq!(srv.string("hello_world").text, "\"hello_world\"");
         assert_eq!(srv.character('c').text, "'c'");
         assert_eq!(srv.byte_string(b"1234586\x88").text, "b\"1234586\\x88\"");
+    }
+
+    #[test]
+    fn test_rustc_server_to_string() {
+        let s = TokenStream {
+            subtree: tt::Subtree {
+                delimiter: None,
+                token_trees: vec![
+                    tt::TokenTree::Leaf(tt::Leaf::Ident(tt::Ident {
+                        text: "struct".into(),
+                        id: tt::TokenId::unspecified(),
+                    })),
+                    tt::TokenTree::Leaf(tt::Leaf::Ident(tt::Ident {
+                        text: "T".into(),
+                        id: tt::TokenId::unspecified(),
+                    })),
+                    tt::TokenTree::Subtree(tt::Subtree {
+                        delimiter: Some(tt::Delimiter {
+                            id: tt::TokenId::unspecified(),
+                            kind: tt::DelimiterKind::Brace,
+                        }),
+                        token_trees: vec![],
+                    }),
+                ],
+            },
+        };
+
+        assert_eq!(s.to_string(), "struct T {}");
     }
 }

@@ -44,7 +44,7 @@
 //! By default, Notify emits non-descript events containing only the affected path and some
 //! metadata. To get richer details about _what_ the events are about, you need to enable
 //! [`Config::PreciseEvents`](config/enum.Config.html#variant.PreciseEvents). The full event
-//! classification is described in the [`event`](event/index.html`) module documentation.
+//! classification is described in the [`event`](event/index.html) module documentation.
 //!
 //! ```
 //! # use notify::{Watcher, RecommendedWatcher, RecursiveMode, Result};
@@ -95,6 +95,8 @@
 //! # }
 //! ```
 
+// FIXME: `anymap` crate triggers this lint and we cannot do anything here.
+#![allow(where_clauses_object_safety)]
 #![deny(missing_docs)]
 
 pub use config::{Config, RecursiveMode};

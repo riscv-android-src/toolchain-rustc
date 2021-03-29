@@ -1,6 +1,5 @@
 //! The type system. We currently use this to infer types for completion, hover
 //! information and various assists.
-
 #[allow(unused)]
 macro_rules! eprintln {
     ($($tt:tt)*) => { stdx::eprintln!($($tt)*) };
@@ -30,8 +29,8 @@ use base_db::{salsa, CrateId};
 use hir_def::{
     expr::ExprId,
     type_ref::{Mutability, Rawness},
-    AdtId, AssocContainerId, DefWithBodyId, GenericDefId, HasModule, Lookup, TraitId, TypeAliasId,
-    TypeParamId,
+    AdtId, AssocContainerId, DefWithBodyId, FunctionId, GenericDefId, HasModule, LifetimeParamId,
+    Lookup, TraitId, TypeAliasId, TypeParamId,
 };
 use itertools::Itertools;
 
@@ -44,14 +43,19 @@ use crate::{
 
 pub use autoderef::autoderef;
 pub use infer::{InferTy, InferenceResult};
-pub use lower::CallableDefId;
 pub use lower::{
-    associated_type_shorthand_candidates, callable_item_sig, ImplTraitLoweringMode, TyDefId,
-    TyLoweringContext, ValueTyDefId,
+    associated_type_shorthand_candidates, callable_item_sig, CallableDefId, ImplTraitLoweringMode,
+    TyDefId, TyLoweringContext, ValueTyDefId,
 };
 pub use traits::{InEnvironment, Obligation, ProjectionPredicate, TraitEnvironment};
 
 pub use chalk_ir::{BoundVar, DebruijnIndex};
+
+#[derive(Clone, PartialEq, Eq, Debug, Hash)]
+pub enum Lifetime {
+    Parameter(LifetimeParamId),
+    Static,
+}
 
 /// A type constructor or type name: this might be something like the primitive
 /// type `bool`, a struct like `Vec`, or things like function pointers or
@@ -134,6 +138,9 @@ pub enum TypeCtor {
     /// representing the Future::Output type.
     OpaqueType(OpaqueTyId),
 
+    /// Represents a foreign type declared in external blocks.
+    ForeignType(TypeAliasId),
+
     /// The type of a specific closure.
     ///
     /// The closure signature is stored in a `FnPtr` type in the first type
@@ -168,6 +175,10 @@ impl TypeCtor {
                 let generic_params = generics(db.upcast(), type_alias.into());
                 generic_params.len()
             }
+            TypeCtor::ForeignType(type_alias) => {
+                let generic_params = generics(db.upcast(), type_alias.into());
+                generic_params.len()
+            }
             TypeCtor::OpaqueType(opaque_ty_id) => {
                 match opaque_ty_id {
                     OpaqueTyId::ReturnTypeImplTrait(func, _) => {
@@ -199,16 +210,21 @@ impl TypeCtor {
             | TypeCtor::Tuple { .. } => None,
             // Closure's krate is irrelevant for coherence I would think?
             TypeCtor::Closure { .. } => None,
-            TypeCtor::Adt(adt) => Some(adt.module(db.upcast()).krate),
+            TypeCtor::Adt(adt) => Some(adt.module(db.upcast()).krate()),
             TypeCtor::FnDef(callable) => Some(callable.krate(db)),
             TypeCtor::AssociatedType(type_alias) => {
-                Some(type_alias.lookup(db.upcast()).module(db.upcast()).krate)
+                Some(type_alias.lookup(db.upcast()).module(db.upcast()).krate())
+            }
+            TypeCtor::ForeignType(type_alias) => {
+                Some(type_alias.lookup(db.upcast()).module(db.upcast()).krate())
             }
             TypeCtor::OpaqueType(opaque_ty_id) => match opaque_ty_id {
                 OpaqueTyId::ReturnTypeImplTrait(func, _) => {
-                    Some(func.lookup(db.upcast()).module(db.upcast()).krate)
+                    Some(func.lookup(db.upcast()).module(db.upcast()).krate())
                 }
-                OpaqueTyId::AsyncBlockTypeImplTrait(def, _) => Some(def.module(db.upcast()).krate),
+                OpaqueTyId::AsyncBlockTypeImplTrait(def, _) => {
+                    Some(def.module(db.upcast()).krate())
+                }
             },
         }
     }
@@ -231,6 +247,7 @@ impl TypeCtor {
             TypeCtor::Adt(adt) => Some(adt.into()),
             TypeCtor::FnDef(callable) => Some(callable.into()),
             TypeCtor::AssociatedType(type_alias) => Some(type_alias.into()),
+            TypeCtor::ForeignType(type_alias) => Some(type_alias.into()),
             TypeCtor::OpaqueType(_impl_trait_id) => None,
         }
     }
@@ -775,6 +792,10 @@ impl Ty {
         matches!(self, Ty::Apply(ApplicationTy { ctor: TypeCtor::Never, .. }))
     }
 
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Ty::Unknown)
+    }
+
     /// If this is a `dyn Trait` type, this returns the `Trait` part.
     pub fn dyn_trait_ref(&self) -> Option<&TraitRef> {
         match self {
@@ -798,6 +819,16 @@ impl Ty {
                 TypeCtor::RawPtr(..) => Some(Ty::clone(a_ty.parameters.as_single())),
                 _ => None,
             },
+            _ => None,
+        }
+    }
+
+    pub fn as_fn_def(&self) -> Option<FunctionId> {
+        match self {
+            &Ty::Apply(ApplicationTy {
+                ctor: TypeCtor::FnDef(CallableDefId::FunctionId(func)),
+                ..
+            }) => Some(func),
             _ => None,
         }
     }
@@ -850,7 +881,7 @@ impl Ty {
             Ty::Apply(ApplicationTy { ctor: TypeCtor::OpaqueType(opaque_ty_id), .. }) => {
                 match opaque_ty_id {
                     OpaqueTyId::AsyncBlockTypeImplTrait(def, _expr) => {
-                        let krate = def.module(db.upcast()).krate;
+                        let krate = def.module(db.upcast()).krate();
                         if let Some(future_trait) = db
                             .lang_item(krate, "future_trait".into())
                             .and_then(|item| item.as_trait())
@@ -1104,5 +1135,5 @@ pub struct ReturnTypeImplTraits {
 
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
 pub(crate) struct ReturnTypeImplTrait {
-    pub bounds: Binders<Vec<GenericPredicate>>,
+    pub(crate) bounds: Binders<Vec<GenericPredicate>>,
 }

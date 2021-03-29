@@ -18,6 +18,7 @@ pub mod attr;
 pub mod path;
 pub mod type_ref;
 pub mod builtin_type;
+pub mod builtin_attr;
 pub mod diagnostics;
 pub mod per_ns;
 pub mod item_scope;
@@ -31,7 +32,6 @@ pub mod adt;
 pub mod data;
 pub mod generics;
 pub mod lang_item;
-pub mod docs;
 
 pub mod expr;
 pub mod body;
@@ -50,14 +50,18 @@ pub mod import_map;
 #[cfg(test)]
 mod test_db;
 
-use std::hash::{Hash, Hasher};
+use std::{
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
-use arena::Idx;
 use base_db::{impl_intern_key, salsa, CrateId};
 use hir_expand::{
     ast_id_map::FileAstId, eager::expand_eager_macro, hygiene::Hygiene, AstId, HirFileId, InFile,
     MacroCallId, MacroCallKind, MacroDefId, MacroDefKind,
 };
+use la_arena::Idx;
+use nameres::DefMap;
 use syntax::ast;
 
 use crate::builtin_type::BuiltinType;
@@ -69,8 +73,22 @@ use stdx::impl_from;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId {
-    pub krate: CrateId,
+    krate: CrateId,
+    block: Option<BlockId>,
     pub local_id: LocalModuleId,
+}
+
+impl ModuleId {
+    pub fn def_map(&self, db: &dyn db::DefDatabase) -> Arc<DefMap> {
+        match self.block {
+            Some(block) => db.block_def_map(block),
+            None => db.crate_def_map(self.krate),
+        }
+    }
+
+    pub fn krate(&self) -> CrateId {
+        self.krate
+    }
 }
 
 /// An ID of a module, **local** to a specific crate
@@ -216,6 +234,15 @@ pub struct ImplId(salsa::InternId);
 type ImplLoc = ItemLoc<Impl>;
 impl_intern!(ImplId, ImplLoc, intern_impl, lookup_intern_impl);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct BlockId(salsa::InternId);
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub struct BlockLoc {
+    ast_id: AstId<ast::BlockExpr>,
+    module: ModuleId,
+}
+impl_intern!(BlockId, BlockLoc, intern_block, lookup_intern_block);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeParamId {
     pub parent: GenericDefId,
@@ -223,6 +250,20 @@ pub struct TypeParamId {
 }
 
 pub type LocalTypeParamId = Idx<generics::TypeParamData>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LifetimeParamId {
+    pub parent: GenericDefId,
+    pub local_id: LocalLifetimeParamId,
+}
+pub type LocalLifetimeParamId = Idx<generics::LifetimeParamData>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConstParamId {
+    pub parent: GenericDefId,
+    pub local_id: LocalConstParamId,
+}
+pub type LocalConstParamId = Idx<generics::ConstParamData>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerId {
@@ -246,6 +287,15 @@ pub enum AdtId {
     EnumId(EnumId),
 }
 impl_from!(StructId, UnionId, EnumId for AdtId);
+
+/// A generic param
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GenericParamId {
+    TypeParamId(TypeParamId),
+    LifetimeParamId(LifetimeParamId),
+    ConstParamId(ConstParamId),
+}
+impl_from!(TypeParamId, LifetimeParamId, ConstParamId for GenericParamId);
 
 /// The defs which can be visible in the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -343,6 +393,7 @@ pub enum AttrDefId {
     TypeAliasId(TypeAliasId),
     MacroDefId(MacroDefId),
     ImplId(ImplId),
+    GenericParamId(GenericParamId),
 }
 
 impl_from!(
@@ -356,7 +407,8 @@ impl_from!(
     TraitId,
     TypeAliasId,
     MacroDefId,
-    ImplId
+    ImplId,
+    GenericParamId
     for AttrDefId
 );
 
@@ -418,6 +470,16 @@ impl HasModule for AdtId {
     }
 }
 
+impl HasModule for VariantId {
+    fn module(&self, db: &dyn db::DefDatabase) -> ModuleId {
+        match self {
+            VariantId::EnumVariantId(it) => it.parent.lookup(db).container.module(db),
+            VariantId::StructId(it) => it.lookup(db).container.module(db),
+            VariantId::UnionId(it) => it.lookup(db).container.module(db),
+        }
+    }
+}
+
 impl HasModule for DefWithBodyId {
     fn module(&self, db: &dyn db::DefDatabase) -> ModuleId {
         match self {
@@ -458,6 +520,35 @@ impl HasModule for StaticLoc {
     }
 }
 
+impl AttrDefId {
+    pub fn krate(&self, db: &dyn db::DefDatabase) -> CrateId {
+        match self {
+            AttrDefId::ModuleId(it) => it.krate,
+            AttrDefId::FieldId(it) => it.parent.module(db).krate,
+            AttrDefId::AdtId(it) => it.module(db).krate,
+            AttrDefId::FunctionId(it) => it.lookup(db).module(db).krate,
+            AttrDefId::EnumVariantId(it) => it.parent.lookup(db).container.module(db).krate,
+            AttrDefId::StaticId(it) => it.lookup(db).module(db).krate,
+            AttrDefId::ConstId(it) => it.lookup(db).module(db).krate,
+            AttrDefId::TraitId(it) => it.lookup(db).container.module(db).krate,
+            AttrDefId::TypeAliasId(it) => it.lookup(db).module(db).krate,
+            AttrDefId::ImplId(it) => it.lookup(db).container.module(db).krate,
+            AttrDefId::GenericParamId(it) => {
+                match it {
+                    GenericParamId::TypeParamId(it) => it.parent,
+                    GenericParamId::LifetimeParamId(it) => it.parent,
+                    GenericParamId::ConstParamId(it) => it.parent,
+                }
+                .module(db)
+                .krate
+            }
+            // FIXME: `MacroDefId` should store the defining module, then this can implement
+            // `HasModule`
+            AttrDefId::MacroDefId(it) => it.krate,
+        }
+    }
+}
+
 /// A helper trait for converting to MacroCallId
 pub trait AsMacroCall {
     fn as_call_id(
@@ -465,54 +556,80 @@ pub trait AsMacroCall {
         db: &dyn db::DefDatabase,
         krate: CrateId,
         resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
-    ) -> Option<MacroCallId>;
-}
+    ) -> Option<MacroCallId> {
+        self.as_call_id_with_errors(db, krate, resolver, &mut |_| ())
+    }
 
-impl AsMacroCall for InFile<&ast::MacroCall> {
-    fn as_call_id(
+    fn as_call_id_with_errors(
         &self,
         db: &dyn db::DefDatabase,
         krate: CrateId,
         resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
+        error_sink: &mut dyn FnMut(mbe::ExpandError),
+    ) -> Option<MacroCallId>;
+}
+
+impl AsMacroCall for InFile<&ast::MacroCall> {
+    fn as_call_id_with_errors(
+        &self,
+        db: &dyn db::DefDatabase,
+        krate: CrateId,
+        resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
+        error_sink: &mut dyn FnMut(mbe::ExpandError),
     ) -> Option<MacroCallId> {
         let ast_id = AstId::new(self.file_id, db.ast_id_map(self.file_id).ast_id(self.value));
         let h = Hygiene::new(db.upcast(), self.file_id);
-        let path = path::ModPath::from_src(self.value.path()?, &h)?;
+        let path = self.value.path().and_then(|path| path::ModPath::from_src(path, &h));
 
-        AstIdWithPath::new(ast_id.file_id, ast_id.value, path).as_call_id(db, krate, resolver)
+        if path.is_none() {
+            error_sink(mbe::ExpandError::Other("malformed macro invocation".into()));
+        }
+
+        AstIdWithPath::new(ast_id.file_id, ast_id.value, path?)
+            .as_call_id_with_errors(db, krate, resolver, error_sink)
     }
 }
 
 /// Helper wrapper for `AstId` with `ModPath`
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AstIdWithPath<T: ast::AstNode> {
-    pub ast_id: AstId<T>,
-    pub path: path::ModPath,
+    ast_id: AstId<T>,
+    path: path::ModPath,
 }
 
 impl<T: ast::AstNode> AstIdWithPath<T> {
-    pub fn new(file_id: HirFileId, ast_id: FileAstId<T>, path: path::ModPath) -> AstIdWithPath<T> {
+    fn new(file_id: HirFileId, ast_id: FileAstId<T>, path: path::ModPath) -> AstIdWithPath<T> {
         AstIdWithPath { ast_id: AstId::new(file_id, ast_id), path }
     }
 }
 
 impl AsMacroCall for AstIdWithPath<ast::MacroCall> {
-    fn as_call_id(
+    fn as_call_id_with_errors(
         &self,
         db: &dyn db::DefDatabase,
         krate: CrateId,
         resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
+        error_sink: &mut dyn FnMut(mbe::ExpandError),
     ) -> Option<MacroCallId> {
-        let def: MacroDefId = resolver(self.path.clone())?;
+        let def: MacroDefId = resolver(self.path.clone()).or_else(|| {
+            error_sink(mbe::ExpandError::Other(format!("could not resolve macro `{}`", self.path)));
+            None
+        })?;
 
         if let MacroDefKind::BuiltInEager(_) = def.kind {
             let macro_call = InFile::new(self.ast_id.file_id, self.ast_id.to_node(db.upcast()));
             let hygiene = Hygiene::new(db.upcast(), self.ast_id.file_id);
 
             Some(
-                expand_eager_macro(db.upcast(), krate, macro_call, def, &|path: ast::Path| {
-                    resolver(path::ModPath::from_src(path, &hygiene)?)
-                })?
+                expand_eager_macro(
+                    db.upcast(),
+                    krate,
+                    macro_call,
+                    def,
+                    &|path: ast::Path| resolver(path::ModPath::from_src(path, &hygiene)?),
+                    error_sink,
+                )
+                .ok()?
                 .into(),
             )
         } else {
@@ -522,13 +639,18 @@ impl AsMacroCall for AstIdWithPath<ast::MacroCall> {
 }
 
 impl AsMacroCall for AstIdWithPath<ast::Item> {
-    fn as_call_id(
+    fn as_call_id_with_errors(
         &self,
         db: &dyn db::DefDatabase,
         krate: CrateId,
         resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
+        error_sink: &mut dyn FnMut(mbe::ExpandError),
     ) -> Option<MacroCallId> {
-        let def = resolver(self.path.clone())?;
+        let def: MacroDefId = resolver(self.path.clone()).or_else(|| {
+            error_sink(mbe::ExpandError::Other(format!("could not resolve macro `{}`", self.path)));
+            None
+        })?;
+
         Some(
             def.as_lazy_macro(
                 db.upcast(),

@@ -1,10 +1,10 @@
 //! Missing batteries for standard libraries.
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Instant,
-};
+use std::{cmp::Ordering, ops, process, time::Instant};
 
 mod macros;
+pub mod panic_context;
+
+pub use always_assert::{always, never};
 
 #[inline(always)]
 pub fn is_ci() -> bool {
@@ -27,16 +27,41 @@ pub fn timeit(label: &'static str) -> impl Drop {
     Guard { label, start: Instant::now() }
 }
 
+/// Prints backtrace to stderr, useful for debugging.
+#[cfg(feature = "backtrace")]
+pub fn print_backtrace() {
+    let bt = backtrace::Backtrace::new();
+    eprintln!("{:?}", bt);
+}
+#[cfg(not(feature = "backtrace"))]
+pub fn print_backtrace() {
+    eprintln!(
+        r#"Enable the backtrace feature.
+Uncomment `default = [ "backtrace" ]` in `crates/stdx/Cargo.toml`.
+"#
+    );
+}
+
 pub fn to_lower_snake_case(s: &str) -> String {
+    to_snake_case(s, char::to_ascii_lowercase)
+}
+pub fn to_upper_snake_case(s: &str) -> String {
+    to_snake_case(s, char::to_ascii_uppercase)
+}
+fn to_snake_case<F: Fn(&char) -> char>(s: &str, change_case: F) -> String {
     let mut buf = String::with_capacity(s.len());
     let mut prev = false;
     for c in s.chars() {
+        // `&& prev` is required to not insert `_` before the first symbol.
         if c.is_ascii_uppercase() && prev {
-            buf.push('_')
+            // This check is required to not translate `Weird_Case` into `weird__case`.
+            if !buf.ends_with('_') {
+                buf.push('_')
+            }
         }
         prev = true;
 
-        buf.push(c.to_ascii_lowercase());
+        buf.push(change_case(&c));
     }
     buf
 }
@@ -107,7 +132,14 @@ impl<'a> Iterator for LinesWithEnds<'a> {
     }
 }
 
-// https://github.com/rust-lang/rust/issues/73831
+/// Returns `idx` such that:
+///
+/// ```text
+///     ∀ x in slice[..idx]:  pred(x)
+///  && ∀ x in slice[idx..]: !pred(x)
+/// ```
+///
+/// https://github.com/rust-lang/rust/issues/73831
 pub fn partition_point<T, P>(slice: &[T], mut pred: P) -> usize
 where
     P: FnMut(&T) -> bool,
@@ -137,28 +169,34 @@ where
     left
 }
 
-pub struct RacyFlag(AtomicUsize);
+pub fn equal_range_by<T, F>(slice: &[T], mut key: F) -> ops::Range<usize>
+where
+    F: FnMut(&T) -> Ordering,
+{
+    let start = partition_point(slice, |it| key(it) == Ordering::Less);
+    let len = partition_point(&slice[start..], |it| key(it) == Ordering::Equal);
+    start..start + len
+}
 
-impl RacyFlag {
-    pub const fn new() -> RacyFlag {
-        RacyFlag(AtomicUsize::new(!0))
+pub struct JodChild(pub process::Child);
+
+impl ops::Deref for JodChild {
+    type Target = process::Child;
+    fn deref(&self) -> &process::Child {
+        &self.0
     }
+}
 
-    pub fn get(&self, init: impl FnMut() -> bool) -> bool {
-        let mut init = Some(init);
-        self.get_impl(&mut || init.take().map_or(false, |mut f| f()))
+impl ops::DerefMut for JodChild {
+    fn deref_mut(&mut self) -> &mut process::Child {
+        &mut self.0
     }
+}
 
-    fn get_impl(&self, init: &mut dyn FnMut() -> bool) -> bool {
-        match self.0.load(Ordering::Relaxed) {
-            0 => false,
-            1 => true,
-            _ => {
-                let res = init();
-                self.0.store(if res { 1 } else { 0 }, Ordering::Relaxed);
-                res
-            }
-        }
+impl Drop for JodChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 

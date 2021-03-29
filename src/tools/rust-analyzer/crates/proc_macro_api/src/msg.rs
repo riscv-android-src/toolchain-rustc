@@ -58,7 +58,13 @@ pub trait Message: Serialize + DeserializeOwned {
     fn read(inp: &mut impl BufRead) -> io::Result<Option<Self>> {
         Ok(match read_json(inp)? {
             None => None,
-            Some(text) => Some(serde_json::from_str(&text)?),
+            Some(text) => {
+                let mut deserializer = serde_json::Deserializer::from_str(&text);
+                // Note that some proc-macro generate very deep syntax tree
+                // We have to disable the current limit of serde here
+                deserializer.disable_recursion_limit();
+                Some(Self::deserialize(&mut deserializer)?)
+            }
         })
     }
     fn write(self, out: &mut impl Write) -> io::Result<()> {
@@ -73,7 +79,7 @@ impl Message for Response {}
 fn read_json(inp: &mut impl BufRead) -> io::Result<Option<String>> {
     let mut buf = String::new();
     inp.read_line(&mut buf)?;
-    buf.pop(); // Remove traling '\n'
+    buf.pop(); // Remove trailing '\n'
     Ok(match buf.len() {
         0 => None,
         _ => Some(buf),

@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::io;
 
 use bytes::BytesMut;
-use tokio_codec::{Decoder, Encoder};
+use tokio_util::codec::{Decoder, Encoder};
 
 use crate::Error;
 
@@ -14,18 +14,17 @@ pub struct LspCodec {
     decoder: LspDecoder,
 }
 
-impl Encoder for LspCodec {
-    type Item = <LspEncoder as Encoder>::Item;
-    type Error = <LspEncoder as Encoder>::Error;
+impl Encoder<Body> for LspCodec {
+    type Error = <LspEncoder as Encoder<Body>>::Error;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: Body, dst: &mut BytesMut) -> Result<(), Self::Error> {
         Encoder::encode(&mut self.encoder, item, dst)
     }
 }
 
 impl Decoder for LspCodec {
-    type Item = <LspEncoder as Encoder>::Item;
-    type Error = <LspEncoder as Encoder>::Error;
+    type Item = Body;
+    type Error = <LspEncoder as Encoder<Body>>::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         Decoder::decode(&mut self.decoder, buf)
@@ -254,8 +253,7 @@ impl Decoder for LspDecoder {
     }
 }
 
-impl Encoder for LspEncoder {
-    type Item = Body;
+impl Encoder<Body> for LspEncoder {
     type Error = Error;
 
     fn encode(&mut self, item: Body, dst: &mut BytesMut) -> Result<(), Error> {

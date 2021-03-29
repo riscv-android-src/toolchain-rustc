@@ -365,7 +365,7 @@ $     the end of text (or end-of-line with multi-line mode)
 
 <pre class="rust">
 (exp)          numbered capture group (indexed by opening parenthesis)
-(?P&lt;name&gt;exp)  named (also numbered) capture group (allowed chars: [_0-9a-zA-Z])
+(?P&lt;name&gt;exp)  named (also numbered) capture group (allowed chars: [_0-9a-zA-Z.\[\]])
 (?:exp)        non-capturing group
 (?flags)       set flags within current group
 (?flags:exp)   set flags for exp (non-capturing)
@@ -562,7 +562,7 @@ All features below are enabled by default.
   [Unicode's "simple loose matches" specification](https://www.unicode.org/reports/tr18/#Simple_Loose_Matches).
 * **unicode-gencat** -
   Provide the data for
-  [Uncode general categories](https://www.unicode.org/reports/tr44/tr44-24.html#General_Category_Values).
+  [Unicode general categories](https://www.unicode.org/reports/tr44/tr44-24.html#General_Category_Values).
   This includes, but is not limited to, `Decimal_Number`, `Letter`,
   `Math_Symbol`, `Number` and `Punctuation`.
 * **unicode-perl** -
@@ -616,6 +616,7 @@ another matching engine with fixed memory requirements.
 #![deny(missing_docs)]
 #![cfg_attr(test, deny(warnings))]
 #![cfg_attr(feature = "pattern", feature(pattern))]
+#![warn(missing_debug_implementations)]
 
 #[cfg(not(feature = "std"))]
 compile_error!("`std` feature is currently required to build this crate");
@@ -731,8 +732,8 @@ Unicode codepoints. For example, in ASCII compatible mode, `\xFF` matches the
 literal byte `\xFF`, while in Unicode mode, `\xFF` is a Unicode codepoint that
 matches its UTF-8 encoding of `\xC3\xBF`. Similarly for octal notation when
 enabled.
-6. `.` matches any *byte* except for `\n` instead of any Unicode scalar value.
-When the `s` flag is enabled, `.` matches any byte.
+6. In ASCII compatible mode, `.` matches any *byte* except for `\n`. When the
+`s` flag is additionally enabled, `.` matches any byte.
 
 # Performance
 

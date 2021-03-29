@@ -17,8 +17,8 @@ mod tests;
 pub mod utils;
 pub mod ast_transform;
 
-use base_db::FileRange;
 use hir::Semantics;
+use ide_db::base_db::FileRange;
 use ide_db::{label::Label, source_change::SourceChange, RootDatabase};
 use syntax::TextRange;
 
@@ -73,45 +73,32 @@ pub struct Assist {
     /// Target ranges are used to sort assists: the smaller the target range,
     /// the more specific assist is, and so it should be sorted first.
     pub target: TextRange,
-}
-
-#[derive(Debug, Clone)]
-pub struct ResolvedAssist {
-    pub assist: Assist,
-    pub source_change: SourceChange,
+    /// Computing source change sometimes is much more costly then computing the
+    /// other fields. Additionally, the actual change is not required to show
+    /// the lightbulb UI, it only is needed when the user tries to apply an
+    /// assist. So, we compute it lazily: the API allow requesting assists with
+    /// or without source change. We could (and in fact, used to) distinguish
+    /// between resolved and unresolved assists at the type level, but this is
+    /// cumbersome, especially if you want to embed an assist into another data
+    /// structure, such as a diagnostic.
+    pub source_change: Option<SourceChange>,
 }
 
 impl Assist {
     /// Return all the assists applicable at the given position.
-    ///
-    /// Assists are returned in the "unresolved" state, that is only labels are
-    /// returned, without actual edits.
-    pub fn unresolved(db: &RootDatabase, config: &AssistConfig, range: FileRange) -> Vec<Assist> {
-        let sema = Semantics::new(db);
-        let ctx = AssistContext::new(sema, config, range);
-        let mut acc = Assists::new_unresolved(&ctx);
-        handlers::all().iter().for_each(|handler| {
-            handler(&mut acc, &ctx);
-        });
-        acc.finish_unresolved()
-    }
-
-    /// Return all the assists applicable at the given position.
-    ///
-    /// Assists are returned in the "resolved" state, that is with edit fully
-    /// computed.
-    pub fn resolved(
+    pub fn get(
         db: &RootDatabase,
         config: &AssistConfig,
+        resolve: bool,
         range: FileRange,
-    ) -> Vec<ResolvedAssist> {
+    ) -> Vec<Assist> {
         let sema = Semantics::new(db);
         let ctx = AssistContext::new(sema, config, range);
-        let mut acc = Assists::new_resolved(&ctx);
+        let mut acc = Assists::new(&ctx, resolve);
         handlers::all().iter().for_each(|handler| {
             handler(&mut acc, &ctx);
         });
-        acc.finish_resolved()
+        acc.finish()
     }
 }
 
@@ -120,14 +107,14 @@ mod handlers {
 
     pub(crate) type Handler = fn(&mut Assists, &AssistContext) -> Option<()>;
 
-    mod add_custom_impl;
     mod add_explicit_type;
+    mod add_lifetime_to_type;
     mod add_missing_impl_members;
     mod add_turbo_fish;
     mod apply_demorgan;
     mod auto_import;
-    mod change_return_type_to_result;
     mod change_visibility;
+    mod convert_integer_literal;
     mod early_return;
     mod expand_glob_import;
     mod extract_struct_from_enum_variant;
@@ -137,11 +124,14 @@ mod handlers {
     mod flip_binexpr;
     mod flip_comma;
     mod flip_trait_bound;
+    mod generate_default_from_enum_variant;
     mod generate_derive;
     mod generate_from_impl_for_enum;
     mod generate_function;
     mod generate_impl;
     mod generate_new;
+    mod infer_function_return_type;
+    mod inline_function;
     mod inline_local_variable;
     mod introduce_named_lifetime;
     mod invert_if;
@@ -149,31 +139,41 @@ mod handlers {
     mod merge_match_arms;
     mod move_bounds;
     mod move_guard;
+    mod move_module_to_file;
+    mod pull_assignment_up;
+    mod qualify_path;
     mod raw_string;
     mod remove_dbg;
     mod remove_mut;
     mod remove_unused_param;
     mod reorder_fields;
+    mod reorder_impl;
+    mod replace_derive_with_manual_impl;
     mod replace_if_let_with_match;
     mod replace_impl_trait_with_generic;
     mod replace_let_with_if_let;
     mod replace_qualified_name_with_use;
+    mod replace_string_with_char;
     mod replace_unwrap_with_match;
     mod split_import;
+    mod toggle_ignore;
+    mod unmerge_use;
     mod unwrap_block;
+    mod wrap_return_type_in_result;
 
     pub(crate) fn all() -> &'static [Handler] {
         &[
             // These are alphabetic for the foolish consistency
-            add_custom_impl::add_custom_impl,
             add_explicit_type::add_explicit_type,
+            add_lifetime_to_type::add_lifetime_to_type,
             add_turbo_fish::add_turbo_fish,
             apply_demorgan::apply_demorgan,
             auto_import::auto_import,
-            change_return_type_to_result::change_return_type_to_result,
             change_visibility::change_visibility,
+            convert_integer_literal::convert_integer_literal,
             early_return::convert_to_guarded_return,
             expand_glob_import::expand_glob_import,
+            move_module_to_file::move_module_to_file,
             extract_struct_from_enum_variant::extract_struct_from_enum_variant,
             extract_variable::extract_variable,
             fill_match_arms::fill_match_arms,
@@ -181,11 +181,14 @@ mod handlers {
             flip_binexpr::flip_binexpr,
             flip_comma::flip_comma,
             flip_trait_bound::flip_trait_bound,
+            generate_default_from_enum_variant::generate_default_from_enum_variant,
             generate_derive::generate_derive,
             generate_from_impl_for_enum::generate_from_impl_for_enum,
             generate_function::generate_function,
             generate_impl::generate_impl,
             generate_new::generate_new,
+            infer_function_return_type::infer_function_return_type,
+            inline_function::inline_function,
             inline_local_variable::inline_local_variable,
             introduce_named_lifetime::introduce_named_lifetime,
             invert_if::invert_if,
@@ -194,24 +197,34 @@ mod handlers {
             move_bounds::move_bounds_to_where_clause,
             move_guard::move_arm_cond_to_match_guard,
             move_guard::move_guard_to_arm_body,
+            pull_assignment_up::pull_assignment_up,
+            qualify_path::qualify_path,
             raw_string::add_hash,
-            raw_string::make_raw_string,
             raw_string::make_usual_string,
             raw_string::remove_hash,
             remove_dbg::remove_dbg,
             remove_mut::remove_mut,
             remove_unused_param::remove_unused_param,
             reorder_fields::reorder_fields,
+            reorder_impl::reorder_impl,
+            replace_derive_with_manual_impl::replace_derive_with_manual_impl,
             replace_if_let_with_match::replace_if_let_with_match,
+            replace_if_let_with_match::replace_match_with_if_let,
             replace_impl_trait_with_generic::replace_impl_trait_with_generic,
             replace_let_with_if_let::replace_let_with_if_let,
             replace_qualified_name_with_use::replace_qualified_name_with_use,
             replace_unwrap_with_match::replace_unwrap_with_match,
             split_import::split_import,
+            toggle_ignore::toggle_ignore,
+            unmerge_use::unmerge_use,
             unwrap_block::unwrap_block,
+            wrap_return_type_in_result::wrap_return_type_in_result,
             // These are manually sorted for better priorities
             add_missing_impl_members::add_missing_impl_members,
             add_missing_impl_members::add_missing_default_members,
+            //
+            replace_string_with_char::replace_string_with_char,
+            raw_string::make_raw_string,
             // Are you sure you want to add new assist here, and not to the
             // sorted list above?
         ]

@@ -2,9 +2,7 @@ use std::iter;
 
 use log::trace;
 
-use rustc_attr as attr;
-use rustc_ast::ast::FloatTy;
-use rustc_middle::{mir, mir::BinOp, ty};
+use rustc_middle::{mir, mir::BinOp, ty, ty::FloatTy};
 use rustc_middle::ty::layout::IntegerExt;
 use rustc_apfloat::{Float, Round};
 use rustc_target::abi::{Align, Integer, LayoutOf};
@@ -51,39 +49,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             // Raw memory accesses
-            #[rustfmt::skip]
-            | "copy"
-            | "copy_nonoverlapping"
-            => {
-                let &[src, dest, count] = check_arg_count(args)?;
-                let elem_ty = instance.substs.type_at(0);
-                let elem_layout = this.layout_of(elem_ty)?;
-                let count = this.read_scalar(count)?.to_machine_usize(this)?;
-                let elem_align = elem_layout.align.abi;
-
-                let size = elem_layout.size.checked_mul(count, this)
-                    .ok_or_else(|| err_ub_format!("overflow computing total size of `{}`", intrinsic_name))?;
-                let src = this.read_scalar(src)?.check_init()?;
-                let src = this.memory.check_ptr_access(src, size, elem_align)?;
-                let dest = this.read_scalar(dest)?.check_init()?;
-                let dest = this.memory.check_ptr_access(dest, size, elem_align)?;
-
-                if let (Some(src), Some(dest)) = (src, dest) {
-                    this.memory.copy(
-                        src,
-                        dest,
-                        size,
-                        intrinsic_name.ends_with("_nonoverlapping"),
-                    )?;
-                }
-            }
-
-            "move_val_init" => {
-                let &[place, dest] = check_arg_count(args)?;
-                let place = this.deref_operand(place)?;
-                this.copy_op(dest, place.into())?;
-            }
-
             "volatile_load" => {
                 let &[place] = check_arg_count(args)?;
                 let place = this.deref_operand(place)?;
@@ -443,11 +408,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.exact_div(this.read_immediate(num)?, this.read_immediate(denom)?, dest)?;
             }
 
-            "forget" => {
-                // We get an argument... and forget about it.
-                let &[_] = check_arg_count(args)?;
-            }
-
             "try" => return this.handle_try(args, dest, ret),
 
             name => throw_unsup_format!("unimplemented intrinsic: {}", name),
@@ -556,9 +516,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         Ok(())
     }
 
-    fn atomic_compare_exchange(
+    fn atomic_compare_exchange_impl(
         &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>,
-        success: AtomicRwOp, fail: AtomicReadOp
+        success: AtomicRwOp, fail: AtomicReadOp, can_fail_spuriously: bool
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
@@ -576,7 +536,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         
         let old = this.atomic_compare_exchange_scalar(
-            place, expect_old, new, success, fail
+            place, expect_old, new, success, fail, can_fail_spuriously
         )?;
 
         // Return old value.
@@ -584,14 +544,18 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         Ok(())
     }
 
+    fn atomic_compare_exchange(
+        &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>,
+        success: AtomicRwOp, fail: AtomicReadOp
+    ) -> InterpResult<'tcx> {
+        self.atomic_compare_exchange_impl(args, dest, success, fail, false)
+    }
+
     fn atomic_compare_exchange_weak(
         &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>,
         success: AtomicRwOp, fail: AtomicReadOp
     ) -> InterpResult<'tcx> {
-
-        // FIXME: the weak part of this is currently not modelled,
-        //  it is assumed to always succeed unconditionally.
-        self.atomic_compare_exchange(args, dest, success, fail)
+        self.atomic_compare_exchange_impl(args, dest, success, fail, true)
     }
 
     fn float_to_int_unchecked<F>(
@@ -612,7 +576,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         Ok(match dest_ty.kind() {
             // Unsigned
             ty::Uint(t) => {
-                let size = Integer::from_attr(this, attr::IntType::UnsignedInt(*t)).size();
+                let size = Integer::from_uint_ty(this, *t).size();
                 let res = f.to_u128(size.bits_usize());
                 if res.status.is_empty() {
                     // No status flags means there was no further rounding or other loss of precision.
@@ -627,7 +591,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
             // Signed
             ty::Int(t) => {
-                let size = Integer::from_attr(this, attr::IntType::SignedInt(*t)).size();
+                let size = Integer::from_int_ty(this, *t).size();
                 let res = f.to_i128(size.bits_usize());
                 if res.status.is_empty() {
                     // No status flags means there was no further rounding or other loss of precision.

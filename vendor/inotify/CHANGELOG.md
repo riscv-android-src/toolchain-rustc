@@ -1,3 +1,30 @@
+### v0.9.2 (2020-12-30)
+
+- Upgrade to Tokio 1.0 ([#165])
+
+[#165]: https://github.com/hannobraun/inotify/pull/165
+
+
+<a name="v0.9.1"></a>
+### v0.9.1 (2020-11-09)
+
+- Fix take wake-up ([#161])
+
+[#161]: https://github.com/hannobraun/inotify/pull/161
+
+
+<a name="v0.9.0"></a>
+### v0.9.0 (2020-11-06)
+
+- Update minimum supported Rust version to version 1.47 ([#154])
+- Fix documentation: `Inotify::read_events` doesn't handle all events ([#157])
+- Update to tokio 0.3 ([#158])
+
+[#154]: https://github.com/hannobraun/inotify/pull/154
+[#157]: https://github.com/hannobraun/inotify/pull/157
+[#158]: https://github.com/hannobraun/inotify/pull/158
+
+
 <a name="v0.8.3"></a>
 ### v0.8.3 (2020-06-05)
 
@@ -26,6 +53,14 @@ No changes, due to a mistake made while releasing this version.
 - Update to tokio 0.2 and futures 0.3 ([#134])
 
 [#134]: https://github.com/inotify-rs/inotify/pull/134
+
+
+<a name="v0.7.1"></a>
+### v0.7.1 (2020-06-05)
+
+- backport: Avoid using `inotify_init1` ([#146])
+
+[#146]: https://github.com/hannobraun/inotify/pull/146
 
 
 <a name="v0.7.0"></a>

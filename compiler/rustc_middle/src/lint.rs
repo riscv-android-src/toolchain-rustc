@@ -49,22 +49,24 @@ impl LintLevelSource {
 }
 
 /// A tuple of a lint level and its source.
-pub type LevelSource = (Level, LintLevelSource);
+pub type LevelAndSource = (Level, LintLevelSource);
 
+#[derive(Debug)]
 pub struct LintLevelSets {
     pub list: Vec<LintSet>,
     pub lint_cap: Level,
 }
 
+#[derive(Debug)]
 pub enum LintSet {
     CommandLine {
         // -A,-W,-D flags, a `Symbol` for the flag itself and `Level` for which
         // flag.
-        specs: FxHashMap<LintId, LevelSource>,
+        specs: FxHashMap<LintId, LevelAndSource>,
     },
 
     Node {
-        specs: FxHashMap<LintId, LevelSource>,
+        specs: FxHashMap<LintId, LevelAndSource>,
         parent: u32,
     },
 }
@@ -78,9 +80,9 @@ impl LintLevelSets {
         &self,
         lint: &'static Lint,
         idx: u32,
-        aux: Option<&FxHashMap<LintId, LevelSource>>,
+        aux: Option<&FxHashMap<LintId, LevelAndSource>>,
         sess: &Session,
-    ) -> LevelSource {
+    ) -> LevelAndSource {
         let (level, mut src) = self.get_lint_id_level(LintId::of(lint), idx, aux);
 
         // If `level` is none then we actually assume the default level for this
@@ -121,7 +123,7 @@ impl LintLevelSets {
         &self,
         id: LintId,
         mut idx: u32,
-        aux: Option<&FxHashMap<LintId, LevelSource>>,
+        aux: Option<&FxHashMap<LintId, LevelAndSource>>,
     ) -> (Option<Level>, LintLevelSource) {
         if let Some(specs) = aux {
             if let Some(&(level, src)) = specs.get(&id) {
@@ -147,6 +149,7 @@ impl LintLevelSets {
     }
 }
 
+#[derive(Debug)]
 pub struct LintLevelMap {
     pub sets: LintLevelSets,
     pub id_to_set: FxHashMap<HirId, u32>,
@@ -165,7 +168,7 @@ impl LintLevelMap {
         lint: &'static Lint,
         id: HirId,
         session: &Session,
-    ) -> Option<LevelSource> {
+    ) -> Option<LevelAndSource> {
         self.id_to_set.get(&id).map(|idx| self.sets.get_lint_level(lint, *idx, None, session))
     }
 }

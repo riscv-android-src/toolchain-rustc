@@ -3,12 +3,12 @@
 use indexmap::IndexMap;
 
 use hir::Semantics;
+use ide_db::call_info::FnCallNode;
 use ide_db::RootDatabase;
-use syntax::{ast, match_ast, AstNode, TextRange};
+use syntax::{ast, AstNode, TextRange};
 
 use crate::{
-    call_info::FnCallNode, display::ToNav, goto_definition, references, FilePosition,
-    NavigationTarget, RangeInfo,
+    display::TryToNav, goto_definition, references, FilePosition, NavigationTarget, RangeInfo,
 };
 
 #[derive(Debug, Clone)]
@@ -47,28 +47,23 @@ pub(crate) fn incoming_calls(db: &RootDatabase, position: FilePosition) -> Optio
 
     let mut calls = CallLocations::default();
 
-    for reference in refs.info.references() {
-        let file_id = reference.file_range.file_id;
+    for (&file_id, references) in refs.references().iter() {
         let file = sema.parse(file_id);
         let file = file.syntax();
-        let token = file.token_at_offset(reference.file_range.range.start()).next()?;
-        let token = sema.descend_into_macros(token);
-        let syntax = token.parent();
+        for reference in references {
+            let token = file.token_at_offset(reference.range.start()).next()?;
+            let token = sema.descend_into_macros(token);
+            let syntax = token.parent();
 
-        // This target is the containing function
-        if let Some(nav) = syntax.ancestors().find_map(|node| {
-            match_ast! {
-                match node {
-                    ast::Fn(it) => {
-                        let def = sema.to_def(&it)?;
-                        Some(def.to_nav(sema.db))
-                    },
-                    _ => None,
-                }
+            // This target is the containing function
+            if let Some(nav) = syntax.ancestors().find_map(|node| {
+                let fn_ = ast::Fn::cast(node)?;
+                let def = sema.to_def(&fn_)?;
+                def.try_to_nav(sema.db)
+            }) {
+                let relative_range = reference.range;
+                calls.add(&nav, relative_range);
             }
-        }) {
-            let relative_range = reference.file_range.range;
-            calls.add(&nav, relative_range);
         }
     }
 
@@ -91,29 +86,21 @@ pub(crate) fn outgoing_calls(db: &RootDatabase, position: FilePosition) -> Optio
         .filter_map(|node| FnCallNode::with_node_exact(&node))
         .filter_map(|call_node| {
             let name_ref = call_node.name_ref()?;
-
-            if let Some(func_target) = match &call_node {
+            let func_target = match call_node {
                 FnCallNode::CallExpr(expr) => {
                     //FIXME: Type::as_callable is broken
                     let callable = sema.type_of_expr(&expr.expr()?)?.as_callable(db)?;
                     match callable.kind() {
-                        hir::CallableKind::Function(it) => {
-                            let fn_def: hir::Function = it.into();
-                            let nav = fn_def.to_nav(db);
-                            Some(nav)
-                        }
+                        hir::CallableKind::Function(it) => it.try_to_nav(db),
                         _ => None,
                     }
                 }
                 FnCallNode::MethodCallExpr(expr) => {
                     let function = sema.resolve_method_call(&expr)?;
-                    Some(function.to_nav(db))
+                    function.try_to_nav(db)
                 }
-            } {
-                Some((func_target, name_ref.syntax().text_range()))
-            } else {
-                None
-            }
+            }?;
+            Some((func_target, name_ref.syntax().text_range()))
         })
         .for_each(|(nav, range)| calls.add(&nav, range));
 
@@ -137,9 +124,9 @@ impl CallLocations {
 
 #[cfg(test)]
 mod tests {
-    use base_db::FilePosition;
+    use ide_db::base_db::FilePosition;
 
-    use crate::mock_analysis::analysis_and_position;
+    use crate::fixture;
 
     fn check_hierarchy(
         ra_fixture: &str,
@@ -147,7 +134,7 @@ mod tests {
         expected_incoming: &[&str],
         expected_outgoing: &[&str],
     ) {
-        let (analysis, pos) = analysis_and_position(ra_fixture);
+        let (analysis, pos) = fixture::position(ra_fixture);
 
         let mut navs = analysis.call_hierarchy(pos).unwrap().unwrap().info;
         assert_eq!(navs.len(), 1);
@@ -178,11 +165,11 @@ mod tests {
 //- /lib.rs
 fn callee() {}
 fn caller() {
-    call<|>ee();
+    call$0ee();
 }
 "#,
-            "callee FN FileId(1) 0..14 3..9",
-            &["caller FN FileId(1) 15..44 18..24 : [33..39]"],
+            "callee Function FileId(0) 0..14 3..9",
+            &["caller Function FileId(0) 15..44 18..24 : [33..39]"],
             &[],
         );
     }
@@ -192,13 +179,13 @@ fn caller() {
         check_hierarchy(
             r#"
 //- /lib.rs
-fn call<|>ee() {}
+fn call$0ee() {}
 fn caller() {
     callee();
 }
 "#,
-            "callee FN FileId(1) 0..14 3..9",
-            &["caller FN FileId(1) 15..44 18..24 : [33..39]"],
+            "callee Function FileId(0) 0..14 3..9",
+            &["caller Function FileId(0) 15..44 18..24 : [33..39]"],
             &[],
         );
     }
@@ -210,12 +197,12 @@ fn caller() {
 //- /lib.rs
 fn callee() {}
 fn caller() {
-    call<|>ee();
+    call$0ee();
     callee();
 }
 "#,
-            "callee FN FileId(1) 0..14 3..9",
-            &["caller FN FileId(1) 15..58 18..24 : [33..39, 47..53]"],
+            "callee Function FileId(0) 0..14 3..9",
+            &["caller Function FileId(0) 15..58 18..24 : [33..39, 47..53]"],
             &[],
         );
     }
@@ -227,17 +214,17 @@ fn caller() {
 //- /lib.rs
 fn callee() {}
 fn caller1() {
-    call<|>ee();
+    call$0ee();
 }
 
 fn caller2() {
     callee();
 }
 "#,
-            "callee FN FileId(1) 0..14 3..9",
+            "callee Function FileId(0) 0..14 3..9",
             &[
-                "caller1 FN FileId(1) 15..45 18..25 : [34..40]",
-                "caller2 FN FileId(1) 47..77 50..57 : [66..72]",
+                "caller1 Function FileId(0) 15..45 18..25 : [34..40]",
+                "caller2 Function FileId(0) 47..77 50..57 : [66..72]",
             ],
             &[],
         );
@@ -250,7 +237,7 @@ fn caller2() {
 //- /lib.rs cfg:test
 fn callee() {}
 fn caller1() {
-    call<|>ee();
+    call$0ee();
 }
 
 #[cfg(test)]
@@ -263,10 +250,10 @@ mod tests {
     }
 }
 "#,
-            "callee FN FileId(1) 0..14 3..9",
+            "callee Function FileId(0) 0..14 3..9",
             &[
-                "caller1 FN FileId(1) 15..45 18..25 : [34..40]",
-                "test_caller FN FileId(1) 95..149 110..121 : [134..140]",
+                "caller1 Function FileId(0) 15..45 18..25 : [34..40]",
+                "test_caller Function FileId(0) 95..149 110..121 : [134..140]",
             ],
             &[],
         );
@@ -281,14 +268,14 @@ mod foo;
 use foo::callee;
 
 fn caller() {
-    call<|>ee();
+    call$0ee();
 }
 
 //- /foo/mod.rs
 pub fn callee() {}
 "#,
-            "callee FN FileId(2) 0..18 7..13",
-            &["caller FN FileId(1) 27..56 30..36 : [45..51]"],
+            "callee Function FileId(1) 0..18 7..13",
+            &["caller Function FileId(0) 27..56 30..36 : [45..51]"],
             &[],
         );
     }
@@ -299,14 +286,14 @@ pub fn callee() {}
             r#"
 //- /lib.rs
 fn callee() {}
-fn call<|>er() {
+fn call$0er() {
     callee();
     callee();
 }
 "#,
-            "caller FN FileId(1) 15..58 18..24",
+            "caller Function FileId(0) 15..58 18..24",
             &[],
-            &["callee FN FileId(1) 0..14 3..9 : [33..39, 47..53]"],
+            &["callee Function FileId(0) 0..14 3..9 : [33..39, 47..53]"],
         );
     }
 
@@ -318,16 +305,16 @@ fn call<|>er() {
 mod foo;
 use foo::callee;
 
-fn call<|>er() {
+fn call$0er() {
     callee();
 }
 
 //- /foo/mod.rs
 pub fn callee() {}
 "#,
-            "caller FN FileId(1) 27..56 30..36",
+            "caller Function FileId(0) 27..56 30..36",
             &[],
-            &["callee FN FileId(2) 0..18 7..13 : [45..51]"],
+            &["callee Function FileId(1) 0..18 7..13 : [45..51]"],
         );
     }
 
@@ -337,7 +324,7 @@ pub fn callee() {}
             r#"
 //- /lib.rs
 fn caller1() {
-    call<|>er2();
+    call$0er2();
 }
 
 fn caller2() {
@@ -348,9 +335,9 @@ fn caller3() {
 
 }
 "#,
-            "caller2 FN FileId(1) 33..64 36..43",
-            &["caller1 FN FileId(1) 0..31 3..10 : [19..26]"],
-            &["caller3 FN FileId(1) 66..83 69..76 : [52..59]"],
+            "caller2 Function FileId(0) 33..64 36..43",
+            &["caller1 Function FileId(0) 0..31 3..10 : [19..26]"],
+            &["caller3 Function FileId(0) 66..83 69..76 : [52..59]"],
         );
     }
 
@@ -365,18 +352,18 @@ fn a() {
 fn b() {}
 
 fn main() {
-    a<|>()
+    a$0()
 }
 "#,
-            "a FN FileId(1) 0..18 3..4",
-            &["main FN FileId(1) 31..52 34..38 : [47..48]"],
-            &["b FN FileId(1) 20..29 23..24 : [13..14]"],
+            "a Function FileId(0) 0..18 3..4",
+            &["main Function FileId(0) 31..52 34..38 : [47..48]"],
+            &["b Function FileId(0) 20..29 23..24 : [13..14]"],
         );
 
         check_hierarchy(
             r#"
 fn a() {
-    b<|>()
+    b$0()
 }
 
 fn b() {}
@@ -385,8 +372,8 @@ fn main() {
     a()
 }
 "#,
-            "b FN FileId(1) 20..29 23..24",
-            &["a FN FileId(1) 0..18 3..4 : [13..14]"],
+            "b Function FileId(0) 20..29 23..24",
+            &["a Function FileId(0) 0..18 3..4 : [13..14]"],
             &[],
         );
     }

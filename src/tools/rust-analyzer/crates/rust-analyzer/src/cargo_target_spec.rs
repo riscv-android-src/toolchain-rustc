@@ -1,6 +1,6 @@
 //! See `CargoTargetSpec`
 
-use cfg::CfgExpr;
+use cfg::{CfgAtom, CfgExpr};
 use ide::{FileId, RunnableKind, TestId};
 use project_model::{self, TargetKind};
 use vfs::AbsPathBuf;
@@ -14,6 +14,7 @@ use crate::{global_state::GlobalStateSnapshot, Result};
 #[derive(Clone)]
 pub(crate) struct CargoTargetSpec {
     pub(crate) workspace_root: AbsPathBuf,
+    pub(crate) cargo_toml: AbsPathBuf,
     pub(crate) package: String,
     pub(crate) target: String,
     pub(crate) target_kind: TargetKind,
@@ -24,7 +25,7 @@ impl CargoTargetSpec {
         snap: &GlobalStateSnapshot,
         spec: Option<CargoTargetSpec>,
         kind: &RunnableKind,
-        cfgs: &[CfgExpr],
+        cfg: &Option<CfgExpr>,
     ) -> Result<(Vec<String>, Vec<String>)> {
         let mut args = Vec::new();
         let mut extra_args = Vec::new();
@@ -83,14 +84,15 @@ impl CargoTargetSpec {
             }
         }
 
-        if snap.config.cargo.all_features {
+        let cargo_config = snap.config.cargo();
+        if cargo_config.all_features {
             args.push("--all-features".to_string());
         } else {
             let mut features = Vec::new();
-            for cfg in cfgs {
+            if let Some(cfg) = cfg.as_ref() {
                 required_features(cfg, &mut features);
             }
-            for feature in &snap.config.cargo.features {
+            for feature in cargo_config.features {
                 features.push(feature.clone());
             }
             features.dedup();
@@ -115,12 +117,17 @@ impl CargoTargetSpec {
             Some(it) => it,
             None => return Ok(None),
         };
+
+        let target_data = &cargo_ws[target];
+        let package_data = &cargo_ws[target_data.package];
         let res = CargoTargetSpec {
             workspace_root: cargo_ws.workspace_root().to_path_buf(),
-            package: cargo_ws.package_flag(&cargo_ws[cargo_ws[target].package]),
-            target: cargo_ws[target].name.clone(),
-            target_kind: cargo_ws[target].kind,
+            cargo_toml: package_data.manifest.clone(),
+            package: cargo_ws.package_flag(&package_data),
+            target: target_data.name.clone(),
+            target_kind: target_data.kind,
         };
+
         Ok(Some(res))
     }
 
@@ -160,7 +167,9 @@ impl CargoTargetSpec {
 /// Fill minimal features needed
 fn required_features(cfg_expr: &CfgExpr, features: &mut Vec<String>) {
     match cfg_expr {
-        CfgExpr::KeyValue { key, value } if key == "feature" => features.push(value.to_string()),
+        CfgExpr::Atom(CfgAtom::KeyValue { key, value }) if key == "feature" => {
+            features.push(value.to_string())
+        }
         CfgExpr::All(preds) => {
             preds.iter().for_each(|cfg| required_features(cfg, features));
         }

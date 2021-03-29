@@ -35,9 +35,18 @@ https://rust-lang.zulipchat.com/#narrow/stream/185405-t-compiler.2Fwg-rls-2.2E0
 * [E-easy](https://github.com/rust-analyzer/rust-analyzer/issues?q=is%3Aopen+is%3Aissue+label%3AE-easy),
   [E-medium](https://github.com/rust-analyzer/rust-analyzer/issues?q=is%3Aopen+is%3Aissue+label%3AE-medium),
   [E-hard](https://github.com/rust-analyzer/rust-analyzer/issues?q=is%3Aopen+is%3Aissue+label%3AE-hard),
-  labels are *estimates* for how hard would be to write a fix.
+  [E-unknown](https://github.com/rust-analyzer/rust-analyzer/issues?q=is%3Aopen+is%3Aissue+label%3AE-unknown),
+  labels are *estimates* for how hard would be to write a fix. Each triaged issue should have one of these labels.
+* [S-actionable](https://github.com/rust-analyzer/rust-analyzer/issues?q=is%3Aopen+is%3Aissue+label%3AS-actionable) and
+  [S-unactionable](https://github.com/rust-analyzer/rust-analyzer/issues?q=is%3Aopen+is%3Aissue+label%3AS-unactionable)
+  specify if there are concrete steps to resolve or advance an issue. Roughly, actionable issues need only work to be fixed,
+  while unactionable ones are effectively wont-fix. Each triaged issue should have one of these labels.
 * [fun](https://github.com/rust-analyzer/rust-analyzer/issues?q=is%3Aopen+is%3Aissue+label%3Afun)
   is for cool, but probably hard stuff.
+* [Design](https://github.com/rust-analyzer/rust-analyzer/issues?q=is%3Aopen+is%3Aissue+label%Design)
+  is for moderate/large scale architecture discussion.
+  Also a kind of fun.
+  These issues should generally include a link to a Zulip discussion thread.
 
 # CI
 
@@ -72,10 +81,10 @@ Notably, this uses the usual `rust-analyzer` binary from `PATH`.
 For this, it is important to have the following in your `settings.json` file:
 ```json
 {
-    "rust-analyzer.serverPath": "rust-analyzer"
+    "rust-analyzer.server.path": "rust-analyzer"
 }
 ```
-After I am done with the fix, I use `cargo xtask install --client-code` to try the new extension for real.
+After I am done with the fix, I use `cargo xtask install --client` to try the new extension for real.
 
 If I need to fix something in the `rust-analyzer` crate, I feel sad because it's on the boundary between the two processes, and working there is slow.
 I usually just `cargo xtask install --server` and poke changes from my live environment.
@@ -165,6 +174,22 @@ In general, API is centered around UI concerns -- the result of the call is what
 The results are 100% Rust specific though.
 Shout outs to LSP developers for popularizing the idea that "UI" is a good place to draw a boundary at.
 
+## LSP is stateless
+
+The protocol is implemented in the mostly stateless way.
+A good mental model is HTTP, which doesn't store per-client state, and instead relies on devices like cookies to maintain an illusion of state.
+If some action requires multi-step protocol, each step should be self-contained.
+
+A good example here is code action resolving process.
+TO display the lightbulb, we compute the list of code actions without computing edits.
+Figuring out the edit is done in a separate `codeAction/resolve` call.
+Rather than storing some `lazy_edit: Box<dyn FnOnce() -> Edit>` somewhere, we use a string ID of action to re-compute the list of actions during the resolve process.
+(See [this post](https://rust-analyzer.github.io/blog/2020/09/28/how-to-make-a-light-bulb.html) for more details.)
+The benefit here is that, generally speaking, the state of the world might change between `codeAction` and `codeAction` resolve requests, so any closure we store might become invalid.
+
+While we don't currently implement any complicated refactors with complex GUI, I imagine we'd use the same techniques for refactors.
+After clicking each "Next" button during refactor, the client would send all the info which server needs to re-recreate the context from scratch.
+
 ## CI
 
 CI does not test rust-analyzer, CI is a core part of rust-analyzer, and is maintained with above average standard of quality.
@@ -191,7 +216,7 @@ To log all communication between the server and the client, there are two choice
 
 * you can log on the server side, by running something like
   ```
-  env RA_LOG=gen_lsp_server=trace code .
+  env RA_LOG=lsp_server=debug code .
   ```
 
 * you can log on the client side, by enabling `"rust-analyzer.trace.server":
@@ -205,6 +230,8 @@ There are also two VS Code commands which might be of interest:
 * `Rust Analyzer: Status` shows some memory-usage statistics.
 
 * `Rust Analyzer: Syntax Tree` shows syntax tree of the current file/selection.
+
+* `Rust Analyzer: View Hir` shows the HIR expressions within the function containing the cursor.
 
   You can hover over syntax nodes in the opened text file to see the appropriate
   rust code that it refers to and the rust editor will also highlight the proper
@@ -227,6 +254,9 @@ RA_PROFILE=*@3>10        // dump everything, up to depth 3, if it takes more tha
 ```
 
 In particular, I have `export RA_PROFILE='*>10'` in my shell profile.
+
+We also have a "counting" profiler which counts number of instances of popular structs.
+It is enabled by `RA_COUNT=1`.
 
 To measure time for from-scratch analysis, use something like this:
 
@@ -271,3 +301,17 @@ Release steps:
 4. Tweet
 5. Inside `rust-analyzer`, run `cargo xtask promote` -- this will create a PR to rust-lang/rust updating rust-analyzer's submodule.
    Self-approve the PR.
+
+# Permissions
+
+There are three sets of people with extra permissions:
+
+* rust-analyzer GitHub organization **admins** (which include current t-compiler leads).
+  Admins have full access to the org.
+* **review** team in the organization.
+  Reviewers have `r+` access to all of organization's repositories and publish rights on crates.io.
+  They also have direct commit access, but all changes should via bors queue.
+  It's ok to self-approve if you think you know what you are doing!
+  bors should automatically sync the permissions.
+* **triage** team in the organization.
+  This team can label and close issues.

@@ -5,21 +5,24 @@
 //! original files. So we need to map the ranges.
 
 mod fixes;
+mod field_shorthand;
 
 use std::cell::RefCell;
 
-use base_db::SourceDatabase;
-use hir::{diagnostics::DiagnosticSinkBuilder, Semantics};
-use ide_db::RootDatabase;
+use hir::{
+    diagnostics::{Diagnostic as _, DiagnosticCode, DiagnosticSinkBuilder},
+    Semantics,
+};
+use ide_db::{base_db::SourceDatabase, RootDatabase};
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
 use syntax::{
     ast::{self, AstNode},
-    SyntaxNode, TextRange, T,
+    SyntaxNode, TextRange,
 };
 use text_edit::TextEdit;
 
-use crate::{FileId, Label, SourceChange, SourceFileEdit};
+use crate::{FileId, Label, SourceChange};
 
 use self::fixes::DiagnosticWithFix;
 
@@ -30,6 +33,37 @@ pub struct Diagnostic {
     pub range: TextRange,
     pub severity: Severity,
     pub fix: Option<Fix>,
+    pub unused: bool,
+    pub code: Option<DiagnosticCode>,
+}
+
+impl Diagnostic {
+    fn error(range: TextRange, message: String) -> Self {
+        Self { message, range, severity: Severity::Error, fix: None, unused: false, code: None }
+    }
+
+    fn hint(range: TextRange, message: String) -> Self {
+        Self {
+            message,
+            range,
+            severity: Severity::WeakWarning,
+            fix: None,
+            unused: false,
+            code: None,
+        }
+    }
+
+    fn with_fix(self, fix: Option<Fix>) -> Self {
+        Self { fix, ..self }
+    }
+
+    fn with_unused(self, unused: bool) -> Self {
+        Self { unused, ..self }
+    }
+
+    fn with_code(self, code: Option<DiagnosticCode>) -> Self {
+        Self { code, ..self }
+    }
 }
 
 #[derive(Debug)]
@@ -70,17 +104,17 @@ pub(crate) fn diagnostics(
     let mut res = Vec::new();
 
     // [#34344] Only take first 128 errors to prevent slowing down editor/ide, the number 128 is chosen arbitrarily.
-    res.extend(parse.errors().iter().take(128).map(|err| Diagnostic {
-        // name: None,
-        range: err.range(),
-        message: format!("Syntax Error: {}", err),
-        severity: Severity::Error,
-        fix: None,
-    }));
+    res.extend(
+        parse
+            .errors()
+            .iter()
+            .take(128)
+            .map(|err| Diagnostic::error(err.range(), format!("Syntax Error: {}", err))),
+    );
 
     for node in parse.tree().syntax().descendants() {
         check_unnecessary_braces_in_use_statement(&mut res, file_id, &node);
-        check_struct_shorthand_initialization(&mut res, file_id, &node);
+        field_shorthand::check(&mut res, file_id, &node);
     }
     let res = RefCell::new(res);
     let sink_builder = DiagnosticSinkBuilder::new()
@@ -90,11 +124,42 @@ pub(crate) fn diagnostics(
         .on::<hir::diagnostics::MissingFields, _>(|d| {
             res.borrow_mut().push(diagnostic_with_fix(d, &sema));
         })
-        .on::<hir::diagnostics::MissingOkInTailExpr, _>(|d| {
+        .on::<hir::diagnostics::MissingOkOrSomeInTailExpr, _>(|d| {
             res.borrow_mut().push(diagnostic_with_fix(d, &sema));
         })
         .on::<hir::diagnostics::NoSuchField, _>(|d| {
             res.borrow_mut().push(diagnostic_with_fix(d, &sema));
+        })
+        .on::<hir::diagnostics::RemoveThisSemicolon, _>(|d| {
+            res.borrow_mut().push(diagnostic_with_fix(d, &sema));
+        })
+        .on::<hir::diagnostics::IncorrectCase, _>(|d| {
+            res.borrow_mut().push(warning_with_fix(d, &sema));
+        })
+        .on::<hir::diagnostics::ReplaceFilterMapNextWithFindMap, _>(|d| {
+            res.borrow_mut().push(warning_with_fix(d, &sema));
+        })
+        .on::<hir::diagnostics::InactiveCode, _>(|d| {
+            // If there's inactive code somewhere in a macro, don't propagate to the call-site.
+            if d.display_source().file_id.expansion_info(db).is_some() {
+                return;
+            }
+
+            // Override severity and mark as unused.
+            res.borrow_mut().push(
+                Diagnostic::hint(sema.diagnostics_display_range(d).range, d.message())
+                    .with_unused(true)
+                    .with_code(Some(d.code())),
+            );
+        })
+        .on::<hir::diagnostics::UnresolvedProcMacro, _>(|d| {
+            // Use more accurate position if available.
+            let display_range =
+                d.precise_location.unwrap_or_else(|| sema.diagnostics_display_range(d).range);
+
+            // FIXME: it would be nice to tell the user whether proc macros are currently disabled
+            res.borrow_mut()
+                .push(Diagnostic::hint(display_range, d.message()).with_code(Some(d.code())));
         })
         // Only collect experimental diagnostics when they're enabled.
         .filter(|diag| !(diag.is_experimental() && config.disable_experimental))
@@ -104,13 +169,10 @@ pub(crate) fn diagnostics(
     let mut sink = sink_builder
         // Diagnostics not handled above get no fix and default treatment.
         .build(|d| {
-            res.borrow_mut().push(Diagnostic {
-                // name: Some(d.name().into()),
-                message: d.message(),
-                range: sema.diagnostics_display_range(d).range,
-                severity: Severity::Error,
-                fix: None,
-            })
+            res.borrow_mut().push(
+                Diagnostic::error(sema.diagnostics_display_range(d).range, d.message())
+                    .with_code(Some(d.code())),
+            );
         });
 
     if let Some(m) = sema.to_module_def(file_id) {
@@ -121,13 +183,15 @@ pub(crate) fn diagnostics(
 }
 
 fn diagnostic_with_fix<D: DiagnosticWithFix>(d: &D, sema: &Semantics<RootDatabase>) -> Diagnostic {
-    Diagnostic {
-        // name: Some(d.name().into()),
-        range: sema.diagnostics_display_range(d).range,
-        message: d.message(),
-        severity: Severity::Error,
-        fix: d.fix(&sema),
-    }
+    Diagnostic::error(sema.diagnostics_display_range(d).range, d.message())
+        .with_fix(d.fix(&sema))
+        .with_code(Some(d.code()))
+}
+
+fn warning_with_fix<D: DiagnosticWithFix>(d: &D, sema: &Semantics<RootDatabase>) -> Diagnostic {
+    Diagnostic::hint(sema.diagnostics_display_range(d).range, d.message())
+        .with_fix(d.fix(&sema))
+        .with_code(Some(d.code()))
 }
 
 fn check_unnecessary_braces_in_use_statement(
@@ -137,6 +201,12 @@ fn check_unnecessary_braces_in_use_statement(
 ) -> Option<()> {
     let use_tree_list = ast::UseTreeList::cast(node.clone())?;
     if let Some((single_use_tree,)) = use_tree_list.use_trees().collect_tuple() {
+        // If there is a comment inside the bracketed `use`,
+        // assume it is a commented out module path and don't show diagnostic.
+        if use_tree_list.has_inner_comment() {
+            return Some(());
+        }
+
         let use_range = use_tree_list.syntax().text_range();
         let edit =
             text_edit_for_remove_unnecessary_braces_with_self_in_use_statement(&single_use_tree)
@@ -148,17 +218,14 @@ fn check_unnecessary_braces_in_use_statement(
                     edit_builder.finish()
                 });
 
-        acc.push(Diagnostic {
-            // name: None,
-            range: use_range,
-            message: "Unnecessary braces in use statement".to_string(),
-            severity: Severity::WeakWarning,
-            fix: Some(Fix::new(
-                "Remove unnecessary braces",
-                SourceFileEdit { file_id, edit }.into(),
-                use_range,
-            )),
-        });
+        acc.push(
+            Diagnostic::hint(use_range, "Unnecessary braces in use statement".to_string())
+                .with_fix(Some(Fix::new(
+                    "Remove unnecessary braces",
+                    SourceChange::from_text_edit(file_id, edit),
+                    use_range,
+                ))),
+        );
     }
 
     Some(())
@@ -168,48 +235,12 @@ fn text_edit_for_remove_unnecessary_braces_with_self_in_use_statement(
     single_use_tree: &ast::UseTree,
 ) -> Option<TextEdit> {
     let use_tree_list_node = single_use_tree.syntax().parent()?;
-    if single_use_tree.path()?.segment()?.syntax().first_child_or_token()?.kind() == T![self] {
+    if single_use_tree.path()?.segment()?.self_token().is_some() {
         let start = use_tree_list_node.prev_sibling_or_token()?.text_range().start();
         let end = use_tree_list_node.text_range().end();
         return Some(TextEdit::delete(TextRange::new(start, end)));
     }
     None
-}
-
-fn check_struct_shorthand_initialization(
-    acc: &mut Vec<Diagnostic>,
-    file_id: FileId,
-    node: &SyntaxNode,
-) -> Option<()> {
-    let record_lit = ast::RecordExpr::cast(node.clone())?;
-    let record_field_list = record_lit.record_expr_field_list()?;
-    for record_field in record_field_list.fields() {
-        if let (Some(name_ref), Some(expr)) = (record_field.name_ref(), record_field.expr()) {
-            let field_name = name_ref.syntax().text().to_string();
-            let field_expr = expr.syntax().text().to_string();
-            let field_name_is_tup_index = name_ref.as_tuple_field().is_some();
-            if field_name == field_expr && !field_name_is_tup_index {
-                let mut edit_builder = TextEdit::builder();
-                edit_builder.delete(record_field.syntax().text_range());
-                edit_builder.insert(record_field.syntax().text_range().start(), field_name);
-                let edit = edit_builder.finish();
-
-                let field_range = record_field.syntax().text_range();
-                acc.push(Diagnostic {
-                    // name: None,
-                    range: field_range,
-                    message: "Shorthand struct initialization".to_string(),
-                    severity: Severity::WeakWarning,
-                    fix: Some(Fix::new(
-                        "Use struct shorthand initialization",
-                        SourceFileEdit { file_id, edit }.into(),
-                        field_range,
-                    )),
-                });
-            }
-        }
-    }
-    Some(())
 }
 
 #[cfg(test)]
@@ -218,73 +249,46 @@ mod tests {
     use stdx::trim_indent;
     use test_utils::assert_eq_text;
 
-    use crate::{
-        mock_analysis::{analysis_and_position, single_file, MockAnalysis},
-        DiagnosticsConfig,
-    };
+    use crate::{fixture, DiagnosticsConfig};
 
     /// Takes a multi-file input fixture with annotated cursor positions,
     /// and checks that:
     ///  * a diagnostic is produced
     ///  * this diagnostic fix trigger range touches the input cursor position
     ///  * that the contents of the file containing the cursor match `after` after the diagnostic fix is applied
-    fn check_fix(ra_fixture_before: &str, ra_fixture_after: &str) {
+    pub(crate) fn check_fix(ra_fixture_before: &str, ra_fixture_after: &str) {
         let after = trim_indent(ra_fixture_after);
 
-        let (analysis, file_position) = analysis_and_position(ra_fixture_before);
+        let (analysis, file_position) = fixture::position(ra_fixture_before);
         let diagnostic = analysis
             .diagnostics(&DiagnosticsConfig::default(), file_position.file_id)
             .unwrap()
             .pop()
             .unwrap();
-        let mut fix = diagnostic.fix.unwrap();
-        let edit = fix.source_change.source_file_edits.pop().unwrap().edit;
-        let target_file_contents = analysis.file_text(file_position.file_id).unwrap();
+        let fix = diagnostic.fix.unwrap();
         let actual = {
-            let mut actual = target_file_contents.to_string();
-            edit.apply(&mut actual);
+            let file_id = *fix.source_change.source_file_edits.keys().next().unwrap();
+            let mut actual = analysis.file_text(file_id).unwrap().to_string();
+
+            for edit in fix.source_change.source_file_edits.values() {
+                edit.apply(&mut actual);
+            }
             actual
         };
 
         assert_eq_text!(&after, &actual);
         assert!(
-            fix.fix_trigger_range.start() <= file_position.offset
-                && fix.fix_trigger_range.end() >= file_position.offset,
+            fix.fix_trigger_range.contains_inclusive(file_position.offset),
             "diagnostic fix range {:?} does not touch cursor position {:?}",
             fix.fix_trigger_range,
             file_position.offset
         );
     }
 
-    /// Checks that a diagnostic applies to the file containing the `<|>` cursor marker
-    /// which has a fix that can apply to other files.
-    fn check_apply_diagnostic_fix_in_other_file(ra_fixture_before: &str, ra_fixture_after: &str) {
-        let ra_fixture_after = &trim_indent(ra_fixture_after);
-        let (analysis, file_pos) = analysis_and_position(ra_fixture_before);
-        let current_file_id = file_pos.file_id;
-        let diagnostic = analysis
-            .diagnostics(&DiagnosticsConfig::default(), current_file_id)
-            .unwrap()
-            .pop()
-            .unwrap();
-        let mut fix = diagnostic.fix.unwrap();
-        let edit = fix.source_change.source_file_edits.pop().unwrap();
-        let changed_file_id = edit.file_id;
-        let before = analysis.file_text(changed_file_id).unwrap();
-        let actual = {
-            let mut actual = before.to_string();
-            edit.edit.apply(&mut actual);
-            actual
-        };
-        assert_eq_text!(ra_fixture_after, &actual);
-    }
-
     /// Takes a multi-file input fixture with annotated cursor position and checks that no diagnostics
     /// apply to the file containing the cursor.
-    fn check_no_diagnostics(ra_fixture: &str) {
-        let mock = MockAnalysis::with_files(ra_fixture);
-        let files = mock.files().map(|(it, _)| it).collect::<Vec<_>>();
-        let analysis = mock.analysis();
+    pub(crate) fn check_no_diagnostics(ra_fixture: &str) {
+        let (analysis, files) = fixture::files(ra_fixture);
         let diagnostics = files
             .into_iter()
             .flat_map(|file_id| {
@@ -295,27 +299,64 @@ mod tests {
     }
 
     fn check_expect(ra_fixture: &str, expect: Expect) {
-        let (analysis, file_id) = single_file(ra_fixture);
+        let (analysis, file_id) = fixture::file(ra_fixture);
         let diagnostics = analysis.diagnostics(&DiagnosticsConfig::default(), file_id).unwrap();
         expect.assert_debug_eq(&diagnostics)
+    }
+
+    #[test]
+    fn test_wrap_return_type_option() {
+        check_fix(
+            r#"
+//- /main.rs crate:main deps:core
+use core::option::Option::{self, Some, None};
+
+fn div(x: i32, y: i32) -> Option<i32> {
+    if y == 0 {
+        return None;
+    }
+    x / y$0
+}
+//- /core/lib.rs crate:core
+pub mod result {
+    pub enum Result<T, E> { Ok(T), Err(E) }
+}
+pub mod option {
+    pub enum Option<T> { Some(T), None }
+}
+"#,
+            r#"
+use core::option::Option::{self, Some, None};
+
+fn div(x: i32, y: i32) -> Option<i32> {
+    if y == 0 {
+        return None;
+    }
+    Some(x / y)
+}
+"#,
+        );
     }
 
     #[test]
     fn test_wrap_return_type() {
         check_fix(
             r#"
-//- /main.rs
+//- /main.rs crate:main deps:core
 use core::result::Result::{self, Ok, Err};
 
 fn div(x: i32, y: i32) -> Result<i32, ()> {
     if y == 0 {
         return Err(());
     }
-    x / y<|>
+    x / y$0
 }
-//- /core/lib.rs
+//- /core/lib.rs crate:core
 pub mod result {
     pub enum Result<T, E> { Ok(T), Err(E) }
+}
+pub mod option {
+    pub enum Option<T> { Some(T), None }
 }
 "#,
             r#"
@@ -335,18 +376,21 @@ fn div(x: i32, y: i32) -> Result<i32, ()> {
     fn test_wrap_return_type_handles_generic_functions() {
         check_fix(
             r#"
-//- /main.rs
+//- /main.rs crate:main deps:core
 use core::result::Result::{self, Ok, Err};
 
 fn div<T>(x: T) -> Result<T, i32> {
     if x == 0 {
         return Err(7);
     }
-    <|>x
+    $0x
 }
-//- /core/lib.rs
+//- /core/lib.rs crate:core
 pub mod result {
     pub enum Result<T, E> { Ok(T), Err(E) }
+}
+pub mod option {
+    pub enum Option<T> { Some(T), None }
 }
 "#,
             r#"
@@ -366,7 +410,7 @@ fn div<T>(x: T) -> Result<T, i32> {
     fn test_wrap_return_type_handles_type_aliases() {
         check_fix(
             r#"
-//- /main.rs
+//- /main.rs crate:main deps:core
 use core::result::Result::{self, Ok, Err};
 
 type MyResult<T> = Result<T, ()>;
@@ -375,11 +419,14 @@ fn div(x: i32, y: i32) -> MyResult<i32> {
     if y == 0 {
         return Err(());
     }
-    x <|>/ y
+    x $0/ y
 }
-//- /core/lib.rs
+//- /core/lib.rs crate:core
 pub mod result {
     pub enum Result<T, E> { Ok(T), Err(E) }
+}
+pub mod option {
+    pub enum Option<T> { Some(T), None }
 }
 "#,
             r#"
@@ -401,33 +448,39 @@ fn div(x: i32, y: i32) -> MyResult<i32> {
     fn test_wrap_return_type_not_applicable_when_expr_type_does_not_match_ok_type() {
         check_no_diagnostics(
             r#"
-//- /main.rs
+//- /main.rs crate:main deps:core
 use core::result::Result::{self, Ok, Err};
 
 fn foo() -> Result<(), i32> { 0 }
 
-//- /core/lib.rs
+//- /core/lib.rs crate:core
 pub mod result {
     pub enum Result<T, E> { Ok(T), Err(E) }
+}
+pub mod option {
+    pub enum Option<T> { Some(T), None }
 }
 "#,
         );
     }
 
     #[test]
-    fn test_wrap_return_type_not_applicable_when_return_type_is_not_result() {
+    fn test_wrap_return_type_not_applicable_when_return_type_is_not_result_or_option() {
         check_no_diagnostics(
             r#"
-//- /main.rs
+//- /main.rs crate:main deps:core
 use core::result::Result::{self, Ok, Err};
 
 enum SomeOtherEnum { Ok(i32), Err(String) }
 
 fn foo() -> SomeOtherEnum { 0 }
 
-//- /core/lib.rs
+//- /core/lib.rs crate:core
 pub mod result {
     pub enum Result<T, E> { Ok(T), Err(E) }
+}
+pub mod option {
+    pub enum Option<T> { Some(T), None }
 }
 "#,
         );
@@ -440,7 +493,7 @@ pub mod result {
 struct TestStruct { one: i32, two: i64 }
 
 fn test_fn() {
-    let s = TestStruct {<|>};
+    let s = TestStruct {$0};
 }
 "#,
             r#"
@@ -460,7 +513,7 @@ fn test_fn() {
 struct TestStruct { one: i32 }
 
 impl TestStruct {
-    fn test_fn() { let s = Self {<|>}; }
+    fn test_fn() { let s = Self {$0}; }
 }
 "#,
             r#"
@@ -483,7 +536,7 @@ enum Expr {
 
 impl Expr {
     fn new_bin(lhs: Box<Expr>, rhs: Box<Expr>) -> Expr {
-        Expr::Bin {<|> }
+        Expr::Bin {$0 }
     }
 }
 "#,
@@ -508,7 +561,7 @@ impl Expr {
 struct TestStruct { one: i32, two: i64 }
 
 fn test_fn() {
-    let s = TestStruct{ two: 2<|> };
+    let s = TestStruct{ two: 2$0 };
 }
 "#,
             r"
@@ -563,19 +616,28 @@ fn test_fn() {
                             Fix {
                                 label: "Create module",
                                 source_change: SourceChange {
-                                    source_file_edits: [],
+                                    source_file_edits: {},
                                     file_system_edits: [
                                         CreateFile {
-                                            anchor: FileId(
-                                                1,
-                                            ),
-                                            dst: "foo.rs",
+                                            dst: AnchoredPathBuf {
+                                                anchor: FileId(
+                                                    0,
+                                                ),
+                                                path: "foo.rs",
+                                            },
+                                            initial_contents: "",
                                         },
                                     ],
                                     is_snippet: false,
                                 },
                                 fix_trigger_range: 0..8,
                             },
+                        ),
+                        unused: false,
+                        code: Some(
+                            DiagnosticCode(
+                                "unresolved-module",
+                            ),
                         ),
                     },
                 ]
@@ -595,13 +657,13 @@ fn here() {}
 macro_rules! id { ($($tt:tt)*) => { $($tt)*}; }
 
 fn main() {
-    let _x = id![Foo { a: <|>42 }];
+    let _x = id![Foo { a: $042 }];
 }
 
 pub struct Foo { pub a: i32, pub b: i32 }
 "#,
             r#"
-fn {a:42, b: ()} {}
+fn some(, b: ()) {}
 fn items() {}
 fn here() {}
 
@@ -622,64 +684,80 @@ pub struct Foo { pub a: i32, pub b: i32 }
             r#"
 use a;
 use a::{c, d::e};
-"#,
-        );
-        check_fix(r#"use {<|>b};"#, r#"use b;"#);
-        check_fix(r#"use {b<|>};"#, r#"use b;"#);
-        check_fix(r#"use a::{c<|>};"#, r#"use a::c;"#);
-        check_fix(r#"use a::{self<|>};"#, r#"use a;"#);
-        check_fix(r#"use a::{c, d::{e<|>}};"#, r#"use a::{c, d::e};"#);
+
+mod a {
+    mod c {}
+    mod d {
+        mod e {}
     }
-
-    #[test]
-    fn test_check_struct_shorthand_initialization() {
-        check_no_diagnostics(
-            r#"
-struct A { a: &'static str }
-fn main() { A { a: "hello" } }
+}
 "#,
         );
         check_no_diagnostics(
             r#"
-struct A(usize);
-fn main() { A { 0: 0 } }
-"#,
-        );
+use a;
+use a::{
+    c,
+    // d::e
+};
 
-        check_fix(
-            r#"
-struct A { a: &'static str }
-fn main() {
-    let a = "haha";
-    A { a<|>: a }
-}
-"#,
-            r#"
-struct A { a: &'static str }
-fn main() {
-    let a = "haha";
-    A { a }
+mod a {
+    mod c {}
+    mod d {
+        mod e {}
+    }
 }
 "#,
         );
-
         check_fix(
-            r#"
-struct A { a: &'static str, b: &'static str }
-fn main() {
-    let a = "haha";
-    let b = "bb";
-    A { a<|>: a, b }
-}
-"#,
-            r#"
-struct A { a: &'static str, b: &'static str }
-fn main() {
-    let a = "haha";
-    let b = "bb";
-    A { a, b }
-}
-"#,
+            r"
+            mod b {}
+            use {$0b};
+            ",
+            r"
+            mod b {}
+            use b;
+            ",
+        );
+        check_fix(
+            r"
+            mod b {}
+            use {b$0};
+            ",
+            r"
+            mod b {}
+            use b;
+            ",
+        );
+        check_fix(
+            r"
+            mod a { mod c {} }
+            use a::{c$0};
+            ",
+            r"
+            mod a { mod c {} }
+            use a::c;
+            ",
+        );
+        check_fix(
+            r"
+            mod a {}
+            use a::{self$0};
+            ",
+            r"
+            mod a {}
+            use a;
+            ",
+        );
+        check_fix(
+            r"
+            mod a { mod c {} mod d { mod e {} } }
+            use a::{c, d::{e$0}};
+            ",
+            r"
+            mod a { mod c {} mod d { mod e {} } }
+            use a::{c, d::e};
+            ",
         );
     }
 
@@ -688,7 +766,7 @@ fn main() {
         check_fix(
             r"
 fn main() {
-    Foo { bar: 3, baz<|>: false};
+    Foo { bar: 3, baz$0: false};
 }
 struct Foo {
     bar: i32
@@ -708,25 +786,25 @@ struct Foo {
 
     #[test]
     fn test_add_field_in_other_file_from_usage() {
-        check_apply_diagnostic_fix_in_other_file(
-            r"
-            //- /main.rs
-            mod foo;
+        check_fix(
+            r#"
+//- /main.rs
+mod foo;
 
-            fn main() {
-                <|>foo::Foo { bar: 3, baz: false};
-            }
-            //- /foo.rs
-            struct Foo {
-                bar: i32
-            }
-            ",
-            r"
-            struct Foo {
-                bar: i32,
-                pub(crate) baz: bool
-            }
-            ",
+fn main() {
+    foo::Foo { bar: 3, $0baz: false};
+}
+//- /foo.rs
+struct Foo {
+    bar: i32
+}
+"#,
+            r#"
+struct Foo {
+    bar: i32,
+    pub(crate) baz: bool
+}
+"#,
         )
     }
 
@@ -735,12 +813,121 @@ struct Foo {
         let mut config = DiagnosticsConfig::default();
         config.disabled.insert("unresolved-module".into());
 
-        let (analysis, file_id) = single_file(r#"mod foo;"#);
+        let (analysis, file_id) = fixture::file(r#"mod foo;"#);
 
         let diagnostics = analysis.diagnostics(&config, file_id).unwrap();
         assert!(diagnostics.is_empty());
 
         let diagnostics = analysis.diagnostics(&DiagnosticsConfig::default(), file_id).unwrap();
         assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_rename_incorrect_case() {
+        check_fix(
+            r#"
+pub struct test_struct$0 { one: i32 }
+
+pub fn some_fn(val: test_struct) -> test_struct {
+    test_struct { one: val.one + 1 }
+}
+"#,
+            r#"
+pub struct TestStruct { one: i32 }
+
+pub fn some_fn(val: TestStruct) -> TestStruct {
+    TestStruct { one: val.one + 1 }
+}
+"#,
+        );
+
+        check_fix(
+            r#"
+pub fn some_fn(NonSnakeCase$0: u8) -> u8 {
+    NonSnakeCase
+}
+"#,
+            r#"
+pub fn some_fn(non_snake_case: u8) -> u8 {
+    non_snake_case
+}
+"#,
+        );
+
+        check_fix(
+            r#"
+pub fn SomeFn$0(val: u8) -> u8 {
+    if val != 0 { SomeFn(val - 1) } else { val }
+}
+"#,
+            r#"
+pub fn some_fn(val: u8) -> u8 {
+    if val != 0 { some_fn(val - 1) } else { val }
+}
+"#,
+        );
+
+        check_fix(
+            r#"
+fn some_fn() {
+    let whatAWeird_Formatting$0 = 10;
+    another_func(whatAWeird_Formatting);
+}
+"#,
+            r#"
+fn some_fn() {
+    let what_a_weird_formatting = 10;
+    another_func(what_a_weird_formatting);
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn test_uppercase_const_no_diagnostics() {
+        check_no_diagnostics(
+            r#"
+fn foo() {
+    const ANOTHER_ITEM$0: &str = "some_item";
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn test_rename_incorrect_case_struct_method() {
+        check_fix(
+            r#"
+pub struct TestStruct;
+
+impl TestStruct {
+    pub fn SomeFn$0() -> TestStruct {
+        TestStruct
+    }
+}
+"#,
+            r#"
+pub struct TestStruct;
+
+impl TestStruct {
+    pub fn some_fn() -> TestStruct {
+        TestStruct
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn test_single_incorrect_case_diagnostic_in_function_name_issue_6970() {
+        let input = r#"fn FOO$0() {}"#;
+        let expected = r#"fn foo() {}"#;
+
+        let (analysis, file_position) = fixture::position(input);
+        let diagnostics =
+            analysis.diagnostics(&DiagnosticsConfig::default(), file_position.file_id).unwrap();
+        assert_eq!(diagnostics.len(), 1);
+
+        check_fix(input, expected);
     }
 }

@@ -1,7 +1,7 @@
 //! Utilities for mapping between hir IDs and the surface syntax.
 
-use arena::map::ArenaMap;
 use hir_expand::InFile;
+use la_arena::ArenaMap;
 
 use crate::{db::DefDatabase, item_tree::ItemTreeNode, AssocItemLoc, ItemLoc};
 
@@ -36,8 +36,7 @@ impl<N: ItemTreeNode> HasSource for ItemLoc<N> {
     }
 }
 
-pub trait HasChildSource {
-    type ChildId;
+pub trait HasChildSource<ChildId> {
     type Value;
-    fn child_source(&self, db: &dyn DefDatabase) -> InFile<ArenaMap<Self::ChildId, Self::Value>>;
+    fn child_source(&self, db: &dyn DefDatabase) -> InFile<ArenaMap<ChildId, Self::Value>>;
 }

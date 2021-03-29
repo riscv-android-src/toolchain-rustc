@@ -4,23 +4,21 @@
 name = "libc"
 version = "0.2.74"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2f02823cf78b754822df5f7f268fb59822e7296276d3e069d8e8cb26a14bd10"
 
 [[package]]
 name = "perf-event"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
- "libc 0.2.74 (registry+https://github.com/rust-lang/crates.io-index)",
- "perf-event-open-sys 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc",
+ "perf-event-open-sys",
 ]
 
 [[package]]
 name = "perf-event-open-sys"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66f37842e29d92d05872a3c0271ba6717842695ecb896cb2e147a825c804b207"
 dependencies = [
- "libc 0.2.74 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc",
 ]
-
-[metadata]
-"checksum libc 0.2.74 (registry+https://github.com/rust-lang/crates.io-index)" = "a2f02823cf78b754822df5f7f268fb59822e7296276d3e069d8e8cb26a14bd10"
-"checksum perf-event-open-sys 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)" = "66f37842e29d92d05872a3c0271ba6717842695ecb896cb2e147a825c804b207"

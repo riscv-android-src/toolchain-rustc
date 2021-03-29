@@ -12,7 +12,7 @@
 
 [package]
 name = "chrono"
-version = "0.4.15"
+version = "0.4.19"
 authors = ["Kang Seonghoon <public+rust@mearie.org>", "Brandon W Maister <quodlibetor@gmail.com>"]
 exclude = ["/ci/*", "/.travis.yml", "/appveyor.yml", "/Makefile"]
 description = "Date and time library for Rust"
@@ -41,6 +41,10 @@ required-features = ["__internal_bench"]
 name = "serde"
 harness = false
 required-features = ["serde"]
+[dependencies.libc]
+version = "0.2.69"
+optional = true
+
 [dependencies.num-integer]
 version = "0.1.36"
 default-features = false
@@ -89,8 +93,9 @@ version = "1"
 __doctest = []
 __internal_bench = []
 alloc = []
-clock = ["time", "std"]
-default = ["clock", "std"]
+clock = ["libc", "std", "winapi"]
+default = ["clock", "std", "oldtime"]
+oldtime = ["time"]
 std = []
 unstable-locales = ["pure-rust-locales", "alloc"]
 wasmbind = ["wasm-bindgen", "js-sys"]
@@ -103,6 +108,10 @@ version = "0.2"
 optional = true
 [target."cfg(all(target_arch = \"wasm32\", not(any(target_os = \"emscripten\", target_os = \"wasi\"))))".dev-dependencies.wasm-bindgen-test]
 version = "0.3"
+[target."cfg(windows)".dependencies.winapi]
+version = "0.3.0"
+features = ["std", "minwinbase", "minwindef", "timezoneapi"]
+optional = true
 [badges.appveyor]
 repository = "chronotope/chrono"
 

@@ -24,7 +24,7 @@ impl<I: Interner> DeepNormalizer<'_, '_, I> {
     pub fn normalize_deep<T: Fold<I>>(
         table: &mut InferenceTable<I>,
         interner: &I,
-        value: &T,
+        value: T,
     ) -> T::Result {
         value
             .fold_with(
@@ -53,9 +53,14 @@ where
         match self.table.probe_var(var) {
             Some(ty) => Ok(ty
                 .assert_ty_ref(interner)
+                .clone()
                 .fold_with(self, DebruijnIndex::INNERMOST)?
                 .shifted_in(interner)), // FIXME shift
-            None => Ok(var.to_ty(interner, kind)),
+            None => {
+                // Normalize all inference vars which have been unified into a
+                // single variable. Ena calls this the "root" variable.
+                Ok(self.table.inference_var_root(var).to_ty(interner, kind))
+            }
         }
     }
 
@@ -68,6 +73,7 @@ where
         match self.table.probe_var(var) {
             Some(l) => Ok(l
                 .assert_lifetime_ref(interner)
+                .clone()
                 .fold_with(self, DebruijnIndex::INNERMOST)?
                 .shifted_in(interner)),
             None => Ok(var.to_lifetime(interner)), // FIXME shift
@@ -76,7 +82,7 @@ where
 
     fn fold_inference_const(
         &mut self,
-        ty: &Ty<I>,
+        ty: Ty<I>,
         var: InferenceVar,
         _outer_binder: DebruijnIndex,
     ) -> Fallible<Const<I>> {
@@ -84,9 +90,10 @@ where
         match self.table.probe_var(var) {
             Some(c) => Ok(c
                 .assert_const_ref(interner)
+                .clone()
                 .fold_with(self, DebruijnIndex::INNERMOST)?
                 .shifted_in(interner)),
-            None => Ok(var.to_const(interner, ty.clone())), // FIXME shift
+            None => Ok(var.to_const(interner, ty)), // FIXME shift
         }
     }
 
@@ -96,10 +103,6 @@ where
 
     fn interner(&self) -> &'i I {
         self.interner
-    }
-
-    fn target_interner(&self) -> &'i I {
-        self.interner()
     }
 }
 
@@ -111,6 +114,20 @@ mod test {
 
     const U0: UniverseIndex = UniverseIndex { counter: 0 };
 
+    // We just use a vec of 20 `Invariant`, since this is zipped and no substs are
+    // longer than this
+    #[derive(Debug)]
+    struct TestDatabase;
+    impl UnificationDatabase<ChalkIr> for TestDatabase {
+        fn fn_def_variance(&self, _fn_def_id: FnDefId<ChalkIr>) -> Variances<ChalkIr> {
+            Variances::from_iter(&ChalkIr, [Variance::Invariant; 20].iter().copied())
+        }
+
+        fn adt_variance(&self, _adt_id: AdtId<ChalkIr>) -> Variances<ChalkIr> {
+            Variances::from_iter(&ChalkIr, [Variance::Invariant; 20].iter().copied())
+        }
+    }
+
     #[test]
     fn infer() {
         let interner = &ChalkIr;
@@ -119,17 +136,37 @@ mod test {
         let a = table.new_variable(U0).to_ty(interner);
         let b = table.new_variable(U0).to_ty(interner);
         table
-            .unify(interner, &environment0, &a, &ty!(apply (item 0) (expr b)))
+            .relate(
+                interner,
+                &TestDatabase,
+                &environment0,
+                Variance::Invariant,
+                &a,
+                &ty!(apply (item 0) (expr b)),
+            )
             .unwrap();
+        // a is unified to Adt<#0>(c), where 'c' is a new inference var
+        // created by the generalizer to generalize 'b'. It then unifies 'b'
+        // and 'c', and when we normalize them, they'll both be output as
+        // the same "root" variable. However, there are no guarantees for
+        // _which_ of 'b' and 'c' becomes the root. We need to normalize
+        // "b" too, then, to ensure we get a consistent result.
         assert_eq!(
-            DeepNormalizer::normalize_deep(&mut table, interner, &a),
-            ty!(apply (item 0) (expr b))
+            DeepNormalizer::normalize_deep(&mut table, interner, a.clone()),
+            ty!(apply (item 0) (expr DeepNormalizer::normalize_deep(&mut table, interner, b.clone()))),
         );
         table
-            .unify(interner, &environment0, &b, &ty!(apply (item 1)))
+            .relate(
+                interner,
+                &TestDatabase,
+                &environment0,
+                Variance::Invariant,
+                &b,
+                &ty!(apply (item 1)),
+            )
             .unwrap();
         assert_eq!(
-            DeepNormalizer::normalize_deep(&mut table, interner, &a),
+            DeepNormalizer::normalize_deep(&mut table, interner, a),
             ty!(apply (item 0) (apply (item 1)))
         );
     }

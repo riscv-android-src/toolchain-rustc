@@ -15,14 +15,16 @@ pub mod proc_macro;
 pub mod quote;
 pub mod eager;
 
+pub use mbe::{ExpandError, ExpandResult};
+
 use std::hash::Hash;
 use std::sync::Arc;
 
-use base_db::{impl_intern_key, salsa, CrateId, FileId};
+use base_db::{impl_intern_key, salsa, CrateId, FileId, FileRange};
 use syntax::{
-    algo,
+    algo::skip_trivia_token,
     ast::{self, AstNode},
-    SyntaxNode, SyntaxToken, TextSize,
+    Direction, SyntaxNode, SyntaxToken, TextRange, TextSize,
 };
 
 use crate::ast_id_map::FileAstId;
@@ -81,7 +83,7 @@ impl HirFileId {
                     }
                     MacroCallId::EagerMacro(id) => {
                         let loc = db.lookup_intern_eager_expansion(id);
-                        loc.file_id
+                        loc.call.file_id
                     }
                 };
                 file_id.original_file(db)
@@ -101,7 +103,7 @@ impl HirFileId {
                 }
                 MacroCallId::EagerMacro(id) => {
                     let loc = db.lookup_intern_eager_expansion(id);
-                    loc.file_id
+                    loc.call.file_id
                 }
             };
         }
@@ -112,17 +114,16 @@ impl HirFileId {
     pub fn call_node(self, db: &dyn db::AstDatabase) -> Option<InFile<SyntaxNode>> {
         match self.0 {
             HirFileIdRepr::FileId(_) => None,
-            HirFileIdRepr::MacroFile(macro_file) => {
-                let lazy_id = match macro_file.macro_call_id {
-                    MacroCallId::LazyMacro(id) => id,
-                    MacroCallId::EagerMacro(_id) => {
-                        // FIXME: handle call node for eager macro
-                        return None;
-                    }
-                };
-                let loc = db.lookup_intern_macro(lazy_id);
-                Some(loc.kind.node(db))
-            }
+            HirFileIdRepr::MacroFile(macro_file) => match macro_file.macro_call_id {
+                MacroCallId::LazyMacro(lazy_id) => {
+                    let loc: MacroCallLoc = db.lookup_intern_macro(lazy_id);
+                    Some(loc.kind.node(db))
+                }
+                MacroCallId::EagerMacro(id) => {
+                    let loc: EagerCallLoc = db.lookup_intern_eager_expansion(id);
+                    Some(loc.call.with_value(loc.call.to_node(db).syntax().clone()))
+                }
+            },
         }
     }
 
@@ -141,16 +142,23 @@ impl HirFileId {
                 let loc: MacroCallLoc = db.lookup_intern_macro(lazy_id);
 
                 let arg_tt = loc.kind.arg(db)?;
-                let def_tt = loc.def.ast_id?.to_node(db).token_tree()?;
+
+                let def = loc.def.ast_id.and_then(|id| {
+                    let def_tt = match id.to_node(db) {
+                        ast::Macro::MacroRules(mac) => mac.token_tree()?,
+                        ast::Macro::MacroDef(_) => return None,
+                    };
+                    Some(InFile::new(id.file_id, def_tt))
+                });
 
                 let macro_def = db.macro_def(loc.def)?;
-                let (parse, exp_map) = db.parse_macro(macro_file)?;
+                let (parse, exp_map) = db.parse_macro_expansion(macro_file).value?;
                 let macro_arg = db.macro_arg(macro_file.macro_call_id)?;
 
                 Some(ExpansionInfo {
                     expanded: InFile::new(self, parse.syntax_node()),
                     arg: InFile::new(loc.kind.file_id(), arg_tt),
-                    def: InFile::new(loc.def.ast_id?.file_id, def_tt),
+                    def,
                     macro_arg,
                     macro_def,
                     exp_map,
@@ -215,14 +223,8 @@ impl From<EagerMacroId> for MacroCallId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MacroDefId {
-    // FIXME: krate and ast_id are currently optional because we don't have a
-    // definition location for built-in derives. There is one, though: the
-    // standard library defines them. The problem is that it uses the new
-    // `macro` syntax for this, which we don't support yet. As soon as we do
-    // (which will probably require touching this code), we can instead use
-    // that (and also remove the hacks for resolving built-in derives).
-    pub krate: Option<CrateId>,
-    pub ast_id: Option<AstId<ast::MacroCall>>,
+    pub krate: CrateId,
+    pub ast_id: Option<AstId<ast::Macro>>,
     pub kind: MacroDefKind,
 
     pub local_inner: bool,
@@ -246,14 +248,14 @@ pub enum MacroDefKind {
     // FIXME: maybe just Builtin and rename BuiltinFnLikeExpander to BuiltinExpander
     BuiltInDerive(BuiltinDeriveExpander),
     BuiltInEager(EagerExpander),
-    CustomDerive(ProcMacroExpander),
+    ProcMacro(ProcMacroExpander),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MacroCallLoc {
     pub(crate) def: MacroDefId,
     pub(crate) krate: CrateId,
-    pub(crate) kind: MacroCallKind,
+    pub kind: MacroCallKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -301,7 +303,7 @@ pub struct EagerCallLoc {
     pub(crate) fragment: FragmentKind,
     pub(crate) subtree: Arc<tt::Subtree>,
     pub(crate) krate: CrateId,
-    pub(crate) file_id: HirFileId,
+    pub(crate) call: AstId<ast::MacroCall>,
 }
 
 /// ExpansionInfo mainly describes how to map text range between src and expanded macro
@@ -309,7 +311,8 @@ pub struct EagerCallLoc {
 pub struct ExpansionInfo {
     expanded: InFile<SyntaxNode>,
     arg: InFile<SyntaxNode>,
-    def: InFile<ast::TokenTree>,
+    /// The `macro_rules!` arguments.
+    def: Option<InFile<ast::TokenTree>>,
 
     macro_def: Arc<(db::TokenExpander, mbe::TokenMap)>,
     macro_arg: Arc<(tt::Subtree, mbe::TokenMap)>,
@@ -332,7 +335,7 @@ impl ExpansionInfo {
 
         let range = self.exp_map.range_by_token(token_id)?.by_kind(token.value.kind())?;
 
-        let token = algo::find_covering_element(&self.expanded.value, range).into_token()?;
+        let token = self.expanded.value.covering_element(range).into_token()?;
 
         Some(self.expanded.with_value(token))
     }
@@ -346,14 +349,19 @@ impl ExpansionInfo {
         let (token_id, origin) = self.macro_def.0.map_id_up(token_id);
         let (token_map, tt) = match origin {
             mbe::Origin::Call => (&self.macro_arg.1, self.arg.clone()),
-            mbe::Origin::Def => {
-                (&self.macro_def.1, self.def.as_ref().map(|tt| tt.syntax().clone()))
-            }
+            mbe::Origin::Def => (
+                &self.macro_def.1,
+                self.def
+                    .as_ref()
+                    .expect("`Origin::Def` used with non-`macro_rules!` macro")
+                    .as_ref()
+                    .map(|tt| tt.syntax().clone()),
+            ),
         };
 
         let range = token_map.range_by_token(token_id)?.by_kind(token.value.kind())?;
-        let token = algo::find_covering_element(&tt.value, range + tt.value.text_range().start())
-            .into_token()?;
+        let token =
+            tt.value.covering_element(range + tt.value.text_range().start()).into_token()?;
         Some((tt.with_value(token), origin))
     }
 }
@@ -431,6 +439,70 @@ impl InFile<SyntaxNode> {
             }
         })
     }
+}
+
+impl<'a> InFile<&'a SyntaxNode> {
+    pub fn original_file_range(self, db: &dyn db::AstDatabase) -> FileRange {
+        if let Some(range) = original_range_opt(db, self) {
+            let original_file = range.file_id.original_file(db);
+            if range.file_id == original_file.into() {
+                return FileRange { file_id: original_file, range: range.value };
+            }
+
+            log::error!("Fail to mapping up more for {:?}", range);
+            return FileRange { file_id: range.file_id.original_file(db), range: range.value };
+        }
+
+        // Fall back to whole macro call.
+        let mut node = self.cloned();
+        while let Some(call_node) = node.file_id.call_node(db) {
+            node = call_node;
+        }
+
+        let orig_file = node.file_id.original_file(db);
+        assert_eq!(node.file_id, orig_file.into());
+        FileRange { file_id: orig_file, range: node.value.text_range() }
+    }
+}
+
+fn original_range_opt(
+    db: &dyn db::AstDatabase,
+    node: InFile<&SyntaxNode>,
+) -> Option<InFile<TextRange>> {
+    let expansion = node.file_id.expansion_info(db)?;
+
+    // the input node has only one token ?
+    let single = skip_trivia_token(node.value.first_token()?, Direction::Next)?
+        == skip_trivia_token(node.value.last_token()?, Direction::Prev)?;
+
+    Some(node.value.descendants().find_map(|it| {
+        let first = skip_trivia_token(it.first_token()?, Direction::Next)?;
+        let first = ascend_call_token(db, &expansion, node.with_value(first))?;
+
+        let last = skip_trivia_token(it.last_token()?, Direction::Prev)?;
+        let last = ascend_call_token(db, &expansion, node.with_value(last))?;
+
+        if (!single && first == last) || (first.file_id != last.file_id) {
+            return None;
+        }
+
+        Some(first.with_value(first.value.text_range().cover(last.value.text_range())))
+    })?)
+}
+
+fn ascend_call_token(
+    db: &dyn db::AstDatabase,
+    expansion: &ExpansionInfo,
+    token: InFile<SyntaxToken>,
+) -> Option<InFile<SyntaxToken>> {
+    let (mapped, origin) = expansion.map_token_up(token.as_ref())?;
+    if origin != Origin::Call {
+        return None;
+    }
+    if let Some(info) = mapped.file_id.expansion_info(db) {
+        return ascend_call_token(db, &info, mapped);
+    }
+    Some(mapped)
 }
 
 impl InFile<SyntaxToken> {

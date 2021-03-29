@@ -1,3 +1,4 @@
+use ide_db::helpers::insert_use::{try_merge_imports, try_merge_trees, MergeBehavior};
 use syntax::{
     algo::{neighbor, SyntaxRewriter},
     ast, AstNode,
@@ -5,10 +6,7 @@ use syntax::{
 
 use crate::{
     assist_context::{AssistContext, Assists},
-    utils::{
-        insert_use::{try_merge_imports, try_merge_trees},
-        next_prev, MergeBehaviour,
-    },
+    utils::next_prev,
     AssistId, AssistKind,
 };
 
@@ -17,7 +15,7 @@ use crate::{
 // Merges two imports with a common prefix.
 //
 // ```
-// use std::<|>fmt::Formatter;
+// use std::$0fmt::Formatter;
 // use std::io;
 // ```
 // ->
@@ -32,7 +30,7 @@ pub(crate) fn merge_imports(acc: &mut Assists, ctx: &AssistContext) -> Option<()
     if let Some(use_item) = tree.syntax().parent().and_then(ast::Use::cast) {
         let (merged, to_delete) =
             next_prev().filter_map(|dir| neighbor(&use_item, dir)).find_map(|use_item2| {
-                try_merge_imports(&use_item, &use_item2, MergeBehaviour::Full).zip(Some(use_item2))
+                try_merge_imports(&use_item, &use_item2, MergeBehavior::Full).zip(Some(use_item2))
             })?;
 
         rewriter.replace_ast(&use_item, &merged);
@@ -44,7 +42,7 @@ pub(crate) fn merge_imports(acc: &mut Assists, ctx: &AssistContext) -> Option<()
     } else {
         let (merged, to_delete) =
             next_prev().filter_map(|dir| neighbor(&tree, dir)).find_map(|use_tree| {
-                try_merge_trees(&tree, &use_tree, MergeBehaviour::Full).zip(Some(use_tree))
+                try_merge_trees(&tree, &use_tree, MergeBehavior::Full).zip(Some(use_tree))
             })?;
 
         rewriter.replace_ast(&tree, &merged);
@@ -73,11 +71,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_merge_equal() {
+        check_assist(
+            merge_imports,
+            r"
+use std::fmt$0::{Display, Debug};
+use std::fmt::{Display, Debug};
+",
+            r"
+use std::fmt::{Debug, Display};
+",
+        )
+    }
+
+    #[test]
     fn test_merge_first() {
         check_assist(
             merge_imports,
             r"
-use std::fmt<|>::Debug;
+use std::fmt$0::Debug;
 use std::fmt::Display;
 ",
             r"
@@ -92,10 +104,10 @@ use std::fmt::{Debug, Display};
             merge_imports,
             r"
 use std::fmt::Debug;
-use std::fmt<|>::Display;
+use std::fmt$0::Display;
 ",
             r"
-use std::fmt::{Display, Debug};
+use std::fmt::{Debug, Display};
 ",
         );
     }
@@ -105,7 +117,7 @@ use std::fmt::{Display, Debug};
         check_assist(
             merge_imports,
             r"
-use std::fmt<|>;
+use std::fmt$0;
 use std::fmt::Display;
 ",
             r"
@@ -119,10 +131,10 @@ use std::fmt::{self, Display};
         check_assist(
             merge_imports,
             r"
-use std::{fmt, <|>fmt::Display};
+use std::{fmt, $0fmt::Display};
 ",
             r"
-use std::{fmt::{Display, self}};
+use std::{fmt::{self, Display}};
 ",
         );
     }
@@ -132,7 +144,7 @@ use std::{fmt::{Display, self}};
         check_assist_not_applicable(
             merge_imports,
             r"
-pub use std::fmt<|>::Debug;
+pub use std::fmt$0::Debug;
 use std::fmt::Display;
 ",
         );
@@ -143,7 +155,7 @@ use std::fmt::Display;
         check_assist_not_applicable(
             merge_imports,
             r"
-use std::fmt<|>::Debug;
+use std::fmt$0::Debug;
 pub use std::fmt::Display;
 ",
         );
@@ -154,7 +166,7 @@ pub use std::fmt::Display;
         check_assist_not_applicable(
             merge_imports,
             r"
-pub(crate) use std::fmt<|>::Debug;
+pub(crate) use std::fmt$0::Debug;
 pub use std::fmt::Display;
 ",
         );
@@ -165,7 +177,7 @@ pub use std::fmt::Display;
         check_assist_not_applicable(
             merge_imports,
             r"
-pub use std::fmt<|>::Debug;
+pub use std::fmt$0::Debug;
 pub(crate) use std::fmt::Display;
 ",
         );
@@ -176,7 +188,7 @@ pub(crate) use std::fmt::Display;
         check_assist(
             merge_imports,
             r"
-pub use std::fmt<|>::Debug;
+pub use std::fmt$0::Debug;
 pub use std::fmt::Display;
 ",
             r"
@@ -190,7 +202,7 @@ pub use std::fmt::{Debug, Display};
         check_assist(
             merge_imports,
             r"
-pub(crate) use std::fmt<|>::Debug;
+pub(crate) use std::fmt$0::Debug;
 pub(crate) use std::fmt::Display;
 ",
             r"
@@ -204,19 +216,23 @@ pub(crate) use std::fmt::{Debug, Display};
         check_assist(
             merge_imports,
             r"
-use std::{fmt<|>::Debug, fmt::Display};
+use std::{fmt$0::Debug, fmt::Display};
 ",
             r"
 use std::{fmt::{Debug, Display}};
 ",
         );
+    }
+
+    #[test]
+    fn test_merge_nested2() {
         check_assist(
             merge_imports,
             r"
-use std::{fmt::Debug, fmt<|>::Display};
+use std::{fmt::Debug, fmt$0::Display};
 ",
             r"
-use std::{fmt::{Display, Debug}};
+use std::{fmt::{Debug, Display}};
 ",
         );
     }
@@ -226,7 +242,7 @@ use std::{fmt::{Display, Debug}};
         check_assist(
             merge_imports,
             r"
-use std<|>::cell::*;
+use std$0::cell::*;
 use std::str;
 ",
             r"
@@ -240,7 +256,7 @@ use std::{cell::*, str};
         check_assist(
             merge_imports,
             r"
-use std<|>::cell::*;
+use std$0::cell::*;
 use std::str::*;
 ",
             r"
@@ -254,7 +270,7 @@ use std::{cell::*, str::*};
         check_assist(
             merge_imports,
             r"
-use foo<|>::bar;
+use foo$0::bar;
 use foo::baz;
 
 /// Doc comment
@@ -273,7 +289,7 @@ use foo::{bar, baz};
             merge_imports,
             r"
 use {
-    foo<|>::bar,
+    foo$0::bar,
     foo::baz,
 };
 ",
@@ -288,7 +304,7 @@ use {
             r"
 use {
     foo::baz,
-    foo<|>::bar,
+    foo$0::bar,
 };
 ",
             r"
@@ -305,14 +321,12 @@ use {
             merge_imports,
             r"
 use foo::bar::baz;
-use foo::<|>{
+use foo::$0{
     FooBar,
 };
 ",
             r"
-use foo::{
-    FooBar,
-bar::baz};
+use foo::{FooBar, bar::baz};
 ",
         )
     }
@@ -322,7 +336,7 @@ bar::baz};
         check_assist_not_applicable(
             merge_imports,
             r"
-use std::<|>
+use std::$0
 fn main() {}",
         );
     }

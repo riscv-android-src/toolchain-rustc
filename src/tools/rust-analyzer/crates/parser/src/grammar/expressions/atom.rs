@@ -16,16 +16,14 @@ use super::*;
 //     let _ = br"f";
 // }
 pub(crate) const LITERAL_FIRST: TokenSet = TokenSet::new(&[
-    TRUE_KW,
-    FALSE_KW,
+    T![true],
+    T![false],
     INT_NUMBER,
     FLOAT_NUMBER,
     BYTE,
     CHAR,
     STRING,
-    RAW_STRING,
     BYTE_STRING,
-    RAW_BYTE_STRING,
 ]);
 
 pub(crate) fn literal(p: &mut Parser) -> Option<CompletedMarker> {
@@ -52,13 +50,15 @@ pub(super) const ATOM_EXPR_FIRST: TokenSet =
         T![match],
         T![unsafe],
         T![return],
+        T![yield],
         T![break],
         T![continue],
         T![async],
         T![try],
+        T![const],
         T![loop],
         T![for],
-        LIFETIME,
+        LIFETIME_IDENT,
     ]));
 
 const EXPR_RECOVERY_SET: TokenSet = TokenSet::new(&[LET_KW, R_DOLLAR]);
@@ -85,7 +85,7 @@ pub(super) fn atom_expr(p: &mut Parser, r: Restrictions) -> Option<(CompletedMar
         T![for] => for_expr(p, None),
         T![while] => while_expr(p, None),
         T![try] => try_block_expr(p, None),
-        LIFETIME if la == T![:] => {
+        LIFETIME_IDENT if la == T![:] => {
             let m = p.start();
             label(p);
             match p.current() {
@@ -125,6 +125,14 @@ pub(super) fn atom_expr(p: &mut Parser, r: Restrictions) -> Option<(CompletedMar
             block_expr(p);
             m.complete(p, EFFECT_EXPR)
         }
+        // test const_block
+        // fn f() { const { } }
+        T![const] if la == T!['{'] => {
+            let m = p.start();
+            p.bump(T![const]);
+            block_expr(p);
+            m.complete(p, EFFECT_EXPR)
+        }
         T!['{'] => {
             // test for_range_from
             // fn foo() {
@@ -135,6 +143,7 @@ pub(super) fn atom_expr(p: &mut Parser, r: Restrictions) -> Option<(CompletedMar
             block_expr_unchecked(p)
         }
         T![return] => return_expr(p),
+        T![yield] => yield_expr(p),
         T![continue] => continue_expr(p),
         T![break] => break_expr(p, r),
         _ => {
@@ -166,11 +175,13 @@ fn tuple_expr(p: &mut Parser) -> CompletedMarker {
     let mut saw_expr = false;
     while !p.at(EOF) && !p.at(T![')']) {
         saw_expr = true;
-        if !p.at_ts(EXPR_FIRST) {
-            p.error("expected expression");
+
+        // test tuple_attrs
+        // const A: (i64, i64) = (1, #[cfg(test)] 2);
+        if !expr_with_attrs(p) {
             break;
         }
-        expr(p);
+
         if !p.at(T![')']) {
             saw_comma = true;
             p.expect(T![,]);
@@ -285,9 +296,9 @@ fn if_expr(p: &mut Parser) -> CompletedMarker {
 //     'c: for x in () {}
 // }
 fn label(p: &mut Parser) {
-    assert!(p.at(LIFETIME) && p.nth(1) == T![:]);
+    assert!(p.at(LIFETIME_IDENT) && p.nth(1) == T![:]);
     let m = p.start();
-    p.bump(LIFETIME);
+    lifetime(p);
     p.bump_any();
     m.complete(p, LABEL);
 }
@@ -499,6 +510,20 @@ fn return_expr(p: &mut Parser) -> CompletedMarker {
     }
     m.complete(p, RETURN_EXPR)
 }
+// test yield_expr
+// fn foo() {
+//     yield;
+//     yield 1;
+// }
+fn yield_expr(p: &mut Parser) -> CompletedMarker {
+    assert!(p.at(T![yield]));
+    let m = p.start();
+    p.bump(T![yield]);
+    if p.at_ts(EXPR_FIRST) {
+        expr(p);
+    }
+    m.complete(p, YIELD_EXPR)
+}
 
 // test continue_expr
 // fn foo() {
@@ -511,7 +536,9 @@ fn continue_expr(p: &mut Parser) -> CompletedMarker {
     assert!(p.at(T![continue]));
     let m = p.start();
     p.bump(T![continue]);
-    p.eat(LIFETIME);
+    if p.at(LIFETIME_IDENT) {
+        lifetime(p);
+    }
     m.complete(p, CONTINUE_EXPR)
 }
 
@@ -528,7 +555,9 @@ fn break_expr(p: &mut Parser, r: Restrictions) -> CompletedMarker {
     assert!(p.at(T![break]));
     let m = p.start();
     p.bump(T![break]);
-    p.eat(LIFETIME);
+    if p.at(LIFETIME_IDENT) {
+        lifetime(p);
+    }
     // test break_ambiguity
     // fn foo(){
     //     if break {}

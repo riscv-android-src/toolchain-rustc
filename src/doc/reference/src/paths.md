@@ -50,22 +50,16 @@ mod m {
 >
 > _GenericArgs_ :\
 > &nbsp;&nbsp; &nbsp;&nbsp; `<` `>`\
-> &nbsp;&nbsp; | `<` _GenericArgsLifetimes_ `,`<sup>?</sup> `>`\
-> &nbsp;&nbsp; | `<` _GenericArgsTypes_ `,`<sup>?</sup> `>`\
-> &nbsp;&nbsp; | `<` _GenericArgsBindings_ `,`<sup>?</sup> `>`\
-> &nbsp;&nbsp; | `<` _GenericArgsTypes_ `,` _GenericArgsBindings_ `,`<sup>?</sup> `>`\
-> &nbsp;&nbsp; | `<` _GenericArgsLifetimes_ `,` _GenericArgsTypes_ `,`<sup>?</sup> `>`\
-> &nbsp;&nbsp; | `<` _GenericArgsLifetimes_ `,` _GenericArgsBindings_ `,`<sup>?</sup> `>`\
-> &nbsp;&nbsp; | `<` _GenericArgsLifetimes_ `,` _GenericArgsTypes_ `,` _GenericArgsBindings_ `,`<sup>?</sup> `>`
+> &nbsp;&nbsp; | `<` ( _GenericArg_ `,` )<sup>\*</sup> _GenericArg_ `,`<sup>?</sup> `>`
 >
-> _GenericArgsLifetimes_ :\
-> &nbsp;&nbsp; [_Lifetime_] (`,` [_Lifetime_])<sup>\*</sup>
+> _GenericArg_ :\
+> &nbsp;&nbsp; [_Lifetime_] | [_Type_] | _GenericArgsConst_ | _GenericArgsBinding_
 >
-> _GenericArgsTypes_ :\
-> &nbsp;&nbsp; [_Type_] (`,` [_Type_])<sup>\*</sup>
->
-> _GenericArgsBindings_ :\
-> &nbsp;&nbsp; _GenericArgsBinding_ (`,` _GenericArgsBinding_)<sup>\*</sup>
+> _GenericArgsConst_ :\
+> &nbsp;&nbsp; &nbsp;&nbsp; [_BlockExpression_]\
+> &nbsp;&nbsp; | [_LiteralExpression_]\
+> &nbsp;&nbsp; | `-` [_LiteralExpression_]\
+> &nbsp;&nbsp; | [_SimplePathSegment_]
 >
 > _GenericArgsBinding_ :\
 > &nbsp;&nbsp; [IDENTIFIER] `=` [_Type_]
@@ -80,6 +74,12 @@ ambiguity with the less-than operator. This is colloquially known as "turbofish"
 (0..10).collect::<Vec<_>>();
 Vec::<u8>::with_capacity(1024);
 ```
+
+The order of generic arguments is restricted to lifetime arguments, then type
+arguments, then const arguments, then equality constraints.
+
+Const arguments must be surrounded by braces unless they are a
+[literal] or a single segment path.
 
 ## Qualified paths
 
@@ -164,10 +164,11 @@ start being resolved from the crate root. Each identifier in the path must resol
 item.
 
 > **Edition Differences**: In the 2015 Edition, the crate root contains a variety of
-> different items, including external crates, default crates such as `std` and `core`, and
+> different items, including external crates, default crates such as `std` or `core`, and
 > items in the top level of the crate (including `use` imports).
 >
-> Beginning with the 2018 Edition, paths starting with `::` can only reference crates.
+> Beginning with the 2018 Edition, paths starting with `::` can only reference
+> crates in the [extern prelude].
 
 ```rust
 mod a {
@@ -364,9 +365,14 @@ mod without { // ::without
 # fn main() {}
 ```
 
+[_BlockExpression_]: expressions/block-expr.md
+[_Expression_]: expressions.md
 [_GenericArgs_]: #paths-in-expressions
 [_Lifetime_]: trait-bounds.md
+[_LiteralExpression_]: expressions/literal-expr.md
+[_SimplePathSegment_]: #simple-paths
 [_Type_]: types.md#type-expressions
+[literal]: expressions/literal-expr.md
 [item]: items.md
 [variable]: variables.md
 [implementations]: items/implementations.md
@@ -375,6 +381,7 @@ mod without { // ::without
 [`use`]: items/use-declarations.md
 [attributes]: attributes.md
 [expressions]: expressions.md
+[extern prelude]: names/preludes.md#extern-prelude
 [macro transcribers]: macros-by-example.md
 [macros]: macros-by-example.md
 [patterns]: patterns.md

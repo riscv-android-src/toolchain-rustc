@@ -1,8 +1,7 @@
 #![cfg(feature = "serde")]
+#![warn(rust_2018_idioms)]
 
-extern crate bytes;
-extern crate serde_test;
-use serde_test::{Token, assert_tokens};
+use serde_test::{assert_tokens, Token};
 
 #[test]
 fn test_ser_de_empty() {

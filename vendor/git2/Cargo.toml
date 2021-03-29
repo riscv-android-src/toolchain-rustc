@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "git2"
-version = "0.13.14"
+version = "0.13.17"
 authors = ["Josh Triplett <josh@joshtriplett.org>", "Alex Crichton <alex@alexcrichton.com>"]
 description = "Bindings to libgit2 for interoperating with git repositories. This library is\nboth threadsafe and memory safe and allows both reading and writing git\nrepositories.\n"
 documentation = "https://docs.rs/git2"
@@ -29,7 +29,7 @@ version = "1.1.0"
 version = "0.2"
 
 [dependencies.libgit2-sys]
-version = "0.12.16"
+version = "0.12.18"
 
 [dependencies.log]
 version = "0.4.8"
@@ -37,7 +37,7 @@ version = "0.4.8"
 [dependencies.url]
 version = "2.0"
 [dev-dependencies.paste]
-version = "0.1.12"
+version = "1"
 
 [dev-dependencies.structopt]
 version = "0.3"

@@ -11,9 +11,15 @@ use serde::{Deserialize, Serialize};
 pub enum AnalyzerStatus {}
 
 impl Request for AnalyzerStatus {
-    type Params = ();
+    type Params = AnalyzerStatusParams;
     type Result = String;
     const METHOD: &'static str = "rust-analyzer/analyzerStatus";
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyzerStatusParams {
+    pub text_document: Option<TextDocumentIdentifier>,
 }
 
 pub enum MemoryUsage {}
@@ -45,6 +51,14 @@ impl Request for SyntaxTree {
 pub struct SyntaxTreeParams {
     pub text_document: TextDocumentIdentifier,
     pub range: Option<Range>,
+}
+
+pub enum ViewHir {}
+
+impl Request for ViewHir {
+    type Params = lsp_types::TextDocumentPositionParams;
+    type Result = String;
+    const METHOD: &'static str = "rust-analyzer/viewHir";
 }
 
 pub enum ExpandMacro {}
@@ -107,22 +121,6 @@ pub struct JoinLinesParams {
     pub ranges: Vec<Range>,
 }
 
-pub enum ResolveCodeActionRequest {}
-
-impl Request for ResolveCodeActionRequest {
-    type Params = ResolveCodeActionParams;
-    type Result = Option<SnippetWorkspaceEdit>;
-    const METHOD: &'static str = "experimental/resolveCodeAction";
-}
-
-/// Params for the ResolveCodeActionRequest
-#[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolveCodeActionParams {
-    pub code_action_params: lsp_types::CodeActionParams,
-    pub id: String,
-}
-
 pub enum OnEnter {}
 
 impl Request for OnEnter {
@@ -165,10 +163,14 @@ pub enum RunnableKind {
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct CargoRunnable {
+    // command to be executed instead of cargo
+    pub override_cargo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<PathBuf>,
     // command, --package and --lib stuff
     pub cargo_args: Vec<String>,
+    // user-specified additional cargo args, like `--release`.
+    pub cargo_extra_args: Vec<String>,
     // stuff after --
     pub executable_args: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -232,6 +234,7 @@ pub enum StatusNotification {}
 #[derive(Serialize, Deserialize)]
 pub enum Status {
     Loading,
+    ReadyPartial,
     Ready,
     NeedsReload,
     Invalid,
@@ -255,12 +258,17 @@ impl Request for CodeActionRequest {
     const METHOD: &'static str = "textDocument/codeAction";
 }
 
+pub enum CodeActionResolveRequest {}
+impl Request for CodeActionResolveRequest {
+    type Params = CodeAction;
+    type Result = CodeAction;
+    const METHOD: &'static str = "codeAction/resolve";
+}
+
 #[derive(Debug, PartialEq, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeAction {
     pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,6 +280,16 @@ pub struct CodeAction {
     pub edit: Option<SnippetWorkspaceEdit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_preferred: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<CodeActionData>,
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeActionData {
+    pub code_action_params: lsp_types::CodeActionParams,
+    pub id: String,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
@@ -293,7 +311,7 @@ pub enum SnippetDocumentChangeOperation {
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnippetTextDocumentEdit {
-    pub text_document: lsp_types::VersionedTextDocumentIdentifier,
+    pub text_document: lsp_types::OptionalVersionedTextDocumentIdentifier,
     pub edits: Vec<SnippetTextEdit>,
 }
 
@@ -336,4 +354,26 @@ pub struct CommandLink {
     pub command: lsp_types::Command,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tooltip: Option<String>,
+}
+
+pub enum ExternalDocs {}
+
+impl Request for ExternalDocs {
+    type Params = lsp_types::TextDocumentPositionParams;
+    type Result = Option<lsp_types::Url>;
+    const METHOD: &'static str = "experimental/externalDocs";
+}
+
+pub enum OpenCargoToml {}
+
+impl Request for OpenCargoToml {
+    type Params = OpenCargoTomlParams;
+    type Result = Option<lsp_types::GotoDefinitionResponse>;
+    const METHOD: &'static str = "experimental/openCargoToml";
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCargoTomlParams {
+    pub text_document: TextDocumentIdentifier,
 }

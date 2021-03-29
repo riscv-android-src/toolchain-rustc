@@ -2,20 +2,25 @@ use std::iter;
 
 use rustc_middle::mir;
 use rustc_target::abi::Size;
+use rustc_target::spec::abi::Abi;
 
 use crate::*;
-use helpers::check_arg_count;
+use helpers::{check_abi, check_arg_count};
+use shims::windows::sync::EvalContextExt as _;
 
 impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn emulate_foreign_item_by_name(
         &mut self,
         link_name: &str,
+        abi: Abi,
         args: &[OpTy<'tcx, Tag>],
         dest: PlaceTy<'tcx, Tag>,
         _ret: mir::BasicBlock,
     ) -> InterpResult<'tcx, bool> {
         let this = self.eval_context_mut();
+
+        check_abi(abi, Abi::System)?;
 
         // Windows API stubs.
         // HANDLE = isize
@@ -207,6 +212,34 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
 
+            // Synchronization primitives
+            "AcquireSRWLockExclusive" => {
+                let &[ptr] = check_arg_count(args)?;
+                this.AcquireSRWLockExclusive(ptr)?;
+            }
+            "ReleaseSRWLockExclusive" => {
+                let &[ptr] = check_arg_count(args)?;
+                this.ReleaseSRWLockExclusive(ptr)?;
+            }
+            "TryAcquireSRWLockExclusive" => {
+                let &[ptr] = check_arg_count(args)?;
+                let ret = this.TryAcquireSRWLockExclusive(ptr)?;
+                this.write_scalar(Scalar::from_u8(ret), dest)?;
+            }
+            "AcquireSRWLockShared" => {
+                let &[ptr] = check_arg_count(args)?;
+                this.AcquireSRWLockShared(ptr)?;
+            }
+            "ReleaseSRWLockShared" => {
+                let &[ptr] = check_arg_count(args)?;
+                this.ReleaseSRWLockShared(ptr)?;
+            }
+            "TryAcquireSRWLockShared" => {
+                let &[ptr] = check_arg_count(args)?;
+                let ret = this.TryAcquireSRWLockShared(ptr)?;
+                this.write_scalar(Scalar::from_u8(ret), dest)?;
+            }
+
             // Dynamic symbol loading
             "GetProcAddress" => {
                 #[allow(non_snake_case)]
@@ -267,12 +300,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // Just fake a HANDLE
                 this.write_scalar(Scalar::from_machine_isize(1, this), dest)?;
             }
-            "GetModuleHandleW" if this.frame().instance.to_string().starts_with("std::sys::windows::") => {
-                #[allow(non_snake_case)]
-                let &[_lpModuleName] = check_arg_count(args)?;
-                // Pretend this does not exist / nothing happened, by returning zero.
-                this.write_null(dest)?;
-            }
             "SetConsoleTextAttribute" if this.frame().instance.to_string().starts_with("std::sys::windows::") => {
                 #[allow(non_snake_case)]
                 let &[_hConsoleOutput, _wAttribute] = check_arg_count(args)?;
@@ -284,6 +311,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let &[_First, _Handler] = check_arg_count(args)?;
                 // Any non zero value works for the stdlib. This is just used for stack overflows anyway.
                 this.write_scalar(Scalar::from_machine_usize(1, this), dest)?;
+            }
+            "SetThreadStackGuarantee" if this.frame().instance.to_string().starts_with("std::sys::windows::") => {
+                #[allow(non_snake_case)]
+                let &[_StackSizeInBytes] = check_arg_count(args)?;
+                // Any non zero value works for the stdlib. This is just used for stack overflows anyway.
+                this.write_scalar(Scalar::from_u32(1), dest)?;
             }
             | "InitializeCriticalSection"
             | "EnterCriticalSection"

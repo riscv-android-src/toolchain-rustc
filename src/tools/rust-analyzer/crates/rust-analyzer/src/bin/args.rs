@@ -14,7 +14,10 @@ use vfs::AbsPathBuf;
 pub(crate) struct Args {
     pub(crate) verbosity: Verbosity,
     pub(crate) log_file: Option<PathBuf>,
+    pub(crate) no_buffering: bool,
     pub(crate) command: Command,
+    #[allow(unused)]
+    pub(crate) wait_dbg: bool,
 }
 
 pub(crate) enum Command {
@@ -28,6 +31,7 @@ pub(crate) enum Command {
     StructuredSearch { debug_snippet: Option<String>, patterns: Vec<SsrPattern> },
     ProcMacro,
     RunServer,
+    PrintConfigSchema,
     Version,
     Help,
 }
@@ -46,11 +50,19 @@ FLAGS:
     -vv, --spammy
     -q,  --quiet      Set verbosity
 
-    --log-file <PATH> Log to the specified filed instead of stderr
+    --print-config-schema
+                      Dump a LSP config JSON schema
+    --log-file <PATH> Log to the specified file instead of stderr
+    --no-log-buffering
+                      Flush log records to the file immediately
+
+    --wait-dbg        Wait until a debugger is attached to.
+                      The flag is valid for debug builds only
 
 ENVIRONMENTAL VARIABLES:
     RA_LOG            Set log filter in env_logger format
     RA_PROFILE        Enable hierarchical profiler
+    RA_WAIT_DBG       If set acts like a --wait-dbg flag
 
 COMMANDS:
 
@@ -108,11 +120,13 @@ impl Args {
         let mut matches = Arguments::from_env();
 
         if matches.contains("--version") {
-            matches.finish()?;
+            finish_args(matches)?;
             return Ok(Args {
                 verbosity: Verbosity::Normal,
                 log_file: None,
                 command: Command::Version,
+                no_buffering: false,
+                wait_dbg: false,
             });
         }
 
@@ -129,17 +143,41 @@ impl Args {
             (false, true, true) => bail!("Invalid flags: -q conflicts with -v"),
         };
         let log_file = matches.opt_value_from_str("--log-file")?;
+        let no_buffering = matches.contains("--no-log-buffering");
+        let wait_dbg = matches.contains("--wait-dbg");
 
         if matches.contains(["-h", "--help"]) {
             eprintln!("{}", HELP);
-            return Ok(Args { verbosity, log_file: None, command: Command::Help });
+            return Ok(Args {
+                verbosity,
+                log_file: None,
+                command: Command::Help,
+                no_buffering,
+                wait_dbg,
+            });
+        }
+
+        if matches.contains("--print-config-schema") {
+            return Ok(Args {
+                verbosity,
+                log_file,
+                command: Command::PrintConfigSchema,
+                no_buffering,
+                wait_dbg,
+            });
         }
 
         let subcommand = match matches.subcommand()? {
             Some(it) => it,
             None => {
-                matches.finish()?;
-                return Ok(Args { verbosity, log_file, command: Command::RunServer });
+                finish_args(matches)?;
+                return Ok(Args {
+                    verbosity,
+                    log_file,
+                    command: Command::RunServer,
+                    no_buffering,
+                    wait_dbg,
+                });
             }
         };
         let command = match subcommand.as_str() {
@@ -155,7 +193,7 @@ impl Args {
                 load_output_dirs: matches.contains("--load-output-dirs"),
                 with_proc_macro: matches.contains("--with-proc-macro"),
                 path: matches
-                    .free_from_str()?
+                    .opt_free_from_str()?
                     .ok_or_else(|| format_err!("expected positional argument"))?,
             }),
             "analysis-bench" => Command::Bench(BenchCmd {
@@ -182,21 +220,21 @@ impl Args {
                 load_output_dirs: matches.contains("--load-output-dirs"),
                 with_proc_macro: matches.contains("--with-proc-macro"),
                 path: matches
-                    .free_from_str()?
+                    .opt_free_from_str()?
                     .ok_or_else(|| format_err!("expected positional argument"))?,
             }),
             "diagnostics" => Command::Diagnostics {
                 load_output_dirs: matches.contains("--load-output-dirs"),
                 with_proc_macro: matches.contains("--with-proc-macro"),
                 path: matches
-                    .free_from_str()?
+                    .opt_free_from_str()?
                     .ok_or_else(|| format_err!("expected positional argument"))?,
             },
             "proc-macro" => Command::ProcMacro,
             "ssr" => Command::Ssr {
                 rules: {
                     let mut acc = Vec::new();
-                    while let Some(rule) = matches.free_from_str()? {
+                    while let Some(rule) = matches.opt_free_from_str()? {
                         acc.push(rule);
                     }
                     acc
@@ -206,7 +244,7 @@ impl Args {
                 debug_snippet: matches.opt_value_from_str("--debug")?,
                 patterns: {
                     let mut acc = Vec::new();
-                    while let Some(rule) = matches.free_from_str()? {
+                    while let Some(rule) = matches.opt_free_from_str()? {
                         acc.push(rule);
                     }
                     acc
@@ -214,10 +252,23 @@ impl Args {
             },
             _ => {
                 eprintln!("{}", HELP);
-                return Ok(Args { verbosity, log_file: None, command: Command::Help });
+                return Ok(Args {
+                    verbosity,
+                    log_file: None,
+                    command: Command::Help,
+                    no_buffering,
+                    wait_dbg,
+                });
             }
         };
-        matches.finish()?;
-        Ok(Args { verbosity, log_file, command })
+        finish_args(matches)?;
+        Ok(Args { verbosity, log_file, command, no_buffering, wait_dbg })
     }
+}
+
+fn finish_args(args: Arguments) -> Result<()> {
+    if !args.finish().is_empty() {
+        bail!("Unused arguments.");
+    }
+    Ok(())
 }

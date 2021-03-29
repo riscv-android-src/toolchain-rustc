@@ -52,6 +52,9 @@ use crate::sys;
 /// hash, as determined by the [`Hash`] trait, or its equality, as determined by
 /// the [`Eq`] trait, changes while it is in the map. This is normally only
 /// possible through [`Cell`], [`RefCell`], global state, I/O, or unsafe code.
+/// The behavior resulting from such a logic error is not specified, but will
+/// not result in undefined behavior. This could include panics, incorrect results,
+/// aborts, memory leaks, and non-termination.
 ///
 /// The hash table implementation is a Rust port of Google's [SwissTable].
 /// The original C++ version of SwissTable can be found [here], and this
@@ -195,7 +198,6 @@ use crate::sys;
 /// // use the values stored in map
 /// ```
 
-#[derive(Clone)]
 #[cfg_attr(not(test), rustc_diagnostic_item = "hashmap_type")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct HashMap<K, V, S = RandomState> {
@@ -449,6 +451,7 @@ impl<K, V, S> HashMap<K, V, S> {
     /// a.insert(1, "a");
     /// assert_eq!(a.len(), 1);
     /// ```
+    #[doc(alias = "length")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> usize {
         self.base.len()
@@ -655,8 +658,7 @@ where
     /// down no lower than the supplied limit while maintaining the internal rules
     /// and possibly leaving some space in accordance with the resize policy.
     ///
-    /// Panics if the current capacity is smaller than the supplied
-    /// minimum capacity.
+    /// If the current capacity is less than the lower limit, this is a no-op.
     ///
     /// # Examples
     ///
@@ -676,7 +678,6 @@ where
     #[inline]
     #[unstable(feature = "shrink_to", reason = "new API", issue = "56431")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
-        assert!(self.capacity() >= min_capacity, "Tried to shrink to a larger capacity");
         self.base.shrink_to(min_capacity);
     }
 
@@ -858,6 +859,7 @@ where
     /// assert_eq!(map.remove(&1), Some("a"));
     /// assert_eq!(map.remove(&1), None);
     /// ```
+    #[doc(alias = "delete")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V>
@@ -1026,6 +1028,24 @@ where
     #[unstable(feature = "hash_raw_entry", issue = "56167")]
     pub fn raw_entry(&self) -> RawEntryBuilder<'_, K, V, S> {
         RawEntryBuilder { map: self }
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<K, V, S> Clone for HashMap<K, V, S>
+where
+    K: Clone,
+    V: Clone,
+    S: Clone,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        Self { base: self.base.clone() }
+    }
+
+    #[inline]
+    fn clone_from(&mut self, other: &Self) {
+        self.base.clone_from(&other.base);
     }
 }
 

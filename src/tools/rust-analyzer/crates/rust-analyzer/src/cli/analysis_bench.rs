@@ -3,20 +3,20 @@
 use std::{env, path::PathBuf, str::FromStr, sync::Arc, time::Instant};
 
 use anyhow::{bail, format_err, Result};
-use base_db::{
-    salsa::{Database, Durability},
-    FileId,
-};
+use hir::PrefixKind;
 use ide::{
-    Analysis, AnalysisChange, AnalysisHost, CompletionConfig, DiagnosticsConfig, FilePosition,
-    LineCol,
+    Analysis, AnalysisHost, Change, CompletionConfig, DiagnosticsConfig, FilePosition, LineCol,
+};
+use ide_db::{
+    base_db::{
+        salsa::{Database, Durability},
+        FileId,
+    },
+    helpers::{insert_use::InsertUseConfig, SnippetCap},
 };
 use vfs::AbsPathBuf;
 
-use crate::{
-    cli::{load_cargo::load_cargo, Verbosity},
-    print_memory_usage,
-};
+use crate::cli::{load_cargo::load_cargo, print_memory_usage, Verbosity};
 
 pub struct BenchCmd {
     pub path: PathBuf,
@@ -91,7 +91,14 @@ impl BenchCmd {
                 let file_position = FilePosition { file_id, offset };
 
                 if is_completion {
-                    let options = CompletionConfig::default();
+                    let options = CompletionConfig {
+                        enable_postfix_completions: true,
+                        enable_imports_on_the_fly: true,
+                        add_call_parenthesis: true,
+                        add_call_argument_snippets: true,
+                        snippet_cap: SnippetCap::new(true),
+                        insert_use: InsertUseConfig { merge: None, prefix_kind: PrefixKind::Plain },
+                    };
                     let res = do_work(&mut host, file_id, |analysis| {
                         analysis.completions(&options, file_position)
                     });
@@ -143,7 +150,7 @@ fn do_work<F: Fn(&Analysis) -> T, T>(host: &mut AnalysisHost, file_id: FileId, w
         {
             let mut text = host.analysis().file_text(file_id).unwrap().to_string();
             text.push_str("\n/* Hello world */\n");
-            let mut change = AnalysisChange::new();
+            let mut change = Change::new();
             change.change_file(file_id, Some(Arc::new(text)));
             host.apply_change(change);
         }
@@ -156,7 +163,7 @@ fn do_work<F: Fn(&Analysis) -> T, T>(host: &mut AnalysisHost, file_id: FileId, w
         {
             let mut text = host.analysis().file_text(file_id).unwrap().to_string();
             text.push_str("\npub fn _dummy() {}\n");
-            let mut change = AnalysisChange::new();
+            let mut change = Change::new();
             change.change_file(file_id, Some(Arc::new(text)));
             host.apply_change(change);
         }

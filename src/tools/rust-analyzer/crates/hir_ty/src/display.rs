@@ -1,14 +1,15 @@
 //! FIXME: write short doc here
 
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use crate::{
     db::HirDatabase, utils::generics, ApplicationTy, CallableDefId, FnSig, GenericPredicate,
-    Obligation, OpaqueTyId, ProjectionTy, Substs, TraitRef, Ty, TypeCtor,
+    Lifetime, Obligation, OpaqueTy, OpaqueTyId, ProjectionTy, Substs, TraitRef, Ty, TypeCtor,
 };
+use arrayvec::ArrayVec;
 use hir_def::{
-    find_path, generics::TypeParamProvenance, item_scope::ItemInNs, AdtId, AssocContainerId,
-    Lookup, ModuleId,
+    db::DefDatabase, find_path, generics::TypeParamProvenance, item_scope::ItemInNs, AdtId,
+    AssocContainerId, HasModule, Lookup, ModuleId, TraitId,
 };
 use hir_expand::name::Name;
 
@@ -24,6 +25,20 @@ pub struct HirFormatter<'a> {
 
 pub trait HirDisplay {
     fn hir_fmt(&self, f: &mut HirFormatter) -> Result<(), HirDisplayError>;
+
+    /// Returns a `Display`able type that is human-readable.
+    fn into_displayable<'a>(
+        &'a self,
+        db: &'a dyn HirDatabase,
+        max_size: Option<usize>,
+        omit_verbose_types: bool,
+        display_target: DisplayTarget,
+    ) -> HirDisplayWrapper<'a, Self>
+    where
+        Self: Sized,
+    {
+        HirDisplayWrapper { db, t: self, max_size, omit_verbose_types, display_target }
+    }
 
     /// Returns a `Display`able type that is human-readable.
     /// Use this for showing types to the user (e.g. diagnostics)
@@ -82,6 +97,20 @@ pub trait HirDisplay {
         };
         Ok(result)
     }
+
+    /// Returns a String representation of `self` for test purposes
+    fn display_test<'a>(&'a self, db: &'a dyn HirDatabase) -> HirDisplayWrapper<'a, Self>
+    where
+        Self: Sized,
+    {
+        HirDisplayWrapper {
+            db,
+            t: self,
+            max_size: None,
+            omit_verbose_types: false,
+            display_target: DisplayTarget::Test,
+        }
+    }
 }
 
 impl<'a> HirFormatter<'a> {
@@ -126,7 +155,7 @@ impl<'a> HirFormatter<'a> {
 }
 
 #[derive(Clone, Copy)]
-enum DisplayTarget {
+pub enum DisplayTarget {
     /// Display types for inlays, doc popups, autocompletion, etc...
     /// Showing `{unknown}` or not qualifying paths is fine here.
     /// There's no reason for this to fail.
@@ -134,17 +163,23 @@ enum DisplayTarget {
     /// Display types for inserting them in source files.
     /// The generated code should compile, so paths need to be qualified.
     SourceCode { module_id: ModuleId },
+    /// Only for test purpose to keep real types
+    Test,
 }
 
 impl DisplayTarget {
     fn is_source_code(&self) -> bool {
-        matches!(self, Self::SourceCode {..})
+        matches!(self, Self::SourceCode { .. })
+    }
+    fn is_test(&self) -> bool {
+        matches!(self, Self::Test)
     }
 }
 
 #[derive(Debug)]
 pub enum DisplaySourceCodeError {
     PathNotFound,
+    UnknownType,
 }
 
 pub enum HirDisplayError {
@@ -213,30 +248,69 @@ impl HirDisplay for ApplicationTy {
             TypeCtor::Str => write!(f, "str")?,
             TypeCtor::Slice => {
                 let t = self.parameters.as_single();
-                write!(f, "[{}]", t.display(f.db))?;
+                write!(f, "[")?;
+                t.hir_fmt(f)?;
+                write!(f, "]")?;
             }
             TypeCtor::Array => {
                 let t = self.parameters.as_single();
-                write!(f, "[{}; _]", t.display(f.db))?;
+                write!(f, "[")?;
+                t.hir_fmt(f)?;
+                write!(f, "; _]")?;
             }
-            TypeCtor::RawPtr(m) => {
+            TypeCtor::RawPtr(m) | TypeCtor::Ref(m) => {
                 let t = self.parameters.as_single();
-                write!(f, "*{}{}", m.as_keyword_for_ptr(), t.display(f.db))?;
-            }
-            TypeCtor::Ref(m) => {
-                let t = self.parameters.as_single();
-                let ty_display = if f.omit_verbose_types() {
-                    t.display_truncated(f.db, f.max_size)
+                let ty_display =
+                    t.into_displayable(f.db, f.max_size, f.omit_verbose_types, f.display_target);
+
+                if matches!(self.ctor, TypeCtor::RawPtr(_)) {
+                    write!(f, "*{}", m.as_keyword_for_ptr())?;
                 } else {
-                    t.display(f.db)
+                    write!(f, "&{}", m.as_keyword_for_ref())?;
+                }
+
+                let datas;
+                let predicates = match t {
+                    Ty::Dyn(predicates) if predicates.len() > 1 => {
+                        Cow::Borrowed(predicates.as_ref())
+                    }
+                    &Ty::Opaque(OpaqueTy {
+                        opaque_ty_id: OpaqueTyId::ReturnTypeImplTrait(func, idx),
+                        ref parameters,
+                    }) => {
+                        datas =
+                            f.db.return_type_impl_traits(func).expect("impl trait id without data");
+                        let data = (*datas)
+                            .as_ref()
+                            .map(|rpit| rpit.impl_traits[idx as usize].bounds.clone());
+                        let bounds = data.subst(parameters);
+                        Cow::Owned(bounds.value)
+                    }
+                    _ => Cow::Borrowed(&[][..]),
                 };
-                write!(f, "&{}{}", m.as_keyword_for_ref(), ty_display)?;
+
+                if let [GenericPredicate::Implemented(trait_ref), _] = predicates.as_ref() {
+                    let trait_ = trait_ref.trait_;
+                    if fn_traits(f.db.upcast(), trait_).any(|it| it == trait_) {
+                        return write!(f, "{}", ty_display);
+                    }
+                }
+
+                if predicates.len() > 1 {
+                    write!(f, "(")?;
+                    write!(f, "{}", ty_display)?;
+                    write!(f, ")")?;
+                } else {
+                    write!(f, "{}", ty_display)?;
+                }
             }
             TypeCtor::Never => write!(f, "!")?,
             TypeCtor::Tuple { .. } => {
                 let ts = &self.parameters;
                 if ts.len() == 1 {
-                    write!(f, "({},)", ts[0].display(f.db))?;
+                    write!(f, "(")?;
+                    ts[0].hir_fmt(f)?;
+                    write!(f, ",)")?;
                 } else {
                     write!(f, "(")?;
                     f.write_joined(&*ts.0, ", ")?;
@@ -245,25 +319,7 @@ impl HirDisplay for ApplicationTy {
             }
             TypeCtor::FnPtr { is_varargs, .. } => {
                 let sig = FnSig::from_fn_ptr_substs(&self.parameters, is_varargs);
-                write!(f, "fn(")?;
-                f.write_joined(sig.params(), ", ")?;
-                if is_varargs {
-                    if sig.params().is_empty() {
-                        write!(f, "...")?;
-                    } else {
-                        write!(f, ", ...")?;
-                    }
-                }
-                write!(f, ")")?;
-                let ret = sig.ret();
-                if *ret != Ty::unit() {
-                    let ret_display = if f.omit_verbose_types() {
-                        ret.display_truncated(f.db, f.max_size)
-                    } else {
-                        ret.display(f.db)
-                    };
-                    write!(f, " -> {}", ret_display)?;
-                }
+                sig.hir_fmt(f)?;
             }
             TypeCtor::FnDef(def) => {
                 let sig = f.db.callable_item_signature(def).subst(&self.parameters);
@@ -293,17 +349,19 @@ impl HirDisplay for ApplicationTy {
                 write!(f, ")")?;
                 let ret = sig.ret();
                 if *ret != Ty::unit() {
-                    let ret_display = if f.omit_verbose_types() {
-                        ret.display_truncated(f.db, f.max_size)
-                    } else {
-                        ret.display(f.db)
-                    };
+                    let ret_display = ret.into_displayable(
+                        f.db,
+                        f.max_size,
+                        f.omit_verbose_types,
+                        f.display_target,
+                    );
+
                     write!(f, " -> {}", ret_display)?;
                 }
             }
             TypeCtor::Adt(def_id) => {
                 match f.display_target {
-                    DisplayTarget::Diagnostics => {
+                    DisplayTarget::Diagnostics | DisplayTarget::Test => {
                         let name = match def_id {
                             AdtId::StructId(it) => f.db.struct_data(it).name.clone(),
                             AdtId::UnionId(it) => f.db.union_data(it).name.clone(),
@@ -372,8 +430,28 @@ impl HirDisplay for ApplicationTy {
                     _ => panic!("not an associated type"),
                 };
                 let trait_ = f.db.trait_data(trait_);
+                let type_alias_data = f.db.type_alias_data(type_alias);
+
+                // Use placeholder associated types when the target is test (https://rust-lang.github.io/chalk/book/clauses/type_equality.html#placeholder-associated-types)
+                if f.display_target.is_test() {
+                    write!(f, "{}::{}", trait_.name, type_alias_data.name)?;
+                    if self.parameters.len() > 0 {
+                        write!(f, "<")?;
+                        f.write_joined(&*self.parameters.0, ", ")?;
+                        write!(f, ">")?;
+                    }
+                } else {
+                    let projection_ty = ProjectionTy {
+                        associated_ty: type_alias,
+                        parameters: self.parameters.clone(),
+                    };
+
+                    projection_ty.hir_fmt(f)?;
+                }
+            }
+            TypeCtor::ForeignType(type_alias) => {
                 let type_alias = f.db.type_alias_data(type_alias);
-                write!(f, "{}::{}", trait_.name, type_alias.name)?;
+                write!(f, "{}", type_alias.name)?;
                 if self.parameters.len() > 0 {
                     write!(f, "<")?;
                     f.write_joined(&*self.parameters.0, ", ")?;
@@ -413,11 +491,12 @@ impl HirDisplay for ApplicationTy {
                         write!(f, "|")?;
                     };
 
-                    let ret_display = if f.omit_verbose_types() {
-                        sig.ret().display_truncated(f.db, f.max_size)
-                    } else {
-                        sig.ret().display(f.db)
-                    };
+                    let ret_display = sig.ret().into_displayable(
+                        f.db,
+                        f.max_size,
+                        f.omit_verbose_types,
+                        f.display_target,
+                    );
                     write!(f, " -> {}", ret_display)?;
                 } else {
                     write!(f, "{{closure}}")?;
@@ -435,7 +514,13 @@ impl HirDisplay for ProjectionTy {
         }
 
         let trait_ = f.db.trait_data(self.trait_(f.db));
-        write!(f, "<{} as {}", self.parameters[0].display(f.db), trait_.name)?;
+        let first_parameter = self.parameters[0].into_displayable(
+            f.db,
+            f.max_size,
+            f.omit_verbose_types,
+            f.display_target,
+        );
+        write!(f, "<{} as {}", first_parameter, trait_.name)?;
         if self.parameters.len() > 1 {
             write!(f, "<")?;
             f.write_joined(&self.parameters[1..], ", ")?;
@@ -495,14 +580,54 @@ impl HirDisplay for Ty {
                     }
                 };
             }
-            Ty::Unknown => write!(f, "{{unknown}}")?,
+            Ty::Unknown => {
+                if f.display_target.is_source_code() {
+                    return Err(HirDisplayError::DisplaySourceCodeError(
+                        DisplaySourceCodeError::UnknownType,
+                    ));
+                }
+                write!(f, "{{unknown}}")?;
+            }
             Ty::Infer(..) => write!(f, "_")?,
         }
         Ok(())
     }
 }
 
-fn write_bounds_like_dyn_trait(
+impl HirDisplay for FnSig {
+    fn hir_fmt(&self, f: &mut HirFormatter) -> Result<(), HirDisplayError> {
+        write!(f, "fn(")?;
+        f.write_joined(self.params(), ", ")?;
+        if self.is_varargs {
+            if self.params().is_empty() {
+                write!(f, "...")?;
+            } else {
+                write!(f, ", ...")?;
+            }
+        }
+        write!(f, ")")?;
+        let ret = self.ret();
+        if *ret != Ty::unit() {
+            let ret_display =
+                ret.into_displayable(f.db, f.max_size, f.omit_verbose_types, f.display_target);
+            write!(f, " -> {}", ret_display)?;
+        }
+        Ok(())
+    }
+}
+
+fn fn_traits(db: &dyn DefDatabase, trait_: TraitId) -> impl Iterator<Item = TraitId> {
+    let krate = trait_.lookup(db).container.module(db).krate();
+    let fn_traits = [
+        db.lang_item(krate, "fn".into()),
+        db.lang_item(krate, "fn_mut".into()),
+        db.lang_item(krate, "fn_once".into()),
+    ];
+    // FIXME: Replace ArrayVec when into_iter is a thing on arrays
+    ArrayVec::from(fn_traits).into_iter().flatten().flat_map(|it| it.as_trait())
+}
+
+pub fn write_bounds_like_dyn_trait(
     predicates: &[GenericPredicate],
     f: &mut HirFormatter,
 ) -> Result<(), HirDisplayError> {
@@ -514,10 +639,15 @@ fn write_bounds_like_dyn_trait(
     // predicate for that trait).
     let mut first = true;
     let mut angle_open = false;
+    let mut is_fn_trait = false;
     for p in predicates.iter() {
         match p {
             GenericPredicate::Implemented(trait_ref) => {
-                if angle_open {
+                let trait_ = trait_ref.trait_;
+                if !is_fn_trait {
+                    is_fn_trait = fn_traits(f.db.upcast(), trait_).any(|it| it == trait_);
+                }
+                if !is_fn_trait && angle_open {
                     write!(f, ">")?;
                     angle_open = false;
                 }
@@ -527,13 +657,26 @@ fn write_bounds_like_dyn_trait(
                 // We assume that the self type is $0 (i.e. the
                 // existential) here, which is the only thing that's
                 // possible in actual Rust, and hence don't print it
-                write!(f, "{}", f.db.trait_data(trait_ref.trait_).name)?;
-                if trait_ref.substs.len() > 1 {
-                    write!(f, "<")?;
-                    f.write_joined(&trait_ref.substs[1..], ", ")?;
-                    // there might be assoc type bindings, so we leave the angle brackets open
-                    angle_open = true;
+                write!(f, "{}", f.db.trait_data(trait_).name)?;
+                if let [_, params @ ..] = &*trait_ref.substs.0 {
+                    if is_fn_trait {
+                        if let Some(args) = params.first().and_then(|it| it.as_tuple()) {
+                            write!(f, "(")?;
+                            f.write_joined(&*args.0, ", ")?;
+                            write!(f, ")")?;
+                        }
+                    } else if !params.is_empty() {
+                        write!(f, "<")?;
+                        f.write_joined(params, ", ")?;
+                        // there might be assoc type bindings, so we leave the angle brackets open
+                        angle_open = true;
+                    }
                 }
+            }
+            GenericPredicate::Projection(projection_pred) if is_fn_trait => {
+                is_fn_trait = false;
+                write!(f, " -> ")?;
+                projection_pred.ty.hir_fmt(f)?;
             }
             GenericPredicate::Projection(projection_pred) => {
                 // in types in actual Rust, these will always come
@@ -614,10 +757,10 @@ impl HirDisplay for GenericPredicate {
                 projection_pred.projection_ty.trait_ref(f.db).hir_fmt_ext(f, true)?;
                 write!(
                     f,
-                    ">::{} = {}",
+                    ">::{} = ",
                     f.db.type_alias_data(projection_pred.projection_ty.associated_ty).name,
-                    projection_pred.ty.display(f.db)
                 )?;
+                projection_pred.ty.hir_fmt(f)?;
             }
             GenericPredicate::Error => write!(f, "{{error}}")?,
         }
@@ -625,16 +768,34 @@ impl HirDisplay for GenericPredicate {
     }
 }
 
+impl HirDisplay for Lifetime {
+    fn hir_fmt(&self, f: &mut HirFormatter) -> Result<(), HirDisplayError> {
+        match self {
+            Lifetime::Parameter(id) => {
+                let generics = generics(f.db.upcast(), id.parent);
+                let param_data = &generics.params.lifetimes[id.local_id];
+                write!(f, "{}", &param_data.name)
+            }
+            Lifetime::Static => write!(f, "'static"),
+        }
+    }
+}
+
 impl HirDisplay for Obligation {
     fn hir_fmt(&self, f: &mut HirFormatter) -> Result<(), HirDisplayError> {
-        Ok(match self {
-            Obligation::Trait(tr) => write!(f, "Implements({})", tr.display(f.db))?,
-            Obligation::Projection(proj) => write!(
-                f,
-                "Normalize({} => {})",
-                proj.projection_ty.display(f.db),
-                proj.ty.display(f.db)
-            )?,
-        })
+        match self {
+            Obligation::Trait(tr) => {
+                write!(f, "Implements(")?;
+                tr.hir_fmt(f)?;
+                write!(f, ")")
+            }
+            Obligation::Projection(proj) => {
+                write!(f, "Normalize(")?;
+                proj.projection_ty.hir_fmt(f)?;
+                write!(f, " => ")?;
+                proj.ty.hir_fmt(f)?;
+                write!(f, ")")
+            }
+        }
     }
 }

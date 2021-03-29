@@ -37,23 +37,22 @@ impl Name {
         Name(Repr::TupleField(idx))
     }
 
-    pub fn new_lifetime(lt: &syntax::SyntaxToken) -> Name {
-        assert!(lt.kind() == syntax::SyntaxKind::LIFETIME);
-        Name(Repr::Text(lt.text().clone()))
+    pub fn new_lifetime(lt: &ast::Lifetime) -> Name {
+        Self::new_text(lt.text().into())
     }
 
     /// Shortcut to create inline plain text name
-    const fn new_inline_ascii(text: &[u8]) -> Name {
-        Name::new_text(SmolStr::new_inline_from_ascii(text.len(), text))
+    const fn new_inline(text: &str) -> Name {
+        Name::new_text(SmolStr::new_inline(text))
     }
 
     /// Resolve a name from the text of token.
-    fn resolve(raw_text: &SmolStr) -> Name {
+    fn resolve(raw_text: &str) -> Name {
         let raw_start = "r#";
-        if raw_text.as_str().starts_with(raw_start) {
+        if raw_text.starts_with(raw_start) {
             Name::new_text(SmolStr::new(&raw_text[raw_start.len()..]))
         } else {
-            Name::new_text(raw_text.clone())
+            Name::new_text(raw_text.into())
         }
     }
 
@@ -127,7 +126,7 @@ pub mod known {
             $(
                 #[allow(bad_style)]
                 pub const $ident: super::Name =
-                    super::Name::new_inline_ascii(stringify!($ident).as_bytes());
+                    super::Name::new_inline(stringify!($ident));
             )*
         };
     }
@@ -153,7 +152,9 @@ pub mod known {
         str,
         // Special names
         macro_rules,
+        derive,
         doc,
+        cfg_attr,
         // Components of known path (value or mod name)
         std,
         core,
@@ -163,13 +164,16 @@ pub mod known {
         future,
         result,
         boxed,
+        option,
         // Components of known path (type name)
+        Iterator,
         IntoIterator,
         Item,
         Try,
         Ok,
         Future,
         Result,
+        Option,
         Output,
         Target,
         Box,
@@ -182,11 +186,15 @@ pub mod known {
         Neg,
         Not,
         Index,
+        // Components of known path (function name)
+        filter_map,
+        next,
         // Builtin macros
         file,
         column,
         compile_error,
         line,
+        module_path,
         assert,
         stringify,
         concat,
@@ -197,6 +205,8 @@ pub mod known {
         format_args_nl,
         env,
         option_env,
+        llvm_asm,
+        asm,
         // Builtin derives
         Copy,
         Clone,
@@ -207,11 +217,49 @@ pub mod known {
         PartialOrd,
         Eq,
         PartialEq,
+        // Safe intrinsics
+        abort,
+        size_of,
+        min_align_of,
+        needs_drop,
+        caller_location,
+        size_of_val,
+        min_align_of_val,
+        add_with_overflow,
+        sub_with_overflow,
+        mul_with_overflow,
+        wrapping_add,
+        wrapping_sub,
+        wrapping_mul,
+        saturating_add,
+        saturating_sub,
+        rotate_left,
+        rotate_right,
+        ctpop,
+        ctlz,
+        cttz,
+        bswap,
+        bitreverse,
+        discriminant_value,
+        type_id,
+        likely,
+        unlikely,
+        ptr_guaranteed_eq,
+        ptr_guaranteed_ne,
+        minnumf32,
+        minnumf64,
+        maxnumf32,
+        rustc_peek,
+        maxnumf64,
+        type_name,
+        variant_count,
     );
 
     // self/Self cannot be used as an identifier
-    pub const SELF_PARAM: super::Name = super::Name::new_inline_ascii(b"self");
-    pub const SELF_TYPE: super::Name = super::Name::new_inline_ascii(b"Self");
+    pub const SELF_PARAM: super::Name = super::Name::new_inline("self");
+    pub const SELF_TYPE: super::Name = super::Name::new_inline("Self");
+
+    pub const STATIC_LIFETIME: super::Name = super::Name::new_inline("'static");
 
     #[macro_export]
     macro_rules! name {
@@ -220,6 +268,9 @@ pub mod known {
         };
         (Self) => {
             $crate::name::known::SELF_TYPE
+        };
+        ('static) => {
+            $crate::name::known::STATIC_LIFETIME
         };
         ($ident:ident) => {
             $crate::name::known::$ident

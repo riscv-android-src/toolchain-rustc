@@ -53,6 +53,12 @@ impl ShortLabel for ast::SourceFile {
     }
 }
 
+impl ShortLabel for ast::BlockExpr {
+    fn short_label(&self) -> Option<String> {
+        None
+    }
+}
+
 impl ShortLabel for ast::TypeAlias {
     fn short_label(&self) -> Option<String> {
         short_label_from_node(self, "type ")
@@ -87,6 +93,17 @@ impl ShortLabel for ast::Variant {
     }
 }
 
+impl ShortLabel for ast::ConstParam {
+    fn short_label(&self) -> Option<String> {
+        let mut buf = "const ".to_owned();
+        buf.push_str(self.name()?.text());
+        if let Some(type_ref) = self.ty() {
+            format_to!(buf, ": {}", type_ref.syntax());
+        }
+        Some(buf)
+    }
+}
+
 fn short_label_from_ty<T>(node: &T, ty: Option<ast::Type>, prefix: &str) -> Option<String>
 where
     T: NameOwner + VisibilityOwner,
@@ -106,6 +123,6 @@ where
 {
     let mut buf = node.visibility().map(|v| format!("{} ", v.syntax())).unwrap_or_default();
     buf.push_str(label);
-    buf.push_str(node.name()?.text().as_str());
+    buf.push_str(node.name()?.text());
     Some(buf)
 }

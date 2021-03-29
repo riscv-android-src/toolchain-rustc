@@ -1,9 +1,9 @@
 //! Renders a bit of code as HTML.
 
-use base_db::SourceDatabase;
+use ide_db::base_db::SourceDatabase;
 use oorandom::Rand32;
 use stdx::format_to;
-use syntax::{AstNode, TextRange, TextSize};
+use syntax::AstNode;
 
 use crate::{syntax_highlighting::highlight, FileId, RootDatabase};
 
@@ -20,35 +20,27 @@ pub(crate) fn highlight_as_html(db: &RootDatabase, file_id: FileId, rainbow: boo
         )
     }
 
-    let ranges = highlight(db, file_id, None, false);
+    let hl_ranges = highlight(db, file_id, None, false);
     let text = parse.tree().syntax().to_string();
-    let mut prev_pos = TextSize::from(0);
     let mut buf = String::new();
     buf.push_str(&STYLE);
     buf.push_str("<pre><code>");
-    for range in &ranges {
-        if range.range.start() > prev_pos {
-            let curr = &text[TextRange::new(prev_pos, range.range.start())];
-            let text = html_escape(curr);
-            buf.push_str(&text);
+    for r in &hl_ranges {
+        let chunk = html_escape(&text[r.range]);
+        if r.highlight.is_empty() {
+            format_to!(buf, "{}", chunk);
+            continue;
         }
-        let curr = &text[TextRange::new(range.range.start(), range.range.end())];
 
-        let class = range.highlight.to_string().replace('.', " ");
-        let color = match (rainbow, range.binding_hash) {
+        let class = r.highlight.to_string().replace('.', " ");
+        let color = match (rainbow, r.binding_hash) {
             (true, Some(hash)) => {
                 format!(" data-binding-hash=\"{}\" style=\"color: {};\"", hash, rainbowify(hash))
             }
             _ => "".into(),
         };
-        format_to!(buf, "<span class=\"{}\"{}>{}</span>", class, color, html_escape(curr));
-
-        prev_pos = range.range.end();
+        format_to!(buf, "<span class=\"{}\"{}>{}</span>", class, color, chunk);
     }
-    // Add the remaining (non-highlighted) text
-    let curr = &text[TextRange::new(prev_pos, TextSize::of(&text))];
-    let text = html_escape(curr);
-    buf.push_str(&text);
     buf.push_str("</code></pre>");
     buf
 }
@@ -64,6 +56,7 @@ body                { margin: 0; }
 pre                 { color: #DCDCCC; background: #3F3F3F; font-size: 22px; padding: 0.4em; }
 
 .lifetime           { color: #DFAF8F; font-style: italic; }
+.label              { color: #DFAF8F; font-style: italic; }
 .comment            { color: #7F9F7F; }
 .documentation      { color: #629755; }
 .injected           { opacity: 0.65 ; }

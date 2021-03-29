@@ -56,9 +56,10 @@ mod tests;
 
 use std::sync::Arc;
 
-use arena::Arena;
 use base_db::{CrateId, Edition, FileId};
 use hir_expand::{diagnostics::DiagnosticSink, name::Name, InFile};
+use la_arena::Arena;
+use profile::Count;
 use rustc_hash::FxHashMap;
 use stdx::format_to;
 use syntax::ast;
@@ -69,26 +70,35 @@ use crate::{
     nameres::{diagnostics::DefDiagnostic, path_resolution::ResolveMode},
     path::ModPath,
     per_ns::PerNs,
-    AstId, LocalModuleId, ModuleDefId, ModuleId,
+    AstId, BlockId, BlockLoc, LocalModuleId, ModuleDefId, ModuleId,
 };
 
 /// Contains all top-level defs from a macro-expanded crate
 #[derive(Debug, PartialEq, Eq)]
-pub struct CrateDefMap {
-    pub root: LocalModuleId,
-    pub modules: Arena<ModuleData>,
-    pub(crate) krate: CrateId,
+pub struct DefMap {
+    _c: Count<Self>,
+    block: Option<BlockInfo>,
+    root: LocalModuleId,
+    modules: Arena<ModuleData>,
+    krate: CrateId,
     /// The prelude module for this crate. This either comes from an import
     /// marked with the `prelude_import` attribute, or (in the normal case) from
     /// a dependency (`std` or `core`).
-    pub(crate) prelude: Option<ModuleId>,
-    pub(crate) extern_prelude: FxHashMap<Name, ModuleDefId>,
+    prelude: Option<ModuleId>,
+    extern_prelude: FxHashMap<Name, ModuleDefId>,
 
     edition: Edition,
     diagnostics: Vec<DefDiagnostic>,
 }
 
-impl std::ops::Index<LocalModuleId> for CrateDefMap {
+#[derive(Debug, PartialEq, Eq)]
+struct BlockInfo {
+    block: BlockId,
+    parent: Arc<DefMap>,
+    parent_module: LocalModuleId,
+}
+
+impl std::ops::Index<LocalModuleId> for DefMap {
     type Output = ModuleData;
     fn index(&self, id: LocalModuleId) -> &ModuleData {
         &self.modules[id]
@@ -109,6 +119,10 @@ pub enum ModuleOrigin {
     Inline {
         definition: AstId<ast::Module>,
     },
+    /// Pseudo-module introduced by a block scope (contains only inner items).
+    BlockExpr {
+        block: AstId<ast::BlockExpr>,
+    },
 }
 
 impl Default for ModuleOrigin {
@@ -122,7 +136,7 @@ impl ModuleOrigin {
         match self {
             ModuleOrigin::File { declaration: module, .. }
             | ModuleOrigin::Inline { definition: module, .. } => Some(*module),
-            ModuleOrigin::CrateRoot { .. } => None,
+            ModuleOrigin::CrateRoot { .. } | ModuleOrigin::BlockExpr { .. } => None,
         }
     }
 
@@ -137,7 +151,7 @@ impl ModuleOrigin {
 
     pub fn is_inline(&self) -> bool {
         match self {
-            ModuleOrigin::Inline { .. } => true,
+            ModuleOrigin::Inline { .. } | ModuleOrigin::BlockExpr { .. } => true,
             ModuleOrigin::CrateRoot { .. } | ModuleOrigin::File { .. } => false,
         }
     }
@@ -155,6 +169,9 @@ impl ModuleOrigin {
                 definition.file_id,
                 ModuleSource::Module(definition.to_node(db.upcast())),
             ),
+            ModuleOrigin::BlockExpr { block } => {
+                InFile::new(block.file_id, ModuleSource::BlockExpr(block.to_node(db.upcast())))
+            }
         }
     }
 }
@@ -169,31 +186,48 @@ pub struct ModuleData {
     pub origin: ModuleOrigin,
 }
 
-impl CrateDefMap {
-    pub(crate) fn crate_def_map_query(db: &dyn DefDatabase, krate: CrateId) -> Arc<CrateDefMap> {
+impl DefMap {
+    pub(crate) fn crate_def_map_query(db: &dyn DefDatabase, krate: CrateId) -> Arc<DefMap> {
         let _p = profile::span("crate_def_map_query").detail(|| {
-            db.crate_graph()[krate]
-                .display_name
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_default()
+            db.crate_graph()[krate].display_name.as_deref().unwrap_or_default().to_string()
         });
-        let def_map = {
-            let edition = db.crate_graph()[krate].edition;
-            let mut modules: Arena<ModuleData> = Arena::default();
-            let root = modules.alloc(ModuleData::default());
-            CrateDefMap {
-                krate,
-                edition,
-                extern_prelude: FxHashMap::default(),
-                prelude: None,
-                root,
-                modules,
-                diagnostics: Vec::new(),
-            }
-        };
-        let def_map = collector::collect_defs(db, def_map);
+        let edition = db.crate_graph()[krate].edition;
+        let def_map = DefMap::empty(krate, edition);
+        let def_map = collector::collect_defs(db, def_map, None);
         Arc::new(def_map)
+    }
+
+    pub(crate) fn block_def_map_query(db: &dyn DefDatabase, block_id: BlockId) -> Arc<DefMap> {
+        let block: BlockLoc = db.lookup_intern_block(block_id);
+        let parent = block.module.def_map(db);
+
+        // FIXME: It would be good to just return the parent map when the block has no items, but
+        // we rely on `def_map.block` in a few places, which is `Some` for the inner `DefMap`.
+
+        let block_info =
+            BlockInfo { block: block_id, parent, parent_module: block.module.local_id };
+
+        let mut def_map = DefMap::empty(block.module.krate, block_info.parent.edition);
+        def_map.block = Some(block_info);
+
+        let def_map = collector::collect_defs(db, def_map, Some(block.ast_id));
+        Arc::new(def_map)
+    }
+
+    fn empty(krate: CrateId, edition: Edition) -> DefMap {
+        let mut modules: Arena<ModuleData> = Arena::default();
+        let root = modules.alloc(ModuleData::default());
+        DefMap {
+            _c: Count::new(),
+            block: None,
+            krate,
+            edition,
+            extern_prelude: FxHashMap::default(),
+            prelude: None,
+            root,
+            modules,
+            diagnostics: Vec::new(),
+        }
     }
 
     pub fn add_diagnostics(
@@ -212,6 +246,31 @@ impl CrateDefMap {
             .map(|(id, _data)| id)
     }
 
+    pub fn modules(&self) -> impl Iterator<Item = (LocalModuleId, &ModuleData)> + '_ {
+        self.modules.iter()
+    }
+
+    pub fn root(&self) -> LocalModuleId {
+        self.root
+    }
+
+    pub(crate) fn krate(&self) -> CrateId {
+        self.krate
+    }
+
+    pub(crate) fn prelude(&self) -> Option<ModuleId> {
+        self.prelude
+    }
+
+    pub(crate) fn extern_prelude(&self) -> impl Iterator<Item = (&Name, &ModuleDefId)> + '_ {
+        self.extern_prelude.iter()
+    }
+
+    pub fn module_id(&self, local_id: LocalModuleId) -> ModuleId {
+        let block = self.block.as_ref().map(|b| b.block);
+        ModuleId { krate: self.krate, local_id, block }
+    }
+
     pub(crate) fn resolve_path(
         &self,
         db: &dyn DefDatabase,
@@ -224,14 +283,30 @@ impl CrateDefMap {
         (res.resolved_def, res.segment_index)
     }
 
+    /// Iterates over the containing `DefMap`s, if `self` is a `DefMap` corresponding to a block
+    /// expression.
+    fn ancestor_maps(
+        &self,
+        local_mod: LocalModuleId,
+    ) -> impl Iterator<Item = (&DefMap, LocalModuleId)> {
+        std::iter::successors(Some((self, local_mod)), |(map, _)| {
+            map.block.as_ref().map(|block| (&*block.parent, block.parent_module))
+        })
+    }
+
     // FIXME: this can use some more human-readable format (ideally, an IR
     // even), as this should be a great debugging aid.
     pub fn dump(&self) -> String {
         let mut buf = String::new();
-        go(&mut buf, self, "crate", self.root);
+        let mut current_map = self;
+        while let Some(block) = &current_map.block {
+            go(&mut buf, current_map, "block scope", current_map.root);
+            current_map = &*block.parent;
+        }
+        go(&mut buf, current_map, "crate", current_map.root);
         return buf;
 
-        fn go(buf: &mut String, map: &CrateDefMap, path: &str, module: LocalModuleId) {
+        fn go(buf: &mut String, map: &DefMap, path: &str, module: LocalModuleId) {
             format_to!(buf, "{}\n", path);
 
             let mut entries: Vec<_> = map.modules[module].scope.resolutions().collect();
@@ -253,7 +328,7 @@ impl CrateDefMap {
                     buf.push_str(" _");
                 }
 
-                buf.push_str("\n");
+                buf.push('\n');
             }
 
             for (name, child) in map.modules[module].children.iter() {
@@ -284,41 +359,216 @@ impl ModuleData {
 pub enum ModuleSource {
     SourceFile(ast::SourceFile),
     Module(ast::Module),
+    BlockExpr(ast::BlockExpr),
 }
 
 mod diagnostics {
+    use cfg::{CfgExpr, CfgOptions};
     use hir_expand::diagnostics::DiagnosticSink;
-    use syntax::{ast, AstPtr};
+    use hir_expand::hygiene::Hygiene;
+    use hir_expand::{InFile, MacroCallKind};
+    use syntax::ast::AttrsOwner;
+    use syntax::{ast, AstNode, AstPtr, SyntaxKind, SyntaxNodePtr};
 
-    use crate::{db::DefDatabase, diagnostics::UnresolvedModule, nameres::LocalModuleId, AstId};
+    use crate::path::ModPath;
+    use crate::{db::DefDatabase, diagnostics::*, nameres::LocalModuleId, AstId};
 
     #[derive(Debug, PartialEq, Eq)]
-    pub(super) enum DefDiagnostic {
-        UnresolvedModule {
-            module: LocalModuleId,
-            declaration: AstId<ast::Module>,
-            candidate: String,
-        },
+    enum DiagnosticKind {
+        UnresolvedModule { declaration: AstId<ast::Module>, candidate: String },
+
+        UnresolvedExternCrate { ast: AstId<ast::ExternCrate> },
+
+        UnresolvedImport { ast: AstId<ast::Use>, index: usize },
+
+        UnconfiguredCode { ast: AstId<ast::Item>, cfg: CfgExpr, opts: CfgOptions },
+
+        UnresolvedProcMacro { ast: MacroCallKind },
+
+        MacroError { ast: MacroCallKind, message: String },
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) struct DefDiagnostic {
+        in_module: LocalModuleId,
+        kind: DiagnosticKind,
     }
 
     impl DefDiagnostic {
+        pub(super) fn unresolved_module(
+            container: LocalModuleId,
+            declaration: AstId<ast::Module>,
+            candidate: String,
+        ) -> Self {
+            Self {
+                in_module: container,
+                kind: DiagnosticKind::UnresolvedModule { declaration, candidate },
+            }
+        }
+
+        pub(super) fn unresolved_extern_crate(
+            container: LocalModuleId,
+            declaration: AstId<ast::ExternCrate>,
+        ) -> Self {
+            Self {
+                in_module: container,
+                kind: DiagnosticKind::UnresolvedExternCrate { ast: declaration },
+            }
+        }
+
+        pub(super) fn unresolved_import(
+            container: LocalModuleId,
+            ast: AstId<ast::Use>,
+            index: usize,
+        ) -> Self {
+            Self { in_module: container, kind: DiagnosticKind::UnresolvedImport { ast, index } }
+        }
+
+        pub(super) fn unconfigured_code(
+            container: LocalModuleId,
+            ast: AstId<ast::Item>,
+            cfg: CfgExpr,
+            opts: CfgOptions,
+        ) -> Self {
+            Self { in_module: container, kind: DiagnosticKind::UnconfiguredCode { ast, cfg, opts } }
+        }
+
+        pub(super) fn unresolved_proc_macro(container: LocalModuleId, ast: MacroCallKind) -> Self {
+            Self { in_module: container, kind: DiagnosticKind::UnresolvedProcMacro { ast } }
+        }
+
+        pub(super) fn macro_error(
+            container: LocalModuleId,
+            ast: MacroCallKind,
+            message: String,
+        ) -> Self {
+            Self { in_module: container, kind: DiagnosticKind::MacroError { ast, message } }
+        }
+
         pub(super) fn add_to(
             &self,
             db: &dyn DefDatabase,
             target_module: LocalModuleId,
             sink: &mut DiagnosticSink,
         ) {
-            match self {
-                DefDiagnostic::UnresolvedModule { module, declaration, candidate } => {
-                    if *module != target_module {
-                        return;
-                    }
+            if self.in_module != target_module {
+                return;
+            }
+
+            match &self.kind {
+                DiagnosticKind::UnresolvedModule { declaration, candidate } => {
                     let decl = declaration.to_node(db.upcast());
                     sink.push(UnresolvedModule {
                         file: declaration.file_id,
                         decl: AstPtr::new(&decl),
                         candidate: candidate.clone(),
                     })
+                }
+
+                DiagnosticKind::UnresolvedExternCrate { ast } => {
+                    let item = ast.to_node(db.upcast());
+                    sink.push(UnresolvedExternCrate {
+                        file: ast.file_id,
+                        item: AstPtr::new(&item),
+                    });
+                }
+
+                DiagnosticKind::UnresolvedImport { ast, index } => {
+                    let use_item = ast.to_node(db.upcast());
+                    let hygiene = Hygiene::new(db.upcast(), ast.file_id);
+                    let mut cur = 0;
+                    let mut tree = None;
+                    ModPath::expand_use_item(
+                        InFile::new(ast.file_id, use_item),
+                        &hygiene,
+                        |_mod_path, use_tree, _is_glob, _alias| {
+                            if cur == *index {
+                                tree = Some(use_tree.clone());
+                            }
+
+                            cur += 1;
+                        },
+                    );
+
+                    if let Some(tree) = tree {
+                        sink.push(UnresolvedImport { file: ast.file_id, node: AstPtr::new(&tree) });
+                    }
+                }
+
+                DiagnosticKind::UnconfiguredCode { ast, cfg, opts } => {
+                    let item = ast.to_node(db.upcast());
+                    sink.push(InactiveCode {
+                        file: ast.file_id,
+                        node: AstPtr::new(&item).into(),
+                        cfg: cfg.clone(),
+                        opts: opts.clone(),
+                    });
+                }
+
+                DiagnosticKind::UnresolvedProcMacro { ast } => {
+                    let mut precise_location = None;
+                    let (file, ast, name) = match ast {
+                        MacroCallKind::FnLike(ast) => {
+                            let node = ast.to_node(db.upcast());
+                            (ast.file_id, SyntaxNodePtr::from(AstPtr::new(&node)), None)
+                        }
+                        MacroCallKind::Attr(ast, name) => {
+                            let node = ast.to_node(db.upcast());
+
+                            // Compute the precise location of the macro name's token in the derive
+                            // list.
+                            // FIXME: This does not handle paths to the macro, but neither does the
+                            // rest of r-a.
+                            let derive_attrs =
+                                node.attrs().filter_map(|attr| match attr.as_simple_call() {
+                                    Some((name, args)) if name == "derive" => Some(args),
+                                    _ => None,
+                                });
+                            'outer: for attr in derive_attrs {
+                                let tokens =
+                                    attr.syntax().children_with_tokens().filter_map(|elem| {
+                                        match elem {
+                                            syntax::NodeOrToken::Node(_) => None,
+                                            syntax::NodeOrToken::Token(tok) => Some(tok),
+                                        }
+                                    });
+                                for token in tokens {
+                                    if token.kind() == SyntaxKind::IDENT
+                                        && token.text() == name.as_str()
+                                    {
+                                        precise_location = Some(token.text_range());
+                                        break 'outer;
+                                    }
+                                }
+                            }
+
+                            (
+                                ast.file_id,
+                                SyntaxNodePtr::from(AstPtr::new(&node)),
+                                Some(name.clone()),
+                            )
+                        }
+                    };
+                    sink.push(UnresolvedProcMacro {
+                        file,
+                        node: ast,
+                        precise_location,
+                        macro_name: name,
+                    });
+                }
+
+                DiagnosticKind::MacroError { ast, message } => {
+                    let (file, ast) = match ast {
+                        MacroCallKind::FnLike(ast) => {
+                            let node = ast.to_node(db.upcast());
+                            (ast.file_id, SyntaxNodePtr::from(AstPtr::new(&node)))
+                        }
+                        MacroCallKind::Attr(ast, _) => {
+                            let node = ast.to_node(db.upcast());
+                            (ast.file_id, SyntaxNodePtr::from(AstPtr::new(&node)))
+                        }
+                    };
+                    sink.push(MacroError { file, node: ast, message: message.clone() });
                 }
             }
         }

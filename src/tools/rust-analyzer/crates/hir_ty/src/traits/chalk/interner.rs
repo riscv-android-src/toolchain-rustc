@@ -10,20 +10,22 @@ use std::{fmt, sync::Arc};
 #[derive(Debug, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Interner;
 
-pub type AssocTypeId = chalk_ir::AssocTypeId<Interner>;
-pub type AssociatedTyDatum = chalk_solve::rust_ir::AssociatedTyDatum<Interner>;
-pub type TraitId = chalk_ir::TraitId<Interner>;
-pub type TraitDatum = chalk_solve::rust_ir::TraitDatum<Interner>;
-pub type AdtId = chalk_ir::AdtId<Interner>;
-pub type StructDatum = chalk_solve::rust_ir::AdtDatum<Interner>;
-pub type ImplId = chalk_ir::ImplId<Interner>;
-pub type ImplDatum = chalk_solve::rust_ir::ImplDatum<Interner>;
-pub type AssociatedTyValueId = chalk_solve::rust_ir::AssociatedTyValueId<Interner>;
-pub type AssociatedTyValue = chalk_solve::rust_ir::AssociatedTyValue<Interner>;
-pub type FnDefId = chalk_ir::FnDefId<Interner>;
-pub type FnDefDatum = chalk_solve::rust_ir::FnDefDatum<Interner>;
-pub type OpaqueTyId = chalk_ir::OpaqueTyId<Interner>;
-pub type OpaqueTyDatum = chalk_solve::rust_ir::OpaqueTyDatum<Interner>;
+pub(crate) type AssocTypeId = chalk_ir::AssocTypeId<Interner>;
+pub(crate) type AssociatedTyDatum = chalk_solve::rust_ir::AssociatedTyDatum<Interner>;
+pub(crate) type ForeignDefId = chalk_ir::ForeignDefId<Interner>;
+pub(crate) type TraitId = chalk_ir::TraitId<Interner>;
+pub(crate) type TraitDatum = chalk_solve::rust_ir::TraitDatum<Interner>;
+pub(crate) type AdtId = chalk_ir::AdtId<Interner>;
+pub(crate) type StructDatum = chalk_solve::rust_ir::AdtDatum<Interner>;
+pub(crate) type ImplId = chalk_ir::ImplId<Interner>;
+pub(crate) type ImplDatum = chalk_solve::rust_ir::ImplDatum<Interner>;
+pub(crate) type AssociatedTyValueId = chalk_solve::rust_ir::AssociatedTyValueId<Interner>;
+pub(crate) type AssociatedTyValue = chalk_solve::rust_ir::AssociatedTyValue<Interner>;
+pub(crate) type FnDefId = chalk_ir::FnDefId<Interner>;
+pub(crate) type FnDefDatum = chalk_solve::rust_ir::FnDefDatum<Interner>;
+pub(crate) type OpaqueTyId = chalk_ir::OpaqueTyId<Interner>;
+pub(crate) type OpaqueTyDatum = chalk_solve::rust_ir::OpaqueTyDatum<Interner>;
+pub(crate) type Variances = chalk_ir::Variances<Interner>;
 
 impl chalk_ir::interner::Interner for Interner {
     type InternedType = Arc<chalk_ir::TyData<Self>>;
@@ -40,6 +42,7 @@ impl chalk_ir::interner::Interner for Interner {
     type InternedVariableKinds = Vec<chalk_ir::VariableKind<Self>>;
     type InternedCanonicalVarKinds = Vec<chalk_ir::CanonicalVarKind<Self>>;
     type InternedConstraints = Vec<chalk_ir::InEnvironment<chalk_ir::Constraint<Self>>>;
+    type InternedVariances = Arc<[chalk_ir::Variance]>;
     type DefId = InternId;
     type InternedAdtId = hir_def::AdtId;
     type Identifier = TypeAliasId;
@@ -119,13 +122,6 @@ impl chalk_ir::interner::Interner for Interner {
         fmt: &mut fmt::Formatter<'_>,
     ) -> Option<fmt::Result> {
         tls::with_current_program(|prog| Some(prog?.debug_program_clause_implication(pci, fmt)))
-    }
-
-    fn debug_application_ty(
-        application_ty: &chalk_ir::ApplicationTy<Interner>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> Option<fmt::Result> {
-        tls::with_current_program(|prog| Some(prog?.debug_application_ty(application_ty, fmt)))
     }
 
     fn debug_substitution(
@@ -375,6 +371,20 @@ impl chalk_ir::interner::Interner for Interner {
         _fmt: &mut fmt::Formatter<'_>,
     ) -> Option<fmt::Result> {
         None
+    }
+
+    fn intern_variances<E>(
+        &self,
+        data: impl IntoIterator<Item = Result<chalk_ir::Variance, E>>,
+    ) -> Result<Self::InternedVariances, E> {
+        data.into_iter().collect()
+    }
+
+    fn variances_data<'a>(
+        &self,
+        variances: &'a Self::InternedVariances,
+    ) -> &'a [chalk_ir::Variance] {
+        &variances
     }
 }
 

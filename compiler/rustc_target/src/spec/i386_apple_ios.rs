@@ -1,5 +1,5 @@
 use super::apple_sdk_base::{opts, Arch};
-use crate::spec::{Target, TargetOptions};
+use crate::spec::{StackProbeType, Target, TargetOptions};
 
 pub fn target() -> Target {
     let base = opts("ios", Arch::I386);
@@ -10,6 +10,11 @@ pub fn target() -> Target {
             f64:32:64-f80:128-n8:16:32-S128"
             .to_string(),
         arch: "x86".to_string(),
-        options: TargetOptions { max_atomic_width: Some(64), stack_probes: true, ..base },
+        options: TargetOptions {
+            max_atomic_width: Some(64),
+            // don't use probe-stack=inline-asm until rust-lang/rust#83139 is resolved.
+            stack_probes: StackProbeType::Call,
+            ..base
+        },
     }
 }

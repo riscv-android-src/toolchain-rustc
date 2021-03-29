@@ -1,17 +1,15 @@
-use hir::Semantics;
+use either::Either;
+use hir::{HasAttrs, ModuleDef, Semantics};
 use ide_db::{
-    defs::{classify_name, classify_name_ref},
-    symbol_index, RootDatabase,
+    defs::{Definition, NameClass, NameRefClass},
+    RootDatabase,
 };
 use syntax::{
-    ast::{self},
-    match_ast, AstNode,
-    SyntaxKind::*,
-    SyntaxToken, TokenAtOffset, T,
+    ast, match_ast, AstNode, AstToken, SyntaxKind::*, SyntaxToken, TextSize, TokenAtOffset, T,
 };
 
 use crate::{
-    display::{ToNav, TryToNav},
+    display::TryToNav, doc_links::extract_definitions_from_markdown, runnables::doc_owner_to_def,
     FilePosition, NavigationTarget, RangeInfo,
 };
 
@@ -33,82 +31,113 @@ pub(crate) fn goto_definition(
     let original_token = pick_best(file.token_at_offset(position.offset))?;
     let token = sema.descend_into_macros(original_token.clone());
     let parent = token.parent();
+    if let Some(comment) = ast::Comment::cast(token.clone()) {
+        let nav = def_for_doc_comment(&sema, position, &comment)?.try_to_nav(db)?;
+        return Some(RangeInfo::new(original_token.text_range(), vec![nav]));
+    }
 
-    let nav_targets = match_ast! {
+    let nav = match_ast! {
         match parent {
             ast::NameRef(name_ref) => {
-                reference_definition(&sema, &name_ref).to_vec()
+                reference_definition(&sema, Either::Right(&name_ref))
             },
             ast::Name(name) => {
-                let def = classify_name(&sema, &name)?.definition(sema.db);
-                let nav = def.try_to_nav(sema.db)?;
-                vec![nav]
+                let def = NameClass::classify(&sema, &name)?.referenced_or_defined(sema.db);
+                def.try_to_nav(sema.db)
+            },
+            ast::Lifetime(lt) => if let Some(name_class) = NameClass::classify_lifetime(&sema, &lt) {
+                let def = name_class.referenced_or_defined(sema.db);
+                def.try_to_nav(sema.db)
+            } else {
+                reference_definition(&sema, Either::Left(&lt))
             },
             _ => return None,
         }
     };
 
-    Some(RangeInfo::new(original_token.text_range(), nav_targets))
+    Some(RangeInfo::new(original_token.text_range(), nav.into_iter().collect()))
+}
+
+fn def_for_doc_comment(
+    sema: &Semantics<RootDatabase>,
+    position: FilePosition,
+    doc_comment: &ast::Comment,
+) -> Option<hir::ModuleDef> {
+    let parent = doc_comment.syntax().parent();
+    let (link, ns) = extract_positioned_link_from_comment(position, doc_comment)?;
+
+    let def = doc_owner_to_def(sema, parent)?;
+    match def {
+        Definition::ModuleDef(def) => match def {
+            ModuleDef::Module(it) => it.resolve_doc_path(sema.db, &link, ns),
+            ModuleDef::Function(it) => it.resolve_doc_path(sema.db, &link, ns),
+            ModuleDef::Adt(it) => it.resolve_doc_path(sema.db, &link, ns),
+            ModuleDef::Variant(it) => it.resolve_doc_path(sema.db, &link, ns),
+            ModuleDef::Const(it) => it.resolve_doc_path(sema.db, &link, ns),
+            ModuleDef::Static(it) => it.resolve_doc_path(sema.db, &link, ns),
+            ModuleDef::Trait(it) => it.resolve_doc_path(sema.db, &link, ns),
+            ModuleDef::TypeAlias(it) => it.resolve_doc_path(sema.db, &link, ns),
+            ModuleDef::BuiltinType(_) => return None,
+        },
+        Definition::Macro(it) => it.resolve_doc_path(sema.db, &link, ns),
+        Definition::Field(it) => it.resolve_doc_path(sema.db, &link, ns),
+        Definition::SelfType(_)
+        | Definition::Local(_)
+        | Definition::GenericParam(_)
+        | Definition::Label(_) => return None,
+    }
+}
+
+fn extract_positioned_link_from_comment(
+    position: FilePosition,
+    comment: &ast::Comment,
+) -> Option<(String, Option<hir::Namespace>)> {
+    let comment_range = comment.syntax().text_range();
+    let doc_comment = comment.doc_comment()?;
+    let def_links = extract_definitions_from_markdown(doc_comment);
+    let (def_link, ns, _) = def_links.iter().min_by_key(|(_, _, def_link_range)| {
+        let matched_position = comment_range.start() + TextSize::from(def_link_range.start as u32);
+        match position.offset.checked_sub(matched_position) {
+            Some(distance) => distance,
+            None => comment_range.end(),
+        }
+    })?;
+    Some((def_link.to_string(), ns.clone()))
 }
 
 fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
     return tokens.max_by_key(priority);
     fn priority(n: &SyntaxToken) -> usize {
         match n.kind() {
-            IDENT | INT_NUMBER | T![self] => 2,
+            IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] | COMMENT => 2,
             kind if kind.is_trivia() => 0,
             _ => 1,
         }
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum ReferenceResult {
-    Exact(NavigationTarget),
-    Approximate(Vec<NavigationTarget>),
-}
-
-impl ReferenceResult {
-    fn to_vec(self) -> Vec<NavigationTarget> {
-        match self {
-            ReferenceResult::Exact(target) => vec![target],
-            ReferenceResult::Approximate(vec) => vec,
-        }
-    }
-}
-
 pub(crate) fn reference_definition(
     sema: &Semantics<RootDatabase>,
-    name_ref: &ast::NameRef,
-) -> ReferenceResult {
-    let name_kind = classify_name_ref(sema, name_ref);
-    if let Some(def) = name_kind {
-        let def = def.definition(sema.db);
-        return match def.try_to_nav(sema.db) {
-            Some(nav) => ReferenceResult::Exact(nav),
-            None => ReferenceResult::Approximate(Vec::new()),
-        };
-    }
-
-    // Fallback index based approach:
-    let navs = symbol_index::index_resolve(sema.db, name_ref)
-        .into_iter()
-        .map(|s| s.to_nav(sema.db))
-        .collect();
-    ReferenceResult::Approximate(navs)
+    name_ref: Either<&ast::Lifetime, &ast::NameRef>,
+) -> Option<NavigationTarget> {
+    let name_kind = name_ref.either(
+        |lifetime| NameRefClass::classify_lifetime(sema, lifetime),
+        |name_ref| NameRefClass::classify(sema, name_ref),
+    )?;
+    let def = name_kind.referenced(sema.db);
+    def.try_to_nav(sema.db)
 }
 
 #[cfg(test)]
 mod tests {
-    use base_db::FileRange;
+    use ide_db::base_db::FileRange;
     use syntax::{TextRange, TextSize};
 
-    use crate::mock_analysis::MockAnalysis;
+    use crate::fixture;
 
     fn check(ra_fixture: &str) {
-        let (mock, position) = MockAnalysis::with_files_and_position(ra_fixture);
-        let (mut expected, data) = mock.annotation();
-        let analysis = mock.analysis();
+        let (analysis, position, mut annotations) = fixture::annotations(ra_fixture);
+        let (mut expected, data) = annotations.pop().unwrap();
         match data.as_str() {
             "" => (),
             "file" => {
@@ -133,12 +162,12 @@ mod tests {
     fn goto_def_for_extern_crate() {
         check(
             r#"
-            //- /main.rs
-            extern crate std<|>;
-            //- /std/lib.rs
-            // empty
-            //^ file
-            "#,
+//- /main.rs crate:main deps:std
+extern crate std$0;
+//- /std/lib.rs crate:std
+// empty
+//^ file
+"#,
         )
     }
 
@@ -146,12 +175,12 @@ mod tests {
     fn goto_def_for_renamed_extern_crate() {
         check(
             r#"
-            //- /main.rs
-            extern crate std as abc<|>;
-            //- /std/lib.rs
-            // empty
-            //^ file
-            "#,
+//- /main.rs crate:main deps:std
+extern crate std as abc$0;
+//- /std/lib.rs crate:std
+// empty
+//^ file
+"#,
         )
     }
 
@@ -161,7 +190,7 @@ mod tests {
             r#"
 struct Foo;
      //^^^
-enum E { X(Foo<|>) }
+enum E { X(Foo$0) }
 "#,
         );
     }
@@ -172,7 +201,7 @@ enum E { X(Foo<|>) }
             r#"
 struct Foo;
      //^^^
-enum E { X(<|>Foo) }
+enum E { X($0Foo) }
 "#,
         );
     }
@@ -185,7 +214,7 @@ enum E { X(<|>Foo) }
 use a::Foo;
 mod a;
 mod b;
-enum E { X(Foo<|>) }
+enum E { X(Foo$0) }
 
 //- /a.rs
 struct Foo;
@@ -201,7 +230,7 @@ struct Foo;
         check(
             r#"
 //- /lib.rs
-mod <|>foo;
+mod $0foo;
 
 //- /foo.rs
 // empty
@@ -212,7 +241,7 @@ mod <|>foo;
         check(
             r#"
 //- /lib.rs
-mod <|>foo;
+mod $0foo;
 
 //- /foo/mod.rs
 // empty
@@ -228,7 +257,7 @@ mod <|>foo;
 macro_rules! foo { () => { () } }
            //^^^
 fn bar() {
-    <|>foo!();
+    $0foo!();
 }
 "#,
         );
@@ -238,13 +267,13 @@ fn bar() {
     fn goto_def_for_macros_from_other_crates() {
         check(
             r#"
-//- /lib.rs
+//- /lib.rs crate:main deps:foo
 use foo::foo;
 fn bar() {
-    <|>foo!();
+    $0foo!();
 }
 
-//- /foo/lib.rs
+//- /foo/lib.rs crate:foo
 #[macro_export]
 macro_rules! foo { () => { () } }
            //^^^
@@ -256,10 +285,10 @@ macro_rules! foo { () => { () } }
     fn goto_def_for_macros_in_use_tree() {
         check(
             r#"
-//- /lib.rs
-use foo::foo<|>;
+//- /lib.rs crate:main deps:foo
+use foo::foo$0;
 
-//- /foo/lib.rs
+//- /foo/lib.rs crate:foo
 #[macro_export]
 macro_rules! foo { () => { () } }
            //^^^
@@ -280,7 +309,7 @@ define_fn!(foo);
          //^^^
 
 fn bar() {
-   <|>foo();
+   $0foo();
 }
 "#,
         );
@@ -299,7 +328,7 @@ macro_rules! define_fn {
 //^^^^^^^^^^^^^
 
 fn bar() {
-   <|>foo();
+   $0foo();
 }
 "#,
         );
@@ -315,7 +344,7 @@ macro_rules! foo {() => {0}}
 
 fn bar() {
     match (0,1) {
-        (<|>foo!(), _) => {}
+        ($0foo!(), _) => {}
     }
 }
 "#,
@@ -331,7 +360,7 @@ macro_rules! foo {() => {0}}
            //^^^
 fn bar() {
     match 0 {
-        <|>foo!() => {}
+        $0foo!() => {}
     }
 }
 "#,
@@ -342,10 +371,10 @@ fn bar() {
     fn goto_def_for_use_alias() {
         check(
             r#"
-//- /lib.rs
-use foo as bar<|>;
+//- /lib.rs crate:main deps:foo
+use foo as bar$0;
 
-//- /foo/lib.rs
+//- /foo/lib.rs crate:foo
 // empty
 //^ file
 "#,
@@ -356,10 +385,10 @@ use foo as bar<|>;
     fn goto_def_for_use_alias_foo_macro() {
         check(
             r#"
-//- /lib.rs
-use foo::foo as bar<|>;
+//- /lib.rs crate:main deps:foo
+use foo::foo as bar$0;
 
-//- /foo/lib.rs
+//- /foo/lib.rs crate:foo
 #[macro_export]
 macro_rules! foo { () => { () } }
            //^^^
@@ -371,7 +400,6 @@ macro_rules! foo { () => { () } }
     fn goto_def_for_methods() {
         check(
             r#"
-//- /lib.rs
 struct Foo;
 impl Foo {
     fn frobnicate(&self) { }
@@ -379,7 +407,7 @@ impl Foo {
 }
 
 fn bar(foo: &Foo) {
-    foo.frobnicate<|>();
+    foo.frobnicate$0();
 }
 "#,
         );
@@ -394,7 +422,7 @@ struct Foo {
 } //^^^^
 
 fn bar(foo: &Foo) {
-    foo.spam<|>;
+    foo.spam$0;
 }
 "#,
         );
@@ -411,7 +439,7 @@ struct Foo {
 
 fn bar() -> Foo {
     Foo {
-        spam<|>: 0,
+        spam$0: 0,
     }
 }
 "#,
@@ -428,7 +456,7 @@ struct Foo {
 } //^^^^
 
 fn bar(foo: Foo) -> Foo {
-    let Foo { spam<|>: _, } = foo
+    let Foo { spam$0: _, } = foo
 }
 "#,
         );
@@ -443,7 +471,7 @@ struct Foo { spam: u32 }
            //^^^^
 
 fn bar() -> Foo {
-    Foo { spam<|>: m!() }
+    Foo { spam$0: m!() }
 }
 ",
         );
@@ -458,7 +486,7 @@ struct Foo(u32);
 
 fn bar() {
     let foo = Foo(0);
-    foo.<|>0;
+    foo.$00;
 }
 "#,
         );
@@ -474,7 +502,7 @@ impl Foo {
 }    //^^^^^^^^^^
 
 fn bar(foo: &Foo) {
-    Foo::frobnicate<|>();
+    Foo::frobnicate$0();
 }
 "#,
         );
@@ -489,7 +517,7 @@ trait Foo {
 }    //^^^^^^^^^^
 
 fn bar() {
-    Foo::frobnicate<|>();
+    Foo::frobnicate$0();
 }
 "#,
         );
@@ -506,7 +534,7 @@ trait Trait {
 impl Trait for Foo {}
 
 fn bar() {
-    Foo::frobnicate<|>();
+    Foo::frobnicate$0();
 }
 "#,
         );
@@ -520,7 +548,7 @@ struct Foo;
 impl Foo {
    //^^^
     pub fn new() -> Self {
-        Self<|> {}
+        Self$0 {}
     }
 }
 "#,
@@ -530,7 +558,7 @@ impl Foo {
 struct Foo;
 impl Foo {
    //^^^
-    pub fn new() -> Self<|> {
+    pub fn new() -> Self$0 {
         Self {}
     }
 }
@@ -542,7 +570,7 @@ impl Foo {
 enum Foo { A }
 impl Foo {
    //^^^
-    pub fn new() -> Self<|> {
+    pub fn new() -> Self$0 {
         Foo::A
     }
 }
@@ -554,7 +582,7 @@ impl Foo {
 enum Foo { A }
 impl Foo {
    //^^^
-    pub fn thing(a: &Self<|>) {
+    pub fn thing(a: &Self$0) {
     }
 }
 "#,
@@ -572,7 +600,7 @@ trait Make {
 impl Make for Foo {
             //^^^
     fn new() -> Self {
-        Self<|> {}
+        Self$0 {}
     }
 }
 "#,
@@ -586,7 +614,7 @@ trait Make {
 }
 impl Make for Foo {
             //^^^
-    fn new() -> Self<|> {
+    fn new() -> Self$0 {
         Self {}
     }
 }
@@ -598,7 +626,7 @@ impl Make for Foo {
     fn goto_def_when_used_on_definition_name_itself() {
         check(
             r#"
-struct Foo<|> { value: u32 }
+struct Foo$0 { value: u32 }
      //^^^
             "#,
         );
@@ -606,21 +634,21 @@ struct Foo<|> { value: u32 }
         check(
             r#"
 struct Foo {
-    field<|>: string,
+    field$0: string,
 } //^^^^^
 "#,
         );
 
         check(
             r#"
-fn foo_test<|>() { }
+fn foo_test$0() { }
  //^^^^^^^^
 "#,
         );
 
         check(
             r#"
-enum Foo<|> { Variant }
+enum Foo$0 { Variant }
    //^^^
 "#,
         );
@@ -629,7 +657,7 @@ enum Foo<|> { Variant }
             r#"
 enum Foo {
     Variant1,
-    Variant2<|>,
+    Variant2$0,
   //^^^^^^^^
     Variant3,
 }
@@ -638,35 +666,35 @@ enum Foo {
 
         check(
             r#"
-static INNER<|>: &str = "";
+static INNER$0: &str = "";
      //^^^^^
 "#,
         );
 
         check(
             r#"
-const INNER<|>: &str = "";
+const INNER$0: &str = "";
     //^^^^^
 "#,
         );
 
         check(
             r#"
-type Thing<|> = Option<()>;
+type Thing$0 = Option<()>;
    //^^^^^
 "#,
         );
 
         check(
             r#"
-trait Foo<|> { }
+trait Foo$0 { }
     //^^^
 "#,
         );
 
         check(
             r#"
-mod bar<|> { }
+mod bar$0 { }
   //^^^
 "#,
         );
@@ -683,7 +711,7 @@ fn foo() {}
  //^^^
 id! {
     fn bar() {
-        fo<|>o();
+        fo$0o();
     }
 }
 mod confuse_index { fn foo(); }
@@ -712,9 +740,34 @@ pub mod __export {
 fn foo() -> i8 {}
  //^^^
 fn test() {
-    format!("{}", fo<|>o())
+    format!("{}", fo$0o())
 }
 "#,
+        );
+    }
+
+    #[test]
+    fn goto_through_included_file() {
+        check(
+            r#"
+//- /main.rs
+#[rustc_builtin_macro]
+macro_rules! include {}
+
+  include!("foo.rs");
+//^^^^^^^^^^^^^^^^^^^
+
+fn f() {
+    foo$0();
+}
+
+mod confuse_index {
+    pub fn foo() {}
+}
+
+//- /foo.rs
+fn foo() {}
+        "#,
         );
     }
 
@@ -722,7 +775,7 @@ fn test() {
     fn goto_for_type_param() {
         check(
             r#"
-struct Foo<T: Clone> { t: <|>T }
+struct Foo<T: Clone> { t: $0T }
          //^
 "#,
         );
@@ -740,7 +793,7 @@ fn foo() {
     let x = 1;
       //^
     id!({
-        let y = <|>x;
+        let y = $0x;
         let z = y;
     });
 }
@@ -758,7 +811,7 @@ fn foo() {
     id!({
         let y = x;
           //^
-        let z = <|>y;
+        let z = $0y;
     });
 }
 "#,
@@ -773,7 +826,7 @@ fn main() {
     fn foo() {
         let x = 92;
           //^
-        <|>x;
+        $0x;
     }
 }
 "#,
@@ -787,7 +840,7 @@ fn main() {
 fn bar() {
     macro_rules! foo { () => { () } }
                //^^^
-    <|>foo!();
+    $0foo!();
 }
 "#,
         );
@@ -801,7 +854,7 @@ struct Foo { x: i32 }
 fn main() {
     let x = 92;
       //^
-    Foo { x<|> };
+    Foo { x$0 };
 }
 "#,
         )
@@ -816,7 +869,7 @@ enum Foo {
 }       //^
 fn baz(foo: Foo) {
     match foo {
-        Foo::Bar { x<|> } => x
+        Foo::Bar { x$0 } => x
     };
 }
 "#,
@@ -831,7 +884,7 @@ enum Foo { Bar }
          //^^^
 impl Foo {
     fn baz(self) {
-        match self { Self::Bar<|> => {} }
+        match self { Self::Bar$0 => {} }
     }
 }
 "#,
@@ -846,7 +899,7 @@ enum Foo { Bar { val: i32 } }
          //^^^
 impl Foo {
     fn baz(self) -> i32 {
-        match self { Self::Bar<|> { val } => {} }
+        match self { Self::Bar$0 { val } => {} }
     }
 }
 "#,
@@ -860,7 +913,7 @@ impl Foo {
 enum Foo { Bar }
          //^^^
 impl Foo {
-    fn baz(self) { Self::Bar<|>; }
+    fn baz(self) { Self::Bar$0; }
 }
 "#,
         );
@@ -873,7 +926,7 @@ impl Foo {
 enum Foo { Bar { val: i32 } }
          //^^^
 impl Foo {
-    fn baz(self) { Self::Bar<|> {val: 4}; }
+    fn baz(self) { Self::Bar$0 {val: 4}; }
 }
 "#,
         );
@@ -883,7 +936,7 @@ impl Foo {
     fn goto_def_for_type_alias_generic_parameter() {
         check(
             r#"
-type Alias<T> = T<|>;
+type Alias<T> = T$0;
          //^
 "#,
         )
@@ -893,10 +946,10 @@ type Alias<T> = T<|>;
     fn goto_def_for_macro_container() {
         check(
             r#"
-//- /lib.rs
-foo::module<|>::mac!();
+//- /lib.rs crate:main deps:foo
+foo::module$0::mac!();
 
-//- /foo/lib.rs
+//- /foo/lib.rs crate:foo
 pub mod module {
       //^^^^^^
     #[macro_export]
@@ -916,7 +969,7 @@ trait Iterator {
        //^^^^
 }
 
-fn f() -> impl Iterator<Item<|> = u8> {}
+fn f() -> impl Iterator<Item$0 = u8> {}
 "#,
         );
     }
@@ -931,7 +984,7 @@ trait Iterator {
     type B;
 }
 
-fn f() -> impl Iterator<A<|> = u8, B = ()> {}
+fn f() -> impl Iterator<A$0 = u8, B = ()> {}
 "#,
         );
         check(
@@ -942,7 +995,7 @@ trait Iterator {
        //^
 }
 
-fn f() -> impl Iterator<A = u8, B<|> = ()> {}
+fn f() -> impl Iterator<A = u8, B$0 = ()> {}
 "#,
         );
     }
@@ -956,7 +1009,7 @@ trait Iterator {
        //^^^^
 }
 
-fn g() -> <() as Iterator<Item<|> = ()>>::Item {}
+fn g() -> <() as Iterator<Item$0 = ()>>::Item {}
 "#,
         );
     }
@@ -971,7 +1024,7 @@ trait Iterator {
     type B;
 }
 
-fn g() -> <() as Iterator<A<|> = (), B = u8>>::B {}
+fn g() -> <() as Iterator<A$0 = (), B = u8>>::B {}
 "#,
         );
         check(
@@ -982,8 +1035,141 @@ trait Iterator {
        //^
 }
 
-fn g() -> <() as Iterator<A = (), B<|> = u8>>::A {}
+fn g() -> <() as Iterator<A = (), B$0 = u8>>::A {}
 "#,
         );
+    }
+
+    #[test]
+    fn goto_self_param_ty_specified() {
+        check(
+            r#"
+struct Foo {}
+
+impl Foo {
+    fn bar(self: &Foo) {
+         //^^^^
+        let foo = sel$0f;
+    }
+}"#,
+        )
+    }
+
+    #[test]
+    fn goto_self_param_on_decl() {
+        check(
+            r#"
+struct Foo {}
+
+impl Foo {
+    fn bar(&self$0) {
+          //^^^^
+    }
+}"#,
+        )
+    }
+
+    #[test]
+    fn goto_lifetime_param_on_decl() {
+        check(
+            r#"
+fn foo<'foobar$0>(_: &'foobar ()) {
+     //^^^^^^^
+}"#,
+        )
+    }
+
+    #[test]
+    fn goto_lifetime_param_decl() {
+        check(
+            r#"
+fn foo<'foobar>(_: &'foobar$0 ()) {
+     //^^^^^^^
+}"#,
+        )
+    }
+
+    #[test]
+    fn goto_lifetime_param_decl_nested() {
+        check(
+            r#"
+fn foo<'foobar>(_: &'foobar ()) {
+    fn foo<'foobar>(_: &'foobar$0 ()) {}
+         //^^^^^^^
+}"#,
+        )
+    }
+
+    #[test]
+    #[ignore] // requires the HIR to somehow track these hrtb lifetimes
+    fn goto_lifetime_hrtb() {
+        check(
+            r#"trait Foo<T> {}
+fn foo<T>() where for<'a> T: Foo<&'a$0 (u8, u16)>, {}
+                    //^^
+"#,
+        );
+        check(
+            r#"trait Foo<T> {}
+fn foo<T>() where for<'a$0> T: Foo<&'a (u8, u16)>, {}
+                    //^^
+"#,
+        );
+    }
+
+    #[test]
+    #[ignore] // requires ForTypes to be implemented
+    fn goto_lifetime_hrtb_for_type() {
+        check(
+            r#"trait Foo<T> {}
+fn foo<T>() where T: for<'a> Foo<&'a$0 (u8, u16)>, {}
+                       //^^
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_label() {
+        check(
+            r#"
+fn foo<'foo>(_: &'foo ()) {
+    'foo: {
+  //^^^^
+        'bar: loop {
+            break 'foo$0;
+        }
+    }
+}"#,
+        )
+    }
+
+    #[test]
+    fn goto_def_for_intra_doc_link_same_file() {
+        check(
+            r#"
+/// Blah, [`bar`](bar) .. [`foo`](foo)$0 has [`bar`](bar)
+pub fn bar() { }
+
+/// You might want to see [`std::fs::read()`] too.
+pub fn foo() { }
+     //^^^
+
+}"#,
+        )
+    }
+
+    #[test]
+    fn goto_def_for_intra_doc_link_inner() {
+        check(
+            r#"
+//- /main.rs
+mod m;
+struct S;
+     //^
+
+//- /m.rs
+//! [`super::S$0`]
+"#,
+        )
     }
 }

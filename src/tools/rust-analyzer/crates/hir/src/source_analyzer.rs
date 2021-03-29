@@ -28,8 +28,8 @@ use syntax::{
 };
 
 use crate::{
-    db::HirDatabase, semantics::PathResolution, Adt, Const, EnumVariant, Field, Function, Local,
-    MacroDef, ModuleDef, Static, Struct, Trait, Type, TypeAlias, TypeParam,
+    db::HirDatabase, semantics::PathResolution, Adt, Const, Field, Function, Local, MacroDef,
+    ModuleDef, Static, Struct, Trait, Type, TypeAlias, TypeParam, Variant,
 };
 use base_db::CrateId;
 
@@ -37,7 +37,7 @@ use base_db::CrateId;
 /// original source files. It should not be used inside the HIR itself.
 #[derive(Debug)]
 pub(crate) struct SourceAnalyzer {
-    file_id: HirFileId,
+    pub(crate) file_id: HirFileId,
     pub(crate) resolver: Resolver,
     body: Option<Arc<Body>>,
     body_source_map: Option<Arc<BodySourceMap>>,
@@ -222,16 +222,19 @@ impl SourceAnalyzer {
         db: &dyn HirDatabase,
         path: &ast::Path,
     ) -> Option<PathResolution> {
+        let mut prefer_value_ns = false;
         if let Some(path_expr) = path.syntax().parent().and_then(ast::PathExpr::cast) {
             let expr_id = self.expr_id(db, &path_expr.into())?;
-            if let Some(assoc) = self.infer.as_ref()?.assoc_resolutions_for_expr(expr_id) {
+            let infer = self.infer.as_ref()?;
+            if let Some(assoc) = infer.assoc_resolutions_for_expr(expr_id) {
                 return Some(PathResolution::AssocItem(assoc.into()));
             }
             if let Some(VariantId::EnumVariantId(variant)) =
-                self.infer.as_ref()?.variant_resolution_for_expr(expr_id)
+                infer.variant_resolution_for_expr(expr_id)
             {
-                return Some(PathResolution::Def(ModuleDef::EnumVariant(variant.into())));
+                return Some(PathResolution::Def(ModuleDef::Variant(variant.into())));
             }
+            prefer_value_ns = true;
         }
 
         if let Some(path_pat) = path.syntax().parent().and_then(ast::PathPat::cast) {
@@ -242,7 +245,7 @@ impl SourceAnalyzer {
             if let Some(VariantId::EnumVariantId(variant)) =
                 self.infer.as_ref()?.variant_resolution_for_pat(pat_id)
             {
-                return Some(PathResolution::Def(ModuleDef::EnumVariant(variant.into())));
+                return Some(PathResolution::Def(ModuleDef::Variant(variant.into())));
             }
         }
 
@@ -251,7 +254,7 @@ impl SourceAnalyzer {
             if let Some(VariantId::EnumVariantId(variant)) =
                 self.infer.as_ref()?.variant_resolution_for_expr(expr_id)
             {
-                return Some(PathResolution::Def(ModuleDef::EnumVariant(variant.into())));
+                return Some(PathResolution::Def(ModuleDef::Variant(variant.into())));
             }
         }
 
@@ -260,7 +263,7 @@ impl SourceAnalyzer {
             if let Some(VariantId::EnumVariantId(variant)) =
                 self.infer.as_ref()?.variant_resolution_for_pat(pat_id)
             {
-                return Some(PathResolution::Def(ModuleDef::EnumVariant(variant.into())));
+                return Some(PathResolution::Def(ModuleDef::Variant(variant.into())));
             }
         }
 
@@ -277,7 +280,7 @@ impl SourceAnalyzer {
             }
         }
 
-        resolve_hir_path(db, &self.resolver, &hir_path)
+        resolve_hir_path_(db, &self.resolver, &hir_path, prefer_value_ns)
     }
 
     pub(crate) fn record_literal_missing_fields(
@@ -447,26 +450,37 @@ fn adjust(
         .map(|(_ptr, scope)| *scope)
 }
 
+#[inline]
 pub(crate) fn resolve_hir_path(
     db: &dyn HirDatabase,
     resolver: &Resolver,
     path: &Path,
 ) -> Option<PathResolution> {
-    let types =
+    resolve_hir_path_(db, resolver, path, false)
+}
+
+fn resolve_hir_path_(
+    db: &dyn HirDatabase,
+    resolver: &Resolver,
+    path: &Path,
+    prefer_value_ns: bool,
+) -> Option<PathResolution> {
+    let types = || {
         resolver.resolve_path_in_type_ns_fully(db.upcast(), path.mod_path()).map(|ty| match ty {
             TypeNs::SelfType(it) => PathResolution::SelfType(it.into()),
             TypeNs::GenericParam(id) => PathResolution::TypeParam(TypeParam { id }),
             TypeNs::AdtSelfType(it) | TypeNs::AdtId(it) => {
                 PathResolution::Def(Adt::from(it).into())
             }
-            TypeNs::EnumVariantId(it) => PathResolution::Def(EnumVariant::from(it).into()),
+            TypeNs::EnumVariantId(it) => PathResolution::Def(Variant::from(it).into()),
             TypeNs::TypeAliasId(it) => PathResolution::Def(TypeAlias::from(it).into()),
             TypeNs::BuiltinType(it) => PathResolution::Def(it.into()),
             TypeNs::TraitId(it) => PathResolution::Def(Trait::from(it).into()),
-        });
+        })
+    };
 
     let body_owner = resolver.body_owner();
-    let values =
+    let values = || {
         resolver.resolve_path_in_value_ns_fully(db.upcast(), path.mod_path()).and_then(|val| {
             let res = match val {
                 ValueNs::LocalBinding(pat_id) => {
@@ -477,22 +491,30 @@ pub(crate) fn resolve_hir_path(
                 ValueNs::ConstId(it) => PathResolution::Def(Const::from(it).into()),
                 ValueNs::StaticId(it) => PathResolution::Def(Static::from(it).into()),
                 ValueNs::StructId(it) => PathResolution::Def(Struct::from(it).into()),
-                ValueNs::EnumVariantId(it) => PathResolution::Def(EnumVariant::from(it).into()),
+                ValueNs::EnumVariantId(it) => PathResolution::Def(Variant::from(it).into()),
                 ValueNs::ImplSelf(impl_id) => PathResolution::SelfType(impl_id.into()),
+                ValueNs::GenericParam(it) => PathResolution::ConstParam(it.into()),
             };
             Some(res)
-        });
+        })
+    };
 
-    let items = resolver
-        .resolve_module_path_in_items(db.upcast(), path.mod_path())
-        .take_types()
-        .map(|it| PathResolution::Def(it.into()));
+    let items = || {
+        resolver
+            .resolve_module_path_in_items(db.upcast(), path.mod_path())
+            .take_types()
+            .map(|it| PathResolution::Def(it.into()))
+    };
 
-    types.or(values).or(items).or_else(|| {
+    let macros = || {
         resolver
             .resolve_path_as_macro(db.upcast(), path.mod_path())
             .map(|def| PathResolution::Macro(def.into()))
-    })
+    };
+
+    if prefer_value_ns { values().or_else(types) } else { types().or_else(values) }
+        .or_else(items)
+        .or_else(macros)
 }
 
 /// Resolves a path where we know it is a qualifier of another path.
@@ -526,7 +548,7 @@ fn resolve_hir_path_qualifier(
         TypeNs::SelfType(it) => PathResolution::SelfType(it.into()),
         TypeNs::GenericParam(id) => PathResolution::TypeParam(TypeParam { id }),
         TypeNs::AdtSelfType(it) | TypeNs::AdtId(it) => PathResolution::Def(Adt::from(it).into()),
-        TypeNs::EnumVariantId(it) => PathResolution::Def(EnumVariant::from(it).into()),
+        TypeNs::EnumVariantId(it) => PathResolution::Def(Variant::from(it).into()),
         TypeNs::TypeAliasId(it) => PathResolution::Def(TypeAlias::from(it).into()),
         TypeNs::BuiltinType(it) => PathResolution::Def(it.into()),
         TypeNs::TraitId(it) => PathResolution::Def(Trait::from(it).into()),

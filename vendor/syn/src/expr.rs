@@ -86,6 +86,7 @@ ast_enum_of_structs! {
     /// A sign that you may not be choosing the right variable names is if you
     /// see names getting repeated in your code, like accessing
     /// `receiver.receiver` or `pat.pat` or `cond.cond`.
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub enum Expr {
         /// A slice literal expression: `[a, b, c, d]`.
         Array(ExprArray),
@@ -223,8 +224,31 @@ ast_enum_of_structs! {
         /// A yield expression: `yield expr`.
         Yield(ExprYield),
 
+        // The following is the only supported idiom for exhaustive matching of
+        // this enum.
+        //
+        //     match expr {
+        //         Expr::Array(e) => {...}
+        //         Expr::Assign(e) => {...}
+        //         ...
+        //         Expr::Yield(e) => {...}
+        //
+        //         #[cfg(test)]
+        //         Expr::__TestExhaustive(_) => unimplemented!(),
+        //         #[cfg(not(test))]
+        //         _ => { /* some sane fallback */ }
+        //     }
+        //
+        // This way we fail your tests but don't break your library when adding
+        // a variant. You will be notified by a test failure when a variant is
+        // added, so that you can add code to handle it, but your library will
+        // continue to compile and work for downstream users in the interim.
+        //
+        // Once `deny(reachable)` is available in rustc, Expr will be
+        // reimplemented as a non_exhaustive enum.
+        // https://github.com/rust-lang/rust/issues/44109#issuecomment-521781237
         #[doc(hidden)]
-        __Nonexhaustive,
+        __TestExhaustive(crate::private),
     }
 }
 
@@ -232,6 +256,7 @@ ast_struct! {
     /// A slice literal expression: `[a, b, c, d]`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprArray #full {
         pub attrs: Vec<Attribute>,
         pub bracket_token: token::Bracket,
@@ -243,6 +268,7 @@ ast_struct! {
     /// An assignment expression: `a = compute()`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprAssign #full {
         pub attrs: Vec<Attribute>,
         pub left: Box<Expr>,
@@ -255,6 +281,7 @@ ast_struct! {
     /// A compound assignment expression: `counter += 1`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprAssignOp #full {
         pub attrs: Vec<Attribute>,
         pub left: Box<Expr>,
@@ -267,6 +294,7 @@ ast_struct! {
     /// An async block: `async { ... }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprAsync #full {
         pub attrs: Vec<Attribute>,
         pub async_token: Token![async],
@@ -279,6 +307,7 @@ ast_struct! {
     /// An await expression: `fut.await`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprAwait #full {
         pub attrs: Vec<Attribute>,
         pub base: Box<Expr>,
@@ -292,6 +321,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or
     /// `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprBinary {
         pub attrs: Vec<Attribute>,
         pub left: Box<Expr>,
@@ -304,6 +334,7 @@ ast_struct! {
     /// A blocked scope: `{ ... }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprBlock #full {
         pub attrs: Vec<Attribute>,
         pub label: Option<Label>,
@@ -315,6 +346,7 @@ ast_struct! {
     /// A box expression: `box f`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprBox #full {
         pub attrs: Vec<Attribute>,
         pub box_token: Token![box],
@@ -327,6 +359,7 @@ ast_struct! {
     /// expression.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprBreak #full {
         pub attrs: Vec<Attribute>,
         pub break_token: Token![break],
@@ -340,6 +373,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or
     /// `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprCall {
         pub attrs: Vec<Attribute>,
         pub func: Box<Expr>,
@@ -353,6 +387,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or
     /// `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprCast {
         pub attrs: Vec<Attribute>,
         pub expr: Box<Expr>,
@@ -365,6 +400,7 @@ ast_struct! {
     /// A closure expression: `|a, b| a + b`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprClosure #full {
         pub attrs: Vec<Attribute>,
         pub asyncness: Option<Token![async]>,
@@ -382,6 +418,7 @@ ast_struct! {
     /// A `continue`, with an optional label.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprContinue #full {
         pub attrs: Vec<Attribute>,
         pub continue_token: Token![continue],
@@ -394,6 +431,7 @@ ast_struct! {
     /// field (`obj.0`).
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprField {
         pub attrs: Vec<Attribute>,
         pub base: Box<Expr>,
@@ -406,6 +444,7 @@ ast_struct! {
     /// A for loop: `for pat in expr { ... }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprForLoop #full {
         pub attrs: Vec<Attribute>,
         pub label: Option<Label>,
@@ -425,6 +464,7 @@ ast_struct! {
     /// `TokenStream`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprGroup #full {
         pub attrs: Vec<Attribute>,
         pub group_token: token::Group,
@@ -440,6 +480,7 @@ ast_struct! {
     /// expression, not any of the other types of expression.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprIf #full {
         pub attrs: Vec<Attribute>,
         pub if_token: Token![if],
@@ -454,6 +495,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or
     /// `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprIndex {
         pub attrs: Vec<Attribute>,
         pub expr: Box<Expr>,
@@ -466,6 +508,7 @@ ast_struct! {
     /// A `let` guard: `let Some(x) = opt`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprLet #full {
         pub attrs: Vec<Attribute>,
         pub let_token: Token![let],
@@ -480,6 +523,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or
     /// `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprLit {
         pub attrs: Vec<Attribute>,
         pub lit: Lit,
@@ -490,6 +534,7 @@ ast_struct! {
     /// Conditionless loop: `loop { ... }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprLoop #full {
         pub attrs: Vec<Attribute>,
         pub label: Option<Label>,
@@ -502,6 +547,7 @@ ast_struct! {
     /// A macro invocation expression: `format!("{}", q)`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprMacro #full {
         pub attrs: Vec<Attribute>,
         pub mac: Macro,
@@ -512,6 +558,7 @@ ast_struct! {
     /// A `match` expression: `match n { Some(n) => {}, None => {} }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprMatch #full {
         pub attrs: Vec<Attribute>,
         pub match_token: Token![match],
@@ -525,6 +572,7 @@ ast_struct! {
     /// A method call expression: `x.foo::<T>(a, b)`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprMethodCall #full {
         pub attrs: Vec<Attribute>,
         pub receiver: Box<Expr>,
@@ -540,6 +588,7 @@ ast_struct! {
     /// A parenthesized expression: `(a + b)`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprParen {
         pub attrs: Vec<Attribute>,
         pub paren_token: token::Paren,
@@ -555,6 +604,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or
     /// `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprPath {
         pub attrs: Vec<Attribute>,
         pub qself: Option<QSelf>,
@@ -566,6 +616,7 @@ ast_struct! {
     /// A range expression: `1..2`, `1..`, `..2`, `1..=2`, `..=2`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprRange #full {
         pub attrs: Vec<Attribute>,
         pub from: Option<Box<Expr>>,
@@ -578,6 +629,7 @@ ast_struct! {
     /// A referencing operation: `&a` or `&mut a`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprReference #full {
         pub attrs: Vec<Attribute>,
         pub and_token: Token![&],
@@ -591,6 +643,7 @@ ast_struct! {
     /// An array literal constructed from one repeated element: `[0u8; N]`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprRepeat #full {
         pub attrs: Vec<Attribute>,
         pub bracket_token: token::Bracket,
@@ -604,6 +657,7 @@ ast_struct! {
     /// A `return`, with an optional value to be returned.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprReturn #full {
         pub attrs: Vec<Attribute>,
         pub return_token: Token![return],
@@ -618,6 +672,7 @@ ast_struct! {
     /// 1, b: 1, ..rest }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprStruct #full {
         pub attrs: Vec<Attribute>,
         pub path: Path,
@@ -632,6 +687,7 @@ ast_struct! {
     /// A try-expression: `expr?`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprTry #full {
         pub attrs: Vec<Attribute>,
         pub expr: Box<Expr>,
@@ -643,6 +699,7 @@ ast_struct! {
     /// A try block: `try { ... }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprTryBlock #full {
         pub attrs: Vec<Attribute>,
         pub try_token: Token![try],
@@ -654,6 +711,7 @@ ast_struct! {
     /// A tuple expression: `(a, b, c, d)`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprTuple #full {
         pub attrs: Vec<Attribute>,
         pub paren_token: token::Paren,
@@ -665,6 +723,7 @@ ast_struct! {
     /// A type ascription expression: `foo: f64`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprType #full {
         pub attrs: Vec<Attribute>,
         pub expr: Box<Expr>,
@@ -678,6 +737,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or
     /// `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct ExprUnary {
         pub attrs: Vec<Attribute>,
         pub op: UnOp,
@@ -689,6 +749,7 @@ ast_struct! {
     /// An unsafe block: `unsafe { ... }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprUnsafe #full {
         pub attrs: Vec<Attribute>,
         pub unsafe_token: Token![unsafe],
@@ -700,6 +761,7 @@ ast_struct! {
     /// A while loop: `while expr { ... }`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprWhile #full {
         pub attrs: Vec<Attribute>,
         pub label: Option<Label>,
@@ -713,6 +775,7 @@ ast_struct! {
     /// A yield expression: `yield expr`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct ExprYield #full {
         pub attrs: Vec<Attribute>,
         pub yield_token: Token![yield],
@@ -764,7 +827,7 @@ impl Expr {
             | Expr::TryBlock(ExprTryBlock { attrs, .. })
             | Expr::Yield(ExprYield { attrs, .. }) => mem::replace(attrs, new),
             Expr::Verbatim(_) => Vec::new(),
-            Expr::__Nonexhaustive => unreachable!(),
+            Expr::__TestExhaustive(_) => unreachable!(),
         }
     }
 }
@@ -775,6 +838,7 @@ ast_enum! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or `"full"`
     /// feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub enum Member {
         /// A named field like `self.x`.
         Named(Ident),
@@ -826,6 +890,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or `"full"`
     /// feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(any(feature = "full", feature = "derive"))))]
     pub struct Index {
         pub index: u32,
         pub span: Span,
@@ -873,6 +938,7 @@ ast_struct! {
     /// `parse::<u64>()`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct MethodTurbofish {
         pub colon2_token: Token![::],
         pub lt_token: Token![<],
@@ -886,6 +952,7 @@ ast_enum! {
     /// An individual generic argument to a method, like `T`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub enum GenericMethodArgument {
         /// A type argument.
         Type(Type),
@@ -902,6 +969,7 @@ ast_struct! {
     /// A field-value pair in a struct literal.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct FieldValue {
         /// Attributes tagged on the field.
         pub attrs: Vec<Attribute>,
@@ -923,6 +991,7 @@ ast_struct! {
     /// A lifetime labeling a `for`, `while`, or `loop`.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct Label {
         pub name: Lifetime,
         pub colon_token: Token![:],
@@ -950,6 +1019,7 @@ ast_struct! {
     /// ```
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub struct Arm {
         pub attrs: Vec<Attribute>,
         pub pat: Pat,
@@ -965,6 +1035,7 @@ ast_enum! {
     /// Limit types of a range, inclusive or exclusive.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "full")))]
     pub enum RangeLimits {
         /// Inclusive at the beginning, exclusive at the end.
         HalfOpen(Token![..]),
@@ -996,6 +1067,8 @@ pub(crate) mod parsing {
     use super::*;
     use crate::parse::{Parse, ParseStream, Result};
     use crate::path;
+    #[cfg(feature = "full")]
+    use proc_macro2::TokenTree;
     use std::cmp::Ordering;
 
     crate::custom_keyword!(raw);
@@ -1054,6 +1127,7 @@ pub(crate) mod parsing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for Expr {
         fn parse(input: ParseStream) -> Result<Self> {
             ambiguous_expr(input, AllowStruct(true))
@@ -1142,6 +1216,7 @@ pub(crate) mod parsing {
         /// implying tighter precedence for `..` than struct init, a
         /// contradiction.
         #[cfg(feature = "full")]
+        #[cfg_attr(doc_cfg, doc(cfg(all(feature = "full", feature = "parsing"))))]
         pub fn parse_without_eager_brace(input: ParseStream) -> Result<Expr> {
             ambiguous_expr(input, AllowStruct(false))
         }
@@ -1668,10 +1743,16 @@ pub(crate) mod parsing {
             input.call(expr_yield).map(Expr::Yield)
         } else if input.peek(Token![unsafe]) {
             input.call(expr_unsafe).map(Expr::Unsafe)
+        } else if input.peek(Token![const]) {
+            input.call(expr_const).map(Expr::Verbatim)
         } else if input.peek(token::Brace) {
             input.call(expr_block).map(Expr::Block)
         } else if input.peek(Token![..]) {
             expr_range(input, allow_struct).map(Expr::Range)
+        } else if input.peek(Token![_]) {
+            Ok(Expr::Verbatim(TokenStream::from(
+                input.parse::<TokenTree>()?,
+            )))
         } else if input.peek(Lifetime) {
             let the_label: Label = input.parse()?;
             let mut expr = if input.peek(Token![while]) {
@@ -1862,6 +1943,8 @@ pub(crate) mod parsing {
             Expr::TryBlock(input.call(expr_try_block)?)
         } else if input.peek(Token![unsafe]) {
             Expr::Unsafe(input.call(expr_unsafe)?)
+        } else if input.peek(Token![const]) {
+            Expr::Verbatim(input.call(expr_const)?)
         } else if input.peek(token::Brace) {
             Expr::Block(input.call(expr_block)?)
         } else {
@@ -1889,6 +1972,7 @@ pub(crate) mod parsing {
         Ok(expr)
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for ExprLit {
         fn parse(input: ParseStream) -> Result<Self> {
             Ok(ExprLit {
@@ -1945,6 +2029,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for ExprIf {
         fn parse(input: ParseStream) -> Result<Self> {
             let attrs = input.call(Attribute::parse_outer)?;
@@ -1985,6 +2070,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for ExprForLoop {
         fn parse(input: ParseStream) -> Result<Self> {
             let outer_attrs = input.call(Attribute::parse_outer)?;
@@ -2014,6 +2100,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for ExprLoop {
         fn parse(input: ParseStream) -> Result<Self> {
             let outer_attrs = input.call(Attribute::parse_outer)?;
@@ -2035,6 +2122,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for ExprMatch {
         fn parse(input: ParseStream) -> Result<Self> {
             let outer_attrs = input.call(Attribute::parse_outer)?;
@@ -2068,6 +2156,7 @@ pub(crate) mod parsing {
         ) => {
             $(
                 #[cfg(all(feature = "full", feature = "printing"))]
+                #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
                 impl Parse for $expr_type {
                     fn parse(input: ParseStream) -> Result<Self> {
                         let mut expr: Expr = input.parse()?;
@@ -2237,13 +2326,14 @@ pub(crate) mod parsing {
                 Pat::Type(_) => unreachable!(),
                 Pat::Verbatim(_) => {}
                 Pat::Wild(pat) => pat.attrs = attrs,
-                Pat::__Nonexhaustive => unreachable!(),
+                Pat::__TestExhaustive(_) => unreachable!(),
             }
             Ok(pat)
         }
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for ExprWhile {
         fn parse(input: ParseStream) -> Result<Self> {
             let outer_attrs = input.call(Attribute::parse_outer)?;
@@ -2267,6 +2357,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for Label {
         fn parse(input: ParseStream) -> Result<Self> {
             Ok(Label {
@@ -2277,6 +2368,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for Option<Label> {
         fn parse(input: ParseStream) -> Result<Self> {
             if input.peek(Lifetime) {
@@ -2339,6 +2431,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for FieldValue {
         fn parse(input: ParseStream) -> Result<Self> {
             let attrs = input.call(Attribute::parse_outer)?;
@@ -2387,7 +2480,11 @@ pub(crate) mod parsing {
                     path,
                     fields,
                     dot2_token: Some(content.parse()?),
-                    rest: Some(Box::new(content.parse()?)),
+                    rest: if content.is_empty() {
+                        None
+                    } else {
+                        Some(Box::new(content.parse()?))
+                    },
                 });
             }
 
@@ -2423,6 +2520,19 @@ pub(crate) mod parsing {
             unsafe_token,
             block: Block { brace_token, stmts },
         })
+    }
+
+    #[cfg(feature = "full")]
+    pub(crate) fn expr_const(input: ParseStream) -> Result<TokenStream> {
+        let begin = input.fork();
+        input.parse::<Token![const]>()?;
+
+        let content;
+        braced!(content in input);
+        content.call(Attribute::parse_inner)?;
+        content.call(Block::parse_within)?;
+
+        Ok(verbatim::between(begin, input))
     }
 
     #[cfg(feature = "full")]
@@ -2463,6 +2573,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for RangeLimits {
         fn parse(input: ParseStream) -> Result<Self> {
             let lookahead = input.lookahead1();
@@ -2479,6 +2590,7 @@ pub(crate) mod parsing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for ExprPath {
         fn parse(input: ParseStream) -> Result<Self> {
             #[cfg(not(feature = "full"))]
@@ -2492,6 +2604,7 @@ pub(crate) mod parsing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for Member {
         fn parse(input: ParseStream) -> Result<Self> {
             if input.peek(Ident) {
@@ -2505,6 +2618,7 @@ pub(crate) mod parsing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for Arm {
         fn parse(input: ParseStream) -> Result<Arm> {
             let requires_comma;
@@ -2537,6 +2651,7 @@ pub(crate) mod parsing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for Index {
         fn parse(input: ParseStream) -> Result<Self> {
             let lit: LitInt = input.parse()?;
@@ -2562,7 +2677,7 @@ pub(crate) mod parsing {
         }
         for part in float_repr.split('.') {
             let index = crate::parse_str(part).map_err(|err| Error::new(float.span(), err))?;
-            let base = mem::replace(e, Expr::__Nonexhaustive);
+            let base = mem::replace(e, Expr::__TestExhaustive(crate::private(())));
             *e = Expr::Field(ExprField {
                 attrs: Vec::new(),
                 base: Box::new(base),
@@ -2590,8 +2705,6 @@ pub(crate) mod printing {
     use super::*;
     #[cfg(feature = "full")]
     use crate::attr::FilterAttrs;
-    #[cfg(feature = "full")]
-    use crate::print::TokensOrDefault;
     use proc_macro2::{Literal, TokenStream};
     use quote::{ToTokens, TokenStreamExt};
 
@@ -2625,6 +2738,7 @@ pub(crate) mod printing {
     fn inner_attrs_to_tokens(_attrs: &[Attribute], _tokens: &mut TokenStream) {}
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprBox {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2634,6 +2748,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprArray {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2644,6 +2759,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprCall {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2655,6 +2771,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprMethodCall {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2669,6 +2786,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for MethodTurbofish {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             self.colon2_token.to_tokens(tokens);
@@ -2679,6 +2797,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for GenericMethodArgument {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             match self {
@@ -2689,6 +2808,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprTuple {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2704,6 +2824,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprBinary {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2713,6 +2834,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprUnary {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2721,6 +2843,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprLit {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2728,6 +2851,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprCast {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2738,6 +2862,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprType {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2768,6 +2893,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprLet {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2779,6 +2905,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprIf {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2790,6 +2917,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprWhile {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2804,6 +2932,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprForLoop {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2820,6 +2949,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprLoop {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2833,6 +2963,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprMatch {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2854,6 +2985,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprAsync {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2864,6 +2996,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprAwait {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2874,6 +3007,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprTryBlock {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2883,6 +3017,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprYield {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2892,6 +3027,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprClosure {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2907,6 +3043,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprUnsafe {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2919,6 +3056,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprBlock {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2931,6 +3069,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprAssign {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2941,6 +3080,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprAssignOp {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2950,6 +3090,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprField {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2959,6 +3100,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for Member {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             match self {
@@ -2968,6 +3110,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for Index {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             let mut lit = Literal::i64_unsuffixed(i64::from(self.index));
@@ -2976,6 +3119,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprIndex {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2987,6 +3131,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprRange {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -2999,6 +3144,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprPath {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3007,6 +3153,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprReference {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3017,6 +3164,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprBreak {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3027,6 +3175,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprContinue {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3036,6 +3185,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprReturn {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3045,6 +3195,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprMacro {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3053,6 +3204,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprStruct {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3060,15 +3212,18 @@ pub(crate) mod printing {
             self.brace_token.surround(tokens, |tokens| {
                 inner_attrs_to_tokens(&self.attrs, tokens);
                 self.fields.to_tokens(tokens);
-                if self.rest.is_some() {
-                    TokensOrDefault(&self.dot2_token).to_tokens(tokens);
-                    self.rest.to_tokens(tokens);
+                if let Some(dot2_token) = &self.dot2_token {
+                    dot2_token.to_tokens(tokens);
+                } else if self.rest.is_some() {
+                    Token![..](Span::call_site()).to_tokens(tokens);
                 }
+                self.rest.to_tokens(tokens);
             })
         }
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprRepeat {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3082,6 +3237,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprGroup {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3091,6 +3247,7 @@ pub(crate) mod printing {
         }
     }
 
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprParen {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3102,6 +3259,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for ExprTry {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3111,6 +3269,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for Label {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             self.name.to_tokens(tokens);
@@ -3119,6 +3278,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for FieldValue {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             outer_attrs_to_tokens(&self.attrs, tokens);
@@ -3131,6 +3291,7 @@ pub(crate) mod printing {
     }
 
     #[cfg(feature = "full")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
     impl ToTokens for Arm {
         fn to_tokens(&self, tokens: &mut TokenStream) {
             tokens.append_all(&self.attrs);

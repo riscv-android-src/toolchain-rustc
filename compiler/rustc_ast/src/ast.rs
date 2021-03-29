@@ -23,8 +23,8 @@ pub use GenericArgs::*;
 pub use UnsafeSource::*;
 
 use crate::ptr::P;
-use crate::token::{self, CommentKind, DelimToken};
-use crate::tokenstream::{DelimSpan, LazyTokenStream, TokenStream};
+use crate::token::{self, CommentKind, DelimToken, Token};
+use crate::tokenstream::{DelimSpan, LazyTokenStream, TokenStream, TokenTree};
 
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::stack::ensure_sufficient_stack;
@@ -167,10 +167,7 @@ pub enum GenericArgs {
 
 impl GenericArgs {
     pub fn is_angle_bracketed(&self) -> bool {
-        match *self {
-            AngleBracketed(..) => true,
-            _ => false,
-        }
+        matches!(self, AngleBracketed(..))
     }
 
     pub fn span(&self) -> Span {
@@ -245,11 +242,20 @@ impl Into<Option<P<GenericArgs>>> for ParenthesizedArgs {
 /// A path like `Foo(A, B) -> C`.
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct ParenthesizedArgs {
-    /// Overall span
+    /// ```text
+    /// Foo(A, B) -> C
+    /// ^^^^^^^^^^^^^^
+    /// ```
     pub span: Span,
 
     /// `(A, B)`
     pub inputs: Vec<P<Ty>>,
+
+    /// ```text
+    /// Foo(A, B) -> C
+    ///    ^^^^^^
+    /// ```
+    pub inputs_span: Span,
 
     /// `C`
     pub output: FnRetTy,
@@ -371,6 +377,8 @@ pub enum GenericParamKind {
         ty: P<Ty>,
         /// Span of the `const` keyword.
         kw_span: Span,
+        /// Optional default value for the const generic param
+        default: Option<AnonConst>,
     },
 }
 
@@ -434,9 +442,9 @@ pub enum WherePredicate {
 impl WherePredicate {
     pub fn span(&self) -> Span {
         match self {
-            &WherePredicate::BoundPredicate(ref p) => p.span,
-            &WherePredicate::RegionPredicate(ref p) => p.span,
-            &WherePredicate::EqPredicate(ref p) => p.span,
+            WherePredicate::BoundPredicate(p) => p.span,
+            WherePredicate::RegionPredicate(p) => p.span,
+            WherePredicate::EqPredicate(p) => p.span,
         }
     }
 }
@@ -629,23 +637,20 @@ impl Pat {
 
     /// Is this a `..` pattern?
     pub fn is_rest(&self) -> bool {
-        match self.kind {
-            PatKind::Rest => true,
-            _ => false,
-        }
+        matches!(self.kind, PatKind::Rest)
     }
 }
 
-/// A single field in a struct pattern
+/// A single field in a struct pattern.
 ///
-/// Patterns like the fields of Foo `{ x, ref y, ref mut z }`
-/// are treated the same as` x: x, y: ref y, z: ref mut z`,
-/// except is_shorthand is true
+/// Patterns like the fields of `Foo { x, ref y, ref mut z }`
+/// are treated the same as `x: x, y: ref y, z: ref mut z`,
+/// except when `is_shorthand` is true.
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct FieldPat {
-    /// The identifier for the field
+    /// The identifier for the field.
     pub ident: Ident,
-    /// The pattern the field is destructured to
+    /// The pattern the field is destructured to.
     pub pat: P<Pat>,
     pub is_shorthand: bool,
     pub attrs: AttrVec,
@@ -852,10 +857,7 @@ impl BinOpKind {
         }
     }
     pub fn lazy(&self) -> bool {
-        match *self {
-            BinOpKind::And | BinOpKind::Or => true,
-            _ => false,
-        }
+        matches!(self, BinOpKind::And | BinOpKind::Or)
     }
 
     pub fn is_comparison(&self) -> bool {
@@ -923,16 +925,6 @@ impl Stmt {
         }
     }
 
-    pub fn set_tokens(&mut self, tokens: Option<LazyTokenStream>) {
-        match self.kind {
-            StmtKind::Local(ref mut local) => local.tokens = tokens,
-            StmtKind::Item(ref mut item) => item.tokens = tokens,
-            StmtKind::Expr(ref mut expr) | StmtKind::Semi(ref mut expr) => expr.tokens = tokens,
-            StmtKind::Empty => {}
-            StmtKind::MacCall(ref mut mac) => mac.tokens = tokens,
-        }
-    }
-
     pub fn has_trailing_semicolon(&self) -> bool {
         match &self.kind {
             StmtKind::Semi(_) => true,
@@ -963,17 +955,11 @@ impl Stmt {
     }
 
     pub fn is_item(&self) -> bool {
-        match self.kind {
-            StmtKind::Item(_) => true,
-            _ => false,
-        }
+        matches!(self.kind, StmtKind::Item(_))
     }
 
     pub fn is_expr(&self) -> bool {
-        match self.kind {
-            StmtKind::Expr(_) => true,
-            _ => false,
-        }
+        matches!(self.kind, StmtKind::Expr(_))
     }
 }
 
@@ -1107,15 +1093,9 @@ impl Expr {
         if let ExprKind::Block(ref block, _) = self.kind {
             match block.stmts.last().map(|last_stmt| &last_stmt.kind) {
                 // Implicit return
-                Some(&StmtKind::Expr(_)) => true,
-                Some(&StmtKind::Semi(ref expr)) => {
-                    if let ExprKind::Ret(_) = expr.kind {
-                        // Last statement is explicit return.
-                        true
-                    } else {
-                        false
-                    }
-                }
+                Some(StmtKind::Expr(_)) => true,
+                // Last statement is an explicit return?
+                Some(StmtKind::Semi(expr)) => matches!(expr.kind, ExprKind::Ret(_)),
                 // This is a block that doesn't end in either an implicit or explicit return.
                 _ => false,
             }
@@ -1128,7 +1108,7 @@ impl Expr {
     /// Is this expr either `N`, or `{ N }`.
     ///
     /// If this is not the case, name resolution does not resolve `N` when using
-    /// `feature(min_const_generics)` as more complex expressions are not supported.
+    /// `min_const_generics` as more complex expressions are not supported.
     pub fn is_potential_trivial_const_param(&self) -> bool {
         let this = if let ExprKind::Block(ref block, None) = self.kind {
             if block.stmts.len() == 1 {
@@ -1483,8 +1463,8 @@ pub enum MacArgs {
     Eq(
         /// Span of the `=` token.
         Span,
-        /// Token stream of the "value".
-        TokenStream,
+        /// "value" as a nonterminal token.
+        Token,
     ),
 }
 
@@ -1497,10 +1477,10 @@ impl MacArgs {
     }
 
     pub fn span(&self) -> Option<Span> {
-        match *self {
+        match self {
             MacArgs::Empty => None,
             MacArgs::Delimited(dspan, ..) => Some(dspan.entire()),
-            MacArgs::Eq(eq_span, ref tokens) => Some(eq_span.to(tokens.span().unwrap_or(eq_span))),
+            MacArgs::Eq(eq_span, token) => Some(eq_span.to(token.span)),
         }
     }
 
@@ -1509,7 +1489,8 @@ impl MacArgs {
     pub fn inner_tokens(&self) -> TokenStream {
         match self {
             MacArgs::Empty => TokenStream::default(),
-            MacArgs::Delimited(.., tokens) | MacArgs::Eq(.., tokens) => tokens.clone(),
+            MacArgs::Delimited(.., tokens) => tokens.clone(),
+            MacArgs::Eq(.., token) => TokenTree::Token(token.clone()).into(),
         }
     }
 
@@ -1652,26 +1633,17 @@ pub enum LitKind {
 impl LitKind {
     /// Returns `true` if this literal is a string.
     pub fn is_str(&self) -> bool {
-        match *self {
-            LitKind::Str(..) => true,
-            _ => false,
-        }
+        matches!(self, LitKind::Str(..))
     }
 
     /// Returns `true` if this literal is byte literal string.
     pub fn is_bytestr(&self) -> bool {
-        match self {
-            LitKind::ByteStr(_) => true,
-            _ => false,
-        }
+        matches!(self, LitKind::ByteStr(_))
     }
 
     /// Returns `true` if this is a numeric literal.
     pub fn is_numeric(&self) -> bool {
-        match *self {
-            LitKind::Int(..) | LitKind::Float(..) => true,
-            _ => false,
-        }
+        matches!(self, LitKind::Int(..) | LitKind::Float(..))
     }
 
     /// Returns `true` if this literal has no suffix.
@@ -1974,7 +1946,7 @@ impl TyKind {
     }
 
     pub fn is_unit(&self) -> bool {
-        if let TyKind::Tup(ref tys) = *self { tys.is_empty() } else { false }
+        matches!(self, TyKind::Tup(tys) if tys.is_empty())
     }
 }
 
@@ -2237,10 +2209,7 @@ impl FnDecl {
         self.inputs.get(0).map_or(false, Param::is_self)
     }
     pub fn c_variadic(&self) -> bool {
-        self.inputs.last().map_or(false, |arg| match arg.ty.kind {
-            TyKind::CVarArgs => true,
-            _ => false,
-        })
+        self.inputs.last().map_or(false, |arg| matches!(arg.ty.kind, TyKind::CVarArgs))
     }
 }
 
@@ -2687,6 +2656,36 @@ impl Default for FnHeader {
 }
 
 #[derive(Clone, Encodable, Decodable, Debug)]
+pub struct TraitKind(
+    pub IsAuto,
+    pub Unsafe,
+    pub Generics,
+    pub GenericBounds,
+    pub Vec<P<AssocItem>>,
+);
+
+#[derive(Clone, Encodable, Decodable, Debug)]
+pub struct TyAliasKind(pub Defaultness, pub Generics, pub GenericBounds, pub Option<P<Ty>>);
+
+#[derive(Clone, Encodable, Decodable, Debug)]
+pub struct ImplKind {
+    pub unsafety: Unsafe,
+    pub polarity: ImplPolarity,
+    pub defaultness: Defaultness,
+    pub constness: Const,
+    pub generics: Generics,
+
+    /// The trait being implemented, if any.
+    pub of_trait: Option<TraitRef>,
+
+    pub self_ty: P<Ty>,
+    pub items: Vec<P<AssocItem>>,
+}
+
+#[derive(Clone, Encodable, Decodable, Debug)]
+pub struct FnKind(pub Defaultness, pub FnSig, pub Generics, pub Option<P<Block>>);
+
+#[derive(Clone, Encodable, Decodable, Debug)]
 pub enum ItemKind {
     /// An `extern crate` item, with the optional *original* crate name if the crate was renamed.
     ///
@@ -2707,7 +2706,7 @@ pub enum ItemKind {
     /// A function declaration (`fn`).
     ///
     /// E.g., `fn foo(bar: usize) -> usize { .. }`.
-    Fn(Defaultness, FnSig, Generics, Option<P<Block>>),
+    Fn(Box<FnKind>),
     /// A module declaration (`mod`).
     ///
     /// E.g., `mod foo;` or `mod foo { .. }`.
@@ -2721,7 +2720,7 @@ pub enum ItemKind {
     /// A type alias (`type`).
     ///
     /// E.g., `type Foo = Bar<u8>;`.
-    TyAlias(Defaultness, Generics, GenericBounds, Option<P<Ty>>),
+    TyAlias(Box<TyAliasKind>),
     /// An enum definition (`enum`).
     ///
     /// E.g., `enum Foo<A, B> { C<A>, D<B> }`.
@@ -2737,7 +2736,7 @@ pub enum ItemKind {
     /// A trait declaration (`trait`).
     ///
     /// E.g., `trait Foo { .. }`, `trait Foo<T> { .. }` or `auto trait Foo {}`.
-    Trait(IsAuto, Unsafe, Generics, GenericBounds, Vec<P<AssocItem>>),
+    Trait(Box<TraitKind>),
     /// Trait alias
     ///
     /// E.g., `trait Foo = Bar + Quux;`.
@@ -2745,19 +2744,7 @@ pub enum ItemKind {
     /// An implementation.
     ///
     /// E.g., `impl<A> Foo<A> { .. }` or `impl<A> Trait for Foo<A> { .. }`.
-    Impl {
-        unsafety: Unsafe,
-        polarity: ImplPolarity,
-        defaultness: Defaultness,
-        constness: Const,
-        generics: Generics,
-
-        /// The trait being implemented, if any.
-        of_trait: Option<TraitRef>,
-
-        self_ty: P<Ty>,
-        items: Vec<P<AssocItem>>,
-    },
+    Impl(Box<ImplKind>),
     /// A macro invocation.
     ///
     /// E.g., `foo!(..)`.
@@ -2766,6 +2753,9 @@ pub enum ItemKind {
     /// A macro definition.
     MacroDef(MacroDef),
 }
+
+#[cfg(target_arch = "x86_64")]
+rustc_data_structures::static_assert_size!(ItemKind, 112);
 
 impl ItemKind {
     pub fn article(&self) -> &str {
@@ -2801,14 +2791,14 @@ impl ItemKind {
 
     pub fn generics(&self) -> Option<&Generics> {
         match self {
-            Self::Fn(_, _, generics, _)
-            | Self::TyAlias(_, generics, ..)
+            Self::Fn(box FnKind(_, _, generics, _))
+            | Self::TyAlias(box TyAliasKind(_, generics, ..))
             | Self::Enum(_, generics)
             | Self::Struct(_, generics)
             | Self::Union(_, generics)
-            | Self::Trait(_, _, generics, ..)
+            | Self::Trait(box TraitKind(_, _, generics, ..))
             | Self::TraitAlias(generics, _)
-            | Self::Impl { generics, .. } => Some(generics),
+            | Self::Impl(box ImplKind { generics, .. }) => Some(generics),
             _ => None,
         }
     }
@@ -2831,17 +2821,22 @@ pub enum AssocItemKind {
     /// If `def` is parsed, then the constant is provided, and otherwise required.
     Const(Defaultness, P<Ty>, Option<P<Expr>>),
     /// An associated function.
-    Fn(Defaultness, FnSig, Generics, Option<P<Block>>),
+    Fn(Box<FnKind>),
     /// An associated type.
-    TyAlias(Defaultness, Generics, GenericBounds, Option<P<Ty>>),
+    TyAlias(Box<TyAliasKind>),
     /// A macro expanding to associated items.
     MacCall(MacCall),
 }
 
+#[cfg(target_arch = "x86_64")]
+rustc_data_structures::static_assert_size!(AssocItemKind, 72);
+
 impl AssocItemKind {
     pub fn defaultness(&self) -> Defaultness {
         match *self {
-            Self::Const(def, ..) | Self::Fn(def, ..) | Self::TyAlias(def, ..) => def,
+            Self::Const(def, ..)
+            | Self::Fn(box FnKind(def, ..))
+            | Self::TyAlias(box TyAliasKind(def, ..)) => def,
             Self::MacCall(..) => Defaultness::Final,
         }
     }
@@ -2851,8 +2846,8 @@ impl From<AssocItemKind> for ItemKind {
     fn from(assoc_item_kind: AssocItemKind) -> ItemKind {
         match assoc_item_kind {
             AssocItemKind::Const(a, b, c) => ItemKind::Const(a, b, c),
-            AssocItemKind::Fn(a, b, c, d) => ItemKind::Fn(a, b, c, d),
-            AssocItemKind::TyAlias(a, b, c, d) => ItemKind::TyAlias(a, b, c, d),
+            AssocItemKind::Fn(fn_kind) => ItemKind::Fn(fn_kind),
+            AssocItemKind::TyAlias(ty_alias_kind) => ItemKind::TyAlias(ty_alias_kind),
             AssocItemKind::MacCall(a) => ItemKind::MacCall(a),
         }
     }
@@ -2864,8 +2859,8 @@ impl TryFrom<ItemKind> for AssocItemKind {
     fn try_from(item_kind: ItemKind) -> Result<AssocItemKind, ItemKind> {
         Ok(match item_kind {
             ItemKind::Const(a, b, c) => AssocItemKind::Const(a, b, c),
-            ItemKind::Fn(a, b, c, d) => AssocItemKind::Fn(a, b, c, d),
-            ItemKind::TyAlias(a, b, c, d) => AssocItemKind::TyAlias(a, b, c, d),
+            ItemKind::Fn(fn_kind) => AssocItemKind::Fn(fn_kind),
+            ItemKind::TyAlias(ty_alias_kind) => AssocItemKind::TyAlias(ty_alias_kind),
             ItemKind::MacCall(a) => AssocItemKind::MacCall(a),
             _ => return Err(item_kind),
         })
@@ -2877,20 +2872,23 @@ impl TryFrom<ItemKind> for AssocItemKind {
 pub enum ForeignItemKind {
     /// A foreign static item (`static FOO: u8`).
     Static(P<Ty>, Mutability, Option<P<Expr>>),
-    /// A foreign function.
-    Fn(Defaultness, FnSig, Generics, Option<P<Block>>),
-    /// A foreign type.
-    TyAlias(Defaultness, Generics, GenericBounds, Option<P<Ty>>),
+    /// An foreign function.
+    Fn(Box<FnKind>),
+    /// An foreign type.
+    TyAlias(Box<TyAliasKind>),
     /// A macro expanding to foreign items.
     MacCall(MacCall),
 }
+
+#[cfg(target_arch = "x86_64")]
+rustc_data_structures::static_assert_size!(ForeignItemKind, 72);
 
 impl From<ForeignItemKind> for ItemKind {
     fn from(foreign_item_kind: ForeignItemKind) -> ItemKind {
         match foreign_item_kind {
             ForeignItemKind::Static(a, b, c) => ItemKind::Static(a, b, c),
-            ForeignItemKind::Fn(a, b, c, d) => ItemKind::Fn(a, b, c, d),
-            ForeignItemKind::TyAlias(a, b, c, d) => ItemKind::TyAlias(a, b, c, d),
+            ForeignItemKind::Fn(fn_kind) => ItemKind::Fn(fn_kind),
+            ForeignItemKind::TyAlias(ty_alias_kind) => ItemKind::TyAlias(ty_alias_kind),
             ForeignItemKind::MacCall(a) => ItemKind::MacCall(a),
         }
     }
@@ -2902,8 +2900,8 @@ impl TryFrom<ItemKind> for ForeignItemKind {
     fn try_from(item_kind: ItemKind) -> Result<ForeignItemKind, ItemKind> {
         Ok(match item_kind {
             ItemKind::Static(a, b, c) => ForeignItemKind::Static(a, b, c),
-            ItemKind::Fn(a, b, c, d) => ForeignItemKind::Fn(a, b, c, d),
-            ItemKind::TyAlias(a, b, c, d) => ForeignItemKind::TyAlias(a, b, c, d),
+            ItemKind::Fn(fn_kind) => ForeignItemKind::Fn(fn_kind),
+            ItemKind::TyAlias(ty_alias_kind) => ForeignItemKind::TyAlias(ty_alias_kind),
             ItemKind::MacCall(a) => ForeignItemKind::MacCall(a),
             _ => return Err(item_kind),
         })
@@ -2911,3 +2909,69 @@ impl TryFrom<ItemKind> for ForeignItemKind {
 }
 
 pub type ForeignItem = Item<ForeignItemKind>;
+
+pub trait HasTokens {
+    /// Called by `Parser::collect_tokens` to store the collected
+    /// tokens inside an AST node
+    fn finalize_tokens(&mut self, tokens: LazyTokenStream);
+}
+
+impl<T: HasTokens + 'static> HasTokens for P<T> {
+    fn finalize_tokens(&mut self, tokens: LazyTokenStream) {
+        (**self).finalize_tokens(tokens);
+    }
+}
+
+impl<T: HasTokens> HasTokens for Option<T> {
+    fn finalize_tokens(&mut self, tokens: LazyTokenStream) {
+        if let Some(inner) = self {
+            inner.finalize_tokens(tokens);
+        }
+    }
+}
+
+impl HasTokens for Attribute {
+    fn finalize_tokens(&mut self, tokens: LazyTokenStream) {
+        match &mut self.kind {
+            AttrKind::Normal(_, attr_tokens) => {
+                if attr_tokens.is_none() {
+                    *attr_tokens = Some(tokens);
+                }
+            }
+            AttrKind::DocComment(..) => {
+                panic!("Called finalize_tokens on doc comment attr {:?}", self)
+            }
+        }
+    }
+}
+
+impl HasTokens for Stmt {
+    fn finalize_tokens(&mut self, tokens: LazyTokenStream) {
+        let stmt_tokens = match self.kind {
+            StmtKind::Local(ref mut local) => &mut local.tokens,
+            StmtKind::Item(ref mut item) => &mut item.tokens,
+            StmtKind::Expr(ref mut expr) | StmtKind::Semi(ref mut expr) => &mut expr.tokens,
+            StmtKind::Empty => return,
+            StmtKind::MacCall(ref mut mac) => &mut mac.tokens,
+        };
+        if stmt_tokens.is_none() {
+            *stmt_tokens = Some(tokens);
+        }
+    }
+}
+
+macro_rules! derive_has_tokens {
+    ($($ty:path),*) => { $(
+        impl HasTokens for $ty {
+            fn finalize_tokens(&mut self, tokens: LazyTokenStream) {
+                if self.tokens.is_none() {
+                    self.tokens = Some(tokens);
+                }
+            }
+        }
+    )* }
+}
+
+derive_has_tokens! {
+    Item, Expr, Ty, AttrItem, Visibility, Path, Block, Pat
+}

@@ -4,7 +4,7 @@
 //! `TokenTree`s as well!
 
 mod parser;
-mod mbe_expander;
+mod expander;
 mod syntax_bridge;
 mod tt_iter;
 mod subtree_source;
@@ -12,17 +12,22 @@ mod subtree_source;
 #[cfg(test)]
 mod tests;
 
-pub use tt::{Delimiter, Punct};
+use std::fmt;
+
+use test_utils::mark;
+pub use tt::{Delimiter, DelimiterKind, Punct};
 
 use crate::{
-    parser::{parse_pattern, Op},
+    parser::{parse_pattern, parse_template, Op},
     tt_iter::TtIter,
 };
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseError {
+    UnexpectedToken(String),
     Expected(String),
-    RepetitionEmtpyTokenTree,
+    InvalidRepeat,
+    RepetitionEmptyTokenTree,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -31,13 +36,28 @@ pub enum ExpandError {
     UnexpectedToken,
     BindingError(String),
     ConversionError,
-    InvalidRepeat,
     ProcMacroError(tt::ExpansionError),
+    UnresolvedProcMacro,
+    Other(String),
 }
 
 impl From<tt::ExpansionError> for ExpandError {
     fn from(it: tt::ExpansionError) -> Self {
         ExpandError::ProcMacroError(it)
+    }
+}
+
+impl fmt::Display for ExpandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExpandError::NoMatchingRule => f.write_str("no rule matches input tokens"),
+            ExpandError::UnexpectedToken => f.write_str("unexpected token in input"),
+            ExpandError::BindingError(e) => f.write_str(e),
+            ExpandError::ConversionError => f.write_str("could not convert tokens"),
+            ExpandError::ProcMacroError(e) => e.fmt(f),
+            ExpandError::UnresolvedProcMacro => f.write_str("unresolved proc macro"),
+            ExpandError::Other(e) => f.write_str(e),
+        }
     }
 }
 
@@ -57,10 +77,27 @@ pub struct MacroRules {
     shift: Shift,
 }
 
+/// For Macro 2.0
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MacroDef {
+    rules: Vec<Rule>,
+    /// Highest id of the token we have in TokenMap
+    shift: Shift,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Rule {
-    lhs: tt::Subtree,
-    rhs: tt::Subtree,
+    lhs: MetaTemplate,
+    rhs: MetaTemplate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MetaTemplate(Vec<Op>);
+
+impl<'a> MetaTemplate {
+    fn iter(&self) -> impl Iterator<Item = &Op> {
+        self.0.iter()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,11 +181,11 @@ impl MacroRules {
         let mut src = TtIter::new(tt);
         let mut rules = Vec::new();
         while src.len() > 0 {
-            let rule = Rule::parse(&mut src)?;
+            let rule = Rule::parse(&mut src, true)?;
             rules.push(rule);
             if let Err(()) = src.expect_char(';') {
                 if src.len() > 0 {
-                    return Err(ParseError::Expected("expected `:`".to_string()));
+                    return Err(ParseError::Expected("expected `;`".to_string()));
                 }
                 break;
             }
@@ -165,7 +202,58 @@ impl MacroRules {
         // apply shift
         let mut tt = tt.clone();
         self.shift.shift_all(&mut tt);
-        mbe_expander::expand(self, &tt)
+        expander::expand_rules(&self.rules, &tt)
+    }
+
+    pub fn map_id_down(&self, id: tt::TokenId) -> tt::TokenId {
+        self.shift.shift(id)
+    }
+
+    pub fn map_id_up(&self, id: tt::TokenId) -> (tt::TokenId, Origin) {
+        match self.shift.unshift(id) {
+            Some(id) => (id, Origin::Call),
+            None => (id, Origin::Def),
+        }
+    }
+}
+
+impl MacroDef {
+    pub fn parse(tt: &tt::Subtree) -> Result<MacroDef, ParseError> {
+        let mut src = TtIter::new(tt);
+        let mut rules = Vec::new();
+
+        if Some(tt::DelimiterKind::Brace) == tt.delimiter_kind() {
+            mark::hit!(parse_macro_def_rules);
+            while src.len() > 0 {
+                let rule = Rule::parse(&mut src, true)?;
+                rules.push(rule);
+                if let Err(()) = src.expect_char(';') {
+                    if src.len() > 0 {
+                        return Err(ParseError::Expected("expected `;`".to_string()));
+                    }
+                    break;
+                }
+            }
+        } else {
+            mark::hit!(parse_macro_def_simple);
+            let rule = Rule::parse(&mut src, false)?;
+            if src.len() != 0 {
+                return Err(ParseError::Expected("remain tokens in macro def".to_string()));
+            }
+            rules.push(rule);
+        }
+        for rule in rules.iter() {
+            validate(&rule.lhs)?;
+        }
+
+        Ok(MacroDef { rules, shift: Shift::new(tt) })
+    }
+
+    pub fn expand(&self, tt: &tt::Subtree) -> ExpandResult<tt::Subtree> {
+        // apply shift
+        let mut tt = tt.clone();
+        self.shift.shift_all(&mut tt);
+        expander::expand_rules(&self.rules, &tt)
     }
 
     pub fn map_id_down(&self, id: tt::TokenId) -> tt::TokenId {
@@ -181,61 +269,54 @@ impl MacroRules {
 }
 
 impl Rule {
-    fn parse(src: &mut TtIter) -> Result<Rule, ParseError> {
-        let mut lhs = src
+    fn parse(src: &mut TtIter, expect_arrow: bool) -> Result<Rule, ParseError> {
+        let lhs = src
             .expect_subtree()
-            .map_err(|()| ParseError::Expected("expected subtree".to_string()))?
-            .clone();
-        lhs.delimiter = None;
-        src.expect_char('=').map_err(|()| ParseError::Expected("expected `=`".to_string()))?;
-        src.expect_char('>').map_err(|()| ParseError::Expected("expected `>`".to_string()))?;
-        let mut rhs = src
+            .map_err(|()| ParseError::Expected("expected subtree".to_string()))?;
+        if expect_arrow {
+            src.expect_char('=').map_err(|()| ParseError::Expected("expected `=`".to_string()))?;
+            src.expect_char('>').map_err(|()| ParseError::Expected("expected `>`".to_string()))?;
+        }
+        let rhs = src
             .expect_subtree()
-            .map_err(|()| ParseError::Expected("expected subtree".to_string()))?
-            .clone();
-        rhs.delimiter = None;
+            .map_err(|()| ParseError::Expected("expected subtree".to_string()))?;
+
+        let lhs = MetaTemplate(parse_pattern(&lhs)?);
+        let rhs = MetaTemplate(parse_template(&rhs)?);
+
         Ok(crate::Rule { lhs, rhs })
     }
 }
 
-fn to_parse_error(e: ExpandError) -> ParseError {
-    let msg = match e {
-        ExpandError::InvalidRepeat => "invalid repeat".to_string(),
-        _ => "invalid macro definition".to_string(),
-    };
-    ParseError::Expected(msg)
-}
-
-fn validate(pattern: &tt::Subtree) -> Result<(), ParseError> {
-    for op in parse_pattern(pattern) {
-        let op = op.map_err(to_parse_error)?;
-
+fn validate(pattern: &MetaTemplate) -> Result<(), ParseError> {
+    for op in pattern.iter() {
         match op {
-            Op::TokenTree(tt::TokenTree::Subtree(subtree)) => validate(subtree)?,
-            Op::Repeat { subtree, separator, .. } => {
+            Op::Subtree { tokens, .. } => validate(&tokens)?,
+            Op::Repeat { tokens: subtree, separator, .. } => {
                 // Checks that no repetition which could match an empty token
                 // https://github.com/rust-lang/rust/blob/a58b1ed44f5e06976de2bdc4d7dc81c36a96934f/src/librustc_expand/mbe/macro_rules.rs#L558
 
                 if separator.is_none() {
-                    if parse_pattern(subtree).all(|child_op| {
-                        match child_op.map_err(to_parse_error) {
-                            Ok(Op::Var { kind, .. }) => {
+                    if subtree.iter().all(|child_op| {
+                        match child_op {
+                            Op::Var { kind, .. } => {
                                 // vis is optional
-                                if kind.map_or(false, |it| it == "vis") {
+                                if kind.as_ref().map_or(false, |it| it == "vis") {
                                     return true;
                                 }
                             }
-                            Ok(Op::Repeat { kind, .. }) => {
+                            Op::Repeat { kind, .. } => {
                                 return matches!(
                                     kind,
                                     parser::RepeatKind::ZeroOrMore | parser::RepeatKind::ZeroOrOne
                                 )
                             }
-                            _ => {}
+                            Op::Leaf(_) => {}
+                            Op::Subtree { .. } => {}
                         }
                         false
                     }) {
-                        return Err(ParseError::RepetitionEmtpyTokenTree);
+                        return Err(ParseError::RepetitionEmptyTokenTree);
                     }
                 }
                 validate(subtree)?
@@ -246,33 +327,42 @@ fn validate(pattern: &tt::Subtree) -> Result<(), ParseError> {
     Ok(())
 }
 
-#[derive(Debug)]
-pub struct ExpandResult<T>(pub T, pub Option<ExpandError>);
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExpandResult<T> {
+    pub value: T,
+    pub err: Option<ExpandError>,
+}
 
 impl<T> ExpandResult<T> {
-    pub fn ok(t: T) -> ExpandResult<T> {
-        ExpandResult(t, None)
+    pub fn ok(value: T) -> Self {
+        Self { value, err: None }
     }
 
-    pub fn only_err(err: ExpandError) -> ExpandResult<T>
+    pub fn only_err(err: ExpandError) -> Self
     where
         T: Default,
     {
-        ExpandResult(Default::default(), Some(err))
+        Self { value: Default::default(), err: Some(err) }
+    }
+
+    pub fn str_err(err: String) -> Self
+    where
+        T: Default,
+    {
+        Self::only_err(ExpandError::Other(err))
     }
 
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> ExpandResult<U> {
-        ExpandResult(f(self.0), self.1)
+        ExpandResult { value: f(self.value), err: self.err }
     }
 
     pub fn result(self) -> Result<T, ExpandError> {
-        self.1.map(Err).unwrap_or(Ok(self.0))
+        self.err.map(Err).unwrap_or(Ok(self.value))
     }
 }
 
 impl<T: Default> From<Result<T, ExpandError>> for ExpandResult<T> {
-    fn from(result: Result<T, ExpandError>) -> ExpandResult<T> {
-        result
-            .map_or_else(|e| ExpandResult(Default::default(), Some(e)), |it| ExpandResult(it, None))
+    fn from(result: Result<T, ExpandError>) -> Self {
+        result.map_or_else(|e| Self::only_err(e), |it| Self::ok(it))
     }
 }

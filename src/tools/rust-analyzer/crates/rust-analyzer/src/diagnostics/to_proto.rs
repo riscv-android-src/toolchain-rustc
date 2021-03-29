@@ -55,8 +55,8 @@ fn location_naive(workspace_root: &Path, span: &DiagnosticSpan) -> lsp_types::Lo
 
     // FIXME: this doesn't handle UTF16 offsets correctly
     let range = lsp_types::Range::new(
-        lsp_types::Position::new(span.line_start as u64 - 1, span.column_start as u64 - 1),
-        lsp_types::Position::new(span.line_end as u64 - 1, span.column_end as u64 - 1),
+        lsp_types::Position::new(span.line_start as u32 - 1, span.column_start as u32 - 1),
+        lsp_types::Position::new(span.line_end as u32 - 1, span.column_end as u32 - 1),
     );
 
     lsp_types::Location { uri, range }
@@ -74,9 +74,13 @@ fn diagnostic_related_information(
     Some(lsp_types::DiagnosticRelatedInformation { location, message })
 }
 
+struct SubDiagnostic {
+    related: lsp_types::DiagnosticRelatedInformation,
+    suggested_fix: Option<lsp_ext::CodeAction>,
+}
+
 enum MappedRustChildDiagnostic {
-    Related(lsp_types::DiagnosticRelatedInformation),
-    SuggestedFix(lsp_ext::CodeAction),
+    SubDiagnostic(SubDiagnostic),
     MessageLine(String),
 }
 
@@ -103,22 +107,31 @@ fn map_rust_child_diagnostic(
     }
 
     if edit_map.is_empty() {
-        MappedRustChildDiagnostic::Related(lsp_types::DiagnosticRelatedInformation {
-            location: location(workspace_root, spans[0]),
-            message: rd.message.clone(),
+        MappedRustChildDiagnostic::SubDiagnostic(SubDiagnostic {
+            related: lsp_types::DiagnosticRelatedInformation {
+                location: location(workspace_root, spans[0]),
+                message: rd.message.clone(),
+            },
+            suggested_fix: None,
         })
     } else {
-        MappedRustChildDiagnostic::SuggestedFix(lsp_ext::CodeAction {
-            title: rd.message.clone(),
-            id: None,
-            group: None,
-            kind: Some(lsp_types::CodeActionKind::QUICKFIX),
-            edit: Some(lsp_ext::SnippetWorkspaceEdit {
-                // FIXME: there's no good reason to use edit_map here....
-                changes: Some(edit_map),
-                document_changes: None,
+        MappedRustChildDiagnostic::SubDiagnostic(SubDiagnostic {
+            related: lsp_types::DiagnosticRelatedInformation {
+                location: location(workspace_root, spans[0]),
+                message: rd.message.clone(),
+            },
+            suggested_fix: Some(lsp_ext::CodeAction {
+                title: rd.message.clone(),
+                group: None,
+                kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                edit: Some(lsp_ext::SnippetWorkspaceEdit {
+                    // FIXME: there's no good reason to use edit_map here....
+                    changes: Some(edit_map),
+                    document_changes: None,
+                }),
+                is_preferred: Some(true),
+                data: None,
             }),
-            is_preferred: Some(true),
         })
     }
 }
@@ -164,23 +177,23 @@ pub(crate) fn map_rust_diagnostic_to_lsp(
     }
 
     let mut needs_primary_span_label = true;
-    let mut related_information = Vec::new();
+    let mut subdiagnostics = Vec::new();
     let mut tags = Vec::new();
 
     for secondary_span in rd.spans.iter().filter(|s| !s.is_primary) {
         let related = diagnostic_related_information(workspace_root, secondary_span);
         if let Some(related) = related {
-            related_information.push(related);
+            subdiagnostics.push(SubDiagnostic { related, suggested_fix: None });
         }
     }
 
-    let mut fixes = Vec::new();
     let mut message = rd.message.clone();
     for child in &rd.children {
         let child = map_rust_child_diagnostic(workspace_root, &child);
         match child {
-            MappedRustChildDiagnostic::Related(related) => related_information.push(related),
-            MappedRustChildDiagnostic::SuggestedFix(code_action) => fixes.push(code_action),
+            MappedRustChildDiagnostic::SubDiagnostic(sub) => {
+                subdiagnostics.push(sub);
+            }
             MappedRustChildDiagnostic::MessageLine(message_line) => {
                 format_to!(message, "\n{}", message_line);
 
@@ -211,9 +224,15 @@ pub(crate) fn map_rust_diagnostic_to_lsp(
         }
     }
 
+    let code_description = match source.as_str() {
+        "rustc" => rustc_code_description(code.as_deref()),
+        "clippy" => clippy_code_description(code.as_deref()),
+        _ => None,
+    };
+
     primary_spans
         .iter()
-        .map(|primary_span| {
+        .flat_map(|primary_span| {
             let location = location(workspace_root, &primary_span);
 
             let mut message = message.clone();
@@ -223,69 +242,133 @@ pub(crate) fn map_rust_diagnostic_to_lsp(
                 }
             }
 
+            // Each primary diagnostic span may result in multiple LSP diagnostics.
+            let mut diagnostics = Vec::new();
+
+            let mut related_macro_info = None;
+
             // If error occurs from macro expansion, add related info pointing to
             // where the error originated
             // Also, we would generate an additional diagnostic, so that exact place of macro
             // will be highlighted in the error origin place.
-            let additional_diagnostic =
-                if !is_from_macro(&primary_span.file_name) && primary_span.expansion.is_some() {
-                    let in_macro_location = location_naive(workspace_root, &primary_span);
+            if !is_from_macro(&primary_span.file_name) && primary_span.expansion.is_some() {
+                let in_macro_location = location_naive(workspace_root, &primary_span);
 
-                    // Add related information for the main disagnostic.
-                    related_information.push(lsp_types::DiagnosticRelatedInformation {
-                        location: in_macro_location.clone(),
-                        message: "Error originated from macro here".to_string(),
-                    });
+                // Add related information for the main disagnostic.
+                related_macro_info = Some(lsp_types::DiagnosticRelatedInformation {
+                    location: in_macro_location.clone(),
+                    message: "Error originated from macro here".to_string(),
+                });
 
-                    // For the additional in-macro diagnostic we add the inverse message pointing to the error location in code.
-                    let information_for_additional_diagnostic =
-                        vec![lsp_types::DiagnosticRelatedInformation {
-                            location: location.clone(),
-                            message: "Exact error occured here".to_string(),
-                        }];
+                // For the additional in-macro diagnostic we add the inverse message pointing to the error location in code.
+                let information_for_additional_diagnostic =
+                    vec![lsp_types::DiagnosticRelatedInformation {
+                        location: location.clone(),
+                        message: "Exact error occurred here".to_string(),
+                    }];
 
-                    let diagnostic = lsp_types::Diagnostic {
-                        range: in_macro_location.range,
-                        severity,
-                        code: code.clone().map(lsp_types::NumberOrString::String),
-                        source: Some(source.clone()),
-                        message: message.clone(),
-                        related_information: Some(information_for_additional_diagnostic),
-                        tags: if tags.is_empty() { None } else { Some(tags.clone()) },
-                    };
-
-                    Some(MappedRustDiagnostic {
-                        url: in_macro_location.uri,
-                        diagnostic,
-                        fixes: fixes.clone(),
-                    })
-                } else {
-                    None
+                let diagnostic = lsp_types::Diagnostic {
+                    range: in_macro_location.range,
+                    severity,
+                    code: code.clone().map(lsp_types::NumberOrString::String),
+                    code_description: code_description.clone(),
+                    source: Some(source.clone()),
+                    message: message.clone(),
+                    related_information: Some(information_for_additional_diagnostic),
+                    tags: if tags.is_empty() { None } else { Some(tags.clone()) },
+                    data: None,
                 };
 
-            let diagnostic = lsp_types::Diagnostic {
-                range: location.range,
-                severity,
-                code: code.clone().map(lsp_types::NumberOrString::String),
-                source: Some(source.clone()),
-                message,
-                related_information: if related_information.is_empty() {
-                    None
-                } else {
-                    Some(related_information.clone())
-                },
-                tags: if tags.is_empty() { None } else { Some(tags.clone()) },
-            };
-
-            let main_diagnostic =
-                MappedRustDiagnostic { url: location.uri, diagnostic, fixes: fixes.clone() };
-            match additional_diagnostic {
-                None => vec![main_diagnostic],
-                Some(additional_diagnostic) => vec![main_diagnostic, additional_diagnostic],
+                diagnostics.push(MappedRustDiagnostic {
+                    url: in_macro_location.uri,
+                    diagnostic,
+                    fixes: Vec::new(),
+                });
             }
+
+            // Emit the primary diagnostic.
+            diagnostics.push(MappedRustDiagnostic {
+                url: location.uri.clone(),
+                diagnostic: lsp_types::Diagnostic {
+                    range: location.range,
+                    severity,
+                    code: code.clone().map(lsp_types::NumberOrString::String),
+                    code_description: code_description.clone(),
+                    source: Some(source.clone()),
+                    message,
+                    related_information: if subdiagnostics.is_empty() {
+                        None
+                    } else {
+                        let mut related = subdiagnostics
+                            .iter()
+                            .map(|sub| sub.related.clone())
+                            .collect::<Vec<_>>();
+                        related.extend(related_macro_info);
+                        Some(related)
+                    },
+                    tags: if tags.is_empty() { None } else { Some(tags.clone()) },
+                    data: None,
+                },
+                fixes: Vec::new(),
+            });
+
+            // Emit hint-level diagnostics for all `related_information` entries such as "help"s.
+            // This is useful because they will show up in the user's editor, unlike
+            // `related_information`, which just produces hard-to-read links, at least in VS Code.
+            let back_ref = lsp_types::DiagnosticRelatedInformation {
+                location,
+                message: "original diagnostic".to_string(),
+            };
+            for sub in &subdiagnostics {
+                // Filter out empty/non-existent messages, as they greatly confuse VS Code.
+                if sub.related.message.is_empty() {
+                    continue;
+                }
+                diagnostics.push(MappedRustDiagnostic {
+                    url: sub.related.location.uri.clone(),
+                    fixes: sub.suggested_fix.iter().cloned().collect(),
+                    diagnostic: lsp_types::Diagnostic {
+                        range: sub.related.location.range,
+                        severity: Some(lsp_types::DiagnosticSeverity::Hint),
+                        code: code.clone().map(lsp_types::NumberOrString::String),
+                        code_description: code_description.clone(),
+                        source: Some(source.clone()),
+                        message: sub.related.message.clone(),
+                        related_information: Some(vec![back_ref.clone()]),
+                        tags: None, // don't apply modifiers again
+                        data: None,
+                    },
+                });
+            }
+
+            diagnostics
         })
-        .flatten()
         .collect()
+}
+
+fn rustc_code_description(code: Option<&str>) -> Option<lsp_types::CodeDescription> {
+    code.filter(|code| {
+        let mut chars = code.chars();
+        chars.next().map_or(false, |c| c == 'E')
+            && chars.by_ref().take(4).all(|c| c.is_ascii_digit())
+            && chars.next().is_none()
+    })
+    .and_then(|code| {
+        lsp_types::Url::parse(&format!("https://doc.rust-lang.org/error-index.html#{}", code))
+            .ok()
+            .map(|href| lsp_types::CodeDescription { href })
+    })
+}
+
+fn clippy_code_description(code: Option<&str>) -> Option<lsp_types::CodeDescription> {
+    code.and_then(|code| {
+        lsp_types::Url::parse(&format!(
+            "https://rust-lang.github.io/rust-clippy/master/index.html#{}",
+            code
+        ))
+        .ok()
+        .map(|href| lsp_types::CodeDescription { href })
+    })
 }
 
 #[cfg(test)]

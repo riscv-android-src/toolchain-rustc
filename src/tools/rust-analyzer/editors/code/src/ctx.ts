@@ -24,7 +24,7 @@ export class Ctx {
         serverPath: string,
         cwd: string,
     ): Promise<Ctx> {
-        const client = createClient(serverPath, cwd);
+        const client = createClient(serverPath, cwd, config.serverExtraEnv);
 
         const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
         extCtx.subscriptions.push(statusBar);
@@ -71,6 +71,12 @@ export class Ctx {
             case "loading":
                 this.statusBar.text = "$(sync~spin) rust-analyzer";
                 this.statusBar.tooltip = "Loading the project";
+                this.statusBar.command = undefined;
+                this.statusBar.color = undefined;
+                break;
+            case "readyPartial":
+                this.statusBar.text = "rust-analyzer";
+                this.statusBar.tooltip = "Ready (Partial)";
                 this.statusBar.command = undefined;
                 this.statusBar.color = undefined;
                 break;

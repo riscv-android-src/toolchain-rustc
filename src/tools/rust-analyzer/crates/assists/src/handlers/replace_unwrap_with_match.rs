@@ -10,9 +10,10 @@ use syntax::{
 };
 
 use crate::{
-    utils::{render_snippet, Cursor, TryEnum},
+    utils::{render_snippet, Cursor},
     AssistContext, AssistId, AssistKind, Assists,
 };
+use ide_db::ty_filter::TryEnum;
 
 // Assist: replace_unwrap_with_match
 //
@@ -22,7 +23,7 @@ use crate::{
 // enum Result<T, E> { Ok(T), Err(E) }
 // fn main() {
 //     let x: Result<i32, i32> = Result::Ok(92);
-//     let y = x.<|>unwrap();
+//     let y = x.$0unwrap();
 // }
 // ```
 // ->
@@ -100,7 +101,7 @@ enum Result<T, E> { Ok(T), Err(E) }
 fn i<T>(a: T) -> T { a }
 fn main() {
     let x: Result<i32, i32> = Result::Ok(92);
-    let y = i(x).<|>unwrap();
+    let y = i(x).$0unwrap();
 }
             ",
             r"
@@ -126,7 +127,7 @@ enum Option<T> { Some(T), None }
 fn i<T>(a: T) -> T { a }
 fn main() {
     let x = Option::Some(92);
-    let y = i(x).<|>unwrap();
+    let y = i(x).$0unwrap();
 }
             ",
             r"
@@ -152,7 +153,7 @@ enum Result<T, E> { Ok(T), Err(E) }
 fn i<T>(a: T) -> T { a }
 fn main() {
     let x: Result<i32, i32> = Result::Ok(92);
-    let y = i(x).<|>unwrap().count_zeroes();
+    let y = i(x).$0unwrap().count_zeroes();
 }
             ",
             r"
@@ -178,7 +179,7 @@ enum Option<T> { Some(T), None }
 fn i<T>(a: T) -> T { a }
 fn main() {
     let x = Option::Some(92);
-    let y = i(x).<|>unwrap();
+    let y = i(x).$0unwrap();
 }
             ",
             r"i(x).unwrap()",

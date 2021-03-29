@@ -1,6 +1,13 @@
 [
     MappedRustDiagnostic {
-        url: "file:///test/src/main.rs",
+        url: Url {
+            scheme: "file",
+            host: None,
+            port: None,
+            path: "/test/src/main.rs",
+            query: None,
+            fragment: None,
+        },
         diagnostic: Diagnostic {
             range: Range {
                 start: Position {
@@ -20,6 +27,24 @@
                     "let_and_return",
                 ),
             ),
+            code_description: Some(
+                CodeDescription {
+                    href: Url {
+                        scheme: "https",
+                        host: Some(
+                            Domain(
+                                "rust-lang.github.io",
+                            ),
+                        ),
+                        port: None,
+                        path: "/rust-clippy/master/index.html",
+                        query: None,
+                        fragment: Some(
+                            "let_and_return",
+                        ),
+                    },
+                },
+            ),
             source: Some(
                 "clippy",
             ),
@@ -28,7 +53,14 @@
                 [
                     DiagnosticRelatedInformation {
                         location: Location {
-                            uri: "file:///test/src/main.rs",
+                            uri: Url {
+                                scheme: "file",
+                                host: None,
+                                port: None,
+                                path: "/test/src/main.rs",
+                                query: None,
+                                fragment: None,
+                            },
                             range: Range {
                                 start: Position {
                                     line: 2,
@@ -42,14 +74,201 @@
                         },
                         message: "unnecessary let binding",
                     },
+                    DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: Url {
+                                scheme: "file",
+                                host: None,
+                                port: None,
+                                path: "/test/src/main.rs",
+                                query: None,
+                                fragment: None,
+                            },
+                            range: Range {
+                                start: Position {
+                                    line: 2,
+                                    character: 4,
+                                },
+                                end: Position {
+                                    line: 2,
+                                    character: 30,
+                                },
+                            },
+                        },
+                        message: "return the expression directly",
+                    },
                 ],
             ),
             tags: None,
+            data: None,
+        },
+        fixes: [],
+    },
+    MappedRustDiagnostic {
+        url: Url {
+            scheme: "file",
+            host: None,
+            port: None,
+            path: "/test/src/main.rs",
+            query: None,
+            fragment: None,
+        },
+        diagnostic: Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 2,
+                    character: 4,
+                },
+                end: Position {
+                    line: 2,
+                    character: 30,
+                },
+            },
+            severity: Some(
+                Hint,
+            ),
+            code: Some(
+                String(
+                    "let_and_return",
+                ),
+            ),
+            code_description: Some(
+                CodeDescription {
+                    href: Url {
+                        scheme: "https",
+                        host: Some(
+                            Domain(
+                                "rust-lang.github.io",
+                            ),
+                        ),
+                        port: None,
+                        path: "/rust-clippy/master/index.html",
+                        query: None,
+                        fragment: Some(
+                            "let_and_return",
+                        ),
+                    },
+                },
+            ),
+            source: Some(
+                "clippy",
+            ),
+            message: "unnecessary let binding",
+            related_information: Some(
+                [
+                    DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: Url {
+                                scheme: "file",
+                                host: None,
+                                port: None,
+                                path: "/test/src/main.rs",
+                                query: None,
+                                fragment: None,
+                            },
+                            range: Range {
+                                start: Position {
+                                    line: 3,
+                                    character: 4,
+                                },
+                                end: Position {
+                                    line: 3,
+                                    character: 5,
+                                },
+                            },
+                        },
+                        message: "original diagnostic",
+                    },
+                ],
+            ),
+            tags: None,
+            data: None,
+        },
+        fixes: [],
+    },
+    MappedRustDiagnostic {
+        url: Url {
+            scheme: "file",
+            host: None,
+            port: None,
+            path: "/test/src/main.rs",
+            query: None,
+            fragment: None,
+        },
+        diagnostic: Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 2,
+                    character: 4,
+                },
+                end: Position {
+                    line: 2,
+                    character: 30,
+                },
+            },
+            severity: Some(
+                Hint,
+            ),
+            code: Some(
+                String(
+                    "let_and_return",
+                ),
+            ),
+            code_description: Some(
+                CodeDescription {
+                    href: Url {
+                        scheme: "https",
+                        host: Some(
+                            Domain(
+                                "rust-lang.github.io",
+                            ),
+                        ),
+                        port: None,
+                        path: "/rust-clippy/master/index.html",
+                        query: None,
+                        fragment: Some(
+                            "let_and_return",
+                        ),
+                    },
+                },
+            ),
+            source: Some(
+                "clippy",
+            ),
+            message: "return the expression directly",
+            related_information: Some(
+                [
+                    DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: Url {
+                                scheme: "file",
+                                host: None,
+                                port: None,
+                                path: "/test/src/main.rs",
+                                query: None,
+                                fragment: None,
+                            },
+                            range: Range {
+                                start: Position {
+                                    line: 3,
+                                    character: 4,
+                                },
+                                end: Position {
+                                    line: 3,
+                                    character: 5,
+                                },
+                            },
+                        },
+                        message: "original diagnostic",
+                    },
+                ],
+            ),
+            tags: None,
+            data: None,
         },
         fixes: [
             CodeAction {
                 title: "return the expression directly",
-                id: None,
                 group: None,
                 kind: Some(
                     CodeActionKind(
@@ -60,7 +279,14 @@
                     SnippetWorkspaceEdit {
                         changes: Some(
                             {
-                                "file:///test/src/main.rs": [
+                                Url {
+                                    scheme: "file",
+                                    host: None,
+                                    port: None,
+                                    path: "/test/src/main.rs",
+                                    query: None,
+                                    fragment: None,
+                                }: [
                                     TextEdit {
                                         range: Range {
                                             start: Position {
@@ -96,6 +322,7 @@
                 is_preferred: Some(
                     true,
                 ),
+                data: None,
             },
         ],
     },

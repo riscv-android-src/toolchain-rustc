@@ -4,13 +4,13 @@
 //! in rustc.
 use std::sync::Arc;
 
-use arena::{map::ArenaMap, Arena};
 use base_db::FileId;
 use either::Either;
 use hir_expand::{
     name::{name, AsName, Name},
     InFile,
 };
+use la_arena::{Arena, ArenaMap};
 use syntax::ast::{self, GenericParamsOwner, NameOwner, TypeBoundsOwner};
 
 use crate::{
@@ -19,18 +19,31 @@ use crate::{
     db::DefDatabase,
     dyn_map::DynMap,
     keys,
-    src::HasChildSource,
-    src::HasSource,
-    type_ref::{TypeBound, TypeRef},
-    AdtId, GenericDefId, LocalTypeParamId, Lookup, TypeParamId,
+    src::{HasChildSource, HasSource},
+    type_ref::{LifetimeRef, TypeBound, TypeRef},
+    AdtId, ConstParamId, GenericDefId, LifetimeParamId, LocalConstParamId, LocalLifetimeParamId,
+    LocalTypeParamId, Lookup, TypeParamId,
 };
 
-/// Data about a generic parameter (to a function, struct, impl, ...).
+/// Data about a generic type parameter (to a function, struct, impl, ...).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TypeParamData {
     pub name: Option<Name>,
     pub default: Option<TypeRef>,
     pub provenance: TypeParamProvenance,
+}
+
+/// Data about a generic lifetime parameter (to a function, struct, impl, ...).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LifetimeParamData {
+    pub name: Name,
+}
+
+/// Data about a generic const parameter (to a function, struct, impl, ...).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ConstParamData {
+    pub name: Name,
+    pub ty: TypeRef,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -44,7 +57,8 @@ pub enum TypeParamProvenance {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct GenericParams {
     pub types: Arena<TypeParamData>,
-    // lifetimes: Arena<LocalLifetimeParamId, LifetimeParamData>,
+    pub lifetimes: Arena<LifetimeParamData>,
+    pub consts: Arena<ConstParamData>,
     pub where_predicates: Vec<WherePredicate>,
 }
 
@@ -53,19 +67,25 @@ pub struct GenericParams {
 /// It might still result in multiple actual predicates though, because of
 /// associated type bindings like `Iterator<Item = u32>`.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct WherePredicate {
-    pub target: WherePredicateTarget,
-    pub bound: TypeBound,
+pub enum WherePredicate {
+    TypeBound { target: WherePredicateTypeTarget, bound: TypeBound },
+    Lifetime { target: LifetimeRef, bound: LifetimeRef },
+    ForLifetime { lifetimes: Box<[Name]>, target: WherePredicateTypeTarget, bound: TypeBound },
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum WherePredicateTarget {
+pub enum WherePredicateTypeTarget {
     TypeRef(TypeRef),
     /// For desugared where predicates that can directly refer to a type param.
     TypeParam(LocalTypeParamId),
 }
 
-type SourceMap = ArenaMap<LocalTypeParamId, Either<ast::Trait, ast::TypeParam>>;
+#[derive(Default)]
+pub(crate) struct SourceMap {
+    pub(crate) type_params: ArenaMap<LocalTypeParamId, Either<ast::Trait, ast::TypeParam>>,
+    lifetime_params: ArenaMap<LocalLifetimeParamId, ast::LifetimeParam>,
+    const_params: ArenaMap<LocalConstParamId, ast::ConstParam>,
+}
 
 impl GenericParams {
     pub(crate) fn generic_params_query(
@@ -123,8 +143,8 @@ impl GenericParams {
     }
 
     fn new(db: &dyn DefDatabase, def: GenericDefId) -> (GenericParams, InFile<SourceMap>) {
-        let mut generics = GenericParams { types: Arena::default(), where_predicates: Vec::new() };
-        let mut sm = ArenaMap::default();
+        let mut generics = GenericParams::default();
+        let mut sm = SourceMap::default();
 
         // FIXME: add `: Sized` bound for everything except for `Self` in traits
         let file_id = match def {
@@ -167,11 +187,11 @@ impl GenericParams {
                     default: None,
                     provenance: TypeParamProvenance::TraitSelf,
                 });
-                sm.insert(self_param_id, Either::Left(src.value.clone()));
+                sm.type_params.insert(self_param_id, Either::Left(src.value.clone()));
                 // add super traits as bounds on Self
                 // i.e., trait Foo: Bar is equivalent to trait Foo where Self: Bar
                 let self_param = TypeRef::Path(name![Self].into());
-                generics.fill_bounds(&lower_ctx, &src.value, self_param);
+                generics.fill_bounds(&lower_ctx, &src.value, Either::Left(self_param));
 
                 generics.fill(&lower_ctx, &mut sm, &src.value);
                 src.file_id
@@ -218,12 +238,12 @@ impl GenericParams {
         &mut self,
         lower_ctx: &LowerCtx,
         node: &dyn ast::TypeBoundsOwner,
-        type_ref: TypeRef,
+        target: Either<TypeRef, LifetimeRef>,
     ) {
         for bound in
             node.type_bound_list().iter().flat_map(|type_bound_list| type_bound_list.bounds())
         {
-            self.add_where_predicate_from_bound(lower_ctx, bound, type_ref.clone());
+            self.add_where_predicate_from_bound(lower_ctx, bound, None, target.clone());
         }
     }
 
@@ -243,22 +263,57 @@ impl GenericParams {
                 provenance: TypeParamProvenance::TypeParamList,
             };
             let param_id = self.types.alloc(param);
-            sm.insert(param_id, Either::Right(type_param.clone()));
+            sm.type_params.insert(param_id, Either::Right(type_param.clone()));
 
             let type_ref = TypeRef::Path(name.into());
-            self.fill_bounds(&lower_ctx, &type_param, type_ref);
+            self.fill_bounds(&lower_ctx, &type_param, Either::Left(type_ref));
+        }
+        for lifetime_param in params.lifetime_params() {
+            let name =
+                lifetime_param.lifetime().map_or_else(Name::missing, |lt| Name::new_lifetime(&lt));
+            let param = LifetimeParamData { name: name.clone() };
+            let param_id = self.lifetimes.alloc(param);
+            sm.lifetime_params.insert(param_id, lifetime_param.clone());
+            let lifetime_ref = LifetimeRef::new_name(name);
+            self.fill_bounds(&lower_ctx, &lifetime_param, Either::Right(lifetime_ref));
+        }
+        for const_param in params.const_params() {
+            let name = const_param.name().map_or_else(Name::missing, |it| it.as_name());
+            let ty = const_param.ty().map_or(TypeRef::Error, |it| TypeRef::from_ast(lower_ctx, it));
+            let param = ConstParamData { name, ty };
+            let param_id = self.consts.alloc(param);
+            sm.const_params.insert(param_id, const_param.clone());
         }
     }
 
     fn fill_where_predicates(&mut self, lower_ctx: &LowerCtx, where_clause: ast::WhereClause) {
         for pred in where_clause.predicates() {
-            let type_ref = match pred.ty() {
-                Some(type_ref) => type_ref,
-                None => continue,
+            let target = if let Some(type_ref) = pred.ty() {
+                Either::Left(TypeRef::from_ast(lower_ctx, type_ref))
+            } else if let Some(lifetime) = pred.lifetime() {
+                Either::Right(LifetimeRef::new(&lifetime))
+            } else {
+                continue;
             };
-            let type_ref = TypeRef::from_ast(lower_ctx, type_ref);
+
+            let lifetimes: Option<Box<_>> = pred.generic_param_list().map(|param_list| {
+                // Higher-Ranked Trait Bounds
+                param_list
+                    .lifetime_params()
+                    .map(|lifetime_param| {
+                        lifetime_param
+                            .lifetime()
+                            .map_or_else(Name::missing, |lt| Name::new_lifetime(&lt))
+                    })
+                    .collect()
+            });
             for bound in pred.type_bound_list().iter().flat_map(|l| l.bounds()) {
-                self.add_where_predicate_from_bound(lower_ctx, bound, type_ref.clone());
+                self.add_where_predicate_from_bound(
+                    lower_ctx,
+                    bound,
+                    lifetimes.as_ref(),
+                    target.clone(),
+                );
             }
         }
     }
@@ -267,15 +322,32 @@ impl GenericParams {
         &mut self,
         lower_ctx: &LowerCtx,
         bound: ast::TypeBound,
-        type_ref: TypeRef,
+        hrtb_lifetimes: Option<&Box<[Name]>>,
+        target: Either<TypeRef, LifetimeRef>,
     ) {
         if bound.question_mark_token().is_some() {
             // FIXME: remove this bound
             return;
         }
         let bound = TypeBound::from_ast(lower_ctx, bound);
-        self.where_predicates
-            .push(WherePredicate { target: WherePredicateTarget::TypeRef(type_ref), bound });
+        let predicate = match (target, bound) {
+            (Either::Left(type_ref), bound) => match hrtb_lifetimes {
+                Some(hrtb_lifetimes) => WherePredicate::ForLifetime {
+                    lifetimes: hrtb_lifetimes.clone(),
+                    target: WherePredicateTypeTarget::TypeRef(type_ref),
+                    bound,
+                },
+                None => WherePredicate::TypeBound {
+                    target: WherePredicateTypeTarget::TypeRef(type_ref),
+                    bound,
+                },
+            },
+            (Either::Right(lifetime), TypeBound::Lifetime(bound)) => {
+                WherePredicate::Lifetime { target: lifetime, bound }
+            }
+            _ => return,
+        };
+        self.where_predicates.push(predicate);
     }
 
     pub(crate) fn fill_implicit_impl_trait_args(&mut self, type_ref: &TypeRef) {
@@ -288,8 +360,8 @@ impl GenericParams {
                 };
                 let param_id = self.types.alloc(param);
                 for bound in bounds {
-                    self.where_predicates.push(WherePredicate {
-                        target: WherePredicateTarget::TypeParam(param_id),
+                    self.where_predicates.push(WherePredicate::TypeBound {
+                        target: WherePredicateTypeTarget::TypeParam(param_id),
                         bound: bound.clone(),
                     });
                 }
@@ -297,10 +369,14 @@ impl GenericParams {
         });
     }
 
-    pub fn find_by_name(&self, name: &Name) -> Option<LocalTypeParamId> {
+    pub fn find_type_by_name(&self, name: &Name) -> Option<LocalTypeParamId> {
         self.types
             .iter()
             .find_map(|(id, p)| if p.name.as_ref() == Some(name) { Some(id) } else { None })
+    }
+
+    pub fn find_const_by_name(&self, name: &Name) -> Option<LocalConstParamId> {
+        self.consts.iter().find_map(|(id, p)| if p.name == *name { Some(id) } else { None })
     }
 
     pub fn find_trait_self_param(&self) -> Option<LocalTypeParamId> {
@@ -314,25 +390,55 @@ impl GenericParams {
     }
 }
 
-impl HasChildSource for GenericDefId {
-    type ChildId = LocalTypeParamId;
+impl HasChildSource<LocalTypeParamId> for GenericDefId {
     type Value = Either<ast::Trait, ast::TypeParam>;
-    fn child_source(&self, db: &dyn DefDatabase) -> InFile<SourceMap> {
-        let (_, sm) = GenericParams::new(db, *self);
-        sm
+    fn child_source(
+        &self,
+        db: &dyn DefDatabase,
+    ) -> InFile<ArenaMap<LocalTypeParamId, Self::Value>> {
+        GenericParams::new(db, *self).1.map(|source_maps| source_maps.type_params)
+    }
+}
+
+impl HasChildSource<LocalLifetimeParamId> for GenericDefId {
+    type Value = ast::LifetimeParam;
+    fn child_source(
+        &self,
+        db: &dyn DefDatabase,
+    ) -> InFile<ArenaMap<LocalLifetimeParamId, Self::Value>> {
+        GenericParams::new(db, *self).1.map(|source_maps| source_maps.lifetime_params)
+    }
+}
+
+impl HasChildSource<LocalConstParamId> for GenericDefId {
+    type Value = ast::ConstParam;
+    fn child_source(
+        &self,
+        db: &dyn DefDatabase,
+    ) -> InFile<ArenaMap<LocalConstParamId, Self::Value>> {
+        GenericParams::new(db, *self).1.map(|source_maps| source_maps.const_params)
     }
 }
 
 impl ChildBySource for GenericDefId {
     fn child_by_source(&self, db: &dyn DefDatabase) -> DynMap {
         let mut res = DynMap::default();
-        let arena_map = self.child_source(db);
-        let arena_map = arena_map.as_ref();
-        for (local_id, src) in arena_map.value.iter() {
+        let (_, sm) = GenericParams::new(db, *self);
+
+        let sm = sm.as_ref();
+        for (local_id, src) in sm.value.type_params.iter() {
             let id = TypeParamId { parent: *self, local_id };
             if let Either::Right(type_param) = src {
-                res[keys::TYPE_PARAM].insert(arena_map.with_value(type_param.clone()), id)
+                res[keys::TYPE_PARAM].insert(sm.with_value(type_param.clone()), id)
             }
+        }
+        for (local_id, src) in sm.value.lifetime_params.iter() {
+            let id = LifetimeParamId { parent: *self, local_id };
+            res[keys::LIFETIME_PARAM].insert(sm.with_value(src.clone()), id);
+        }
+        for (local_id, src) in sm.value.const_params.iter() {
+            let id = ConstParamId { parent: *self, local_id };
+            res[keys::CONST_PARAM].insert(sm.with_value(src.clone()), id);
         }
         res
     }

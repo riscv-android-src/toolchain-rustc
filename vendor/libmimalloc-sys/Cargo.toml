@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "libmimalloc-sys"
-version = "0.1.16"
+version = "0.1.18"
 authors = ["Octavian Oncescu <octavonce@gmail.com>"]
 links = "mimalloc"
 description = "Sys crate wrapping the mimalloc allocator"
@@ -31,5 +31,6 @@ version = "0.1"
 
 [features]
 extended = ["cty"]
+local_dynamic_tls = []
 override = []
 secure = []

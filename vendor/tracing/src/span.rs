@@ -404,10 +404,19 @@ impl Span {
     /// [`Subscriber`]: ../subscriber/trait.Subscriber.html
     /// [field values]: ../field/struct.ValueSet.html
     /// [`follows_from`]: ../struct.Span.html#method.follows_from
-    #[inline]
     pub fn new(meta: &'static Metadata<'static>, values: &field::ValueSet<'_>) -> Span {
+        dispatcher::get_default(|dispatch| Self::new_with(meta, values, dispatch))
+    }
+
+    #[inline]
+    #[doc(hidden)]
+    pub fn new_with(
+        meta: &'static Metadata<'static>,
+        values: &field::ValueSet<'_>,
+        dispatch: &Dispatch,
+    ) -> Span {
         let new_span = Attributes::new(meta, values);
-        Self::make(meta, new_span)
+        Self::make_with(meta, new_span, dispatch)
     }
 
     /// Constructs a new `Span` as the root of its own trace tree, with the
@@ -419,9 +428,19 @@ impl Span {
     /// [metadata]: ../metadata
     /// [field values]: ../field/struct.ValueSet.html
     /// [`follows_from`]: ../struct.Span.html#method.follows_from
-    #[inline]
     pub fn new_root(meta: &'static Metadata<'static>, values: &field::ValueSet<'_>) -> Span {
-        Self::make(meta, Attributes::new_root(meta, values))
+        dispatcher::get_default(|dispatch| Self::new_root_with(meta, values, dispatch))
+    }
+
+    #[inline]
+    #[doc(hidden)]
+    pub fn new_root_with(
+        meta: &'static Metadata<'static>,
+        values: &field::ValueSet<'_>,
+        dispatch: &Dispatch,
+    ) -> Span {
+        let new_span = Attributes::new_root(meta, values);
+        Self::make_with(meta, new_span, dispatch)
     }
 
     /// Constructs a new `Span` as child of the given parent span, with the
@@ -438,11 +457,25 @@ impl Span {
         meta: &'static Metadata<'static>,
         values: &field::ValueSet<'_>,
     ) -> Span {
+        let mut parent = parent.into();
+        dispatcher::get_default(move |dispatch| {
+            Self::child_of_with(Option::take(&mut parent), meta, values, dispatch)
+        })
+    }
+
+    #[inline]
+    #[doc(hidden)]
+    pub fn child_of_with(
+        parent: impl Into<Option<Id>>,
+        meta: &'static Metadata<'static>,
+        values: &field::ValueSet<'_>,
+        dispatch: &Dispatch,
+    ) -> Span {
         let new_span = match parent.into() {
             Some(parent) => Attributes::child_of(parent, meta, values),
             None => Attributes::new_root(meta, values),
         };
-        Self::make(meta, new_span)
+        Self::make_with(meta, new_span, dispatch)
     }
 
     /// Constructs a new disabled span with the given `Metadata`.
@@ -497,12 +530,14 @@ impl Span {
         })
     }
 
-    fn make(meta: &'static Metadata<'static>, new_span: Attributes<'_>) -> Span {
+    fn make_with(
+        meta: &'static Metadata<'static>,
+        new_span: Attributes<'_>,
+        dispatch: &Dispatch,
+    ) -> Span {
         let attrs = &new_span;
-        let inner = dispatcher::get_default(move |dispatch| {
-            let id = dispatch.new_span(attrs);
-            Some(Inner::new(id, dispatch))
-        });
+        let id = dispatch.new_span(attrs);
+        let inner = Some(Inner::new(id, dispatch));
 
         let span = Self {
             inner,
@@ -515,12 +550,11 @@ impl Span {
             } else {
                 meta.target()
             };
-            span.log(target, level_to_log!(meta.level()), format_args!("++ {}{}", meta.name(), FmtAttrs(attrs)));
+            span.log(target, level_to_log!(*meta.level()), format_args!("++ {}{}", meta.name(), FmtAttrs(attrs)));
         }}
 
         span
     }
-
     /// Enters this span, returning a guard that will exit the span when dropped.
     ///
     /// If this span is enabled by the current subscriber, then this function will
@@ -583,8 +617,8 @@ impl Span {
     ///       // ...
     ///   }
     ///   ```
-    /// * For instrumenting asynchronous code, the [`tracing-futures` crate]
-    ///   provides the [`Future::instrument` combinator][instrument] for
+    /// * For instrumenting asynchronous code, `tracing` provides the
+    ///   [`Future::instrument` combinator][instrument] for
     ///   attaching a span to a future (async function or block). This will
     ///   enter the span _every_ time the future is polled, and exit it whenever
     ///   the future yields.
@@ -592,7 +626,7 @@ impl Span {
     ///   `Instrument` can be used with an async block inside an async function:
     ///   ```ignore
     ///   # use tracing::info_span;
-    ///   use tracing_futures::Instrument;
+    ///   use tracing::Instrument;
     ///
     ///   # async fn some_other_async_function() {}
     ///   async fn my_async_function() {
@@ -616,7 +650,7 @@ impl Span {
     ///   callsite:
     ///   ```ignore
     ///   # use tracing::debug_span;
-    ///   use tracing_futures::Instrument;
+    ///   use tracing::Instrument;
     ///
     ///   # async fn some_other_async_function() {}
     ///   async fn my_async_function() {
@@ -628,8 +662,7 @@ impl Span {
     ///   }
     ///   ```
     ///
-    /// * Finally, if your crate depends on the `tracing-futures` crate, the
-    ///   [`#[instrument]` attribute macro][attr] will automatically generate
+    /// * The [`#[instrument]` attribute macro][attr] can automatically generate
     ///   correct code when used on an async function:
     ///
     ///   ```ignore
@@ -648,8 +681,7 @@ impl Span {
     ///
     /// [syntax]: https://rust-lang.github.io/async-book/01_getting_started/04_async_await_primer.html
     /// [`Span::in_scope`]: #method.in_scope
-    /// [`tracing-futures` crate]: https://docs.rs/tracing-futures/
-    /// [instrument]: https://docs.rs/tracing-futures/latest/tracing_futures/trait.Instrument.html
+    /// [instrument]: https://docs.rs/tracing/latest/tracing/trait.Instrument.html
     /// [attr]: ../../attr.instrument.html
     ///
     /// # Examples
@@ -891,7 +923,7 @@ impl Span {
                 } else {
                     meta.target()
                 };
-                self.log(target, level_to_log!(meta.level()), format_args!("{}{}", meta.name(), FmtValues(&record)));
+                self.log(target, level_to_log!(*meta.level()), format_args!("{}{}", meta.name(), FmtValues(&record)));
             }
         }}
 
@@ -994,7 +1026,7 @@ impl Span {
     #[inline]
     fn log(&self, target: &str, level: log::Level, message: fmt::Arguments<'_>) {
         if let Some(ref meta) = self.meta {
-            if level_to_log!(meta.level()) <= log::max_level() {
+            if level_to_log!(*meta.level()) <= log::max_level() {
                 let logger = log::logger();
                 let log_meta = log::Metadata::builder().level(level).target(target).build();
                 if logger.enabled(&log_meta) {

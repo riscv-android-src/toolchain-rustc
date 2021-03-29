@@ -1,23 +1,66 @@
-use std::collections::BTreeSet;
+use ide_db::helpers::{
+    import_assets::{ImportAssets, ImportCandidate},
+    insert_use::{insert_use, ImportScope},
+    mod_path_to_ast,
+};
+use syntax::{ast, AstNode, SyntaxNode};
 
-use ast::make;
-use either::Either;
-use hir::{
-    AsAssocItem, AssocItemContainer, ModPath, Module, ModuleDef, PathResolution, Semantics, Trait,
-    Type,
-};
-use ide_db::{imports_locator, RootDatabase};
-use insert_use::ImportScope;
-use rustc_hash::FxHashSet;
-use syntax::{
-    ast::{self, AstNode},
-    SyntaxNode,
-};
+use crate::{AssistContext, AssistId, AssistKind, Assists, GroupLabel};
 
-use crate::{
-    utils::{insert_use, MergeBehaviour},
-    AssistContext, AssistId, AssistKind, Assists, GroupLabel,
-};
+// Feature: Auto Import
+//
+// Using the `auto-import` assist it is possible to insert missing imports for unresolved items.
+// When inserting an import it will do so in a structured manner by keeping imports grouped,
+// separated by a newline in the following order:
+//
+// - `std` and `core`
+// - External Crates
+// - Current Crate, paths prefixed by `crate`
+// - Current Module, paths prefixed by `self`
+// - Super Module, paths prefixed by `super`
+//
+// Example:
+// ```rust
+// use std::fs::File;
+//
+// use itertools::Itertools;
+// use syntax::ast;
+//
+// use crate::utils::insert_use;
+//
+// use self::auto_import;
+//
+// use super::AssistContext;
+// ```
+//
+// .Merge Behaviour
+//
+// It is possible to configure how use-trees are merged with the `importMergeBehaviour` setting.
+// It has the following configurations:
+//
+// - `full`: This setting will cause auto-import to always completely merge use-trees that share the
+//  same path prefix while also merging inner trees that share the same path-prefix. This kind of
+//  nesting is only supported in Rust versions later than 1.24.
+// - `last`: This setting will cause auto-import to merge use-trees as long as the resulting tree
+//  will only contain a nesting of single segment paths at the very end.
+// - `none`: This setting will cause auto-import to never merge use-trees keeping them as simple
+//  paths.
+//
+// In `VS Code` the configuration for this is `rust-analyzer.assist.importMergeBehaviour`.
+//
+// .Import Prefix
+//
+// The style of imports in the same crate is configurable through the `importPrefix` setting.
+// It has the following configurations:
+//
+// - `by_crate`: This setting will force paths to be always absolute, starting with the `crate`
+//  prefix, unless the item is defined outside of the current crate.
+// - `by_self`: This setting will force paths that are relative to the current module to always
+//  start with `self`. This will result in paths that always start with either `crate`, `self`,
+//  `super` or an extern crate identifier.
+// - `plain`: This setting does not impose any restrictions in imports.
+//
+// In `VS Code` the configuration for this is `rust-analyzer.assist.importPrefix`.
 
 // Assist: auto_import
 //
@@ -25,7 +68,7 @@ use crate::{
 //
 // ```
 // fn main() {
-//     let map = HashMap<|>::new();
+//     let map = HashMap$0::new();
 // }
 // # pub mod std { pub mod collections { pub struct HashMap { } } }
 // ```
@@ -39,253 +82,57 @@ use crate::{
 // # pub mod std { pub mod collections { pub struct HashMap { } } }
 // ```
 pub(crate) fn auto_import(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    let auto_import_assets = AutoImportAssets::new(ctx)?;
-    let proposed_imports = auto_import_assets.search_for_imports(ctx);
+    let (import_assets, syntax_under_caret) = find_importable_node(ctx)?;
+    let proposed_imports =
+        import_assets.search_for_imports(&ctx.sema, ctx.config.insert_use.prefix_kind);
     if proposed_imports.is_empty() {
         return None;
     }
 
-    let range = ctx.sema.original_range(&auto_import_assets.syntax_under_caret).range;
-    let group = auto_import_assets.get_import_group_message();
-    let scope =
-        ImportScope::find_insert_use_container(&auto_import_assets.syntax_under_caret, ctx)?;
-    let syntax = scope.as_syntax_node();
-    for import in proposed_imports {
+    let range = ctx.sema.original_range(&syntax_under_caret).range;
+    let group = import_group_message(import_assets.import_candidate());
+    let scope = ImportScope::find_insert_use_container(&syntax_under_caret, &ctx.sema)?;
+    for (import, _) in proposed_imports {
         acc.add_group(
             &group,
             AssistId("auto_import", AssistKind::QuickFix),
             format!("Import `{}`", &import),
             range,
             |builder| {
-                let new_syntax = insert_use(
-                    &scope,
-                    make::path_from_text(&import.to_string()),
-                    Some(MergeBehaviour::Full),
-                );
-                builder.replace(syntax.text_range(), new_syntax.to_string())
+                let rewriter =
+                    insert_use(&scope, mod_path_to_ast(&import), ctx.config.insert_use.merge);
+                builder.rewrite(rewriter);
             },
         );
     }
     Some(())
 }
 
-#[derive(Debug)]
-struct AutoImportAssets {
-    import_candidate: ImportCandidate,
-    module_with_name_to_import: Module,
-    syntax_under_caret: SyntaxNode,
-}
-
-impl AutoImportAssets {
-    fn new(ctx: &AssistContext) -> Option<Self> {
-        if let Some(path_under_caret) = ctx.find_node_at_offset_with_descend::<ast::Path>() {
-            Self::for_regular_path(path_under_caret, &ctx)
-        } else {
-            Self::for_method_call(ctx.find_node_at_offset_with_descend()?, &ctx)
-        }
-    }
-
-    fn for_method_call(method_call: ast::MethodCallExpr, ctx: &AssistContext) -> Option<Self> {
-        let syntax_under_caret = method_call.syntax().to_owned();
-        let module_with_name_to_import = ctx.sema.scope(&syntax_under_caret).module()?;
-        Some(Self {
-            import_candidate: ImportCandidate::for_method_call(&ctx.sema, &method_call)?,
-            module_with_name_to_import,
-            syntax_under_caret,
-        })
-    }
-
-    fn for_regular_path(path_under_caret: ast::Path, ctx: &AssistContext) -> Option<Self> {
-        let syntax_under_caret = path_under_caret.syntax().to_owned();
-        if syntax_under_caret.ancestors().find_map(ast::Use::cast).is_some() {
-            return None;
-        }
-
-        let module_with_name_to_import = ctx.sema.scope(&syntax_under_caret).module()?;
-        Some(Self {
-            import_candidate: ImportCandidate::for_regular_path(&ctx.sema, &path_under_caret)?,
-            module_with_name_to_import,
-            syntax_under_caret,
-        })
-    }
-
-    fn get_search_query(&self) -> &str {
-        match &self.import_candidate {
-            ImportCandidate::UnqualifiedName(name) => name,
-            ImportCandidate::QualifierStart(qualifier_start) => qualifier_start,
-            ImportCandidate::TraitAssocItem(_, trait_assoc_item_name) => trait_assoc_item_name,
-            ImportCandidate::TraitMethod(_, trait_method_name) => trait_method_name,
-        }
-    }
-
-    fn get_import_group_message(&self) -> GroupLabel {
-        let name = match &self.import_candidate {
-            ImportCandidate::UnqualifiedName(name) => format!("Import {}", name),
-            ImportCandidate::QualifierStart(qualifier_start) => {
-                format!("Import {}", qualifier_start)
-            }
-            ImportCandidate::TraitAssocItem(_, trait_assoc_item_name) => {
-                format!("Import a trait for item {}", trait_assoc_item_name)
-            }
-            ImportCandidate::TraitMethod(_, trait_method_name) => {
-                format!("Import a trait for method {}", trait_method_name)
-            }
-        };
-        GroupLabel(name)
-    }
-
-    fn search_for_imports(&self, ctx: &AssistContext) -> BTreeSet<ModPath> {
-        let _p = profile::span("auto_import::search_for_imports");
-        let db = ctx.db();
-        let current_crate = self.module_with_name_to_import.krate();
-        imports_locator::find_imports(&ctx.sema, current_crate, &self.get_search_query())
-            .into_iter()
-            .filter_map(|candidate| match &self.import_candidate {
-                ImportCandidate::TraitAssocItem(assoc_item_type, _) => {
-                    let located_assoc_item = match candidate {
-                        Either::Left(ModuleDef::Function(located_function)) => located_function
-                            .as_assoc_item(db)
-                            .map(|assoc| assoc.container(db))
-                            .and_then(Self::assoc_to_trait),
-                        Either::Left(ModuleDef::Const(located_const)) => located_const
-                            .as_assoc_item(db)
-                            .map(|assoc| assoc.container(db))
-                            .and_then(Self::assoc_to_trait),
-                        _ => None,
-                    }?;
-
-                    let mut trait_candidates = FxHashSet::default();
-                    trait_candidates.insert(located_assoc_item.into());
-
-                    assoc_item_type
-                        .iterate_path_candidates(
-                            db,
-                            current_crate,
-                            &trait_candidates,
-                            None,
-                            |_, assoc| Self::assoc_to_trait(assoc.container(db)),
-                        )
-                        .map(ModuleDef::from)
-                        .map(Either::Left)
-                }
-                ImportCandidate::TraitMethod(function_callee, _) => {
-                    let located_assoc_item =
-                        if let Either::Left(ModuleDef::Function(located_function)) = candidate {
-                            located_function
-                                .as_assoc_item(db)
-                                .map(|assoc| assoc.container(db))
-                                .and_then(Self::assoc_to_trait)
-                        } else {
-                            None
-                        }?;
-
-                    let mut trait_candidates = FxHashSet::default();
-                    trait_candidates.insert(located_assoc_item.into());
-
-                    function_callee
-                        .iterate_method_candidates(
-                            db,
-                            current_crate,
-                            &trait_candidates,
-                            None,
-                            |_, function| {
-                                Self::assoc_to_trait(function.as_assoc_item(db)?.container(db))
-                            },
-                        )
-                        .map(ModuleDef::from)
-                        .map(Either::Left)
-                }
-                _ => Some(candidate),
-            })
-            .filter_map(|candidate| match candidate {
-                Either::Left(module_def) => {
-                    self.module_with_name_to_import.find_use_path(db, module_def)
-                }
-                Either::Right(macro_def) => {
-                    self.module_with_name_to_import.find_use_path(db, macro_def)
-                }
-            })
-            .filter(|use_path| !use_path.segments.is_empty())
-            .take(20)
-            .collect::<BTreeSet<_>>()
-    }
-
-    fn assoc_to_trait(assoc: AssocItemContainer) -> Option<Trait> {
-        if let AssocItemContainer::Trait(extracted_trait) = assoc {
-            Some(extracted_trait)
-        } else {
-            None
-        }
+pub(super) fn find_importable_node(ctx: &AssistContext) -> Option<(ImportAssets, SyntaxNode)> {
+    if let Some(path_under_caret) = ctx.find_node_at_offset_with_descend::<ast::Path>() {
+        ImportAssets::for_exact_path(&path_under_caret, &ctx.sema)
+            .zip(Some(path_under_caret.syntax().clone()))
+    } else if let Some(method_under_caret) =
+        ctx.find_node_at_offset_with_descend::<ast::MethodCallExpr>()
+    {
+        ImportAssets::for_method_call(&method_under_caret, &ctx.sema)
+            .zip(Some(method_under_caret.syntax().clone()))
+    } else {
+        None
     }
 }
 
-#[derive(Debug)]
-enum ImportCandidate {
-    /// Simple name like 'HashMap'
-    UnqualifiedName(String),
-    /// First part of the qualified name.
-    /// For 'std::collections::HashMap', that will be 'std'.
-    QualifierStart(String),
-    /// A trait associated function (with no self parameter) or associated constant.
-    /// For 'test_mod::TestEnum::test_function', `Type` is the `test_mod::TestEnum` expression type
-    /// and `String` is the `test_function`
-    TraitAssocItem(Type, String),
-    /// A trait method with self parameter.
-    /// For 'test_enum.test_method()', `Type` is the `test_enum` expression type
-    /// and `String` is the `test_method`
-    TraitMethod(Type, String),
-}
-
-impl ImportCandidate {
-    fn for_method_call(
-        sema: &Semantics<RootDatabase>,
-        method_call: &ast::MethodCallExpr,
-    ) -> Option<Self> {
-        if sema.resolve_method_call(method_call).is_some() {
-            return None;
+fn import_group_message(import_candidate: &ImportCandidate) -> GroupLabel {
+    let name = match import_candidate {
+        ImportCandidate::Path(candidate) => format!("Import {}", candidate.name.text()),
+        ImportCandidate::TraitAssocItem(candidate) => {
+            format!("Import a trait for item {}", candidate.name.text())
         }
-        Some(Self::TraitMethod(
-            sema.type_of_expr(&method_call.receiver()?)?,
-            method_call.name_ref()?.syntax().to_string(),
-        ))
-    }
-
-    fn for_regular_path(
-        sema: &Semantics<RootDatabase>,
-        path_under_caret: &ast::Path,
-    ) -> Option<Self> {
-        if sema.resolve_path(path_under_caret).is_some() {
-            return None;
+        ImportCandidate::TraitMethod(candidate) => {
+            format!("Import a trait for method {}", candidate.name.text())
         }
-
-        let segment = path_under_caret.segment()?;
-        if let Some(qualifier) = path_under_caret.qualifier() {
-            let qualifier_start = qualifier.syntax().descendants().find_map(ast::NameRef::cast)?;
-            let qualifier_start_path =
-                qualifier_start.syntax().ancestors().find_map(ast::Path::cast)?;
-            if let Some(qualifier_start_resolution) = sema.resolve_path(&qualifier_start_path) {
-                let qualifier_resolution = if qualifier_start_path == qualifier {
-                    qualifier_start_resolution
-                } else {
-                    sema.resolve_path(&qualifier)?
-                };
-                if let PathResolution::Def(ModuleDef::Adt(assoc_item_path)) = qualifier_resolution {
-                    Some(ImportCandidate::TraitAssocItem(
-                        assoc_item_path.ty(sema.db),
-                        segment.syntax().to_string(),
-                    ))
-                } else {
-                    None
-                }
-            } else {
-                Some(ImportCandidate::QualifierStart(qualifier_start.syntax().to_string()))
-            }
-        } else {
-            Some(ImportCandidate::UnqualifiedName(
-                segment.syntax().descendants().find_map(ast::NameRef::cast)?.syntax().to_string(),
-            ))
-        }
-    }
+    };
+    GroupLabel(name)
 }
 
 #[cfg(test)]
@@ -294,11 +141,40 @@ mod tests {
     use crate::tests::{check_assist, check_assist_not_applicable, check_assist_target};
 
     #[test]
+    fn applicable_when_found_an_import_partial() {
+        check_assist(
+            auto_import,
+            r"
+            mod std {
+                pub mod fmt {
+                    pub struct Formatter;
+                }
+            }
+
+            use std::fmt;
+
+            $0Formatter
+            ",
+            r"
+            mod std {
+                pub mod fmt {
+                    pub struct Formatter;
+                }
+            }
+
+            use std::fmt::{self, Formatter};
+
+            Formatter
+            ",
+        );
+    }
+
+    #[test]
     fn applicable_when_found_an_import() {
         check_assist(
             auto_import,
             r"
-            <|>PubStruct
+            $0PubStruct
 
             pub mod PubMod {
                 pub struct PubStruct;
@@ -324,7 +200,7 @@ mod tests {
             macro_rules! foo {
                 ($i:ident) => { fn foo(a: $i) {} }
             }
-            foo!(Pub<|>Struct);
+            foo!(Pub$0Struct);
 
             pub mod PubMod {
                 pub struct PubStruct;
@@ -353,7 +229,7 @@ mod tests {
             use PubMod::PubStruct1;
 
             struct Test {
-                test: Pub<|>Struct2<u8>,
+                test: Pub$0Struct2<u8>,
             }
 
             pub mod PubMod {
@@ -385,7 +261,7 @@ mod tests {
         check_assist(
             auto_import,
             r"
-            PubSt<|>ruct
+            PubSt$0ruct
 
             pub mod PubMod1 {
                 pub struct PubStruct;
@@ -422,7 +298,7 @@ mod tests {
             r"
             use PubMod::PubStruct;
 
-            PubStruct<|>
+            PubStruct$0
 
             pub mod PubMod {
                 pub struct PubStruct;
@@ -436,7 +312,7 @@ mod tests {
         check_assist_not_applicable(
             auto_import,
             r"
-            PrivateStruct<|>
+            PrivateStruct$0
 
             pub mod PubMod {
                 struct PrivateStruct;
@@ -450,7 +326,7 @@ mod tests {
         check_assist_not_applicable(
             auto_import,
             "
-            PubStruct<|>",
+            PubStruct$0",
         );
     }
 
@@ -459,7 +335,7 @@ mod tests {
         check_assist_not_applicable(
             auto_import,
             r"
-            use PubStruct<|>;
+            use PubStruct$0;
 
             pub mod PubMod {
                 pub struct PubStruct;
@@ -472,7 +348,7 @@ mod tests {
         check_assist(
             auto_import,
             r"
-            test_function<|>
+            test_function$0
 
             pub mod PubMod {
                 pub fn test_function() {};
@@ -503,7 +379,7 @@ macro_rules! foo {
 
 //- /main.rs crate:main deps:crate_with_macro
 fn main() {
-    foo<|>
+    foo$0
 }
 ",
             r"use crate_with_macro::foo;
@@ -521,7 +397,7 @@ fn main() {
             auto_import,
             r"
             struct AssistInfo {
-                group_label: Option<<|>GroupLabel>,
+                group_label: Option<$0GroupLabel>,
             }
 
             mod m { pub struct GroupLabel; }
@@ -545,7 +421,7 @@ fn main() {
 
             use mod1::mod2;
             fn main() {
-                mod2::mod3::TestStruct<|>
+                mod2::mod3::TestStruct$0
             }
             ",
         );
@@ -562,7 +438,7 @@ fn main() {
 
             use test_mod::test_function;
             fn main() {
-                test_function<|>
+                test_function$0
             }
             ",
         );
@@ -581,7 +457,7 @@ fn main() {
             }
 
             fn main() {
-                TestStruct::test_function<|>
+                TestStruct::test_function$0
             }
             ",
             r"
@@ -614,7 +490,7 @@ fn main() {
             }
 
             fn main() {
-                TestStruct::TEST_CONST<|>
+                TestStruct::TEST_CONST$0
             }
             ",
             r"
@@ -650,7 +526,7 @@ fn main() {
             }
 
             fn main() {
-                test_mod::TestStruct::test_function<|>
+                test_mod::TestStruct::test_function$0
             }
             ",
             r"
@@ -699,7 +575,7 @@ fn main() {
 
             use test_mod::TestTrait2;
             fn main() {
-                test_mod::TestEnum::test_function<|>;
+                test_mod::TestEnum::test_function$0;
             }
             ",
         )
@@ -721,7 +597,7 @@ fn main() {
             }
 
             fn main() {
-                test_mod::TestStruct::TEST_CONST<|>
+                test_mod::TestStruct::TEST_CONST$0
             }
             ",
             r"
@@ -770,7 +646,7 @@ fn main() {
 
             use test_mod::TestTrait2;
             fn main() {
-                test_mod::TestEnum::TEST_CONST<|>;
+                test_mod::TestEnum::TEST_CONST$0;
             }
             ",
         )
@@ -793,7 +669,7 @@ fn main() {
 
             fn main() {
                 let test_struct = test_mod::TestStruct {};
-                test_struct.test_meth<|>od()
+                test_struct.test_meth$0od()
             }
             ",
             r"
@@ -825,7 +701,7 @@ fn main() {
             //- /main.rs crate:main deps:dep
             fn main() {
                 let test_struct = dep::test_mod::TestStruct {};
-                test_struct.test_meth<|>od()
+                test_struct.test_meth$0od()
             }
             //- /dep.rs crate:dep
             pub mod test_mod {
@@ -856,7 +732,7 @@ fn main() {
             r"
             //- /main.rs crate:main deps:dep
             fn main() {
-                dep::test_mod::TestStruct::test_func<|>tion
+                dep::test_mod::TestStruct::test_func$0tion
             }
             //- /dep.rs crate:dep
             pub mod test_mod {
@@ -886,7 +762,7 @@ fn main() {
             r"
             //- /main.rs crate:main deps:dep
             fn main() {
-                dep::test_mod::TestStruct::CONST<|>
+                dep::test_mod::TestStruct::CONST$0
             }
             //- /dep.rs crate:dep
             pub mod test_mod {
@@ -917,7 +793,7 @@ fn main() {
             //- /main.rs crate:main deps:dep
             fn main() {
                 let test_struct = dep::test_mod::TestStruct {};
-                test_struct.test_func<|>tion()
+                test_struct.test_func$0tion()
             }
             //- /dep.rs crate:dep
             pub mod test_mod {
@@ -941,7 +817,7 @@ fn main() {
             //- /main.rs crate:main deps:dep
             fn main() {
                 let test_struct = dep::test_mod::TestStruct {};
-                test_struct.test_meth<|>od()
+                test_struct.test_meth$0od()
             }
             //- /dep.rs crate:dep
             pub mod test_mod {
@@ -984,7 +860,7 @@ fn main() {
             use test_mod::TestTrait2;
             fn main() {
                 let one = test_mod::TestEnum::One;
-                one.test<|>_method();
+                one.test$0_method();
             }
             ",
         )
@@ -1000,7 +876,7 @@ pub struct Struct;
 
 //- /main.rs crate:main deps:dep
 fn main() {
-    Struct<|>
+    Struct$0
 }
 ",
             r"use dep::Struct;
@@ -1028,7 +904,7 @@ pub fn panic_fmt() {}
 //- /main.rs crate:main deps:dep
 struct S;
 
-impl f<|>mt::Display for S {}
+impl f$0mt::Display for S {}
 ",
             r"use dep::fmt;
 
@@ -1056,7 +932,7 @@ mac!();
 
 //- /main.rs crate:main deps:dep
 fn main() {
-    Cheese<|>;
+    Cheese$0;
 }
 ",
             r"use dep::Cheese;
@@ -1080,7 +956,7 @@ pub struct fmt;
 
 //- /main.rs crate:main deps:dep
 fn main() {
-    FMT<|>;
+    FMT$0;
 }
 ",
             r"use dep::FMT;

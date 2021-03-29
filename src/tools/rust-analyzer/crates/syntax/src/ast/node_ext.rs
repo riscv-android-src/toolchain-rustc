@@ -3,22 +3,29 @@
 
 use std::fmt;
 
+use ast::AttrsOwner;
 use itertools::Itertools;
 use parser::SyntaxKind;
 
 use crate::{
-    ast::{self, support, AstNode, NameOwner, SyntaxNode},
+    ast::{self, support, AstNode, AstToken, NameOwner, SyntaxNode},
     SmolStr, SyntaxElement, SyntaxToken, T,
 };
 
+impl ast::Lifetime {
+    pub fn text(&self) -> &str {
+        text_of_first_token(self.syntax())
+    }
+}
+
 impl ast::Name {
-    pub fn text(&self) -> &SmolStr {
+    pub fn text(&self) -> &str {
         text_of_first_token(self.syntax())
     }
 }
 
 impl ast::NameRef {
-    pub fn text(&self) -> &SmolStr {
+    pub fn text(&self) -> &str {
         text_of_first_token(self.syntax())
     }
 
@@ -27,9 +34,60 @@ impl ast::NameRef {
     }
 }
 
-fn text_of_first_token(node: &SyntaxNode) -> &SmolStr {
+fn text_of_first_token(node: &SyntaxNode) -> &str {
     node.green().children().next().and_then(|it| it.into_token()).unwrap().text()
 }
+
+pub enum Macro {
+    MacroRules(ast::MacroRules),
+    MacroDef(ast::MacroDef),
+}
+
+impl From<ast::MacroRules> for Macro {
+    fn from(it: ast::MacroRules) -> Self {
+        Macro::MacroRules(it)
+    }
+}
+
+impl From<ast::MacroDef> for Macro {
+    fn from(it: ast::MacroDef) -> Self {
+        Macro::MacroDef(it)
+    }
+}
+
+impl AstNode for Macro {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        match kind {
+            SyntaxKind::MACRO_RULES | SyntaxKind::MACRO_DEF => true,
+            _ => false,
+        }
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        let res = match syntax.kind() {
+            SyntaxKind::MACRO_RULES => Macro::MacroRules(ast::MacroRules { syntax }),
+            SyntaxKind::MACRO_DEF => Macro::MacroDef(ast::MacroDef { syntax }),
+            _ => return None,
+        };
+        Some(res)
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            Macro::MacroRules(it) => it.syntax(),
+            Macro::MacroDef(it) => it.syntax(),
+        }
+    }
+}
+
+impl NameOwner for Macro {
+    fn name(&self) -> Option<ast::Name> {
+        match self {
+            Macro::MacroRules(mac) => mac.name(),
+            Macro::MacroDef(mac) => mac.name(),
+        }
+    }
+}
+
+impl AttrsOwner for Macro {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttrKind {
@@ -53,15 +111,17 @@ impl ast::Attr {
     pub fn as_simple_key_value(&self) -> Option<(SmolStr, SmolStr)> {
         let lit = self.literal()?;
         let key = self.simple_name()?;
-        // FIXME: escape? raw string?
-        let value = lit.syntax().first_token()?.text().trim_matches('"').into();
+        let value_token = lit.syntax().first_token()?;
+
+        let value: SmolStr = ast::String::cast(value_token)?.value()?.into();
+
         Some((key, value))
     }
 
     pub fn simple_name(&self) -> Option<SmolStr> {
         let path = self.path()?;
         match (path.segment(), path.qualifier()) {
-            (Some(segment), None) => Some(segment.syntax().first_token()?.text().clone()),
+            (Some(segment), None) => Some(segment.syntax().first_token()?.text().into()),
             _ => None,
         }
     }
@@ -73,7 +133,7 @@ impl ast::Attr {
             first_token.and_then(|token| token.next_token()).as_ref().map(SyntaxToken::kind);
 
         match (first_token_kind, second_token_kind) {
-            (Some(SyntaxKind::POUND), Some(T![!])) => AttrKind::Inner,
+            (Some(T![#]), Some(T![!])) => AttrKind::Inner,
             _ => AttrKind::Outer,
         }
     }
@@ -96,14 +156,28 @@ impl ast::PathSegment {
             .expect("segments are always nested in paths")
     }
 
+    pub fn crate_token(&self) -> Option<SyntaxToken> {
+        self.name_ref().and_then(|it| it.crate_token())
+    }
+
+    pub fn self_token(&self) -> Option<SyntaxToken> {
+        self.name_ref().and_then(|it| it.self_token())
+    }
+
+    pub fn super_token(&self) -> Option<SyntaxToken> {
+        self.name_ref().and_then(|it| it.super_token())
+    }
+
     pub fn kind(&self) -> Option<PathSegmentKind> {
         let res = if let Some(name_ref) = self.name_ref() {
-            PathSegmentKind::Name(name_ref)
+            match name_ref.syntax().first_token().map(|it| it.kind()) {
+                Some(T![self]) => PathSegmentKind::SelfKw,
+                Some(T![super]) => PathSegmentKind::SuperKw,
+                Some(T![crate]) => PathSegmentKind::CrateKw,
+                _ => PathSegmentKind::Name(name_ref),
+            }
         } else {
             match self.syntax().first_child_or_token()?.kind() {
-                T![self] => PathSegmentKind::SelfKw,
-                T![super] => PathSegmentKind::SuperKw,
-                T![crate] => PathSegmentKind::CrateKw,
                 T![<] => {
                     // <T> or <T as Trait>
                     // T is any TypeRef, Trait has to be a PathType
@@ -124,6 +198,13 @@ impl ast::Path {
     pub fn parent_path(&self) -> Option<ast::Path> {
         self.syntax().parent().and_then(ast::Path::cast)
     }
+
+    pub fn as_single_segment(&self) -> Option<ast::PathSegment> {
+        match self.qualifier() {
+            Some(_) => None,
+            None => self.segment(),
+        }
+    }
 }
 
 impl ast::UseTreeList {
@@ -132,6 +213,14 @@ impl ast::UseTreeList {
             .parent()
             .and_then(ast::UseTree::cast)
             .expect("UseTreeLists are always nested in UseTrees")
+    }
+
+    pub fn has_inner_comment(&self) -> bool {
+        self.syntax()
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find_map(ast::Comment::cast)
+            .is_some()
     }
 }
 
@@ -201,15 +290,7 @@ impl ast::RecordExprField {
         if let Some(name_ref) = self.name_ref() {
             return Some(name_ref);
         }
-        if let Some(ast::Expr::PathExpr(expr)) = self.expr() {
-            let path = expr.path()?;
-            let segment = path.segment()?;
-            let name_ref = segment.name_ref()?;
-            if path.qualifier().is_none() {
-                return Some(name_ref);
-            }
-        }
-        None
+        self.expr()?.name_ref()
     }
 }
 
@@ -347,7 +428,7 @@ pub enum TypeBoundKind {
     /// for<'a> ...
     ForType(ast::ForType),
     /// 'a
-    Lifetime(SyntaxToken),
+    Lifetime(ast::Lifetime),
 }
 
 impl ast::TypeBound {
@@ -356,7 +437,7 @@ impl ast::TypeBound {
             TypeBoundKind::PathType(path_type)
         } else if let Some(for_type) = support::children(self.syntax()).next() {
             TypeBoundKind::ForType(for_type)
-        } else if let Some(lifetime) = self.lifetime_token() {
+        } else if let Some(lifetime) = self.lifetime() {
             TypeBoundKind::Lifetime(lifetime)
         } else {
             unreachable!()
@@ -374,32 +455,23 @@ pub enum VisibilityKind {
 
 impl ast::Visibility {
     pub fn kind(&self) -> VisibilityKind {
-        if let Some(path) = support::children(self.syntax()).next() {
-            VisibilityKind::In(path)
-        } else if self.crate_token().is_some() {
-            VisibilityKind::PubCrate
-        } else if self.super_token().is_some() {
-            VisibilityKind::PubSuper
-        } else if self.self_token().is_some() {
-            VisibilityKind::PubSelf
-        } else {
-            VisibilityKind::Pub
+        match self.path() {
+            Some(path) => {
+                if let Some(segment) =
+                    path.as_single_segment().filter(|it| it.coloncolon_token().is_none())
+                {
+                    if segment.crate_token().is_some() {
+                        return VisibilityKind::PubCrate;
+                    } else if segment.super_token().is_some() {
+                        return VisibilityKind::PubSuper;
+                    } else if segment.self_token().is_some() {
+                        return VisibilityKind::PubSelf;
+                    }
+                }
+                VisibilityKind::In(path)
+            }
+            None => VisibilityKind::Pub,
         }
-    }
-}
-
-impl ast::MacroCall {
-    pub fn is_macro_rules(&self) -> Option<ast::Name> {
-        let name_ref = self.path()?.segment()?.name_ref()?;
-        if name_ref.text() == "macro_rules" {
-            self.name()
-        } else {
-            None
-        }
-    }
-
-    pub fn is_bang(&self) -> bool {
-        self.is_macro_rules().is_none()
     }
 }
 
@@ -409,7 +481,7 @@ impl ast::LifetimeParam {
             .children_with_tokens()
             .filter_map(|it| it.into_token())
             .skip_while(|x| x.kind() != T![:])
-            .filter(|it| it.kind() == T![lifetime])
+            .filter(|it| it.kind() == T![lifetime_ident])
     }
 }
 
@@ -482,4 +554,7 @@ impl ast::DocCommentsOwner for ast::Static {}
 impl ast::DocCommentsOwner for ast::Const {}
 impl ast::DocCommentsOwner for ast::TypeAlias {}
 impl ast::DocCommentsOwner for ast::Impl {}
-impl ast::DocCommentsOwner for ast::MacroCall {}
+impl ast::DocCommentsOwner for ast::MacroRules {}
+impl ast::DocCommentsOwner for ast::MacroDef {}
+impl ast::DocCommentsOwner for ast::Macro {}
+impl ast::DocCommentsOwner for ast::Use {}

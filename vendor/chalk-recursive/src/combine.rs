@@ -1,4 +1,4 @@
-use crate::Solution;
+use chalk_solve::Solution;
 use tracing::debug;
 
 use chalk_ir::interner::Interner;
@@ -69,7 +69,7 @@ fn calculate_inputs<I: Interner>(
     solution: &Solution<I>,
 ) -> Vec<GenericArg<I>> {
     if let Some(subst) = solution.constrained_subst(interner) {
-        let subst_goal = subst.value.subst.apply(&domain_goal, interner);
+        let subst_goal = subst.value.subst.apply(domain_goal.clone(), interner);
         subst_goal.inputs(interner)
     } else {
         domain_goal.inputs(interner)

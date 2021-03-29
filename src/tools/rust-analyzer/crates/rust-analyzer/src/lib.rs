@@ -34,19 +34,21 @@ mod request_metrics;
 mod lsp_utils;
 mod thread_pool;
 mod document;
+mod diff;
+mod op_queue;
 pub mod lsp_ext;
 pub mod config;
 
 use serde::de::DeserializeOwned;
-
-pub type Result<T, E = Box<dyn std::error::Error + Send + Sync>> = std::result::Result<T, E>;
-pub use crate::{caps::server_capabilities, main_loop::main_loop};
-use ide::AnalysisHost;
 use std::fmt;
-use vfs::Vfs;
+
+pub use crate::{caps::server_capabilities, main_loop::main_loop};
+
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub fn from_json<T: DeserializeOwned>(what: &'static str, json: serde_json::Value) -> Result<T> {
-    let res = T::deserialize(&json)
+    let res = serde_path_to_error::deserialize(&json)
         .map_err(|e| format!("Failed to deserialize {}: {}; {}", what, e, json))?;
     Ok(res)
 }
@@ -70,22 +72,3 @@ impl fmt::Display for LspError {
 }
 
 impl std::error::Error for LspError {}
-
-fn print_memory_usage(mut host: AnalysisHost, vfs: Vfs) {
-    let mut mem = host.per_query_memory_usage();
-
-    let before = profile::memory_usage();
-    drop(vfs);
-    let vfs = before.allocated - profile::memory_usage().allocated;
-    mem.push(("VFS".into(), vfs));
-
-    let before = profile::memory_usage();
-    drop(host);
-    mem.push(("Unaccounted".into(), before.allocated - profile::memory_usage().allocated));
-
-    mem.push(("Remaining".into(), profile::memory_usage().allocated));
-
-    for (name, bytes) in mem {
-        eprintln!("{:>8} {}", bytes, name);
-    }
-}

@@ -230,10 +230,10 @@ fn main() {
                             err => panic!("unknown error decoding -Zmiri-seed as hex: {:?}", err),
                         });
                     if seed_raw.len() > 8 {
-                        panic!(format!(
+                        panic!(
                             "-Zmiri-seed must be at most 8 bytes, was {}",
                             seed_raw.len()
-                        ));
+                        );
                     }
 
                     let mut bytes = [0; 8];
@@ -281,6 +281,14 @@ fn main() {
                         ),
                     };
                     miri_config.tracked_alloc_id = Some(miri::AllocId(id));
+                }
+                arg if arg.starts_with("-Zmiri-compare-exchange-weak-failure-rate=") => {
+                    let rate = match arg.strip_prefix("-Zmiri-compare-exchange-weak-failure-rate=").unwrap().parse::<f64>() {
+                        Ok(rate) if rate >= 0.0 && rate <= 1.0 => rate,
+                        Ok(_) => panic!("-Zmiri-compare-exchange-weak-failure-rate must be between `0.0` and `1.0`"),
+                        Err(err) => panic!("-Zmiri-compare-exchange-weak-failure-rate requires a `f64` between `0.0` and `1.0`: {}", err),
+                    };
+                    miri_config.cmpxchg_weak_failure_rate = rate;
                 }
                 _ => {
                     // Forward to rustc.

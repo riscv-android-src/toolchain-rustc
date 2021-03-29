@@ -1,55 +1,20 @@
 ## pico-args
-[![Build Status](https://travis-ci.org/RazrFalcon/pico-args.svg?branch=master)](https://travis-ci.org/RazrFalcon/pico-args)
+![Build Status](https://github.com/RazrFalcon/pico-args/workflows/Rust/badge.svg)
 [![Crates.io](https://img.shields.io/crates/v/pico-args.svg)](https://crates.io/crates/pico-args)
 [![Documentation](https://docs.rs/pico-args/badge.svg)](https://docs.rs/pico-args)
-[![Rust 1.31+](https://img.shields.io/badge/rust-1.31+-orange.svg)](https://www.rust-lang.org)
+[![Rust 1.32+](https://img.shields.io/badge/rust-1.31+-orange.svg)](https://www.rust-lang.org)
+![](https://img.shields.io/badge/unsafe-forbidden-brightgreen.svg)
 
 An ultra simple CLI arguments parser.
 
-- Only flags, options, free arguments and subcommands are supported.
-- Arguments can be separated by a space or `=`.
-- Non UTF-8 arguments are supported.
+If you think that this library doesn't support some feature, it's probably intentional.
+
 - No help generation.
+- Only flags, options, free arguments and subcommands are supported.
 - No combined flags (like `-vvv`, `-abc` or `-j1`).
-- Arguments are parsed in a linear order. From first to last.
-
-### Example
-
-```rust
-struct Args {
-    help: bool,
-    version: bool,
-    number: u32,
-    opt_number: Option<u32>,
-    width: u32,
-    free: Vec<String>,
-}
-
-fn parse_width(s: &str) -> Result<u32, String> {
-    s.parse().map_err(|_| "not a number".to_string())
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = pico_args::Arguments::from_env();
-    // Arguments can be parsed in any order.
-    let args = Args {
-        // You can use a slice for multiple commands
-        help: args.contains(["-h", "--help"]),
-        // or just a string for a single one.
-        version: args.contains("-V"),
-        // Parses an optional value that implements `FromStr`.
-        number: args.opt_value_from_str("--number")?.unwrap_or(5),
-        // Parses an optional value that implements `FromStr`.
-        opt_number: args.opt_value_from_str("--opt-number")?,
-        // Parses an optional value using a specified function.
-        width: args.opt_value_from_fn("--width", parse_width)?.unwrap_or(10),
-        // Will return all free arguments or an error if any flags are left.
-        free: args.free()?,
-    };
-
-    Ok(())
-}
-```
+- Options can be separated by a space, `=` or nothing. See build features.
+- Arguments can be in any order.
+- Non UTF-8 arguments are supported.
 
 ### Build features
 
@@ -79,12 +44,12 @@ There are a lot of arguments parsing implementations, but we will use only these
 - [structopt](https://crates.io/crates/structopt) - a two above combined
 - [argh](https://crates.io/crates/argh) - similar to gumdrop
 
-|                        | null    | `pico-args` | `clap`   | `gumdrop` | `structopt` | `argh`      |
-|------------------------|---------|-------------|----------|-----------|-------------|-------------|
-| Binary overhead        | 0KiB    | 18.6KiB     | 379.8KiB | 21.9KiB   | 379.6KiB    | **17.1KiB** |
-| Build time             | 0.1s    | **0.5s**    | 5.4s     | 7.7s      | 15.3s       | 6.0s        |
-| Number of dependencies | 0       | **0**       | 12       | 5         | 25          | 12          |
-| Tested version         | -       | 0.3.4       | 2.33.1   | 0.8.0     | 0.3.14      | 0.1.3       |
+|                        | null    | `pico-args` | `clap`   | `gumdrop` | `structopt` | `argh`  |
+|------------------------|---------|-------------|----------|-----------|-------------|---------|
+| Binary overhead        | 0KiB    | **14.3KiB** | 373.0KiB | 19.8KiB   | 371.4KiB    | 17.6KiB |
+| Build time             | 0.4s    | **0.7s**    | 5.6s     | 4.1s      | 6.2s        | 4.0s    |
+| Number of dependencies | 0       | **0**       | 8        | 5         | 20          | 8       |
+| Tested version         | -       | 0.4.0       | 2.33.3   | 0.8.0     | 0.3.21      | 0.1.4   |
 
 - Binary size overhead was measured by subtracting the `.text` section size of an app with
   arguments parsing and a hello world app.

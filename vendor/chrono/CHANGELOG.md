@@ -3,12 +3,41 @@ ChangeLog for Chrono
 
 This documents all notable changes to [Chrono](https://github.com/chronotope/chrono).
 
-Chrono obeys the principle of [Semantic Versioning](http://semver.org/).
+Chrono obeys the principle of [Semantic Versioning](http://semver.org/), with one caveat: we may
+move previously-existing code behind a feature gate and put it behind a new feature. This new
+feature will always be placed in the `previously-default` feature, which you can use to prevent
+breakage if you use `no-default-features`.
 
 There were/are numerous minor versions before 1.0 due to the language changes.
 Versions with only mechanical changes will be omitted from the following list.
 
-## 0.4.16 (unreleased)
+## 0.4.20 (unreleased)
+
+## 0.4.19
+
+* Correct build on solaris/illumos
+
+## 0.4.18
+
+* Restore support for x86_64-fortanix-unknown-sgx
+
+## 0.4.17
+
+* Fix a name resolution error in wasm-bindgen code introduced by removing the dependency on time
+  v0.1
+
+## 0.4.16
+
+### Features
+
+* Add %Z specifier to the `FromStr`, similar to the glibc strptime
+  (does not set the offset from the timezone name)
+
+* Drop the dependency on time v0.1, which is deprecated, unless the `oldtime`
+  feature is active. This feature is active by default in v0.4.16 for backwards
+  compatibility, but will likely be removed in v0.5. Code that imports
+  `time::Duration` should be switched to import `chrono::Duration` instead to
+  avoid breakage.
 
 ## 0.4.15
 

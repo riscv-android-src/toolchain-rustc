@@ -1,8 +1,8 @@
+use error::{Error, ErrorKind, Result};
 use std;
-use std::path::Path;
+use std::fs::{remove_file, File};
 use std::io::{Read, Write};
-use error::{Result, Error, ErrorKind};
-use std::fs::{File, remove_file};
+use std::path::Path;
 
 ///	Options and flags which can be used to configure how a file will be  copied  or moved.
 pub struct CopyOptions {
@@ -33,6 +33,13 @@ impl CopyOptions {
         }
     }
 }
+
+impl Default for CopyOptions {
+    fn default() -> Self {
+        CopyOptions::new()
+    }
+}
+
 /// A structure  which include information about the current status of the copy or move file.
 pub struct TransitProcess {
     /// Copied bytes on this time.
@@ -68,7 +75,6 @@ where
     P: AsRef<Path>,
     Q: AsRef<Path>,
 {
-
     let from = from.as_ref();
     if !from.exists() {
         if let Some(msg) = from.to_str() {
@@ -88,8 +94,6 @@ where
         }
         err!("Path is not a file!", ErrorKind::InvalidFile);
     }
-
-
 
     if !options.overwrite && to.as_ref().exists() {
         if options.skip_exist {
@@ -161,8 +165,6 @@ where
         err!("Path is not a file!", ErrorKind::InvalidFile);
     }
 
-
-
     if !options.overwrite && to.as_ref().exists() {
         if options.skip_exist {
             return Ok(0);
@@ -196,7 +198,6 @@ where
         }
     }
     Ok(file_size)
-
 }
 
 /// Moves file from one place to another. This function will also copy the permission
@@ -284,7 +285,6 @@ where
 
     Ok(result)
 }
-
 
 /// Removes a file from the filesystem.
 ///

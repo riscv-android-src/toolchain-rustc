@@ -116,7 +116,7 @@ pub struct NativeLib {
 
 impl From<&cstore::NativeLib> for NativeLib {
     fn from(lib: &cstore::NativeLib) -> Self {
-        NativeLib { kind: lib.kind.clone(), name: lib.name.clone(), cfg: lib.cfg.clone() }
+        NativeLib { kind: lib.kind, name: lib.name, cfg: lib.cfg.clone() }
     }
 }
 
@@ -160,13 +160,12 @@ pub struct CodegenResults {
 
 pub fn provide(providers: &mut Providers) {
     crate::back::symbol_export::provide(providers);
-    crate::base::provide_both(providers);
+    crate::base::provide(providers);
     crate::target_features::provide(providers);
 }
 
 pub fn provide_extern(providers: &mut Providers) {
     crate::back::symbol_export::provide_extern(providers);
-    crate::base::provide_both(providers);
 }
 
 /// Checks if the given filename ends with the `.rcgu.o` extension that `rustc`

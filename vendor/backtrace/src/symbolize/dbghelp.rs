@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Symbolication strategy using `dbghelp.dll` on Windows, only used for MSVC
 //!
 //! This symbolication strategy, like with backtraces, uses dynamically loaded
@@ -27,12 +17,8 @@
 
 #![allow(bad_style)]
 
-use crate::backtrace::FrameImp as Frame;
-use crate::dbghelp;
-use crate::symbolize::ResolveWhat;
-use crate::types::BytesOrWideString;
-use crate::windows::*;
-use crate::SymbolName;
+use super::super::{backtrace::StackFrame, dbghelp, windows::*};
+use super::{BytesOrWideString, ResolveWhat, SymbolName};
 use core::char;
 use core::ffi::c_void;
 use core::marker;
@@ -66,6 +52,10 @@ impl Symbol<'_> {
             .map(|slice| unsafe { BytesOrWideString::Wide(&*slice) })
     }
 
+    pub fn colno(&self) -> Option<u32> {
+        None
+    }
+
     pub fn lineno(&self) -> Option<u32> {
         self.line
     }
@@ -90,9 +80,9 @@ pub unsafe fn resolve(what: ResolveWhat<'_>, cb: &mut dyn FnMut(&super::Symbol))
 
     match what {
         ResolveWhat::Address(_) => resolve_without_inline(&dbghelp, what.address_or_ip(), cb),
-        ResolveWhat::Frame(frame) => match &frame.inner {
-            Frame::New(frame) => resolve_with_inline(&dbghelp, frame, cb),
-            Frame::Old(_) => resolve_without_inline(&dbghelp, frame.ip(), cb),
+        ResolveWhat::Frame(frame) => match &frame.inner.stack_frame {
+            StackFrame::New(frame) => resolve_with_inline(&dbghelp, frame, cb),
+            StackFrame::Old(_) => resolve_without_inline(&dbghelp, frame.ip(), cb),
         },
     }
 }
@@ -224,3 +214,5 @@ unsafe fn cache(filename: Option<*const [u16]>) -> Option<::std::ffi::OsString> 
 
 #[cfg(not(feature = "std"))]
 unsafe fn cache(_filename: Option<*const [u16]>) {}
+
+pub unsafe fn clear_symbol_cache() {}

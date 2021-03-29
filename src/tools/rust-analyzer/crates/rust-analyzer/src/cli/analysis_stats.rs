@@ -2,20 +2,21 @@
 //! errors.
 
 use std::{
+    env,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use base_db::{
-    salsa::{self, ParallelDatabase},
-    SourceDatabaseExt,
-};
 use hir::{
     db::{AstDatabase, DefDatabase, HirDatabase},
-    original_range, AssocItem, Crate, HasSource, HirDisplay, ModuleDef,
+    AssocItem, Crate, HasSource, HirDisplay, ModuleDef,
 };
 use hir_def::FunctionId;
 use hir_ty::{Ty, TypeWalk};
+use ide_db::base_db::{
+    salsa::{self, ParallelDatabase},
+    SourceDatabaseExt,
+};
 use itertools::Itertools;
 use oorandom::Rand32;
 use rayon::prelude::*;
@@ -23,11 +24,9 @@ use rustc_hash::FxHashSet;
 use stdx::format_to;
 use syntax::AstNode;
 
-use crate::{
-    cli::{
-        load_cargo::load_cargo, progress_report::ProgressReport, report_metric, Result, Verbosity,
-    },
-    print_memory_usage,
+use crate::cli::{
+    load_cargo::load_cargo, print_memory_usage, progress_report::ProgressReport, report_metric,
+    Result, Verbosity,
 };
 use profile::StopWatch;
 
@@ -60,7 +59,7 @@ impl AnalysisStatsCmd {
         let mut db_load_sw = self.stop_watch();
         let (host, vfs) = load_cargo(&self.path, self.load_output_dirs, self.with_proc_macro)?;
         let db = host.raw_database();
-        eprintln!("Database loaded {}", db_load_sw.elapsed());
+        eprintln!("{:<20} {}", "Database loaded:", db_load_sw.elapsed());
 
         let mut analysis_sw = self.stop_watch();
         let mut num_crates = 0;
@@ -87,7 +86,7 @@ impl AnalysisStatsCmd {
             shuffle(&mut rng, &mut visit_queue);
         }
 
-        eprintln!("Crates in this dir: {}", num_crates);
+        eprint!("  crates: {}", num_crates);
         let mut num_decls = 0;
         let mut funcs = Vec::new();
         while let Some(module) = visit_queue.pop() {
@@ -111,10 +110,8 @@ impl AnalysisStatsCmd {
                 }
             }
         }
-        eprintln!("Total modules found: {}", visited_modules.len());
-        eprintln!("Total declarations: {}", num_decls);
-        eprintln!("Total functions: {}", funcs.len());
-        eprintln!("Item Collection: {}", analysis_sw.elapsed());
+        eprintln!(", mods: {}, decls: {}, fns: {}", visited_modules.len(), num_decls, funcs.len());
+        eprintln!("{:<20} {}", "Item Collection:", analysis_sw.elapsed());
 
         if self.randomize {
             shuffle(&mut rng, &mut funcs);
@@ -137,7 +134,7 @@ impl AnalysisStatsCmd {
                     snap.0.infer(f_id.into());
                 })
                 .count();
-            eprintln!("Parallel Inference: {}", inference_sw.elapsed());
+            eprintln!("{:<20} {}", "Parallel Inference:", inference_sw.elapsed());
         }
 
         let mut inference_sw = self.stop_watch();
@@ -163,11 +160,12 @@ impl AnalysisStatsCmd {
             }
             let mut msg = format!("processing: {}", full_name);
             if verbosity.is_verbose() {
-                let src = f.source(db);
-                let original_file = src.file_id.original_file(db);
-                let path = vfs.file_path(original_file);
-                let syntax_range = src.value.syntax().text_range();
-                format_to!(msg, " ({} {:?})", path, syntax_range);
+                if let Some(src) = f.source(db) {
+                    let original_file = src.file_id.original_file(db);
+                    let path = vfs.file_path(original_file);
+                    let syntax_range = src.value.syntax().text_range();
+                    format_to!(msg, " ({} {:?})", path, syntax_range);
+                }
             }
             if verbosity.is_spammy() {
                 bar.println(msg.to_string());
@@ -232,7 +230,7 @@ impl AnalysisStatsCmd {
                             // But also, we should just turn the type mismatches into diagnostics and provide these
                             let root = db.parse_or_expand(src.file_id).unwrap();
                             let node = src.map(|e| e.to_node(&root).syntax().clone());
-                            let original_range = original_range(db, node.as_ref());
+                            let original_range = node.as_ref().original_file_range(db);
                             let path = vfs.file_path(original_range.file_id);
                             let line_index =
                                 host.analysis().file_line_index(original_range.file_id).unwrap();
@@ -274,27 +272,22 @@ impl AnalysisStatsCmd {
             bar.inc(1);
         }
         bar.finish_and_clear();
-        eprintln!("Total expressions: {}", num_exprs);
         eprintln!(
-            "Expressions of unknown type: {} ({}%)",
+            "  exprs: {}, ??ty: {} ({}%), ?ty: {} ({}%), !ty: {}",
+            num_exprs,
             num_exprs_unknown,
-            if num_exprs > 0 { num_exprs_unknown * 100 / num_exprs } else { 100 }
+            percentage(num_exprs_unknown, num_exprs),
+            num_exprs_partially_unknown,
+            percentage(num_exprs_partially_unknown, num_exprs),
+            num_type_mismatches
         );
         report_metric("unknown type", num_exprs_unknown, "#");
-
-        eprintln!(
-            "Expressions of partially unknown type: {} ({}%)",
-            num_exprs_partially_unknown,
-            if num_exprs > 0 { num_exprs_partially_unknown * 100 / num_exprs } else { 100 }
-        );
-
-        eprintln!("Type mismatches: {}", num_type_mismatches);
         report_metric("type mismatches", num_type_mismatches, "#");
 
-        eprintln!("Inference: {}", inference_sw.elapsed());
+        eprintln!("{:<20} {}", "Inference:", inference_sw.elapsed());
 
         let total_span = analysis_sw.elapsed();
-        eprintln!("Total: {}", total_span);
+        eprintln!("{:<20} {}", "Total:", total_span);
         report_metric("total time", total_span.time.as_millis() as u64, "ms");
         if let Some(instructions) = total_span.instructions {
             report_metric("total instructions", instructions, "#instr");
@@ -303,7 +296,11 @@ impl AnalysisStatsCmd {
             report_metric("total memory", memory.allocated.megabytes() as u64, "MB");
         }
 
-        if self.memory_usage {
+        if env::var("RA_COUNT").is_ok() {
+            eprintln!("{}", profile::countme::get_all());
+        }
+
+        if self.memory_usage && verbosity.is_verbose() {
             print_memory_usage(host, vfs);
         }
 
@@ -325,4 +322,8 @@ fn shuffle<T>(rng: &mut Rand32, slice: &mut [T]) {
         let idx = rng.rand_range(0..slice.len() as u32) as usize;
         slice.swap(0, idx);
     }
+}
+
+fn percentage(n: u64, total: u64) -> u64 {
+    (n * 100).checked_div(total).unwrap_or(100)
 }

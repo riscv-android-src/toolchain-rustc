@@ -12,8 +12,7 @@ use hir_def::{
 use hir_expand::diagnostics::DiagnosticSink;
 
 use crate::{
-    db::HirDatabase, diagnostics::MissingUnsafe, lower::CallableDefId, ApplicationTy,
-    InferenceResult, Ty, TypeCtor,
+    db::HirDatabase, diagnostics::MissingUnsafe, ApplicationTy, InferenceResult, Ty, TypeCtor,
 };
 
 pub(super) struct UnsafeValidator<'a, 'b: 'a> {
@@ -59,12 +58,12 @@ impl<'a, 'b> UnsafeValidator<'a, 'b> {
     }
 }
 
-pub struct UnsafeExpr {
-    pub expr: ExprId,
-    pub inside_unsafe_block: bool,
+pub(crate) struct UnsafeExpr {
+    pub(crate) expr: ExprId,
+    pub(crate) inside_unsafe_block: bool,
 }
 
-pub fn unsafe_expressions(
+pub(crate) fn unsafe_expressions(
     db: &dyn HirDatabase,
     infer: &InferenceResult,
     def: DefWithBodyId,
@@ -87,13 +86,8 @@ fn walk_unsafe(
 ) {
     let expr = &body.exprs[current];
     match expr {
-        Expr::Call { callee, .. } => {
-            let ty = &infer[*callee];
-            if let &Ty::Apply(ApplicationTy {
-                ctor: TypeCtor::FnDef(CallableDefId::FunctionId(func)),
-                ..
-            }) = ty
-            {
+        &Expr::Call { callee, .. } => {
+            if let Some(func) = infer[callee].as_fn_def() {
                 if db.function_data(func).is_unsafe {
                     unsafe_exprs.push(UnsafeExpr { expr: current, inside_unsafe_block });
                 }
@@ -190,14 +184,32 @@ struct Ty {
     a: u8,
 }
 
-static mut static_mut: Ty = Ty { a: 0 };
+static mut STATIC_MUT: Ty = Ty { a: 0 };
 
 fn main() {
-    let x = static_mut.a;
+    let x = STATIC_MUT.a;
           //^^^^^^^^^^ This operation is unsafe and requires an unsafe function or block
     unsafe {
-        let x = static_mut.a;
+        let x = STATIC_MUT.a;
     }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn no_missing_unsafe_diagnostic_with_safe_intrinsic() {
+        check_diagnostics(
+            r#"
+extern "rust-intrinsic" {
+    pub fn bitreverse(x: u32) -> u32; // Safe intrinsic
+    pub fn floorf32(x: f32) -> f32; // Unsafe intrinsic
+}
+
+fn main() {
+    let _ = bitreverse(12);
+    let _ = floorf32(12.0);
+          //^^^^^^^^^^^^^^ This operation is unsafe and requires an unsafe function or block
 }
 "#,
         );

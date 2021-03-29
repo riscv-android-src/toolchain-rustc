@@ -9,12 +9,13 @@ extern crate self as chalk_ir;
 use crate::cast::{Cast, CastTo, Caster};
 use crate::fold::shift::Shift;
 use crate::fold::{Fold, Folder, Subst, SuperFold};
-use crate::visit::{SuperVisit, Visit, VisitExt, VisitResult, Visitor};
+use crate::visit::{ControlFlow, SuperVisit, Visit, VisitExt, Visitor};
 use chalk_derive::{Fold, HasInterner, SuperVisit, Visit, Zip};
 use std::marker::PhantomData;
 
 pub use crate::debug::SeparatorTraitRef;
-
+#[macro_use(bitflags)]
+extern crate bitflags;
 /// Uninhabited (empty) type, used in combination with `PhantomData`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Void {}
@@ -23,13 +24,22 @@ pub enum Void {}
 /// to perform some operation which may not complete.
 pub type Fallible<T> = Result<T, NoSolution>;
 
+/// A combination of `Fallible` and `Floundered`.
+pub enum FallibleOrFloundered<T> {
+    /// Success
+    Ok(T),
+    /// No solution. See `chalk_ir::NoSolution`.
+    NoSolution,
+    /// Floundered. See `chalk_ir::Floundered`.
+    Floundered,
+}
+
 /// Indicates that the attempted operation has "no solution" -- i.e.,
 /// cannot be performed.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NoSolution;
 
-/// Error type for the `UnificationOps::program_clauses` method --
-/// indicates that the complete set of program clauses for this goal
+/// Indicates that the complete set of program clauses for this goal
 /// cannot be enumerated.
 pub struct Floundered;
 
@@ -61,6 +71,80 @@ use interner::{HasInterner, Interner};
 
 pub mod could_match;
 pub mod debug;
+
+/// Variance
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Variance {
+    /// a <: b
+    Covariant,
+    /// a == b
+    Invariant,
+    /// b <: a
+    Contravariant,
+}
+
+impl Variance {
+    /// `a.xform(b)` combines the variance of a context with the
+    /// variance of a type with the following meaning. If we are in a
+    /// context with variance `a`, and we encounter a type argument in
+    /// a position with variance `b`, then `a.xform(b)` is the new
+    /// variance with which the argument appears.
+    ///
+    /// Example 1:
+    ///
+    /// ```ignore
+    /// *mut Vec<i32>
+    /// ```
+    ///
+    /// Here, the "ambient" variance starts as covariant. `*mut T` is
+    /// invariant with respect to `T`, so the variance in which the
+    /// `Vec<i32>` appears is `Covariant.xform(Invariant)`, which
+    /// yields `Invariant`. Now, the type `Vec<T>` is covariant with
+    /// respect to its type argument `T`, and hence the variance of
+    /// the `i32` here is `Invariant.xform(Covariant)`, which results
+    /// (again) in `Invariant`.
+    ///
+    /// Example 2:
+    ///
+    /// ```ignore
+    /// fn(*const Vec<i32>, *mut Vec<i32)
+    /// ```
+    ///
+    /// The ambient variance is covariant. A `fn` type is
+    /// contravariant with respect to its parameters, so the variance
+    /// within which both pointer types appear is
+    /// `Covariant.xform(Contravariant)`, or `Contravariant`. `*const
+    /// T` is covariant with respect to `T`, so the variance within
+    /// which the first `Vec<i32>` appears is
+    /// `Contravariant.xform(Covariant)` or `Contravariant`. The same
+    /// is true for its `i32` argument. In the `*mut T` case, the
+    /// variance of `Vec<i32>` is `Contravariant.xform(Invariant)`,
+    /// and hence the outermost type is `Invariant` with respect to
+    /// `Vec<i32>` (and its `i32` argument).
+    ///
+    /// Source: Figure 1 of "Taming the Wildcards:
+    /// Combining Definition- and Use-Site Variance" published in PLDI'11.
+    /// (Doc from rustc)
+    pub fn xform(self, other: Variance) -> Variance {
+        match (self, other) {
+            (Variance::Invariant, _) => Variance::Invariant,
+            (_, Variance::Invariant) => Variance::Invariant,
+            (_, Variance::Covariant) => self,
+            (Variance::Covariant, Variance::Contravariant) => Variance::Contravariant,
+            (Variance::Contravariant, Variance::Contravariant) => Variance::Covariant,
+        }
+    }
+
+    /// Converts `Covariant` into `Contravariant` and vice-versa. `Invariant`
+    /// stays the same.
+    pub fn invert(self) -> Variance {
+        match self {
+            Variance::Invariant => Variance::Invariant,
+            Variance::Covariant => Variance::Contravariant,
+            Variance::Contravariant => Variance::Covariant,
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner)]
 /// The set of assumptions we've made so far, and the current number of
@@ -327,11 +411,147 @@ pub struct Ty<I: Interner> {
     interned: I::InternedType,
 }
 
+///compute type flags for Lifetime
+fn compute_lifetime_flags<I: Interner>(lifetime: &Lifetime<I>, interner: &I) -> TypeFlags {
+    match lifetime.data(&interner) {
+        LifetimeData::InferenceVar(_) => {
+            TypeFlags::HAS_RE_INFER
+                | TypeFlags::HAS_FREE_LOCAL_REGIONS
+                | TypeFlags::HAS_FREE_REGIONS
+        }
+        LifetimeData::Placeholder(_) => {
+            TypeFlags::HAS_RE_PLACEHOLDER
+                | TypeFlags::HAS_FREE_LOCAL_REGIONS
+                | TypeFlags::HAS_FREE_REGIONS
+        }
+        LifetimeData::Static | LifetimeData::Empty(_) => TypeFlags::HAS_FREE_REGIONS,
+        LifetimeData::Phantom(_, _) => TypeFlags::empty(),
+        LifetimeData::BoundVar(_) => TypeFlags::HAS_RE_LATE_BOUND,
+        LifetimeData::Erased => TypeFlags::HAS_RE_ERASED,
+    }
+}
+
+/// Compute type flags for Substitution<I>
+fn compute_substitution_flags<I: Interner>(
+    substitution: &Substitution<I>,
+    interner: &I,
+) -> TypeFlags {
+    let mut flags = TypeFlags::empty();
+    for generic_arg in substitution.iter(&interner) {
+        flags |= compute_generic_arg_flags(generic_arg, &interner);
+    }
+    flags
+}
+
+/// Compute type flags for GenericArg<I>
+fn compute_generic_arg_flags<I: Interner>(generic_arg: &GenericArg<I>, interner: &I) -> TypeFlags {
+    match generic_arg.data(&interner) {
+        GenericArgData::Ty(ty) => ty.data(interner).flags,
+        GenericArgData::Lifetime(lifetime) => compute_lifetime_flags(lifetime, interner),
+        GenericArgData::Const(constant) => {
+            let data = constant.data(&interner);
+            let flags = data.ty.data(interner).flags;
+            match data.value {
+                ConstValue::BoundVar(_) => flags,
+                ConstValue::InferenceVar(_) => {
+                    flags | TypeFlags::HAS_CT_INFER | TypeFlags::STILL_FURTHER_SPECIALIZABLE
+                }
+                ConstValue::Placeholder(_) => {
+                    flags | TypeFlags::HAS_CT_PLACEHOLDER | TypeFlags::STILL_FURTHER_SPECIALIZABLE
+                }
+                ConstValue::Concrete(_) => flags,
+            }
+        }
+    }
+}
+
+/// Compute type flags for aliases
+fn compute_alias_flags<I: Interner>(alias_ty: &AliasTy<I>, interner: &I) -> TypeFlags {
+    match alias_ty {
+        AliasTy::Projection(projection_ty) => {
+            TypeFlags::HAS_TY_PROJECTION
+                | compute_substitution_flags(&(projection_ty.substitution), interner)
+        }
+        AliasTy::Opaque(opaque_ty) => {
+            TypeFlags::HAS_TY_OPAQUE
+                | compute_substitution_flags(&(opaque_ty.substitution), interner)
+        }
+    }
+}
+
+/// Compute type flags for a TyKind
+fn compute_flags<I: Interner>(kind: &TyKind<I>, interner: &I) -> TypeFlags {
+    match kind {
+        TyKind::Adt(_, substitution)
+        | TyKind::AssociatedType(_, substitution)
+        | TyKind::Tuple(_, substitution)
+        | TyKind::Closure(_, substitution)
+        | TyKind::Generator(_, substitution)
+        | TyKind::GeneratorWitness(_, substitution)
+        | TyKind::FnDef(_, substitution)
+        | TyKind::OpaqueType(_, substitution) => compute_substitution_flags(substitution, interner),
+        TyKind::Scalar(_) | TyKind::Str | TyKind::Never | TyKind::Foreign(_) => TypeFlags::empty(),
+        TyKind::Error => TypeFlags::HAS_ERROR,
+        TyKind::Slice(ty) | TyKind::Raw(_, ty) => ty.data(interner).flags,
+        TyKind::Ref(_, lifetime, ty) => {
+            compute_lifetime_flags(lifetime, interner) | ty.data(interner).flags
+        }
+        TyKind::Array(ty, const_ty) => {
+            let flags = ty.data(interner).flags;
+            let const_data = const_ty.data(interner);
+            flags
+                | const_data.ty.data(interner).flags
+                | match const_data.value {
+                    ConstValue::BoundVar(_) | ConstValue::Concrete(_) => TypeFlags::empty(),
+                    ConstValue::InferenceVar(_) => {
+                        TypeFlags::HAS_CT_INFER | TypeFlags::STILL_FURTHER_SPECIALIZABLE
+                    }
+                    ConstValue::Placeholder(_) => {
+                        TypeFlags::HAS_CT_PLACEHOLDER | TypeFlags::STILL_FURTHER_SPECIALIZABLE
+                    }
+                }
+        }
+        TyKind::Placeholder(_) => TypeFlags::HAS_TY_PLACEHOLDER,
+        TyKind::Dyn(dyn_ty) => {
+            let lifetime_flags = compute_lifetime_flags(&(dyn_ty.lifetime), &interner);
+            let mut dyn_flags = TypeFlags::empty();
+            for var_kind in dyn_ty.bounds.value.iter(&interner) {
+                match &(var_kind.value) {
+                    WhereClause::Implemented(trait_ref) => {
+                        dyn_flags |= compute_substitution_flags(&(trait_ref.substitution), interner)
+                    }
+                    WhereClause::AliasEq(alias_eq) => {
+                        dyn_flags |= compute_alias_flags(&(alias_eq.alias), &interner);
+                        dyn_flags |= alias_eq.ty.data(&interner).flags;
+                    }
+                    WhereClause::LifetimeOutlives(lifetime_outlives) => {
+                        dyn_flags |= compute_lifetime_flags(&(lifetime_outlives.a), &interner)
+                            | compute_lifetime_flags(&(lifetime_outlives.b), &interner);
+                    }
+                    WhereClause::TypeOutlives(type_outlives) => {
+                        dyn_flags |= type_outlives.ty.data(&interner).flags;
+                        dyn_flags |= compute_lifetime_flags(&(type_outlives.lifetime), &interner);
+                    }
+                }
+            }
+            lifetime_flags | dyn_flags
+        }
+        TyKind::Alias(alias_ty) => compute_alias_flags(&alias_ty, &interner),
+        TyKind::BoundVar(_) => TypeFlags::empty(),
+        TyKind::InferenceVar(_, _) => TypeFlags::HAS_TY_INFER,
+        TyKind::Function(fn_pointer) => {
+            compute_substitution_flags(&fn_pointer.substitution.0, interner)
+        }
+    }
+}
+
 impl<I: Interner> Ty<I> {
     /// Creates a type from `TyKind`.
     pub fn new(interner: &I, data: impl CastTo<TyKind<I>>) -> Self {
+        let ty_kind = data.cast(&interner);
         let data = TyData {
-            kind: data.cast(interner),
+            flags: compute_flags(&ty_kind, &interner),
+            kind: ty_kind,
         };
         Ty {
             interned: I::intern_ty(interner, data),
@@ -446,8 +666,57 @@ impl<I: Interner> Ty<I> {
 pub struct TyData<I: Interner> {
     /// The kind
     pub kind: TyKind<I>,
+    /// Type flags
+    pub flags: TypeFlags,
 }
 
+bitflags! {
+    /// Contains flags indicating various properties of a Ty
+    pub struct TypeFlags : u16 {
+        /// Does the type contain an InferenceVar
+        const HAS_TY_INFER                = 1;
+        /// Does the type contain a lifetime with an InferenceVar
+        const HAS_RE_INFER                = 1 << 1;
+        /// Does the type contain a ConstValue with an InferenceVar
+        const HAS_CT_INFER                = 1 << 2;
+        /// Does the type contain a Placeholder TyKind
+        const HAS_TY_PLACEHOLDER          = 1 << 3;
+        /// Does the type contain a lifetime with a Placeholder
+        const HAS_RE_PLACEHOLDER          = 1 << 4;
+        /// Does the type contain a ConstValue Placeholder
+        const HAS_CT_PLACEHOLDER          = 1 << 5;
+        /// True when the type has free lifetimes related to a local context
+        const HAS_FREE_LOCAL_REGIONS      = 1 << 6;
+        /// Does the type contain a projection of an associated type
+        const HAS_TY_PROJECTION           = 1 << 7;
+        /// Does the type contain an opaque type
+        const HAS_TY_OPAQUE               = 1 << 8;
+        /// Does the type contain an unevaluated const projection
+        const HAS_CT_PROJECTION           = 1 << 9;
+        /// Does the type contain an error
+        const HAS_ERROR                   = 1 << 10;
+        /// Does the type contain any free lifetimes
+        const HAS_FREE_REGIONS            = 1 << 11;
+        /// True when the type contains lifetimes that will be substituted when function is called
+        const HAS_RE_LATE_BOUND           = 1 << 12;
+        /// True when the type contains an erased lifetime
+        const HAS_RE_ERASED               = 1 << 13;
+        /// Does the type contain placeholders or inference variables that could be replaced later
+        const STILL_FURTHER_SPECIALIZABLE = 1 << 14;
+
+        /// True when the type contains free names local to a particular context
+        const HAS_FREE_LOCAL_NAMES        = TypeFlags::HAS_TY_INFER.bits
+                                          | TypeFlags::HAS_CT_INFER.bits
+                                          | TypeFlags::HAS_TY_PLACEHOLDER.bits
+                                          | TypeFlags::HAS_CT_PLACEHOLDER.bits
+                                          | TypeFlags::HAS_FREE_LOCAL_REGIONS.bits;
+
+        /// Does the type contain any form of projection
+        const HAS_PROJECTION              = TypeFlags::HAS_TY_PROJECTION.bits
+                                          | TypeFlags::HAS_TY_OPAQUE.bits
+                                          | TypeFlags::HAS_CT_PROJECTION.bits;
+    }
+}
 /// Type data, which holds the actual type information.
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
 pub enum TyKind<I: Interner> {
@@ -829,7 +1098,7 @@ impl DebruijnIndex {
 /// known. It is referenced within the type using `^1.0`, indicating
 /// a bound type with debruijn index 1 (i.e., skipping through one
 /// level of binder).
-#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner, Zip)]
+#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner)]
 pub struct DynTy<I: Interner> {
     /// The unknown self type.
     pub bounds: Binders<QuantifiedWhereClauses<I>>,
@@ -891,6 +1160,11 @@ pub struct FnSig<I: Interner> {
     pub safety: Safety,
     pub variadic: bool,
 }
+/// A wrapper for the substs on a Fn.
+#[derive(Clone, PartialEq, Eq, Hash, HasInterner, Fold, Visit)]
+pub struct FnSubst<I: Interner>(pub Substitution<I>);
+
+impl<I: Interner> Copy for FnSubst<I> where I::InternedSubstitution: Copy {}
 
 /// for<'a...'z> X -- all binders are instantiated at once,
 /// and we use deBruijn indices within `self.ty`
@@ -899,10 +1173,34 @@ pub struct FnSig<I: Interner> {
 pub struct FnPointer<I: Interner> {
     pub num_binders: usize,
     pub sig: FnSig<I>,
-    pub substitution: Substitution<I>,
+    pub substitution: FnSubst<I>,
 }
 
 impl<I: Interner> Copy for FnPointer<I> where I::InternedSubstitution: Copy {}
+
+impl<I: Interner> FnPointer<I> {
+    /// Represent the current `Fn` as if it was wrapped in `Binders`
+    pub fn into_binders(self, interner: &I) -> Binders<FnSubst<I>> {
+        Binders::new(
+            VariableKinds::from_iter(
+                interner,
+                (0..self.num_binders).map(|_| VariableKind::Lifetime),
+            ),
+            self.substitution,
+        )
+    }
+
+    /// Represent the current `Fn` as if it was wrapped in `Binders`
+    pub fn as_binders(&self, interner: &I) -> Binders<&FnSubst<I>> {
+        Binders::new(
+            VariableKinds::from_iter(
+                interner,
+                (0..self.num_binders).map(|_| VariableKind::Lifetime),
+            ),
+            &self.substitution,
+        )
+    }
+}
 
 /// Constants.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
@@ -1055,6 +1353,8 @@ impl<I: Interner> Lifetime<I> {
             LifetimeData::InferenceVar(_) => false,
             LifetimeData::Placeholder(_) => false,
             LifetimeData::Static => false,
+            LifetimeData::Empty(_) => false,
+            LifetimeData::Erased => false,
             LifetimeData::Phantom(..) => unreachable!(),
         }
     }
@@ -1071,6 +1371,14 @@ pub enum LifetimeData<I: Interner> {
     Placeholder(PlaceholderIndex),
     /// Static lifetime
     Static,
+    /// An empty lifetime: a lifetime shorter than any other lifetime in a
+    /// universe with a lesser or equal index. The universe only non-zero in
+    /// lexical region resolve in rustc, so chalk shouldn't ever see a non-zero
+    /// index.
+    Empty(UniverseIndex),
+    /// An erased lifetime, used by rustc to improve caching when we doesn't
+    /// care about lifetimes
+    Erased,
     /// Lifetime on phantom data.
     Phantom(Void, PhantomData<I>),
 }
@@ -1113,7 +1421,6 @@ impl PlaceholderIndex {
         .intern(interner)
     }
 }
-
 /// Represents some extra knowledge we may have about the type variable.
 /// ```ignore
 /// let x: &[u32];
@@ -1346,19 +1653,14 @@ impl<I: Interner> AliasTy<I> {
     /// Gets the type parameters of the `Self` type in this alias type.
     pub fn self_type_parameter(&self, interner: &I) -> Ty<I> {
         match self {
-            AliasTy::Projection(projection_ty) => projection_ty
-                .substitution
-                .iter(interner)
-                .find_map(move |p| p.ty(interner))
-                .unwrap()
-                .clone(),
+            AliasTy::Projection(projection_ty) => projection_ty.self_type_parameter(interner),
             _ => todo!(),
         }
     }
 }
 
 /// A projection `<P0 as TraitName<P1..Pn>>::AssocItem<Pn+1..Pm>`.
-#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner, Zip)]
+#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner)]
 pub struct ProjectionTy<I: Interner> {
     /// The id for the associated type member.
     pub associated_ty_id: AssocTypeId<I>,
@@ -1368,8 +1670,19 @@ pub struct ProjectionTy<I: Interner> {
 
 impl<I: Interner> Copy for ProjectionTy<I> where I::InternedSubstitution: Copy {}
 
+impl<I: Interner> ProjectionTy<I> {
+    /// Gets the type parameters of the `Self` type in this alias type.
+    pub fn self_type_parameter(&self, interner: &I) -> Ty<I> {
+        self.substitution
+            .iter(interner)
+            .find_map(move |p| p.ty(interner))
+            .unwrap()
+            .clone()
+    }
+}
+
 /// An opaque type `opaque type T<..>: Trait = HiddenTy`.
-#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner, Zip)]
+#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner)]
 pub struct OpaqueTy<I: Interner> {
     /// The id for the opaque type.
     pub opaque_ty_id: OpaqueTyId<I>,
@@ -1385,7 +1698,7 @@ impl<I: Interner> Copy for OpaqueTy<I> where I::InternedSubstitution: Copy {}
 ///   implements the trait.
 /// - `<P0 as Trait<P1..Pn>>` (e.g. `i32 as Copy`), which casts the type to
 ///   that specific trait.
-#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner, Zip)]
+#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner)]
 pub struct TraitRef<I: Interner> {
     /// The trait id.
     pub trait_id: TraitId<I>,
@@ -1715,6 +2028,16 @@ pub struct EqGoal<I: Interner> {
 
 impl<I: Interner> Copy for EqGoal<I> where I::InternedGenericArg: Copy {}
 
+/// Subtype goal: tries to prove that `a` is a subtype of `b`
+#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, Zip)]
+#[allow(missing_docs)]
+pub struct SubtypeGoal<I: Interner> {
+    pub a: Ty<I>,
+    pub b: Ty<I>,
+}
+
+impl<I: Interner> Copy for SubtypeGoal<I> where I::InternedType: Copy {}
+
 /// Proves that the given type alias **normalizes** to the given
 /// type. A projection `T::Foo` normalizes to the type `U` if we can
 /// **match it to an impl** and that impl has a `type Foo = V` where
@@ -1777,6 +2100,13 @@ impl<T: HasInterner> HasInterner for Binders<T> {
     type Interner = T::Interner;
 }
 
+impl<T: Clone + HasInterner> Binders<&T> {
+    /// Converts a `Binders<&T>` to a `Binders<T>` by cloning `T`.
+    pub fn cloned(self) -> Binders<T> {
+        self.map(Clone::clone)
+    }
+}
+
 impl<T: HasInterner> Binders<T> {
     /// Create new binders.
     pub fn new(binders: VariableKinds<T::Interner>, value: T) -> Self {
@@ -1804,6 +2134,12 @@ impl<T: HasInterner> Binders<T> {
     /// - checking if there are any fields in a StructDatum
     pub fn skip_binders(&self) -> &T {
         &self.value
+    }
+
+    /// Skips the binder and returns the "bound" value as well as the skipped free variables. This
+    /// is just as risky as [`skip_binders`].
+    pub fn into_value_and_skipped_binders(self) -> (T, VariableKinds<T::Interner>) {
+        (self.value, self.binders)
     }
 
     /// Converts `&Binders<T>` to `Binders<&T>`. Produces new `Binders`
@@ -1890,7 +2226,7 @@ impl<T: HasInterner> Binders<T> {
 
 impl<T, I> Binders<Binders<T>>
 where
-    T: Fold<I, I> + HasInterner<Interner = I>,
+    T: Fold<I> + HasInterner<Interner = I>,
     T::Result: HasInterner<Interner = I>,
     I: Interner,
 {
@@ -1906,7 +2242,6 @@ where
                 .enumerate()
                 .map(|(i, pk)| (i + num_binders, pk).to_generic_arg(interner)),
         );
-        let value = self.value.substitute(interner, &subst);
         let binders = VariableKinds::from_iter(
             interner,
             self.binders
@@ -1914,6 +2249,7 @@ where
                 .chain(self.value.binders.iter(interner))
                 .cloned(),
         );
+        let value = self.value.substitute(interner, &subst);
         Binders { binders, value }
     }
 }
@@ -1926,7 +2262,7 @@ impl<T: HasInterner> From<Binders<T>> for (VariableKinds<T::Interner>, T) {
 
 impl<T, I> Binders<T>
 where
-    T: Fold<I, I> + HasInterner<Interner = I>,
+    T: Fold<I> + HasInterner<Interner = I>,
     I: Interner,
 {
     /// Substitute `parameters` for the variables introduced by these
@@ -1934,13 +2270,13 @@ where
     /// parameters is the slice `[A, B]`, then returns `[X => A, Y =>
     /// B] T`.
     pub fn substitute(
-        &self,
+        self,
         interner: &I,
         parameters: &(impl AsParameters<I> + ?Sized),
     ) -> T::Result {
         let parameters = parameters.as_parameters(interner);
         assert_eq!(self.binders.len(interner), parameters.len());
-        Subst::apply(interner, parameters, &self.value)
+        Subst::apply(interner, parameters, self.value)
     }
 }
 
@@ -2288,6 +2624,9 @@ pub enum GoalData<I: Interner> {
     /// Make two things equal; the rules for doing so are well known to the logic
     EqGoal(EqGoal<I>),
 
+    /// Make one thing a subtype of another; the rules for doing so are well known to the logic
+    SubtypeGoal(SubtypeGoal<I>),
+
     /// A "domain goal" indicates some base sort of goal that can be
     /// proven via program clauses
     DomainGoal(DomainGoal<I>),
@@ -2401,19 +2740,11 @@ impl<I: Interner> Substitution<I> {
     }
 
     /// Apply the substitution to a value.
-    pub fn apply<T>(&self, value: &T, interner: &I) -> T::Result
+    pub fn apply<T>(&self, value: T, interner: &I) -> T::Result
     where
-        T: Fold<I, I>,
+        T: Fold<I>,
     {
-        value
-            .fold_with(
-                &mut &SubstFolder {
-                    interner,
-                    subst: self,
-                },
-                DebruijnIndex::INNERMOST,
-            )
-            .unwrap()
+        Substitute::apply(self, value, interner)
     }
 
     /// Gets an iterator of all type parameters.
@@ -2424,16 +2755,16 @@ impl<I: Interner> Substitution<I> {
     }
 }
 
-struct SubstFolder<'i, I: Interner> {
+struct SubstFolder<'i, I: Interner, A: AsParameters<I>> {
     interner: &'i I,
-    subst: &'i Substitution<I>,
+    subst: &'i A,
 }
 
-impl<I: Interner> SubstFolder<'_, I> {
+impl<I: Interner, A: AsParameters<I>> SubstFolder<'_, I, A> {
     /// Index into the list of parameters.
     pub fn at(&self, index: usize) -> &GenericArg<I> {
         let interner = self.interner;
-        &self.subst.as_slice(interner)[index]
+        &self.subst.as_parameters(interner)[index]
     }
 }
 
@@ -2477,6 +2808,30 @@ where
     }
 }
 
+/// An extension trait to anything that can be represented as list of `GenericArg`s that signifies
+/// that it can applied as a substituion to a value
+pub trait Substitute<I: Interner>: AsParameters<I> {
+    /// Apply the substitution to a value.
+    fn apply<T: Fold<I>>(&self, value: T, interner: &I) -> T::Result;
+}
+
+impl<I: Interner, A: AsParameters<I>> Substitute<I> for A {
+    fn apply<T>(&self, value: T, interner: &I) -> T::Result
+    where
+        T: Fold<I>,
+    {
+        value
+            .fold_with(
+                &mut &SubstFolder {
+                    interner,
+                    subst: self,
+                },
+                DebruijnIndex::INNERMOST,
+            )
+            .unwrap()
+    }
+}
+
 /// Utility for converting a list of all the binders into scope
 /// into references to those binders. Simply pair the binders with
 /// the indices, and invoke `to_generic_arg()` on the `(binder,
@@ -2500,7 +2855,7 @@ impl<'a, I: Interner> ToGenericArg<I> for (usize, &'a VariableKind<I>) {
     }
 }
 
-impl<'i, I: Interner> Folder<'i, I> for &SubstFolder<'i, I> {
+impl<'i, I: Interner, A: AsParameters<I>> Folder<'i, I> for &SubstFolder<'i, I, A> {
     fn as_dyn(&mut self) -> &mut dyn Folder<'i, I> {
         self
     }
@@ -2513,7 +2868,7 @@ impl<'i, I: Interner> Folder<'i, I> for &SubstFolder<'i, I> {
         assert_eq!(bound_var.debruijn, DebruijnIndex::INNERMOST);
         let ty = self.at(bound_var.index);
         let ty = ty.assert_ty_ref(self.interner());
-        Ok(ty.shifted_in_from(self.interner(), outer_binder))
+        Ok(ty.clone().shifted_in_from(self.interner(), outer_binder))
     }
 
     fn fold_free_var_lifetime(
@@ -2524,31 +2879,27 @@ impl<'i, I: Interner> Folder<'i, I> for &SubstFolder<'i, I> {
         assert_eq!(bound_var.debruijn, DebruijnIndex::INNERMOST);
         let l = self.at(bound_var.index);
         let l = l.assert_lifetime_ref(self.interner());
-        Ok(l.shifted_in_from(self.interner(), outer_binder))
+        Ok(l.clone().shifted_in_from(self.interner(), outer_binder))
     }
 
     fn fold_free_var_const(
         &mut self,
-        _ty: &Ty<I>,
+        _ty: Ty<I>,
         bound_var: BoundVar,
         outer_binder: DebruijnIndex,
     ) -> Fallible<Const<I>> {
         assert_eq!(bound_var.debruijn, DebruijnIndex::INNERMOST);
         let c = self.at(bound_var.index);
         let c = c.assert_const_ref(self.interner());
-        Ok(c.shifted_in_from(self.interner(), outer_binder))
+        Ok(c.clone().shifted_in_from(self.interner(), outer_binder))
     }
 
     fn interner(&self) -> &'i I {
         self.interner
     }
-
-    fn target_interner(&self) -> &'i I {
-        self.interner()
-    }
 }
 
-macro_rules! interned_slice {
+macro_rules! interned_slice_common {
     ($seq:ident, $data:ident => $elem:ty, $intern:ident => $interned:ident) => {
         /// List of interned elements.
         #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
@@ -2561,46 +2912,15 @@ macro_rules! interned_slice {
             pub fn interned(&self) -> &I::$interned {
                 &self.interned
             }
-        }
-
-        impl<I: Interner> $seq<I> {
-            /// Tries to create a sequence using an iterator of element-like things.
-            pub fn from_fallible<E>(
-                interner: &I,
-                elements: impl IntoIterator<Item = Result<impl CastTo<$elem>, E>>,
-            ) -> Result<Self, E> {
-                Ok(Self {
-                    interned: I::$intern(interner, elements.into_iter().casted(interner))?,
-                })
-            }
 
             /// Returns a slice containing the elements.
             pub fn as_slice(&self, interner: &I) -> &[$elem] {
                 Interner::$data(interner, &self.interned)
             }
 
-            /// Create a sequence from elements
-            pub fn from_iter(
-                interner: &I,
-                elements: impl IntoIterator<Item = impl CastTo<$elem>>,
-            ) -> Self {
-                Self::from_fallible(
-                    interner,
-                    elements
-                        .into_iter()
-                        .map(|el| -> Result<$elem, ()> { Ok(el.cast(interner)) }),
-                )
-                .unwrap()
-            }
-
             /// Index into the sequence.
             pub fn at(&self, interner: &I, index: usize) -> &$elem {
                 &self.as_slice(interner)[index]
-            }
-
-            /// Create a sequence from a single element.
-            pub fn from1(interner: &I, element: impl CastTo<$elem>) -> Self {
-                Self::from_iter(interner, Some(element))
             }
 
             /// Create an empty sequence.
@@ -2621,6 +2941,43 @@ macro_rules! interned_slice {
             /// Get the length of the sequence.
             pub fn len(&self, interner: &I) -> usize {
                 self.as_slice(interner).len()
+            }
+        }
+    };
+}
+
+macro_rules! interned_slice {
+    ($seq:ident, $data:ident => $elem:ty, $intern:ident => $interned:ident) => {
+        interned_slice_common!($seq, $data => $elem, $intern => $interned);
+
+        impl<I: Interner> $seq<I> {
+            /// Tries to create a sequence using an iterator of element-like things.
+            pub fn from_fallible<E>(
+                interner: &I,
+                elements: impl IntoIterator<Item = Result<impl CastTo<$elem>, E>>,
+            ) -> Result<Self, E> {
+                Ok(Self {
+                    interned: I::$intern(interner, elements.into_iter().casted(interner))?,
+                })
+            }
+
+            /// Create a sequence from elements
+            pub fn from_iter(
+                interner: &I,
+                elements: impl IntoIterator<Item = impl CastTo<$elem>>,
+            ) -> Self {
+                Self::from_fallible(
+                    interner,
+                    elements
+                        .into_iter()
+                        .map(|el| -> Result<$elem, ()> { Ok(el.cast(interner)) }),
+                )
+                .unwrap()
+            }
+
+            /// Create a sequence from a single element.
+            pub fn from1(interner: &I, element: impl CastTo<$elem>) -> Self {
+                Self::from_iter(interner, Some(element))
             }
         }
     };
@@ -2664,6 +3021,40 @@ interned_slice!(
     intern_substitution => InternedSubstitution
 );
 
+interned_slice_common!(
+    Variances,
+    variances_data => Variance,
+    intern_variance => InternedVariances
+);
+
+impl<I: Interner> Variances<I> {
+    /// Tries to create a list of canonical variable kinds using an iterator.
+    pub fn from_fallible<E>(
+        interner: &I,
+        variances: impl IntoIterator<Item = Result<Variance, E>>,
+    ) -> Result<Self, E> {
+        Ok(Variances {
+            interned: I::intern_variances(interner, variances.into_iter())?,
+        })
+    }
+
+    /// Creates a list of canonical variable kinds using an iterator.
+    pub fn from_iter(interner: &I, variances: impl IntoIterator<Item = Variance>) -> Self {
+        Self::from_fallible(
+            interner,
+            variances
+                .into_iter()
+                .map(|p| -> Result<Variance, ()> { Ok(p) }),
+        )
+        .unwrap()
+    }
+
+    /// Creates a list of canonical variable kinds from a single canonical variable kind.
+    pub fn from1(interner: &I, variance: Variance) -> Self {
+        Self::from_iter(interner, Some(variance))
+    }
+}
+
 /// Combines a substitution (`subst`) with a set of region constraints
 /// (`constraints`). This represents the result of a query; the
 /// substitution stores the values for the query's unknown variables,
@@ -2693,4 +3084,17 @@ pub struct AnswerSubst<I: Interner> {
 
     /// Delayed subgoals, used when the solver answered with an (incomplete) `Answer` (instead of a `CompleteAnswer`).
     pub delayed_subgoals: Vec<InEnvironment<Goal<I>>>,
+}
+
+/// Logic to decide the Variance for a given subst
+pub trait UnificationDatabase<I>
+where
+    Self: std::fmt::Debug,
+    I: Interner,
+{
+    /// Gets the variances for the substitution of a fn def
+    fn fn_def_variance(&self, fn_def_id: FnDefId<I>) -> Variances<I>;
+
+    /// Gets the variances for the substitution of a adt
+    fn adt_variance(&self, adt_id: AdtId<I>) -> Variances<I>;
 }

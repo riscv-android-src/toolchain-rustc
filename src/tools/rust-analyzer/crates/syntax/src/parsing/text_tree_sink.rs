@@ -5,9 +5,10 @@ use std::mem;
 use parser::{ParseError, TreeSink};
 
 use crate::{
+    ast,
     parsing::Token,
     syntax_node::GreenNode,
-    SmolStr, SyntaxError,
+    SyntaxError,
     SyntaxKind::{self, *},
     SyntaxTreeBuilder, TextRange, TextSize,
 };
@@ -134,7 +135,7 @@ impl<'a> TextTreeSink<'a> {
 
     fn do_token(&mut self, kind: SyntaxKind, len: TextSize, n_tokens: usize) {
         let range = TextRange::at(self.text_pos, len);
-        let text: SmolStr = self.text[range].into();
+        let text = &self.text[range];
         self.text_pos += len;
         self.token_pos += n_tokens;
         self.inner.token(kind, text);
@@ -146,31 +147,29 @@ fn n_attached_trivias<'a>(
     trivias: impl Iterator<Item = (SyntaxKind, &'a str)>,
 ) -> usize {
     match kind {
-        MACRO_CALL | CONST | TYPE_ALIAS | STRUCT | ENUM | VARIANT | FN | TRAIT | MODULE
-        | RECORD_FIELD | STATIC => {
+        MACRO_CALL | MACRO_RULES | CONST | TYPE_ALIAS | STRUCT | ENUM | VARIANT | FN | TRAIT
+        | MODULE | RECORD_FIELD | STATIC | USE => {
             let mut res = 0;
             let mut trivias = trivias.enumerate().peekable();
 
             while let Some((i, (kind, text))) = trivias.next() {
                 match kind {
-                    WHITESPACE => {
-                        if text.contains("\n\n") {
-                            // we check whether the next token is a doc-comment
-                            // and skip the whitespace in this case
-                            if let Some((peek_kind, peek_text)) =
-                                trivias.peek().map(|(_, pair)| pair)
-                            {
-                                if *peek_kind == COMMENT
-                                    && peek_text.starts_with("///")
-                                    && !peek_text.starts_with("////")
-                                {
-                                    continue;
-                                }
+                    WHITESPACE if text.contains("\n\n") => {
+                        // we check whether the next token is a doc-comment
+                        // and skip the whitespace in this case
+                        if let Some((COMMENT, peek_text)) = trivias.peek().map(|(_, pair)| pair) {
+                            let comment_kind = ast::CommentKind::from_text(peek_text);
+                            if comment_kind.doc == Some(ast::CommentPlacement::Outer) {
+                                continue;
                             }
-                            break;
                         }
+                        break;
                     }
                     COMMENT => {
+                        let comment_kind = ast::CommentKind::from_text(text);
+                        if comment_kind.doc == Some(ast::CommentPlacement::Inner) {
+                            break;
+                        }
                         res = i + 1;
                     }
                     _ => (),

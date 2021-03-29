@@ -122,7 +122,9 @@ h3.impl, h3.method, h3.type {
 h1, h2, h3, h4,
 .sidebar, a.source, .search-input, .content table td:first-child > a,
 .collapse-toggle, div.item-list .out-of-band,
-#source-sidebar, #sidebar-toggle {
+#source-sidebar, #sidebar-toggle,
+/* This selector is for the items listed in the "all items" page. */
+#main > ul.docblock > li > a {
 	font-family: "Fira Sans", sans-serif;
 }
 
@@ -154,6 +156,7 @@ code, pre, a.test-arrow {
 }
 .docblock pre code, .docblock-short pre code, .docblock code.spotlight {
 	padding: 0;
+	padding-right: 1ex;
 }
 .docblock code.spotlight :last-child {
 	padding-bottom: 0.6em;
@@ -402,7 +405,7 @@ nav.sub {
 	text-overflow: ellipsis;
 	margin: 0;
 }
-.docblock code, .docblock-short code {
+.docblock-short code {
 	white-space: pre-wrap;
 }
 
@@ -795,6 +798,7 @@ body.blur > :not(#help) {
 	float: left;
 	clear: left;
 	display: block;
+	margin-right: 0.5rem;
 }
 #help > div > span {
 	text-align: center;
@@ -1410,6 +1414,7 @@ h4 > .notable-traits {
 	.sidebar > .block.version {
 		border-bottom: none;
 		margin-top: 12px;
+		margin-bottom: 0;
 	}
 
 	nav.sub {
@@ -1421,7 +1426,7 @@ h4 > .notable-traits {
 		margin-left: 0px;
 	}
 
-	#main {
+	#main, #search {
 		margin-top: 45px;
 		padding: 0;
 	}
@@ -1485,6 +1490,14 @@ h4 > .notable-traits {
 		margin-left: 0;
 		background-color: rgba(0,0,0,0);
 		height: 100%;
+	}
+	/*
+	This allows to prevent the version text to overflow the sidebar title on mobile mode when the
+	sidebar is displayed (after clicking on the "hamburger" button).
+	*/
+	.sidebar.mobile > div.version {
+		overflow: hidden;
+		max-height: 33px;
 	}
 	.sidebar {
 		width: calc(100% + 30px);
@@ -1575,12 +1588,15 @@ h4 > .notable-traits {
 	}
 }
 
-@media (max-width: 416px) {
+@media (max-width: 464px) {
 	#titles, #titles > button {
 		height: 73px;
 	}
 
-	#main {
+	/* This is to prevent the search bar from being underneath the <section>
+	 * element following it.
+	 */
+	#main, #search {
 		margin-top: 100px;
 	}
 
@@ -1617,6 +1633,10 @@ h4 > .notable-traits {
 
 	#settings-menu {
 		top: 7px;
+	}
+
+	.docblock {
+		margin-left: 12px;
 	}
 }
 

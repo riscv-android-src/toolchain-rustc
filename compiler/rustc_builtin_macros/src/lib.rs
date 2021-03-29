@@ -2,6 +2,8 @@
 //! injecting code into the crate before it is lowered to HIR.
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
+#![feature(box_patterns)]
+#![feature(box_syntax)]
 #![feature(bool_to_option)]
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
@@ -14,10 +16,9 @@ extern crate proc_macro;
 
 use crate::deriving::*;
 
-use rustc_expand::base::{MacroExpanderFn, ResolverExpand, SyntaxExtension, SyntaxExtensionKind};
+use rustc_expand::base::{MacroExpanderFn, ResolverExpand, SyntaxExtensionKind};
 use rustc_expand::proc_macro::BangProcMacro;
-use rustc_span::edition::Edition;
-use rustc_span::symbol::{sym, Ident};
+use rustc_span::symbol::sym;
 
 mod asm;
 mod assert;
@@ -34,6 +35,7 @@ mod global_allocator;
 mod global_asm;
 mod llvm_asm;
 mod log_syntax;
+mod panic;
 mod source_util;
 mod test;
 mod trace_macros;
@@ -44,13 +46,8 @@ pub mod proc_macro_harness;
 pub mod standard_library_imports;
 pub mod test_harness;
 
-pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand, edition: Edition) {
-    let mut register = |name, kind| {
-        resolver.register_builtin_macro(
-            Ident::with_dummy_span(name),
-            SyntaxExtension { is_builtin: true, ..SyntaxExtension::default(kind, edition) },
-        )
-    };
+pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
+    let mut register = |name, kind| resolver.register_builtin_macro(name, kind);
     macro register_bang($($name:ident: $f:expr,)*) {
         $(register(sym::$name, SyntaxExtensionKind::LegacyBang(Box::new($f as MacroExpanderFn)));)*
     }
@@ -82,6 +79,8 @@ pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand, edition: Editi
         log_syntax: log_syntax::expand_log_syntax,
         module_path: source_util::expand_mod,
         option_env: env::expand_option_env,
+        core_panic: panic::expand_panic,
+        std_panic: panic::expand_panic,
         stringify: source_util::expand_stringify,
         trace_macros: trace_macros::expand_trace_macros,
     }

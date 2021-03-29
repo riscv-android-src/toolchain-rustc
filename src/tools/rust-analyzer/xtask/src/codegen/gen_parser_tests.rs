@@ -45,15 +45,15 @@ pub fn generate_parser_tests(mode: Mode) -> Result<()> {
 
 #[derive(Debug)]
 struct Test {
-    pub name: String,
-    pub text: String,
-    pub ok: bool,
+    name: String,
+    text: String,
+    ok: bool,
 }
 
 #[derive(Default, Debug)]
 struct Tests {
-    pub ok: HashMap<String, Test>,
-    pub err: HashMap<String, Test>,
+    ok: HashMap<String, Test>,
+    err: HashMap<String, Test>,
 }
 
 fn collect_tests(s: &str) -> Vec<Test> {
@@ -124,7 +124,7 @@ fn existing_tests(dir: &Path, ok: bool) -> Result<HashMap<String, (PathBuf, Test
             let file_name = path.file_name().unwrap().to_str().unwrap();
             file_name[5..file_name.len() - 3].to_string()
         };
-        let text = fs::read_to_string(&path)?;
+        let text = xshell::read_file(&path)?;
         let test = Test { name: name.clone(), text, ok };
         if let Some(old) = res.insert(name, (path, test)) {
             println!("Duplicate test: {:?}", old);

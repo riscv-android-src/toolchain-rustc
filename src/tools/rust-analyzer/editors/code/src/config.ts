@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { Env } from './client';
 import { log } from "./util";
 
 export type UpdatesChannel = "stable" | "nightly";
@@ -13,6 +14,7 @@ export class Config {
     readonly rootSection = "rust-analyzer";
     private readonly requiresReloadOpts = [
         "serverPath",
+        "server",
         "cargo",
         "procMacro",
         "files",
@@ -91,7 +93,10 @@ export class Config {
         return this.cfg.get<T>(path)!;
     }
 
-    get serverPath() { return this.get<null | string>("serverPath"); }
+    get serverPath() {
+        return this.get<null | string>("server.path") ?? this.get<null | string>("serverPath");
+    }
+    get serverExtraEnv() { return this.get<Env | null>("server.extraEnv") ?? {}; }
     get channel() { return this.get<UpdatesChannel>("updates.channel"); }
     get askBeforeDownload() { return this.get<boolean>("updates.askBeforeDownload"); }
     get traceExtension() { return this.get<boolean>("trace.extension"); }
@@ -138,6 +143,8 @@ export class Config {
             run: this.get<boolean>("lens.run"),
             debug: this.get<boolean>("lens.debug"),
             implementations: this.get<boolean>("lens.implementations"),
+            methodReferences: this.get<boolean>("lens.methodReferences"),
+            references: this.get<boolean>("lens.references"),
         };
     }
 

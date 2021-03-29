@@ -26,12 +26,12 @@ pub(super) fn opt_generic_arg_list(p: &mut Parser, colon_colon_required: bool) {
 }
 
 // test type_arg
-// type A = B<'static, i32, 1, { 2 }, Item=u64>;
+// type A = B<'static, i32, 1, { 2 }, Item=u64, true, false>;
 fn generic_arg(p: &mut Parser) {
     let m = p.start();
     match p.current() {
-        LIFETIME => {
-            p.bump(LIFETIME);
+        LIFETIME_IDENT => {
+            lifetime(p);
             m.complete(p, LIFETIME_ARG);
         }
         // test associated_type_bounds
@@ -52,6 +52,10 @@ fn generic_arg(p: &mut Parser) {
             m.complete(p, CONST_ARG);
         }
         k if k.is_literal() => {
+            expressions::literal(p);
+            m.complete(p, CONST_ARG);
+        }
+        T![true] | T![false] => {
             expressions::literal(p);
             m.complete(p, CONST_ARG);
         }

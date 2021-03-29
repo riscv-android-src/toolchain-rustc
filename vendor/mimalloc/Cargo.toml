@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "mimalloc"
-version = "0.1.20"
+version = "0.1.22"
 authors = ["Octavian Oncescu <octavonce@gmail.com>", "Vincent Rouillé <vincent@speedy37.fr>", "Thom Chiovoloni <chiovolonit@gmail.com>"]
 description = "Performance and security oriented drop-in allocator"
 readme = "README.md"
@@ -22,11 +22,12 @@ categories = ["memory-management", "api-bindings"]
 license = "MIT"
 repository = "https://github.com/purpleprotocol/mimalloc_rust"
 [dependencies.libmimalloc-sys]
-version = "0.1.16"
+version = "0.1.18"
 default-features = false
 
 [features]
 default = ["secure"]
+local_dynamic_tls = ["libmimalloc-sys/local_dynamic_tls"]
 override = ["libmimalloc-sys/override"]
 secure = ["libmimalloc-sys/secure"]
 [badges.travis-ci]

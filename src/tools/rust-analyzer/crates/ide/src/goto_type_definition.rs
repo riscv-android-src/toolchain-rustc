@@ -1,7 +1,7 @@
 use ide_db::RootDatabase;
 use syntax::{ast, match_ast, AstNode, SyntaxKind::*, SyntaxToken, TokenAtOffset, T};
 
-use crate::{display::ToNav, FilePosition, NavigationTarget, RangeInfo};
+use crate::{display::TryToNav, FilePosition, NavigationTarget, RangeInfo};
 
 // Feature: Go to Type Definition
 //
@@ -37,7 +37,7 @@ pub(crate) fn goto_type_definition(
 
     let adt_def = ty.autoderef(db).filter_map(|ty| ty.as_adt()).last()?;
 
-    let nav = adt_def.to_nav(db);
+    let nav = adt_def.try_to_nav(db)?;
     Some(RangeInfo::new(node.text_range(), vec![nav]))
 }
 
@@ -54,15 +54,14 @@ fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
 
 #[cfg(test)]
 mod tests {
-    use base_db::FileRange;
+    use ide_db::base_db::FileRange;
 
-    use crate::mock_analysis::MockAnalysis;
+    use crate::fixture;
 
     fn check(ra_fixture: &str) {
-        let (mock, position) = MockAnalysis::with_files_and_position(ra_fixture);
-        let (expected, data) = mock.annotation();
+        let (analysis, position, mut annotations) = fixture::annotations(ra_fixture);
+        let (expected, data) = annotations.pop().unwrap();
         assert!(data.is_empty());
-        let analysis = mock.analysis();
 
         let mut navs = analysis.goto_type_definition(position).unwrap().unwrap().info;
         assert_eq!(navs.len(), 1);
@@ -77,7 +76,7 @@ mod tests {
 struct Foo;
      //^^^
 fn foo() {
-    let f: Foo; f<|>
+    let f: Foo; f$0
 }
 "#,
         );
@@ -90,7 +89,7 @@ fn foo() {
 struct Foo;
      //^^^
 fn foo() {
-    let f: &Foo; f<|>
+    let f: &Foo; f$0
 }
 "#,
         );
@@ -104,7 +103,7 @@ macro_rules! id { ($($tt:tt)*) => { $($tt)* } }
 struct Foo {}
      //^^^
 id! {
-    fn bar() { let f<|> = Foo {}; }
+    fn bar() { let f$0 = Foo {}; }
 }
 "#,
         );
@@ -116,7 +115,7 @@ id! {
             r#"
 struct Foo;
      //^^^
-fn foo(<|>f: Foo) {}
+fn foo($0f: Foo) {}
 "#,
         );
     }
@@ -130,7 +129,7 @@ struct Foo;
 struct Bar(Foo);
 fn foo() {
     let bar = Bar(Foo);
-    bar.<|>0;
+    bar.$00;
 }
 "#,
         );
@@ -143,7 +142,7 @@ fn foo() {
 struct Foo;
      //^^^
 impl Foo {
-    fn f(&self<|>) {}
+    fn f(&self$0) {}
 }
 "#,
         )

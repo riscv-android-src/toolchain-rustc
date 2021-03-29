@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "tracing-tree"
-version = "0.1.6"
+version = "0.1.7"
 authors = ["David Barsky <me@davidbarsky.com>", "Nathan Whitaker"]
 description = "A Tracing Layer which prints a tree of spans and events."
 readme = "README.md"
@@ -24,26 +24,36 @@ repository = "https://github.com/davidbarsky/tracing-tree"
 name = "ui"
 harness = false
 [dependencies.ansi_term]
-version = "0.12.1"
+version = "0.12"
 
 [dependencies.atty]
-version = "0.2.14"
+version = "0.2"
 
 [dependencies.chrono]
-version = "0.4.10"
+version = "0.4"
 
 [dependencies.termcolor]
-version = "1.0.5"
+version = "1.1"
 
 [dependencies.tracing]
 version = "0.1"
+
+[dependencies.tracing-log]
+version = "0.1"
+optional = true
 
 [dependencies.tracing-subscriber]
 version = "0.2"
 features = ["registry", "fmt"]
 default-features = false
 [dev-dependencies.assert_cmd]
-version = "1.0.1"
+version = "1"
 
 [dev-dependencies.glob]
-version = "0.3.0"
+version = "0.3"
+
+[dev-dependencies.log]
+version = "0.4"
+
+[features]
+default = ["tracing-log"]

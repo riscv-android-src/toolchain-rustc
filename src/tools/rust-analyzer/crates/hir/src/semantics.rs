@@ -14,8 +14,9 @@ use hir_ty::associated_type_shorthand_candidates;
 use itertools::Itertools;
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::{
-    algo::{find_node_at_offset, skip_trivia_token},
-    ast, AstNode, Direction, SyntaxNode, SyntaxToken, TextRange, TextSize,
+    algo::find_node_at_offset,
+    ast::{self, GenericParamsOwner, LoopBodyOwner},
+    match_ast, AstNode, SyntaxNode, SyntaxToken, TextSize,
 };
 
 use crate::{
@@ -24,8 +25,9 @@ use crate::{
     diagnostics::Diagnostic,
     semantics::source_to_def::{ChildContainer, SourceToDefCache, SourceToDefCtx},
     source_analyzer::{resolve_hir_path, SourceAnalyzer},
-    AssocItem, Callable, Crate, Field, Function, HirFileId, ImplDef, InFile, Local, MacroDef,
-    Module, ModuleDef, Name, Origin, Path, ScopeDef, Trait, Type, TypeAlias, TypeParam, VariantDef,
+    AssocItem, Callable, ConstParam, Crate, Field, Function, HirFileId, Impl, InFile, Label,
+    LifetimeParam, Local, MacroDef, Module, ModuleDef, Name, Path, ScopeDef, Trait, Type,
+    TypeAlias, TypeParam, VariantDef,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +38,8 @@ pub enum PathResolution {
     Local(Local),
     /// A generic parameter
     TypeParam(TypeParam),
-    SelfType(ImplDef),
+    ConstParam(ConstParam),
+    SelfType(Impl),
     Macro(MacroDef),
     AssocItem(AssocItem),
 }
@@ -49,7 +52,7 @@ impl PathResolution {
                 Some(TypeNs::BuiltinType(*builtin))
             }
             PathResolution::Def(ModuleDef::Const(_))
-            | PathResolution::Def(ModuleDef::EnumVariant(_))
+            | PathResolution::Def(ModuleDef::Variant(_))
             | PathResolution::Def(ModuleDef::Function(_))
             | PathResolution::Def(ModuleDef::Module(_))
             | PathResolution::Def(ModuleDef::Static(_))
@@ -57,7 +60,9 @@ impl PathResolution {
             PathResolution::Def(ModuleDef::TypeAlias(alias)) => {
                 Some(TypeNs::TypeAliasId((*alias).into()))
             }
-            PathResolution::Local(_) | PathResolution::Macro(_) => None,
+            PathResolution::Local(_) | PathResolution::Macro(_) | PathResolution::ConstParam(_) => {
+                None
+            }
             PathResolution::TypeParam(param) => Some(TypeNs::GenericParam((*param).into())),
             PathResolution::SelfType(impl_def) => Some(TypeNs::SelfType((*impl_def).into())),
             PathResolution::AssocItem(AssocItem::Const(_))
@@ -174,6 +179,14 @@ impl<'db, DB: HirDatabase> Semantics<'db, DB> {
         }
 
         self.imp.descend_node_at_offset(node, offset).find_map(N::cast)
+    }
+
+    pub fn resolve_lifetime_param(&self, lifetime: &ast::Lifetime) -> Option<LifetimeParam> {
+        self.imp.resolve_lifetime_param(lifetime)
+    }
+
+    pub fn resolve_label(&self, lifetime: &ast::Lifetime) -> Option<Label> {
+        self.imp.resolve_label(lifetime)
     }
 
     pub fn type_of_expr(&self, expr: &ast::Expr) -> Option<Type> {
@@ -297,9 +310,8 @@ impl<'db> SemanticsImpl<'db> {
     }
 
     fn expand(&self, macro_call: &ast::MacroCall) -> Option<SyntaxNode> {
-        let macro_call = self.find_file(macro_call.syntax().clone()).with_value(macro_call);
-        let sa = self.analyze2(macro_call.map(|it| it.syntax()), None);
-        let file_id = sa.expand(self.db, macro_call)?;
+        let sa = self.analyze(macro_call.syntax());
+        let file_id = sa.expand(self.db, InFile::new(sa.file_id, macro_call))?;
         let node = self.db.parse_or_expand(file_id)?;
         self.cache(node.clone(), file_id);
         Some(node)
@@ -311,9 +323,8 @@ impl<'db> SemanticsImpl<'db> {
         hypothetical_args: &ast::TokenTree,
         token_to_map: SyntaxToken,
     ) -> Option<(SyntaxNode, SyntaxToken)> {
-        let macro_call =
-            self.find_file(actual_macro_call.syntax().clone()).with_value(actual_macro_call);
-        let sa = self.analyze2(macro_call.map(|it| it.syntax()), None);
+        let sa = self.analyze(actual_macro_call.syntax());
+        let macro_call = InFile::new(sa.file_id, actual_macro_call);
         let krate = sa.resolver.krate()?;
         let macro_call_id = macro_call.as_call_id(self.db.upcast(), krate, |path| {
             sa.resolver.resolve_path_as_macro(self.db.upcast(), &path)
@@ -329,10 +340,9 @@ impl<'db> SemanticsImpl<'db> {
     fn descend_into_macros(&self, token: SyntaxToken) -> SyntaxToken {
         let _p = profile::span("descend_into_macros");
         let parent = token.parent();
-        let parent = self.find_file(parent);
-        let sa = self.analyze2(parent.as_ref(), None);
+        let sa = self.analyze(&parent);
 
-        let token = successors(Some(parent.with_value(token)), |token| {
+        let token = successors(Some(InFile::new(sa.file_id, token)), |token| {
             self.db.check_canceled();
             let macro_call = token.value.ancestors().find_map(ast::MacroCall::cast)?;
             let tt = macro_call.token_tree()?;
@@ -372,7 +382,7 @@ impl<'db> SemanticsImpl<'db> {
 
     fn original_range(&self, node: &SyntaxNode) -> FileRange {
         let node = self.find_file(node.clone());
-        original_range(self.db, node.as_ref())
+        node.as_ref().original_file_range(self.db.upcast())
     }
 
     fn diagnostics_display_range(&self, diagnostics: &dyn Diagnostic) -> FileRange {
@@ -380,7 +390,7 @@ impl<'db> SemanticsImpl<'db> {
         let root = self.db.parse_or_expand(src.file_id).unwrap();
         let node = src.value.to_node(&root);
         self.cache(root, src.file_id);
-        original_range(self.db, src.with_value(&node))
+        src.with_value(&node).original_file_range(self.db.upcast())
     }
 
     fn ancestors_with_macros(&self, node: SyntaxNode) -> impl Iterator<Item = SyntaxNode> + '_ {
@@ -398,16 +408,62 @@ impl<'db> SemanticsImpl<'db> {
             .kmerge_by(|node1, node2| node1.text_range().len() < node2.text_range().len())
     }
 
+    fn resolve_lifetime_param(&self, lifetime: &ast::Lifetime) -> Option<LifetimeParam> {
+        let text = lifetime.text();
+        let lifetime_param = lifetime.syntax().ancestors().find_map(|syn| {
+            let gpl = match_ast! {
+                match syn {
+                    ast::Fn(it) => it.generic_param_list()?,
+                    ast::TypeAlias(it) => it.generic_param_list()?,
+                    ast::Struct(it) => it.generic_param_list()?,
+                    ast::Enum(it) => it.generic_param_list()?,
+                    ast::Union(it) => it.generic_param_list()?,
+                    ast::Trait(it) => it.generic_param_list()?,
+                    ast::Impl(it) => it.generic_param_list()?,
+                    ast::WherePred(it) => it.generic_param_list()?,
+                    ast::ForType(it) => it.generic_param_list()?,
+                    _ => return None,
+                }
+            };
+            gpl.lifetime_params()
+                .find(|tp| tp.lifetime().as_ref().map(|lt| lt.text()) == Some(text))
+        })?;
+        let src = self.find_file(lifetime_param.syntax().clone()).with_value(lifetime_param);
+        ToDef::to_def(self, src)
+    }
+
+    fn resolve_label(&self, lifetime: &ast::Lifetime) -> Option<Label> {
+        let text = lifetime.text();
+        let label = lifetime.syntax().ancestors().find_map(|syn| {
+            let label = match_ast! {
+                match syn {
+                    ast::ForExpr(it) => it.label(),
+                    ast::WhileExpr(it) => it.label(),
+                    ast::LoopExpr(it) => it.label(),
+                    ast::EffectExpr(it) => it.label(),
+                    _ => None,
+                }
+            };
+            label.filter(|l| {
+                l.lifetime()
+                    .and_then(|lt| lt.lifetime_ident_token())
+                    .map_or(false, |lt| lt.text() == text)
+            })
+        })?;
+        let src = self.find_file(label.syntax().clone()).with_value(label);
+        ToDef::to_def(self, src)
+    }
+
     fn type_of_expr(&self, expr: &ast::Expr) -> Option<Type> {
-        self.analyze(expr.syntax()).type_of_expr(self.db, &expr)
+        self.analyze(expr.syntax()).type_of_expr(self.db, expr)
     }
 
     fn type_of_pat(&self, pat: &ast::Pat) -> Option<Type> {
-        self.analyze(pat.syntax()).type_of_pat(self.db, &pat)
+        self.analyze(pat.syntax()).type_of_pat(self.db, pat)
     }
 
     fn type_of_self(&self, param: &ast::SelfParam) -> Option<Type> {
-        self.analyze(param.syntax()).type_of_self(self.db, &param)
+        self.analyze(param.syntax()).type_of_self(self.db, param)
     }
 
     fn resolve_method_call(&self, call: &ast::MethodCallExpr) -> Option<FunctionId> {
@@ -489,15 +545,13 @@ impl<'db> SemanticsImpl<'db> {
     }
 
     fn scope(&self, node: &SyntaxNode) -> SemanticsScope<'db> {
-        let node = self.find_file(node.clone());
-        let resolver = self.analyze2(node.as_ref(), None).resolver;
-        SemanticsScope { db: self.db, file_id: node.file_id, resolver }
+        let sa = self.analyze(node);
+        SemanticsScope { db: self.db, file_id: sa.file_id, resolver: sa.resolver }
     }
 
     fn scope_at_offset(&self, node: &SyntaxNode, offset: TextSize) -> SemanticsScope<'db> {
-        let node = self.find_file(node.clone());
-        let resolver = self.analyze2(node.as_ref(), Some(offset)).resolver;
-        SemanticsScope { db: self.db, file_id: node.file_id, resolver }
+        let sa = self.analyze_with_offset(node, offset);
+        SemanticsScope { db: self.db, file_id: sa.file_id, resolver: sa.resolver }
     }
 
     fn scope_for_def(&self, def: Trait) -> SemanticsScope<'db> {
@@ -507,21 +561,24 @@ impl<'db> SemanticsImpl<'db> {
     }
 
     fn analyze(&self, node: &SyntaxNode) -> SourceAnalyzer {
-        let src = self.find_file(node.clone());
-        self.analyze2(src.as_ref(), None)
+        self.analyze_impl(node, None)
     }
+    fn analyze_with_offset(&self, node: &SyntaxNode, offset: TextSize) -> SourceAnalyzer {
+        self.analyze_impl(node, Some(offset))
+    }
+    fn analyze_impl(&self, node: &SyntaxNode, offset: Option<TextSize>) -> SourceAnalyzer {
+        let _p = profile::span("Semantics::analyze_impl");
+        let node = self.find_file(node.clone());
+        let node = node.as_ref();
 
-    fn analyze2(&self, src: InFile<&SyntaxNode>, offset: Option<TextSize>) -> SourceAnalyzer {
-        let _p = profile::span("Semantics::analyze2");
-
-        let container = match self.with_ctx(|ctx| ctx.find_container(src)) {
+        let container = match self.with_ctx(|ctx| ctx.find_container(node)) {
             Some(it) => it,
-            None => return SourceAnalyzer::new_for_resolver(Resolver::default(), src),
+            None => return SourceAnalyzer::new_for_resolver(Resolver::default(), node),
         };
 
         let resolver = match container {
             ChildContainer::DefWithBodyId(def) => {
-                return SourceAnalyzer::new_for_body(self.db, def, src, offset)
+                return SourceAnalyzer::new_for_body(self.db, def, node, offset)
             }
             ChildContainer::TraitId(it) => it.resolver(self.db.upcast()),
             ChildContainer::ImplId(it) => it.resolver(self.db.upcast()),
@@ -531,7 +588,7 @@ impl<'db> SemanticsImpl<'db> {
             ChildContainer::TypeAliasId(it) => it.resolver(self.db.upcast()),
             ChildContainer::GenericDefId(it) => it.resolver(self.db.upcast()),
         };
-        SourceAnalyzer::new_for_resolver(resolver, src)
+        SourceAnalyzer::new_for_resolver(resolver, node)
     }
 
     fn cache(&self, root_node: SyntaxNode, file_id: HirFileId) {
@@ -680,23 +737,46 @@ to_def_impls![
     (crate::Enum, ast::Enum, enum_to_def),
     (crate::Union, ast::Union, union_to_def),
     (crate::Trait, ast::Trait, trait_to_def),
-    (crate::ImplDef, ast::Impl, impl_to_def),
+    (crate::Impl, ast::Impl, impl_to_def),
     (crate::TypeAlias, ast::TypeAlias, type_alias_to_def),
     (crate::Const, ast::Const, const_to_def),
     (crate::Static, ast::Static, static_to_def),
     (crate::Function, ast::Fn, fn_to_def),
     (crate::Field, ast::RecordField, record_field_to_def),
     (crate::Field, ast::TupleField, tuple_field_to_def),
-    (crate::EnumVariant, ast::Variant, enum_variant_to_def),
+    (crate::Variant, ast::Variant, enum_variant_to_def),
     (crate::TypeParam, ast::TypeParam, type_param_to_def),
-    (crate::MacroDef, ast::MacroCall, macro_call_to_def), // this one is dubious, not all calls are macros
+    (crate::LifetimeParam, ast::LifetimeParam, lifetime_param_to_def),
+    (crate::ConstParam, ast::ConstParam, const_param_to_def),
+    (crate::MacroDef, ast::MacroRules, macro_rules_to_def),
     (crate::Local, ast::IdentPat, bind_pat_to_def),
+    (crate::Local, ast::SelfParam, self_param_to_def),
+    (crate::Label, ast::Label, label_to_def),
 ];
 
 fn find_root(node: &SyntaxNode) -> SyntaxNode {
     node.ancestors().last().unwrap()
 }
 
+/// `SemanticScope` encapsulates the notion of a scope (the set of visible
+/// names) at a particular program point.
+///
+/// It is a bit tricky, as scopes do not really exist inside the compiler.
+/// Rather, the compiler directly computes for each reference the definition it
+/// refers to. It might transiently compute the explicit scope map while doing
+/// so, but, generally, this is not something left after the analysis.
+///
+/// However, we do very much need explicit scopes for IDE purposes --
+/// completion, at its core, lists the contents of the current scope. The notion
+/// of scope is also useful to answer questions like "what would be the meaning
+/// of this piece of code if we inserted it into this position?".
+///
+/// So `SemanticsScope` is constructed from a specific program point (a syntax
+/// node or just a raw offset) and provides access to the set of visible names
+/// on a somewhat best-effort basis.
+///
+/// Note that if you are wondering "what does this specific existing name mean?",
+/// you'd better use the `resolve_` family of methods.
 #[derive(Debug)]
 pub struct SemanticsScope<'a> {
     pub db: &'a dyn HirDatabase,
@@ -734,7 +814,7 @@ impl<'a> SemanticsScope<'a> {
                 }
                 resolver::ScopeDef::ImplSelfType(it) => ScopeDef::ImplSelfType(it.into()),
                 resolver::ScopeDef::AdtSelfType(it) => ScopeDef::AdtSelfType(it.into()),
-                resolver::ScopeDef::GenericParam(id) => ScopeDef::GenericParam(TypeParam { id }),
+                resolver::ScopeDef::GenericParam(id) => ScopeDef::GenericParam(id.into()),
                 resolver::ScopeDef::Local(pat_id) => {
                     let parent = resolver.body_owner().unwrap().into();
                     ScopeDef::Local(Local { parent, pat_id })
@@ -751,69 +831,4 @@ impl<'a> SemanticsScope<'a> {
         let path = Path::from_src(path.clone(), &hygiene)?;
         resolve_hir_path(self.db, &self.resolver, &path)
     }
-}
-
-// FIXME: Change `HasSource` trait to work with `Semantics` and remove this?
-pub fn original_range(db: &dyn HirDatabase, node: InFile<&SyntaxNode>) -> FileRange {
-    if let Some(range) = original_range_opt(db, node) {
-        let original_file = range.file_id.original_file(db.upcast());
-        if range.file_id == original_file.into() {
-            return FileRange { file_id: original_file, range: range.value };
-        }
-
-        log::error!("Fail to mapping up more for {:?}", range);
-        return FileRange { file_id: range.file_id.original_file(db.upcast()), range: range.value };
-    }
-
-    // Fall back to whole macro call
-    if let Some(expansion) = node.file_id.expansion_info(db.upcast()) {
-        if let Some(call_node) = expansion.call_node() {
-            return FileRange {
-                file_id: call_node.file_id.original_file(db.upcast()),
-                range: call_node.value.text_range(),
-            };
-        }
-    }
-
-    FileRange { file_id: node.file_id.original_file(db.upcast()), range: node.value.text_range() }
-}
-
-fn original_range_opt(
-    db: &dyn HirDatabase,
-    node: InFile<&SyntaxNode>,
-) -> Option<InFile<TextRange>> {
-    let expansion = node.file_id.expansion_info(db.upcast())?;
-
-    // the input node has only one token ?
-    let single = skip_trivia_token(node.value.first_token()?, Direction::Next)?
-        == skip_trivia_token(node.value.last_token()?, Direction::Prev)?;
-
-    Some(node.value.descendants().find_map(|it| {
-        let first = skip_trivia_token(it.first_token()?, Direction::Next)?;
-        let first = ascend_call_token(db, &expansion, node.with_value(first))?;
-
-        let last = skip_trivia_token(it.last_token()?, Direction::Prev)?;
-        let last = ascend_call_token(db, &expansion, node.with_value(last))?;
-
-        if (!single && first == last) || (first.file_id != last.file_id) {
-            return None;
-        }
-
-        Some(first.with_value(first.value.text_range().cover(last.value.text_range())))
-    })?)
-}
-
-fn ascend_call_token(
-    db: &dyn HirDatabase,
-    expansion: &ExpansionInfo,
-    token: InFile<SyntaxToken>,
-) -> Option<InFile<SyntaxToken>> {
-    let (mapped, origin) = expansion.map_token_up(token.as_ref())?;
-    if origin != Origin::Call {
-        return None;
-    }
-    if let Some(info) = mapped.file_id.expansion_info(db.upcast()) {
-        return ascend_call_token(db, &info, mapped);
-    }
-    Some(mapped)
 }

@@ -1,9 +1,7 @@
 //! Empty symbolication strategy used to compile for platforms that have no
 //! support.
 
-use crate::symbolize::ResolveWhat;
-use crate::types::BytesOrWideString;
-use crate::SymbolName;
+use super::{BytesOrWideString, ResolveWhat, SymbolName};
 use core::ffi::c_void;
 use core::marker;
 
@@ -34,4 +32,10 @@ impl Symbol<'_> {
     pub fn lineno(&self) -> Option<u32> {
         None
     }
+
+    pub fn colno(&self) -> Option<u32> {
+        None
+    }
 }
+
+pub unsafe fn clear_symbol_cache() {}

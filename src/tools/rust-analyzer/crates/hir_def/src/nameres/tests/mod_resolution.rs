@@ -323,13 +323,26 @@ pub struct Baz;
 fn module_resolution_relative_path_outside_root() {
     check(
         r#"
-//- /main.rs
+//- /a/b/c/d/e/main.rs crate:main
 #[path="../../../../../outside.rs"]
 mod foo;
+
+//- /outside.rs
+mod bar;
+
+//- /bar.rs
+pub struct Baz;
 "#,
         expect![[r#"
             crate
-        "#]],
+            foo: t
+
+            crate::foo
+            bar: t
+
+            crate::foo::bar
+            Baz: t v
+"#]],
     );
 }
 
@@ -359,7 +372,7 @@ fn module_resolution_explicit_path_mod_rs_with_win_separator() {
     check(
         r#"
 //- /main.rs
-#[path = "module\bar\mod.rs"]
+#[path = r"module\bar\mod.rs"]
 mod foo;
 
 //- /module/bar/mod.rs
@@ -672,42 +685,6 @@ pub struct Baz;
 }
 
 #[test]
-fn unresolved_module_diagnostics() {
-    let db = TestDB::with_files(
-        r"
-        //- /lib.rs
-        mod foo;
-        mod bar;
-        mod baz {}
-        //- /foo.rs
-        ",
-    );
-    let krate = db.test_crate();
-
-    let crate_def_map = db.crate_def_map(krate);
-
-    expect![[r#"
-        [
-            UnresolvedModule {
-                module: Idx::<ModuleData>(0),
-                declaration: InFile {
-                    file_id: HirFileId(
-                        FileId(
-                            FileId(
-                                0,
-                            ),
-                        ),
-                    ),
-                    value: FileAstId::<syntax::ast::generated::nodes::Module>(1),
-                },
-                candidate: "bar.rs",
-            },
-        ]
-    "#]]
-    .assert_debug_eq(&crate_def_map.diagnostics);
-}
-
-#[test]
 fn module_resolution_decl_inside_module_in_non_crate_root_2() {
     check(
         r#"
@@ -791,6 +768,54 @@ struct X;
 
             crate::a::b::c
             X: t v
+        "#]],
+    );
+}
+
+#[test]
+fn circular_mods() {
+    mark::check!(circular_mods);
+    compute_crate_def_map(
+        r#"
+//- /lib.rs
+mod foo;
+//- /foo.rs
+#[path = "./foo.rs"]
+mod foo;
+"#,
+    );
+
+    compute_crate_def_map(
+        r#"
+//- /lib.rs
+mod foo;
+//- /foo.rs
+#[path = "./bar.rs"]
+mod bar;
+//- /bar.rs
+#[path = "./foo.rs"]
+mod foo;
+"#,
+    );
+}
+
+#[test]
+fn abs_path_ignores_local() {
+    check(
+        r#"
+//- /main.rs crate:main deps:core
+pub use ::core::hash::Hash;
+pub mod core {}
+
+//- /lib.rs crate:core
+pub mod hash { pub trait Hash {} }
+"#,
+        expect![[r#"
+            crate
+            Hash: t
+            core: t
+
+            crate::core
         "#]],
     );
 }

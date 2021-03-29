@@ -4,6 +4,7 @@ mod support;
 use self::support::*;
 use tracing::Level;
 
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[test]
 fn multiple_max_level_hints() {
     // This test ensures that when multiple subscribers are active, their max
@@ -25,6 +26,7 @@ fn multiple_max_level_hints() {
     }
 
     let (subscriber1, handle1) = subscriber::mock()
+        .named("subscriber1")
         .with_max_level_hint(Level::INFO)
         .with_filter(|meta| {
             let level = dbg!(meta.level());
@@ -40,6 +42,7 @@ fn multiple_max_level_hints() {
         .done()
         .run_with_handle();
     let (subscriber2, handle2) = subscriber::mock()
+        .named("subscriber2")
         .with_max_level_hint(Level::DEBUG)
         .with_filter(|meta| {
             let level = dbg!(meta.level());

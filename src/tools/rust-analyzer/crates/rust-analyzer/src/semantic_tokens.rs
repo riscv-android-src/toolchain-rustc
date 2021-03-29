@@ -27,7 +27,7 @@ macro_rules! define_semantic_token_types {
             SemanticTokenType::ENUM_MEMBER,
             SemanticTokenType::TYPE_PARAMETER,
             SemanticTokenType::FUNCTION,
-            SemanticTokenType::MEMBER,
+            SemanticTokenType::METHOD,
             SemanticTokenType::PROPERTY,
             SemanticTokenType::MACRO,
             SemanticTokenType::VARIABLE,
@@ -38,15 +38,25 @@ macro_rules! define_semantic_token_types {
 }
 
 define_semantic_token_types![
+    (ANGLE, "angle"),
     (ATTRIBUTE, "attribute"),
     (BOOLEAN, "boolean"),
+    (BRACE, "brace"),
+    (BRACKET, "bracket"),
     (BUILTIN_TYPE, "builtinType"),
+    (COMMA, "comma"),
+    (COLON, "colon"),
+    (DOT, "dot"),
     (ESCAPE_SEQUENCE, "escapeSequence"),
     (FORMAT_SPECIFIER, "formatSpecifier"),
     (GENERIC, "generic"),
+    (CONST_PARAMETER, "constParameter"),
     (LIFETIME, "lifetime"),
+    (LABEL, "label"),
+    (PARENTHESIS, "parenthesis"),
     (PUNCTUATION, "punctuation"),
     (SELF_KEYWORD, "selfKeyword"),
+    (SEMICOLON, "semicolon"),
     (TYPE_ALIAS, "typeAlias"),
     (UNION, "union"),
     (UNRESOLVED_REFERENCE, "unresolvedReference"),
@@ -77,6 +87,7 @@ define_semantic_token_modifiers![
     (CONSUMING, "consuming"),
     (UNSAFE, "unsafe"),
     (ATTRIBUTE_MODIFIER, "attribute"),
+    (CALLABLE, "callable"),
 ];
 
 #[derive(Default)]
@@ -100,12 +111,12 @@ pub(crate) struct SemanticTokensBuilder {
 }
 
 impl SemanticTokensBuilder {
-    pub fn new(id: String) -> Self {
+    pub(crate) fn new(id: String) -> Self {
         SemanticTokensBuilder { id, prev_line: 0, prev_char: 0, data: Default::default() }
     }
 
     /// Push a new token onto the builder
-    pub fn push(&mut self, range: Range, token_index: u32, modifier_bitset: u32) {
+    pub(crate) fn push(&mut self, range: Range, token_index: u32, modifier_bitset: u32) {
         let mut push_line = range.start.line as u32;
         let mut push_char = range.start.character as u32;
 
@@ -133,12 +144,12 @@ impl SemanticTokensBuilder {
         self.prev_char = range.start.character as u32;
     }
 
-    pub fn build(self) -> SemanticTokens {
+    pub(crate) fn build(self) -> SemanticTokens {
         SemanticTokens { result_id: Some(self.id), data: self.data }
     }
 }
 
-pub fn diff_tokens(old: &[SemanticToken], new: &[SemanticToken]) -> Vec<SemanticTokensEdit> {
+pub(crate) fn diff_tokens(old: &[SemanticToken], new: &[SemanticToken]) -> Vec<SemanticTokensEdit> {
     let offset = new.iter().zip(old.iter()).take_while(|&(n, p)| n == p).count();
 
     let (_, old) = old.split_at(offset);
@@ -164,7 +175,7 @@ pub fn diff_tokens(old: &[SemanticToken], new: &[SemanticToken]) -> Vec<Semantic
     }
 }
 
-pub fn type_index(type_: SemanticTokenType) -> u32 {
+pub(crate) fn type_index(type_: SemanticTokenType) -> u32 {
     SUPPORTED_TYPES.iter().position(|it| *it == type_).unwrap() as u32
 }
 

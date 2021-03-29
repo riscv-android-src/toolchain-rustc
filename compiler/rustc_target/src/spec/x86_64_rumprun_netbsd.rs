@@ -1,4 +1,4 @@
-use crate::spec::{LinkerFlavor, Target, TargetOptions};
+use crate::spec::{LinkerFlavor, StackProbeType, Target, TargetOptions};
 
 pub fn target() -> Target {
     let mut base = super::netbsd_base::opts();
@@ -12,7 +12,8 @@ pub fn target() -> Target {
     base.has_rpath = false;
     base.position_independent_executables = false;
     base.disable_redzone = true;
-    base.stack_probes = true;
+    // don't use probe-stack=inline-asm until rust-lang/rust#83139 is resolved.
+    base.stack_probes = StackProbeType::Call;
 
     Target {
         llvm_target: "x86_64-rumprun-netbsd".to_string(),

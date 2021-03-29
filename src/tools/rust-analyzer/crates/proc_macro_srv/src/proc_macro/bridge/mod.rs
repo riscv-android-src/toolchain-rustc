@@ -57,6 +57,10 @@ use std::thread;
 macro_rules! with_api {
     ($S:ident, $self:ident, $m:ident) => {
         $m! {
+            FreeFunctions {
+                fn drop($self: $S::FreeFunctions);
+                fn track_env_var(var: &str, value: Option<&str>);
+            },
             TokenStream {
                 fn drop($self: $S::TokenStream);
                 fn clone($self: &$S::TokenStream) -> $S::TokenStream;
@@ -221,6 +225,9 @@ pub struct Bridge<'a> {
 
     /// Server-side function that the client uses to make requests.
     dispatch: closure::Closure<'a, Buffer<u8>, Buffer<u8>>,
+
+    /// If 'true', always invoke the default panic hook
+    force_show_panics: bool,
 }
 
 // impl<'a> !Sync for Bridge<'a> {}

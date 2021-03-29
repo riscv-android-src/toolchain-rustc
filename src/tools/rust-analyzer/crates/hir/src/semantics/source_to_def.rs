@@ -4,10 +4,11 @@ use base_db::FileId;
 use hir_def::{
     child_by_source::ChildBySource,
     dyn_map::DynMap,
-    expr::PatId,
+    expr::{LabelId, PatId},
     keys::{self, Key},
-    ConstId, DefWithBodyId, EnumId, EnumVariantId, FieldId, FunctionId, GenericDefId, ImplId,
-    ModuleId, StaticId, StructId, TraitId, TypeAliasId, TypeParamId, UnionId, VariantId,
+    ConstId, ConstParamId, DefWithBodyId, EnumId, EnumVariantId, FieldId, FunctionId, GenericDefId,
+    ImplId, LifetimeParamId, ModuleId, StaticId, StructId, TraitId, TypeAliasId, TypeParamId,
+    UnionId, VariantId,
 };
 use hir_expand::{name::AsName, AstId, MacroDefKind};
 use rustc_hash::FxHashMap;
@@ -29,12 +30,12 @@ pub(super) struct SourceToDefCtx<'a, 'b> {
 impl SourceToDefCtx<'_, '_> {
     pub(super) fn file_to_def(&mut self, file: FileId) -> Option<ModuleId> {
         let _p = profile::span("SourceBinder::to_module_def");
-        let (krate, local_id) = self.db.relevant_crates(file).iter().find_map(|&crate_id| {
+        self.db.relevant_crates(file).iter().find_map(|&crate_id| {
+            // FIXME: inner items
             let crate_def_map = self.db.crate_def_map(crate_id);
             let local_id = crate_def_map.modules_for_file(file).next()?;
-            Some((crate_id, local_id))
-        })?;
-        Some(ModuleId { krate, local_id })
+            Some(crate_def_map.module_id(local_id))
+        })
     }
 
     pub(super) fn module_to_def(&mut self, src: InFile<ast::Module>) -> Option<ModuleId> {
@@ -59,9 +60,9 @@ impl SourceToDefCtx<'_, '_> {
         }?;
 
         let child_name = src.value.name()?.as_name();
-        let def_map = self.db.crate_def_map(parent_module.krate);
+        let def_map = parent_module.def_map(self.db.upcast());
         let child_id = *def_map[parent_module.local_id].children.get(&child_name)?;
-        Some(ModuleId { krate: parent_module.krate, local_id: child_id })
+        Some(def_map.module_id(child_id))
     }
 
     pub(super) fn trait_to_def(&mut self, src: InFile<ast::Trait>) -> Option<TraitId> {
@@ -107,11 +108,29 @@ impl SourceToDefCtx<'_, '_> {
         &mut self,
         src: InFile<ast::IdentPat>,
     ) -> Option<(DefWithBodyId, PatId)> {
-        let container = self.find_pat_container(src.as_ref().map(|it| it.syntax()))?;
+        let container = self.find_pat_or_label_container(src.as_ref().map(|it| it.syntax()))?;
         let (_body, source_map) = self.db.body_with_source_map(container);
         let src = src.map(ast::Pat::from);
         let pat_id = source_map.node_pat(src.as_ref())?;
         Some((container, pat_id))
+    }
+    pub(super) fn self_param_to_def(
+        &mut self,
+        src: InFile<ast::SelfParam>,
+    ) -> Option<(DefWithBodyId, PatId)> {
+        let container = self.find_pat_or_label_container(src.as_ref().map(|it| it.syntax()))?;
+        let (_body, source_map) = self.db.body_with_source_map(container);
+        let pat_id = source_map.node_self_param(src.as_ref())?;
+        Some((container, pat_id))
+    }
+    pub(super) fn label_to_def(
+        &mut self,
+        src: InFile<ast::Label>,
+    ) -> Option<(DefWithBodyId, LabelId)> {
+        let container = self.find_pat_or_label_container(src.as_ref().map(|it| it.syntax()))?;
+        let (_body, source_map) = self.db.body_with_source_map(container);
+        let label_id = source_map.node_label(src.as_ref())?;
+        Some((container, label_id))
     }
 
     fn to_def<Ast: AstNode + 'static, ID: Copy + 'static>(
@@ -128,21 +147,48 @@ impl SourceToDefCtx<'_, '_> {
 
     pub(super) fn type_param_to_def(&mut self, src: InFile<ast::TypeParam>) -> Option<TypeParamId> {
         let container: ChildContainer =
-            self.find_type_param_container(src.as_ref().map(|it| it.syntax()))?.into();
+            self.find_generic_param_container(src.as_ref().map(|it| it.syntax()))?.into();
         let db = self.db;
         let dyn_map =
             &*self.cache.entry(container).or_insert_with(|| container.child_by_source(db));
         dyn_map[keys::TYPE_PARAM].get(&src).copied()
     }
 
+    pub(super) fn lifetime_param_to_def(
+        &mut self,
+        src: InFile<ast::LifetimeParam>,
+    ) -> Option<LifetimeParamId> {
+        let container: ChildContainer =
+            self.find_generic_param_container(src.as_ref().map(|it| it.syntax()))?.into();
+        let db = self.db;
+        let dyn_map =
+            &*self.cache.entry(container).or_insert_with(|| container.child_by_source(db));
+        dyn_map[keys::LIFETIME_PARAM].get(&src).copied()
+    }
+
+    pub(super) fn const_param_to_def(
+        &mut self,
+        src: InFile<ast::ConstParam>,
+    ) -> Option<ConstParamId> {
+        let container: ChildContainer =
+            self.find_generic_param_container(src.as_ref().map(|it| it.syntax()))?.into();
+        let db = self.db;
+        let dyn_map =
+            &*self.cache.entry(container).or_insert_with(|| container.child_by_source(db));
+        dyn_map[keys::CONST_PARAM].get(&src).copied()
+    }
+
     // FIXME: use DynMap as well?
-    pub(super) fn macro_call_to_def(&mut self, src: InFile<ast::MacroCall>) -> Option<MacroDefId> {
+    pub(super) fn macro_rules_to_def(
+        &mut self,
+        src: InFile<ast::MacroRules>,
+    ) -> Option<MacroDefId> {
         let kind = MacroDefKind::Declarative;
         let file_id = src.file_id.original_file(self.db.upcast());
-        let krate = self.file_to_def(file_id)?.krate;
+        let krate = self.file_to_def(file_id)?.krate();
         let file_ast_id = self.db.ast_id_map(src.file_id).ast_id(&src.value);
-        let ast_id = Some(AstId::new(src.file_id, file_ast_id));
-        Some(MacroDefId { krate: Some(krate), ast_id, kind, local_inner: false })
+        let ast_id = Some(AstId::new(src.file_id, file_ast_id.upcast()));
+        Some(MacroDefId { krate, ast_id, kind, local_inner: false })
     }
 
     pub(super) fn find_container(&mut self, src: InFile<&SyntaxNode>) -> Option<ChildContainer> {
@@ -189,6 +235,10 @@ impl SourceToDefCtx<'_, '_> {
                         let def = self.type_alias_to_def(container.with_value(it))?;
                         def.into()
                     },
+                    ast::Variant(it) => {
+                        let def = self.enum_variant_to_def(container.with_value(it))?;
+                        VariantId::from(def).into()
+                    },
                     _ => continue,
                 }
             };
@@ -199,7 +249,7 @@ impl SourceToDefCtx<'_, '_> {
         Some(def.into())
     }
 
-    fn find_type_param_container(&mut self, src: InFile<&SyntaxNode>) -> Option<GenericDefId> {
+    fn find_generic_param_container(&mut self, src: InFile<&SyntaxNode>) -> Option<GenericDefId> {
         for container in src.cloned().ancestors_with_macros(self.db.upcast()).skip(1) {
             let res: GenericDefId = match_ast! {
                 match (container.value) {
@@ -217,7 +267,7 @@ impl SourceToDefCtx<'_, '_> {
         None
     }
 
-    fn find_pat_container(&mut self, src: InFile<&SyntaxNode>) -> Option<DefWithBodyId> {
+    fn find_pat_or_label_container(&mut self, src: InFile<&SyntaxNode>) -> Option<DefWithBodyId> {
         for container in src.cloned().ancestors_with_macros(self.db.upcast()).skip(1) {
             let res: DefWithBodyId = match_ast! {
                 match (container.value) {
@@ -243,7 +293,7 @@ pub(crate) enum ChildContainer {
     VariantId(VariantId),
     TypeAliasId(TypeAliasId),
     /// XXX: this might be the same def as, for example an `EnumId`. However,
-    /// here the children generic parameters, and not, eg enum variants.
+    /// here the children are generic parameters, and not, eg enum variants.
     GenericDefId(GenericDefId),
 }
 impl_from! {

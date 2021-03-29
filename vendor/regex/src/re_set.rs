@@ -96,6 +96,19 @@ impl RegexSet {
         RegexSetBuilder::new(exprs).build()
     }
 
+    /// Create a new empty regex set.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use regex::RegexSet;
+    /// let set = RegexSet::empty();
+    /// assert!(set.is_empty());
+    /// ```
+    pub fn empty() -> RegexSet {
+        RegexSetBuilder::new(&[""; 0]).build().unwrap()
+    }
+
     /// Returns true if and only if one of the regexes in this set matches
     /// the text given.
     ///
@@ -207,6 +220,11 @@ impl RegexSet {
         self.0.regex_strings().len()
     }
 
+    /// Returns `true` if this set contains no regular expressions.
+    pub fn is_empty(&self) -> bool {
+        self.0.regex_strings().is_empty()
+    }
+
     /// Returns the patterns that this set will match on.
     ///
     /// This function can be used to determine the pattern for a match. The
@@ -302,6 +320,7 @@ impl<'a> IntoIterator for &'a SetMatches {
 /// This will always produces matches in ascending order of index, where the
 /// index corresponds to the index of the regex that matched with respect to
 /// its position when initially building the set.
+#[derive(Debug)]
 pub struct SetMatchesIntoIter(iter::Enumerate<vec::IntoIter<bool>>);
 
 impl Iterator for SetMatchesIntoIter {
@@ -334,6 +353,8 @@ impl DoubleEndedIterator for SetMatchesIntoIter {
     }
 }
 
+impl iter::FusedIterator for SetMatchesIntoIter {}
+
 /// A borrowed iterator over the set of matches from a regex set.
 ///
 /// The lifetime `'a` refers to the lifetime of a `SetMatches` value.
@@ -341,7 +362,7 @@ impl DoubleEndedIterator for SetMatchesIntoIter {
 /// This will always produces matches in ascending order of index, where the
 /// index corresponds to the index of the regex that matched with respect to
 /// its position when initially building the set.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SetMatchesIter<'a>(iter::Enumerate<slice::Iter<'a, bool>>);
 
 impl<'a> Iterator for SetMatchesIter<'a> {
@@ -373,6 +394,8 @@ impl<'a> DoubleEndedIterator for SetMatchesIter<'a> {
         }
     }
 }
+
+impl<'a> iter::FusedIterator for SetMatchesIter<'a> {}
 
 #[doc(hidden)]
 impl From<Exec> for RegexSet {

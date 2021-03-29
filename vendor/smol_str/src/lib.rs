@@ -1,4 +1,10 @@
-use std::{borrow::Borrow, cmp::Ordering, fmt, hash, iter, ops::Deref, sync::Arc};
+use std::{
+    borrow::Borrow,
+    cmp::{self, Ordering},
+    fmt, hash, iter,
+    ops::Deref,
+    sync::Arc,
+};
 
 /// A `SmolStr` is a string type that has the following properties:
 ///
@@ -19,67 +25,7 @@ use std::{borrow::Borrow, cmp::Ordering, fmt, hash, iter, ops::Deref, sync::Arc}
 pub struct SmolStr(Repr);
 
 impl SmolStr {
-    /// Constructs an inline variant of `SmolStr` at compile time.
-    ///
-    /// # Parameters
-    ///
-    /// - `len`: Must be short (≤ 22 bytes)
-    /// - `bytes`: Must be ASCII bytes, and there must be at least `len` of
-    ///   them. If `len` is smaller than the actual len of `bytes`, the string
-    ///   is truncated.
-    ///
-    /// # Returns
-    ///
-    /// A constant `SmolStr` with inline data.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use smol_str::SmolStr;
-    /// const IDENT: SmolStr = SmolStr::new_inline_from_ascii(5, b"hello");
-    /// ```
-    ///
-    /// Given a `len` smaller than the number of bytes in `bytes`, the string is
-    /// cut off:
-    ///
-    /// ```rust
-    /// # use smol_str::SmolStr;
-    /// const SHORT: SmolStr = SmolStr::new_inline_from_ascii(5, b"hello world");
-    /// assert_eq!(SHORT.as_str(), "hello");
-    /// ```
-    ///
-    /// ## Compile-time errors
-    ///
-    /// This will **fail** at compile-time with a message like "index out of
-    /// bounds" on a `_len_is_short` because the string is too large:
-    ///
-    /// ```rust,compile_fail
-    /// # use smol_str::SmolStr;
-    /// const IDENT: SmolStr = SmolStr::new_inline_from_ascii(
-    ///     49,
-    ///     b"hello world, how are you doing this fine morning?",
-    /// );
-    /// ```
-    ///
-    /// Similarly, this will **fail** to compile with "index out of bounds" on
-    /// an `_is_ascii` binding because it contains non-ASCII characters:
-    ///
-    /// ```rust,compile_fail
-    /// # use smol_str::SmolStr;
-    /// const IDENT: SmolStr = SmolStr::new_inline_from_ascii(
-    ///     2,
-    ///     &[209, 139],
-    /// );
-    /// ```
-    ///
-    /// Last but not least, given a `len` that is larger than the number of
-    /// bytes in `bytes`, it will fail to compile with "index out of bounds: the
-    /// len is 5 but the index is 5" on a binding called `byte`:
-    ///
-    /// ```rust,compile_fail
-    /// # use smol_str::SmolStr;
-    /// const IDENT: SmolStr = SmolStr::new_inline_from_ascii(10, b"hello");
-    /// ```
+    #[deprecated = "Use `new_inline` instead"]
     pub const fn new_inline_from_ascii(len: usize, bytes: &[u8]) -> SmolStr {
         let _len_is_short = [(); INLINE_CAP + 1][len];
 
@@ -98,6 +44,23 @@ impl SmolStr {
         s!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21);
         SmolStr(Repr::Inline {
             len: len as u8,
+            buf,
+        })
+    }
+
+    /// Constructs inline variant of `SmolStr`.
+    ///
+    /// Panics if `text.len() > 22`.
+    #[inline]
+    pub const fn new_inline(text: &str) -> SmolStr {
+        let mut buf = [0; INLINE_CAP];
+        let mut i = 0;
+        while i < text.len() {
+            buf[i] = text.as_bytes()[i];
+            i += 1
+        }
+        SmolStr(Repr::Inline {
+            len: text.len() as u8,
             buf,
         })
     }
@@ -135,6 +98,33 @@ impl SmolStr {
             Repr::Heap(..) => true,
             _ => false,
         }
+    }
+
+    fn from_char_iter<I: iter::Iterator<Item = char>>(mut iter: I) -> SmolStr {
+        let (min_size, _) = iter.size_hint();
+        if min_size > INLINE_CAP {
+            let heap: String = iter.collect();
+            return SmolStr(Repr::Heap(heap.into_boxed_str().into()));
+        }
+        let mut len = 0;
+        let mut buf = [0u8; INLINE_CAP];
+        while let Some(ch) = iter.next() {
+            let size = ch.len_utf8();
+            if size + len > INLINE_CAP {
+                let (min_remaining, _) = iter.size_hint();
+                let mut heap = String::with_capacity(size + len + min_remaining);
+                heap.push_str(std::str::from_utf8(&buf[..len]).unwrap());
+                heap.push(ch);
+                heap.extend(iter);
+                return SmolStr(Repr::Heap(heap.into_boxed_str().into()));
+            }
+            ch.encode_utf8(&mut buf[len..]);
+            len += size;
+        }
+        SmolStr(Repr::Inline {
+            len: len as u8,
+            buf,
+        })
     }
 }
 
@@ -240,25 +230,8 @@ impl fmt::Display for SmolStr {
 
 impl iter::FromIterator<char> for SmolStr {
     fn from_iter<I: iter::IntoIterator<Item = char>>(iter: I) -> SmolStr {
-        let mut len = 0;
-        let mut buf = [0u8; INLINE_CAP];
-        let mut iter = iter.into_iter();
-        while let Some(ch) = iter.next() {
-            let size = ch.len_utf8();
-            if size + len > INLINE_CAP {
-                let mut heap = String::with_capacity(size + len);
-                heap.push_str(std::str::from_utf8(&buf[..len]).unwrap());
-                heap.push(ch);
-                heap.extend(iter);
-                return SmolStr(Repr::Heap(heap.into_boxed_str().into()));
-            }
-            ch.encode_utf8(&mut buf[len..]);
-            len += size;
-        }
-        SmolStr(Repr::Inline {
-            len: len as u8,
-            buf,
-        })
+        let iter = iter.into_iter();
+        Self::from_char_iter(iter)
     }
 }
 
@@ -358,10 +331,17 @@ impl Repr {
                 };
             }
 
-            let newlines = text.bytes().take_while(|&b| b == b'\n').count();
-            if text[newlines..].bytes().all(|b| b == b' ') {
-                let spaces = len - newlines;
-                if newlines <= N_NEWLINES && spaces <= N_SPACES {
+            if len <= N_NEWLINES + N_SPACES {
+                let bytes = text.as_bytes();
+                let possible_newline_count = cmp::min(len, N_NEWLINES);
+                let newlines = bytes[..possible_newline_count]
+                    .iter()
+                    .take_while(|&&b| b == b'\n')
+                    .count();
+                let possible_space_count = len - newlines;
+                if possible_space_count <= N_SPACES && bytes[newlines..].iter().all(|&b| b == b' ')
+                {
+                    let spaces = possible_space_count;
                     return Repr::Substring { newlines, spaces };
                 }
             }
@@ -410,9 +390,9 @@ impl Repr {
 
 #[cfg(feature = "serde")]
 mod serde {
+    use super::SmolStr;
     use ::serde::de::{Deserializer, Error, Unexpected, Visitor};
     use std::fmt;
-    use super::SmolStr;
 
     // https://github.com/serde-rs/serde/blob/629802f2abfd1a54a6072992888fea7ca5bc209f/serde/src/private/de.rs#L56-L125
     fn smol_str<'de: 'a, 'a, D>(deserializer: D) -> Result<SmolStr, D::Error>

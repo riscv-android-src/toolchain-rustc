@@ -112,7 +112,7 @@ impl TraitImpls {
         let mut impls = Self { map: FxHashMap::default() };
 
         let crate_def_map = db.crate_def_map(krate);
-        for (_module_id, module_data) in crate_def_map.modules.iter() {
+        for (_module_id, module_data) in crate_def_map.modules() {
             for impl_id in module_data.scope.impls() {
                 let target_trait = match db.impl_trait(impl_id) {
                     Some(tr) => tr.value.trait_,
@@ -198,7 +198,7 @@ impl InherentImpls {
         let mut map: FxHashMap<_, Vec<_>> = FxHashMap::default();
 
         let crate_def_map = db.crate_def_map(krate);
-        for (_module_id, module_data) in crate_def_map.modules.iter() {
+        for (_module_id, module_data) in crate_def_map.modules() {
             for impl_id in module_data.scope.impls() {
                 let data = db.impl_data(impl_id);
                 if data.target_trait.is_some() {
@@ -248,7 +248,15 @@ impl Ty {
         let lang_item_targets = match self {
             Ty::Apply(a_ty) => match a_ty.ctor {
                 TypeCtor::Adt(def_id) => {
-                    return Some(std::iter::once(def_id.module(db.upcast()).krate).collect())
+                    return Some(std::iter::once(def_id.module(db.upcast()).krate()).collect())
+                }
+                TypeCtor::ForeignType(type_alias_id) => {
+                    return Some(
+                        std::iter::once(
+                            type_alias_id.lookup(db.upcast()).module(db.upcast()).krate(),
+                        )
+                        .collect(),
+                    )
                 }
                 TypeCtor::Bool => lang_item_crate!("bool"),
                 TypeCtor::Char => lang_item_crate!("char"),
@@ -272,7 +280,7 @@ impl Ty {
                 LangItemTarget::ImplDefId(it) => Some(it),
                 _ => None,
             })
-            .map(|it| it.lookup(db.upcast()).container.module(db.upcast()).krate)
+            .map(|it| it.lookup(db.upcast()).container.module(db.upcast()).krate())
             .collect();
         Some(res)
     }
@@ -712,7 +720,13 @@ fn transform_receiver_ty(
             .push(self_ty.value.clone())
             .fill_with_unknown()
             .build(),
-        AssocContainerId::ImplId(impl_id) => inherent_impl_substs(db, impl_id, &self_ty)?,
+        AssocContainerId::ImplId(impl_id) => {
+            let impl_substs = inherent_impl_substs(db, impl_id, &self_ty)?;
+            Substs::build_for_def(db, function_id)
+                .use_parent_substs(&impl_substs)
+                .fill_with_unknown()
+                .build()
+        }
         AssocContainerId::ContainerId(_) => unreachable!(),
     };
     let sig = db.callable_item_signature(function_id.into());
@@ -730,6 +744,19 @@ pub fn implements_trait(
     let solution = db.trait_solve(krate, goal);
 
     solution.is_some()
+}
+
+pub fn implements_trait_unique(
+    ty: &Canonical<Ty>,
+    db: &dyn HirDatabase,
+    env: Arc<TraitEnvironment>,
+    krate: CrateId,
+    trait_: TraitId,
+) -> bool {
+    let goal = generic_implements_goal(db, env, trait_, ty.clone());
+    let solution = db.trait_solve(krate, goal);
+
+    matches!(solution, Some(crate::traits::Solution::Unique(_)))
 }
 
 /// This creates Substs for a trait with the given Self type and type variables

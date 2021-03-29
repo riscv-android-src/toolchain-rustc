@@ -1,18 +1,15 @@
-use syntax::{algo::SyntaxRewriter, ast, match_ast, AstNode, SyntaxNode, TextRange};
+use ide_db::helpers::insert_use::{insert_use, ImportScope};
+use syntax::{algo::SyntaxRewriter, ast, match_ast, AstNode, SyntaxNode};
 use test_utils::mark;
 
-use crate::{
-    utils::{insert_use, ImportScope, MergeBehaviour},
-    AssistContext, AssistId, AssistKind, Assists,
-};
-use ast::make;
+use crate::{AssistContext, AssistId, AssistKind, Assists};
 
 // Assist: replace_qualified_name_with_use
 //
 // Adds a use statement for a given fully-qualified name.
 //
 // ```
-// fn process(map: std::collections::<|>HashMap<String, String>) {}
+// fn process(map: std::collections::$0HashMap<String, String>) {}
 // ```
 // ->
 // ```
@@ -33,18 +30,9 @@ pub(crate) fn replace_qualified_name_with_use(
         mark::hit!(dont_import_trivial_paths);
         return None;
     }
-    let path_to_import = path.to_string();
-    let path_to_import = match path.segment()?.generic_arg_list() {
-        Some(generic_args) => {
-            let generic_args_start =
-                generic_args.syntax().text_range().start() - path.syntax().text_range().start();
-            &path_to_import[TextRange::up_to(generic_args_start)]
-        }
-        None => path_to_import.as_str(),
-    };
 
     let target = path.syntax().text_range();
-    let scope = ImportScope::find_insert_use_container(path.syntax(), ctx)?;
+    let scope = ImportScope::find_insert_use_container(path.syntax(), &ctx.sema)?;
     let syntax = scope.as_syntax_node();
     acc.add(
         AssistId("replace_qualified_name_with_use", AssistKind::RefactorRewrite),
@@ -54,22 +42,17 @@ pub(crate) fn replace_qualified_name_with_use(
             // Now that we've brought the name into scope, re-qualify all paths that could be
             // affected (that is, all paths inside the node we added the `use` to).
             let mut rewriter = SyntaxRewriter::default();
-            shorten_paths(&mut rewriter, syntax.clone(), path);
-            let rewritten_syntax = rewriter.rewrite(&syntax);
-            if let Some(ref import_scope) = ImportScope::from(rewritten_syntax) {
-                let new_syntax = insert_use(
-                    import_scope,
-                    make::path_from_text(path_to_import),
-                    Some(MergeBehaviour::Full),
-                );
-                builder.replace(syntax.text_range(), new_syntax.to_string())
+            shorten_paths(&mut rewriter, syntax.clone(), &path);
+            if let Some(ref import_scope) = ImportScope::from(syntax.clone()) {
+                rewriter += insert_use(import_scope, path, ctx.config.insert_use.merge);
+                builder.rewrite(rewriter);
             }
         },
     )
 }
 
 /// Adds replacements to `re` that shorten `path` in all descendants of `node`.
-fn shorten_paths(rewriter: &mut SyntaxRewriter<'static>, node: SyntaxNode, path: ast::Path) {
+fn shorten_paths(rewriter: &mut SyntaxRewriter<'static>, node: SyntaxNode, path: &ast::Path) {
     for child in node.children() {
         match_ast! {
             match child {
@@ -82,10 +65,10 @@ fn shorten_paths(rewriter: &mut SyntaxRewriter<'static>, node: SyntaxNode, path:
                 ast::Path(p) => {
                     match maybe_replace_path(rewriter, p.clone(), path.clone()) {
                         Some(()) => {},
-                        None => shorten_paths(rewriter, p.syntax().clone(), path.clone()),
+                        None => shorten_paths(rewriter, p.syntax().clone(), path),
                     }
                 },
-                _ => shorten_paths(rewriter, child, path.clone()),
+                _ => shorten_paths(rewriter, child, path),
             }
         }
     }
@@ -138,11 +121,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_replace_already_imported() {
+        check_assist(
+            replace_qualified_name_with_use,
+            r"use std::fs;
+
+fn main() {
+    std::f$0s::Path
+}",
+            r"use std::fs;
+
+fn main() {
+    fs::Path
+}",
+        )
+    }
+
+    #[test]
     fn test_replace_add_use_no_anchor() {
         check_assist(
             replace_qualified_name_with_use,
             r"
-std::fmt::Debug<|>
+std::fmt::Debug$0
     ",
             r"
 use std::fmt::Debug;
@@ -156,7 +156,7 @@ Debug
         check_assist(
             replace_qualified_name_with_use,
             r"
-std::fmt::Debug<|>
+std::fmt::Debug$0
 
 fn main() {
 }
@@ -180,7 +180,7 @@ fn main() {
 fn main() {
 }
 
-std::fmt::Debug<|>
+std::fmt::Debug$0
     ",
             r"
 use std::fmt::Debug;
@@ -198,7 +198,7 @@ Debug
         check_assist(
             replace_qualified_name_with_use,
             r"
-std::fmt<|>::Debug
+std::fmt$0::Debug
     ",
             r"
 use std::fmt;
@@ -215,7 +215,7 @@ fmt::Debug
             r"
 use stdx;
 
-impl std::fmt::Debug<|> for Foo {
+impl std::fmt::Debug$0 for Foo {
 }
     ",
             r"
@@ -234,7 +234,7 @@ impl Debug for Foo {
         check_assist(
             replace_qualified_name_with_use,
             r"
-impl std::fmt::Debug<|> for Foo {
+impl std::fmt::Debug$0 for Foo {
 }
     ",
             r"
@@ -251,7 +251,7 @@ impl Debug for Foo {
         check_assist(
             replace_qualified_name_with_use,
             r"
-    impl std::fmt::Debug<|> for Foo {
+    impl std::fmt::Debug$0 for Foo {
     }
     ",
             r"
@@ -270,7 +270,7 @@ impl Debug for Foo {
             r"
 use std::fmt;
 
-impl std::io<|> for Foo {
+impl std::io$0 for Foo {
 }
     ",
             r"
@@ -289,7 +289,7 @@ impl io for Foo {
             r"
 use std::fmt;
 
-impl std::fmt::Debug<|> for Foo {
+impl std::fmt::Debug$0 for Foo {
 }
     ",
             r"
@@ -308,11 +308,11 @@ impl Debug for Foo {
             r"
 use std::fmt::Debug;
 
-impl std::fmt<|> for Foo {
+impl std::fmt$0 for Foo {
 }
     ",
             r"
-use std::fmt::{Debug, self};
+use std::fmt::{self, Debug};
 
 impl fmt for Foo {
 }
@@ -327,12 +327,11 @@ impl fmt for Foo {
             r"
 use std::fmt::{Debug, nested::{Display}};
 
-impl std::fmt::nested<|> for Foo {
+impl std::fmt::nested$0 for Foo {
 }
 ",
-            // FIXME(veykril): should be nested::{self, Display} here
             r"
-use std::fmt::{Debug, nested::{Display}, nested};
+use std::fmt::{Debug, nested::{self, Display}};
 
 impl nested for Foo {
 }
@@ -347,12 +346,11 @@ impl nested for Foo {
             r"
 use std::fmt::{Debug, nested::{self, Display}};
 
-impl std::fmt::nested<|> for Foo {
+impl std::fmt::nested$0 for Foo {
 }
 ",
-            // FIXME(veykril): nested is duplicated now
             r"
-use std::fmt::{Debug, nested::{self, Display}, nested};
+use std::fmt::{Debug, nested::{self, Display}};
 
 impl nested for Foo {
 }
@@ -367,11 +365,11 @@ impl nested for Foo {
             r"
 use std::fmt::{Debug, nested::{Display}};
 
-impl std::fmt::nested::Debug<|> for Foo {
+impl std::fmt::nested::Debug$0 for Foo {
 }
 ",
             r"
-use std::fmt::{Debug, nested::{Display}, nested::Debug};
+use std::fmt::{Debug, nested::{Debug, Display}};
 
 impl Debug for Foo {
 }
@@ -386,7 +384,7 @@ impl Debug for Foo {
             r"
 use std::fmt::Debug;
 
-impl std::fmt::nested::Display<|> for Foo {
+impl std::fmt::nested::Display$0 for Foo {
 }
 ",
             r"
@@ -405,11 +403,11 @@ impl Display for Foo {
             r"
 use std::fmt::nested::Debug;
 
-impl std::fmt::Display<|> for Foo {
+impl std::fmt::Display$0 for Foo {
 }
 ",
             r"
-use std::fmt::{nested::Debug, Display};
+use std::fmt::{Display, nested::Debug};
 
 impl Display for Foo {
 }
@@ -427,14 +425,10 @@ use crate::{
     AssocItem,
 };
 
-fn foo() { crate::ty::lower<|>::trait_env() }
+fn foo() { crate::ty::lower$0::trait_env() }
 ",
-            // FIXME(veykril): formatting broke here
             r"
-use crate::{
-    ty::{Substs, Ty},
-    AssocItem,
-ty::lower};
+use crate::{AssocItem, ty::{Substs, Ty, lower}};
 
 fn foo() { lower::trait_env() }
 ",
@@ -448,7 +442,7 @@ fn foo() { lower::trait_env() }
             r"
 use std::fmt as foo;
 
-impl foo::Debug<|> for Foo {
+impl foo::Debug$0 for Foo {
 }
 ",
             r"
@@ -468,7 +462,7 @@ impl Debug for Foo {
         check_assist_not_applicable(
             replace_qualified_name_with_use,
             r"
-impl foo<|> for Foo {
+impl foo$0 for Foo {
 }
 ",
         );
@@ -479,7 +473,7 @@ impl foo<|> for Foo {
         check_assist_not_applicable(
             replace_qualified_name_with_use,
             r"
-use std::fmt<|>;
+use std::fmt$0;
 ",
         );
     }
@@ -491,7 +485,7 @@ use std::fmt<|>;
             r"
 mod foo {
     mod bar {
-        std::fmt::Debug<|>
+        std::fmt::Debug$0
     }
 }
     ",
@@ -515,7 +509,7 @@ mod foo {
 #![allow(dead_code)]
 
 fn main() {
-    std::fmt::Debug<|>
+    std::fmt::Debug$0
 }
     ",
             r"
@@ -536,7 +530,7 @@ fn main() {
             replace_qualified_name_with_use,
             r"
 fn main() {
-    std::fmt::Debug<|>;
+    std::fmt::Debug$0;
     let x: std::fmt::Debug = std::fmt::Debug;
 }
     ",
@@ -558,7 +552,7 @@ fn main() {
             r"
 mod m {
     fn f() {
-        std::fmt::Debug<|>;
+        std::fmt::Debug$0;
         let x: std::fmt::Debug = std::fmt::Debug;
     }
     fn g() {
@@ -596,7 +590,7 @@ fn f() {
             replace_qualified_name_with_use,
             r"
 fn main() {
-    std::fmt::Debug<|>;
+    std::fmt::Debug$0;
 }
 
 mod sub {
@@ -629,11 +623,11 @@ mod sub {
 use std::fmt::Display;
 
 fn main() {
-    std::fmt<|>;
+    std::fmt$0;
 }
     ",
             r"
-use std::fmt::{Display, self};
+use std::fmt::{self, Display};
 
 fn main() {
     fmt;
@@ -649,7 +643,7 @@ fn main() {
             r"
 pub use std::fmt;
 
-impl std::io<|> for Foo {
+impl std::io$0 for Foo {
 }
     ",
             r"
@@ -669,7 +663,7 @@ impl io for Foo {
             r"
 pub(crate) use std::fmt;
 
-impl std::io<|> for Foo {
+impl std::io$0 for Foo {
 }
     ",
             r"

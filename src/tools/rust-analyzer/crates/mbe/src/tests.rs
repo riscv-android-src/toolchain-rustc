@@ -1,8 +1,12 @@
 use std::fmt::Write;
 
 use ::parser::FragmentKind;
-use syntax::{ast, AstNode, NodeOrToken, SyntaxKind::IDENT, SyntaxNode, WalkEvent, T};
-use test_utils::assert_eq_text;
+use syntax::{
+    ast, AstNode, NodeOrToken,
+    SyntaxKind::{ERROR, IDENT},
+    SyntaxNode, WalkEvent, T,
+};
+use test_utils::{assert_eq_text, mark};
 
 use super::*;
 
@@ -29,26 +33,25 @@ mod rule_parsing {
 
     #[test]
     fn test_invalid_arms() {
-        fn check(macro_body: &str, err: &str) {
+        fn check(macro_body: &str, err: ParseError) {
             let m = parse_macro_arm(macro_body);
-            assert_eq!(m, Err(ParseError::Expected(String::from(err))));
+            assert_eq!(m, Err(err.into()));
         }
+        check("invalid", ParseError::Expected("expected subtree".into()));
 
-        check("invalid", "expected subtree");
+        check("$i:ident => ()", ParseError::Expected("expected subtree".into()));
+        check("($i:ident) ()", ParseError::Expected("expected `=`".into()));
+        check("($($i:ident)_) => ()", ParseError::InvalidRepeat);
 
-        check("$i:ident => ()", "expected subtree");
-        check("($i:ident) ()", "expected `=`");
-        check("($($i:ident)_) => ()", "invalid repeat");
-
-        check("($i) => ($i)", "invalid macro definition");
-        check("($i:) => ($i)", "invalid macro definition");
+        check("($i) => ($i)", ParseError::UnexpectedToken("bad fragment specifier 1".into()));
+        check("($i:) => ($i)", ParseError::UnexpectedToken("bad fragment specifier 1".into()));
     }
 
     fn parse_macro_arm(arm_definition: &str) -> Result<crate::MacroRules, ParseError> {
         let macro_definition = format!(" macro_rules! m {{ {} }} ", arm_definition);
         let source_file = ast::SourceFile::parse(&macro_definition).ok().unwrap();
         let macro_definition =
-            source_file.syntax().descendants().find_map(ast::MacroCall::cast).unwrap();
+            source_file.syntax().descendants().find_map(ast::MacroRules::cast).unwrap();
 
         let (definition_tt, _) =
             ast_to_token_tree(&macro_definition.token_tree().unwrap()).unwrap();
@@ -257,7 +260,6 @@ fn test_expr_order() {
 
     let dump = format!("{:#?}", expanded);
     assert_eq_text!(
-        dump.trim(),
         r#"MACRO_ITEMS@0..15
   FN@0..15
     FN_KW@0..2 "fn"
@@ -281,6 +283,7 @@ fn test_expr_order() {
             INT_NUMBER@12..13 "2"
         SEMICOLON@13..14 ";"
       R_CURLY@14..15 "}""#,
+        dump.trim()
     );
 }
 
@@ -671,6 +674,36 @@ fn test_match_literal() {
     .assert_expand_items("foo! ['('];", "fn foo () {}");
 }
 
+#[test]
+fn test_parse_macro_def_simple() {
+    mark::check!(parse_macro_def_simple);
+
+    parse_macro2(
+        r#"
+macro foo($id:ident) {
+    fn $id() {}
+}
+"#,
+    )
+    .assert_expand_items("foo!(bar);", "fn bar () {}");
+}
+
+#[test]
+fn test_parse_macro_def_rules() {
+    mark::check!(parse_macro_def_rules);
+
+    parse_macro2(
+        r#"
+macro foo {
+    ($id:ident) => {
+        fn $id() {}
+    }
+}
+"#,
+    )
+    .assert_expand_items("foo!(bar);", "fn bar () {}");
+}
+
 // The following tests are port from intellij-rust directly
 // https://github.com/intellij-rust/intellij-rust/blob/c4e9feee4ad46e7953b1948c112533360b6087bb/src/test/kotlin/org/rust/lang/core/macros/RsMacroExpansionTest.kt
 
@@ -758,6 +791,18 @@ fn test_last_expr() {
         "vec!(1,2,3);",
         "{let mut v = Vec :: new () ; v . push (1) ; v . push (2) ; v . push (3) ; v}",
     );
+}
+
+#[test]
+fn test_expr_with_attr() {
+    parse_macro(
+        r#"
+macro_rules! m {
+    ($a:expr) => {0}
+}
+"#,
+    )
+    .assert_expand_items("m!(#[allow(a)]())", "0");
 }
 
 #[test]
@@ -973,7 +1018,6 @@ fn test_tt_composite2() {
 
     let res = format!("{:#?}", &node);
     assert_eq_text!(
-        res.trim(),
         r###"MACRO_ITEMS@0..10
   MACRO_CALL@0..10
     PATH@0..3
@@ -987,8 +1031,98 @@ fn test_tt_composite2() {
       R_ANGLE@6..7 ">"
       WHITESPACE@7..8 " "
       POUND@8..9 "#"
-      R_PAREN@9..10 ")""###
+      R_PAREN@9..10 ")""###,
+        res.trim()
     );
+}
+
+#[test]
+fn test_tt_with_composite_without_space() {
+    parse_macro(
+        r#"
+        macro_rules! foo {
+            ($ op:tt, $j:path) => (
+                0
+            )
+        }
+"#,
+    )
+    // Test macro input without any spaces
+    // See https://github.com/rust-analyzer/rust-analyzer/issues/6692
+    .assert_expand_items("foo!(==,Foo::Bool)", "0");
+}
+
+#[test]
+fn test_underscore() {
+    parse_macro(
+        r#"
+            macro_rules! foo {
+                 ($_:tt) => { 0 }
+            }
+    "#,
+    )
+    .assert_expand_items(r#"foo! { => }"#, r#"0"#);
+}
+
+#[test]
+fn test_underscore_not_greedily() {
+    parse_macro(
+        r#"
+macro_rules! q {
+    ($($a:ident)* _) => {0};
+}
+"#,
+    )
+    // `_` overlaps with `$a:ident` but rustc matches it under the `_` token
+    .assert_expand_items(r#"q![a b c d _]"#, r#"0"#);
+
+    parse_macro(
+        r#"
+macro_rules! q {
+    ($($a:expr => $b:ident)* _ => $c:expr) => {0};
+}
+"#,
+    )
+    // `_ => ou` overlaps with `$a:expr => $b:ident` but rustc matches it under `_ => $c:expr`
+    .assert_expand_items(r#"q![a => b c => d _ => ou]"#, r#"0"#);
+}
+
+#[test]
+fn test_underscore_as_type() {
+    parse_macro(
+        r#"
+macro_rules! q {
+    ($a:ty) => {0};
+}
+"#,
+    )
+    // Underscore is a type
+    .assert_expand_items(r#"q![_]"#, r#"0"#);
+}
+
+#[test]
+fn test_vertical_bar_with_pat() {
+    parse_macro(
+        r#"
+            macro_rules! foo {
+                 (| $pat:pat | ) => { 0 }
+            }
+    "#,
+    )
+    .assert_expand_items(r#"foo! { | x | }"#, r#"0"#);
+}
+
+#[test]
+fn test_dollar_crate_lhs_is_not_meta() {
+    parse_macro(
+        r#"
+macro_rules! foo {
+    ($crate) => {};
+    () => {0};
+}
+    "#,
+    )
+    .assert_expand_items(r#"foo!{}"#, r#"0"#);
 }
 
 #[test]
@@ -1008,11 +1142,20 @@ fn test_literal() {
     parse_macro(
         r#"
         macro_rules! foo {
-              ($ type:ty $ lit:literal) => { const VALUE: $ type = $ lit;};
+              ($ type:ty , $ lit:literal) => { const VALUE: $ type = $ lit;};
         }
 "#,
     )
-    .assert_expand_items(r#"foo!(u8 0);"#, r#"const VALUE : u8 = 0 ;"#);
+    .assert_expand_items(r#"foo!(u8,0);"#, r#"const VALUE : u8 = 0 ;"#);
+
+    parse_macro(
+        r#"
+        macro_rules! foo {
+              ($ type:ty , $ lit:literal) => { const VALUE: $ type = $ lit;};
+        }
+"#,
+    )
+    .assert_expand_items(r#"foo!(i32,-1);"#, r#"const VALUE : i32 = - 1 ;"#);
 }
 
 #[test]
@@ -1082,6 +1225,23 @@ macro_rules! foo {
         r#"foo!(x,y, 1);"#,
         r#"macro_rules ! bar {($ bi : ident) => {fn $ bi () -> u8 {1}}} bar ! (x) ; fn y () -> u8 {1}"#,
     );
+}
+
+#[test]
+fn test_expr_after_path_colons() {
+    assert!(parse_macro(
+        r#"
+macro_rules! m {
+    ($k:expr) => {
+            f(K::$k);
+       }
+}
+"#,
+    )
+    .expand_statements(r#"m!(C("0"))"#)
+    .descendants()
+    .find(|token| token.kind() == ERROR)
+    .is_some());
 }
 
 // The following tests are based on real world situations
@@ -1568,98 +1728,125 @@ pub(crate) struct MacroFixture {
     rules: MacroRules,
 }
 
-impl MacroFixture {
-    pub(crate) fn expand_tt(&self, invocation: &str) -> tt::Subtree {
-        self.try_expand_tt(invocation).unwrap()
-    }
-
-    fn try_expand_tt(&self, invocation: &str) -> Result<tt::Subtree, ExpandError> {
-        let source_file = ast::SourceFile::parse(invocation).tree();
-        let macro_invocation =
-            source_file.syntax().descendants().find_map(ast::MacroCall::cast).unwrap();
-
-        let (invocation_tt, _) = ast_to_token_tree(&macro_invocation.token_tree().unwrap())
-            .ok_or_else(|| ExpandError::ConversionError)?;
-
-        self.rules.expand(&invocation_tt).result()
-    }
-
-    fn assert_expand_err(&self, invocation: &str, err: &ExpandError) {
-        assert_eq!(self.try_expand_tt(invocation).as_ref(), Err(err));
-    }
-
-    fn expand_items(&self, invocation: &str) -> SyntaxNode {
-        let expanded = self.expand_tt(invocation);
-        token_tree_to_syntax_node(&expanded, FragmentKind::Items).unwrap().0.syntax_node()
-    }
-
-    fn expand_statements(&self, invocation: &str) -> SyntaxNode {
-        let expanded = self.expand_tt(invocation);
-        token_tree_to_syntax_node(&expanded, FragmentKind::Statements).unwrap().0.syntax_node()
-    }
-
-    fn expand_expr(&self, invocation: &str) -> SyntaxNode {
-        let expanded = self.expand_tt(invocation);
-        token_tree_to_syntax_node(&expanded, FragmentKind::Expr).unwrap().0.syntax_node()
-    }
-
-    fn assert_expand_tt(&self, invocation: &str, expected: &str) {
-        let expansion = self.expand_tt(invocation);
-        assert_eq!(expansion.to_string(), expected);
-    }
-
-    fn assert_expand(&self, invocation: &str, expected: &str) {
-        let expansion = self.expand_tt(invocation);
-        let actual = format!("{:?}", expansion);
-        test_utils::assert_eq_text!(&actual.trim(), &expected.trim());
-    }
-
-    fn assert_expand_items(&self, invocation: &str, expected: &str) -> &MacroFixture {
-        self.assert_expansion(FragmentKind::Items, invocation, expected);
-        self
-    }
-
-    fn assert_expand_statements(&self, invocation: &str, expected: &str) -> &MacroFixture {
-        self.assert_expansion(FragmentKind::Statements, invocation, expected);
-        self
-    }
-
-    fn assert_expansion(&self, kind: FragmentKind, invocation: &str, expected: &str) {
-        let expanded = self.expand_tt(invocation);
-        assert_eq!(expanded.to_string(), expected);
-
-        let expected = expected.replace("$crate", "C_C__C");
-
-        // wrap the given text to a macro call
-        let expected = {
-            let wrapped = format!("wrap_macro!( {} )", expected);
-            let wrapped = ast::SourceFile::parse(&wrapped);
-            let wrapped =
-                wrapped.tree().syntax().descendants().find_map(ast::TokenTree::cast).unwrap();
-            let mut wrapped = ast_to_token_tree(&wrapped).unwrap().0;
-            wrapped.delimiter = None;
-            wrapped
-        };
-
-        let expanded_tree = token_tree_to_syntax_node(&expanded, kind).unwrap().0.syntax_node();
-        let expanded_tree = debug_dump_ignore_spaces(&expanded_tree).trim().to_string();
-
-        let expected_tree = token_tree_to_syntax_node(&expected, kind).unwrap().0.syntax_node();
-        let expected_tree = debug_dump_ignore_spaces(&expected_tree).trim().to_string();
-
-        let expected_tree = expected_tree.replace("C_C__C", "$crate");
-        assert_eq!(
-            expanded_tree, expected_tree,
-            "\nleft:\n{}\nright:\n{}",
-            expanded_tree, expected_tree,
-        );
-    }
+pub(crate) struct MacroFixture2 {
+    rules: MacroDef,
 }
 
-fn parse_macro_to_tt(ra_fixture: &str) -> tt::Subtree {
+macro_rules! impl_fixture {
+    ($name:ident) => {
+        impl $name {
+            pub(crate) fn expand_tt(&self, invocation: &str) -> tt::Subtree {
+                self.try_expand_tt(invocation).unwrap()
+            }
+
+            fn try_expand_tt(&self, invocation: &str) -> Result<tt::Subtree, ExpandError> {
+                let source_file = ast::SourceFile::parse(invocation).tree();
+                let macro_invocation =
+                    source_file.syntax().descendants().find_map(ast::MacroCall::cast).unwrap();
+
+                let (invocation_tt, _) = ast_to_token_tree(&macro_invocation.token_tree().unwrap())
+                    .ok_or_else(|| ExpandError::ConversionError)?;
+
+                self.rules.expand(&invocation_tt).result()
+            }
+
+            #[allow(unused)]
+            fn assert_expand_err(&self, invocation: &str, err: &ExpandError) {
+                assert_eq!(self.try_expand_tt(invocation).as_ref(), Err(err));
+            }
+
+            #[allow(unused)]
+            fn expand_items(&self, invocation: &str) -> SyntaxNode {
+                let expanded = self.expand_tt(invocation);
+                token_tree_to_syntax_node(&expanded, FragmentKind::Items).unwrap().0.syntax_node()
+            }
+
+            #[allow(unused)]
+            fn expand_statements(&self, invocation: &str) -> SyntaxNode {
+                let expanded = self.expand_tt(invocation);
+                token_tree_to_syntax_node(&expanded, FragmentKind::Statements)
+                    .unwrap()
+                    .0
+                    .syntax_node()
+            }
+
+            #[allow(unused)]
+            fn expand_expr(&self, invocation: &str) -> SyntaxNode {
+                let expanded = self.expand_tt(invocation);
+                token_tree_to_syntax_node(&expanded, FragmentKind::Expr).unwrap().0.syntax_node()
+            }
+
+            #[allow(unused)]
+            fn assert_expand_tt(&self, invocation: &str, expected: &str) {
+                let expansion = self.expand_tt(invocation);
+                assert_eq!(expansion.to_string(), expected);
+            }
+
+            #[allow(unused)]
+            fn assert_expand(&self, invocation: &str, expected: &str) {
+                let expansion = self.expand_tt(invocation);
+                let actual = format!("{:?}", expansion);
+                test_utils::assert_eq_text!(&expected.trim(), &actual.trim());
+            }
+
+            fn assert_expand_items(&self, invocation: &str, expected: &str) -> &$name {
+                self.assert_expansion(FragmentKind::Items, invocation, expected);
+                self
+            }
+
+            #[allow(unused)]
+            fn assert_expand_statements(&self, invocation: &str, expected: &str) -> &$name {
+                self.assert_expansion(FragmentKind::Statements, invocation, expected);
+                self
+            }
+
+            fn assert_expansion(&self, kind: FragmentKind, invocation: &str, expected: &str) {
+                let expanded = self.expand_tt(invocation);
+                assert_eq!(expanded.to_string(), expected);
+
+                let expected = expected.replace("$crate", "C_C__C");
+
+                // wrap the given text to a macro call
+                let expected = {
+                    let wrapped = format!("wrap_macro!( {} )", expected);
+                    let wrapped = ast::SourceFile::parse(&wrapped);
+                    let wrapped = wrapped
+                        .tree()
+                        .syntax()
+                        .descendants()
+                        .find_map(ast::TokenTree::cast)
+                        .unwrap();
+                    let mut wrapped = ast_to_token_tree(&wrapped).unwrap().0;
+                    wrapped.delimiter = None;
+                    wrapped
+                };
+
+                let expanded_tree =
+                    token_tree_to_syntax_node(&expanded, kind).unwrap().0.syntax_node();
+                let expanded_tree = debug_dump_ignore_spaces(&expanded_tree).trim().to_string();
+
+                let expected_tree =
+                    token_tree_to_syntax_node(&expected, kind).unwrap().0.syntax_node();
+                let expected_tree = debug_dump_ignore_spaces(&expected_tree).trim().to_string();
+
+                let expected_tree = expected_tree.replace("C_C__C", "$crate");
+                assert_eq!(
+                    expanded_tree, expected_tree,
+                    "\nleft:\n{}\nright:\n{}",
+                    expanded_tree, expected_tree,
+                );
+            }
+        }
+    };
+}
+
+impl_fixture!(MacroFixture);
+impl_fixture!(MacroFixture2);
+
+fn parse_macro_rules_to_tt(ra_fixture: &str) -> tt::Subtree {
     let source_file = ast::SourceFile::parse(ra_fixture).ok().unwrap();
     let macro_definition =
-        source_file.syntax().descendants().find_map(ast::MacroCall::cast).unwrap();
+        source_file.syntax().descendants().find_map(ast::MacroRules::cast).unwrap();
 
     let (definition_tt, _) = ast_to_token_tree(&macro_definition.token_tree().unwrap()).unwrap();
 
@@ -1673,14 +1860,36 @@ fn parse_macro_to_tt(ra_fixture: &str) -> tt::Subtree {
     definition_tt
 }
 
+fn parse_macro_def_to_tt(ra_fixture: &str) -> tt::Subtree {
+    let source_file = ast::SourceFile::parse(ra_fixture).ok().unwrap();
+    let macro_definition =
+        source_file.syntax().descendants().find_map(ast::MacroDef::cast).unwrap();
+
+    let (definition_tt, _) = ast_to_token_tree(&macro_definition.body().unwrap()).unwrap();
+
+    let parsed =
+        parse_to_token_tree(&ra_fixture[macro_definition.body().unwrap().syntax().text_range()])
+            .unwrap()
+            .0;
+    assert_eq!(definition_tt, parsed);
+
+    definition_tt
+}
+
 pub(crate) fn parse_macro(ra_fixture: &str) -> MacroFixture {
-    let definition_tt = parse_macro_to_tt(ra_fixture);
+    let definition_tt = parse_macro_rules_to_tt(ra_fixture);
     let rules = MacroRules::parse(&definition_tt).unwrap();
     MacroFixture { rules }
 }
 
+pub(crate) fn parse_macro2(ra_fixture: &str) -> MacroFixture2 {
+    let definition_tt = parse_macro_def_to_tt(ra_fixture);
+    let rules = MacroDef::parse(&definition_tt).unwrap();
+    MacroFixture2 { rules }
+}
+
 pub(crate) fn parse_macro_error(ra_fixture: &str) -> ParseError {
-    let definition_tt = parse_macro_to_tt(ra_fixture);
+    let definition_tt = parse_macro_rules_to_tt(ra_fixture);
 
     match MacroRules::parse(&definition_tt) {
         Ok(_) => panic!("Expect error"),
@@ -1810,7 +2019,6 @@ fn test_no_space_after_semi_colon() {
 
     let dump = format!("{:#?}", expanded);
     assert_eq_text!(
-        dump.trim(),
         r###"MACRO_ITEMS@0..52
   MODULE@0..26
     ATTR@0..21
@@ -1850,6 +2058,7 @@ fn test_no_space_after_semi_colon() {
     NAME@50..51
       IDENT@50..51 "f"
     SEMICOLON@51..52 ";""###,
+        dump.trim()
     );
 }
 
@@ -1857,7 +2066,7 @@ fn test_no_space_after_semi_colon() {
 #[test]
 fn test_rustc_issue_57597() {
     fn test_error(fixture: &str) {
-        assert_eq!(parse_macro_error(fixture), ParseError::RepetitionEmtpyTokenTree);
+        assert_eq!(parse_macro_error(fixture), ParseError::RepetitionEmptyTokenTree);
     }
 
     test_error("macro_rules! foo { ($($($i:ident)?)+) => {}; }");

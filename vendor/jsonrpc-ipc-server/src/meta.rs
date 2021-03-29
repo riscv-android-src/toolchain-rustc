@@ -1,4 +1,6 @@
-use crate::jsonrpc::futures::sync::mpsc;
+use std::path::Path;
+
+use crate::jsonrpc::futures::channel::mpsc;
 use crate::jsonrpc::Metadata;
 use crate::server_utils::session;
 
@@ -7,9 +9,9 @@ pub struct RequestContext<'a> {
 	/// Session ID
 	pub session_id: session::SessionId,
 	/// Remote UDS endpoint
-	pub endpoint_addr: &'a ::parity_tokio_ipc::RemoteId,
+	pub endpoint_addr: &'a Path,
 	/// Direct pipe sender
-	pub sender: mpsc::Sender<String>,
+	pub sender: mpsc::UnboundedSender<String>,
 }
 
 /// Metadata extractor (per session)

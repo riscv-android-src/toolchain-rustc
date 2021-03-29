@@ -39,7 +39,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::{
     ast::{self, NameOwner},
     match_ast, AstNode, Parse, SmolStr, SourceFile,
-    SyntaxKind::{self, *},
+    SyntaxKind::*,
     SyntaxNode, SyntaxNodePtr, TextRange, WalkEvent,
 };
 
@@ -191,7 +191,7 @@ pub fn crate_symbols(db: &RootDatabase, krate: CrateId, query: Query) -> Vec<Fil
 
     let def_map = db.crate_def_map(krate);
     let mut files = Vec::new();
-    let mut modules = vec![def_map.root];
+    let mut modules = vec![def_map.root()];
     while let Some(module) = modules.pop() {
         let data = &def_map[module];
         files.extend(data.origin.file_id());
@@ -209,8 +209,7 @@ pub fn crate_symbols(db: &RootDatabase, krate: CrateId, query: Query) -> Vec<Fil
     query.search(&buf)
 }
 
-pub fn index_resolve(db: &RootDatabase, name_ref: &ast::NameRef) -> Vec<FileSymbol> {
-    let name = name_ref.text();
+pub fn index_resolve(db: &RootDatabase, name: &str) -> Vec<FileSymbol> {
     let mut query = Query::new(name.to_string());
     query.exact();
     query.limit(4);
@@ -324,7 +323,7 @@ impl Query {
                 let (start, end) = SymbolIndex::map_value_to_range(indexed_value.value);
 
                 for symbol in &symbol_index.symbols[start..end] {
-                    if self.only_types && !is_type(symbol.kind) {
+                    if self.only_types && !symbol.kind.is_type() {
                         continue;
                     }
                     if self.exact && symbol.name != self.query {
@@ -342,21 +341,44 @@ impl Query {
     }
 }
 
-fn is_type(kind: SyntaxKind) -> bool {
-    matches!(kind, STRUCT | ENUM | TRAIT | TYPE_ALIAS)
-}
-
 /// The actual data that is stored in the index. It should be as compact as
 /// possible.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FileSymbol {
     pub file_id: FileId,
     pub name: SmolStr,
-    pub kind: SyntaxKind,
+    pub kind: FileSymbolKind,
     pub range: TextRange,
     pub ptr: SyntaxNodePtr,
     pub name_range: Option<TextRange>,
     pub container_name: Option<SmolStr>,
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+pub enum FileSymbolKind {
+    Const,
+    Enum,
+    Function,
+    Macro,
+    Module,
+    Static,
+    Struct,
+    Trait,
+    TypeAlias,
+    Union,
+}
+
+impl FileSymbolKind {
+    fn is_type(self: FileSymbolKind) -> bool {
+        matches!(
+            self,
+            FileSymbolKind::Struct
+                | FileSymbolKind::Enum
+                | FileSymbolKind::Trait
+                | FileSymbolKind::TypeAlias
+                | FileSymbolKind::Union
+        )
+    }
 }
 
 fn source_file_to_file_symbols(source_file: &SourceFile, file_id: FileId) -> Vec<FileSymbol> {
@@ -389,7 +411,7 @@ fn to_symbol(node: &SyntaxNode) -> Option<(SmolStr, SyntaxNodePtr, TextRange)> {
     fn decl<N: NameOwner>(node: N) -> Option<(SmolStr, SyntaxNodePtr, TextRange)> {
         let name = node.name()?;
         let name_range = name.syntax().text_range();
-        let name = name.text().clone();
+        let name = name.text().into();
         let ptr = SyntaxNodePtr::new(node.syntax());
 
         Some((name, ptr, name_range))
@@ -404,13 +426,8 @@ fn to_symbol(node: &SyntaxNode) -> Option<(SmolStr, SyntaxNodePtr, TextRange)> {
             ast::TypeAlias(it) => decl(it),
             ast::Const(it) => decl(it),
             ast::Static(it) => decl(it),
-            ast::MacroCall(it) => {
-                if it.is_macro_rules().is_some() {
-                    decl(it)
-                } else {
-                    None
-                }
-            },
+            ast::MacroRules(it) => decl(it),
+            ast::Union(it) => decl(it),
             _ => None,
         }
     }
@@ -419,7 +436,19 @@ fn to_symbol(node: &SyntaxNode) -> Option<(SmolStr, SyntaxNodePtr, TextRange)> {
 fn to_file_symbol(node: &SyntaxNode, file_id: FileId) -> Option<FileSymbol> {
     to_symbol(node).map(move |(name, ptr, name_range)| FileSymbol {
         name,
-        kind: node.kind(),
+        kind: match node.kind() {
+            FN => FileSymbolKind::Function,
+            STRUCT => FileSymbolKind::Struct,
+            ENUM => FileSymbolKind::Enum,
+            TRAIT => FileSymbolKind::Trait,
+            MODULE => FileSymbolKind::Module,
+            TYPE_ALIAS => FileSymbolKind::TypeAlias,
+            CONST => FileSymbolKind::Const,
+            STATIC => FileSymbolKind::Static,
+            MACRO_RULES => FileSymbolKind::Macro,
+            UNION => FileSymbolKind::Union,
+            kind => unreachable!("{:?}", kind),
+        },
         range: node.text_range(),
         ptr,
         file_id,

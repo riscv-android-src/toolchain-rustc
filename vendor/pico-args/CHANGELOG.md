@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2021-01-03
+### Added
+- `Arguments::opt_free_from_*`.
+
+### Changed
+- `Arguments::finish` no longer returns an error and simply returns remaining arguments as is.
+- `Arguments::free_from_*` methods no longer check that argument doesn't start with `-`.
+- `Arguments::free_from_*` methods return `T` instead of `Option<T>` now.
+  Use `Arguments::opt_free_from_*` instead.
+
+### Removed
+- `Arguments::free` and `Arguments::free_os`. You should use `Arguments::free_from_*` methods
+  or parse them manually after calling `Arguments::finish`.
+- `Error::UnusedArgsLeft`. This should be handled by the caller now.
+
 ## [0.3.4] - 2020-08-09
 ### Added
 - `short-space-opt` build feature. Thanks to [@hdamron17](https://github.com/hdamron17).
@@ -52,7 +67,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Fixed
 - Do not panic while parsing non UTF-8 arguments.
 
-[Unreleased]: https://github.com/RazrFalcon/pico-args/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/RazrFalcon/pico-args/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/RazrFalcon/pico-args/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/RazrFalcon/pico-args/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/RazrFalcon/pico-args/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/RazrFalcon/pico-args/compare/v0.3.1...v0.3.2

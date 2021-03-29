@@ -32,6 +32,7 @@ mod ptr;
 #[cfg(test)]
 mod tests;
 
+pub mod display;
 pub mod algo;
 pub mod ast;
 #[doc(hidden)]
@@ -45,16 +46,19 @@ use text_edit::Indel;
 pub use crate::{
     algo::InsertPosition,
     ast::{AstNode, AstToken},
-    parsing::{lex_single_syntax_kind, lex_single_valid_syntax_kind, tokenize, Token},
+    parsing::lexer::{lex_single_syntax_kind, lex_single_valid_syntax_kind, tokenize, Token},
     ptr::{AstPtr, SyntaxNodePtr},
     syntax_error::SyntaxError,
     syntax_node::{
-        Direction, GreenNode, NodeOrToken, SyntaxElement, SyntaxElementChildren, SyntaxNode,
-        SyntaxNodeChildren, SyntaxToken, SyntaxTreeBuilder,
+        SyntaxElement, SyntaxElementChildren, SyntaxNode, SyntaxNodeChildren, SyntaxToken,
+        SyntaxTreeBuilder,
     },
 };
 pub use parser::{SyntaxKind, T};
-pub use rowan::{SmolStr, SyntaxText, TextRange, TextSize, TokenAtOffset, WalkEvent};
+pub use rowan::{
+    Direction, GreenNode, NodeOrToken, SyntaxText, TextRange, TextSize, TokenAtOffset, WalkEvent,
+};
+pub use smol_str::SmolStr;
 
 /// `Parse` is the result of the parsing: a syntax tree and a collection of
 /// errors.
@@ -201,6 +205,20 @@ impl ast::Type {
     }
 }
 
+impl ast::Attr {
+    /// Returns `text`, parsed as an attribute, but only if it has no errors.
+    pub fn parse(text: &str) -> Result<Self, ()> {
+        parsing::parse_text_fragment(text, parser::FragmentKind::Attr)
+    }
+}
+
+impl ast::Stmt {
+    /// Returns `text`, parsed as statement, but only if it has no errors.
+    pub fn parse(text: &str) -> Result<Self, ()> {
+        parsing::parse_text_fragment(text, parser::FragmentKind::StatementOptionalSemi)
+    }
+}
+
 /// Matches a `SyntaxNode` against an `ast` type.
 ///
 /// # Example:
@@ -272,7 +290,7 @@ fn api_walkthrough() {
 
     // Let's get the `1 + 1` expression!
     let body: ast::BlockExpr = func.body().unwrap();
-    let expr: ast::Expr = body.expr().unwrap();
+    let expr: ast::Expr = body.tail_expr().unwrap();
 
     // Enums are used to group related ast nodes together, and can be used for
     // matching. However, because there are no public fields, it's possible to

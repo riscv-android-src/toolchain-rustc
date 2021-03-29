@@ -91,6 +91,12 @@ fn run_mdbook_init_with_custom_book_and_src_locations() {
             file
         );
     }
+
+    let contents = fs::read_to_string(temp.path().join("book.toml")).unwrap();
+    assert_eq!(
+        contents,
+        "[book]\nauthors = []\nlanguage = \"en\"\nmultilingual = false\nsrc = \"in\"\n\n[build]\nbuild-dir = \"out\"\ncreate-missing = true\nuse-default-preprocessors = true\n"
+    );
 }
 
 #[test]
@@ -101,4 +107,38 @@ fn book_toml_isnt_required() {
     let _ = fs::remove_file(temp.path().join("book.toml"));
 
     md.build().unwrap();
+}
+
+#[test]
+fn copy_theme() {
+    let temp = TempFileBuilder::new().prefix("mdbook").tempdir().unwrap();
+    MDBook::init(temp.path()).copy_theme(true).build().unwrap();
+    let expected = vec![
+        "book.js",
+        "css/chrome.css",
+        "css/general.css",
+        "css/print.css",
+        "css/variables.css",
+        "favicon.png",
+        "favicon.svg",
+        "highlight.css",
+        "highlight.js",
+        "index.hbs",
+    ];
+    let theme_dir = temp.path().join("theme");
+    let mut actual: Vec<_> = walkdir::WalkDir::new(&theme_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| !e.file_type().is_dir())
+        .map(|e| {
+            e.path()
+                .strip_prefix(&theme_dir)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/")
+        })
+        .collect();
+    actual.sort();
+    assert_eq!(actual, expected);
 }
