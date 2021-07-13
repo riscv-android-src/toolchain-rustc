@@ -31,7 +31,7 @@ pub(crate) fn goto_definition(
     let original_token = pick_best(file.token_at_offset(position.offset))?;
     let token = sema.descend_into_macros(original_token.clone());
     let parent = token.parent();
-    if let Some(comment) = ast::Comment::cast(token.clone()) {
+    if let Some(comment) = ast::Comment::cast(token) {
         let nav = def_for_doc_comment(&sema, position, &comment)?.try_to_nav(db)?;
         return Some(RangeInfo::new(original_token.text_range(), vec![nav]));
     }
@@ -131,22 +131,11 @@ pub(crate) fn reference_definition(
 #[cfg(test)]
 mod tests {
     use ide_db::base_db::FileRange;
-    use syntax::{TextRange, TextSize};
 
     use crate::fixture;
 
     fn check(ra_fixture: &str) {
-        let (analysis, position, mut annotations) = fixture::annotations(ra_fixture);
-        let (mut expected, data) = annotations.pop().unwrap();
-        match data.as_str() {
-            "" => (),
-            "file" => {
-                expected.range =
-                    TextRange::up_to(TextSize::of(&*analysis.file_text(expected.file_id).unwrap()))
-            }
-            data => panic!("bad data: {}", data),
-        }
-
+        let (analysis, position, expected) = fixture::nav_target_annotation(ra_fixture);
         let mut navs =
             analysis.goto_definition(position).unwrap().expect("no definition found").info;
         if navs.len() == 0 {

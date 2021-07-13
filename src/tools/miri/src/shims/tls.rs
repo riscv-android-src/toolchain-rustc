@@ -9,6 +9,7 @@ use log::trace;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_middle::ty;
 use rustc_target::abi::{Size, HasDataLayout};
+use rustc_target::spec::abi::Abi;
 
 use crate::*;
 
@@ -65,7 +66,7 @@ impl<'tcx> TlsData<'tcx> {
     pub fn create_tls_key(&mut self, dtor: Option<ty::Instance<'tcx>>, max_size: Size) -> InterpResult<'tcx, TlsKey> {
         let new_key = self.next_key;
         self.next_key += 1;
-        self.keys.insert(new_key, TlsEntry { data: Default::default(), dtor }).unwrap_none();
+        self.keys.try_insert(new_key, TlsEntry { data: Default::default(), dtor }).unwrap();
         trace!("New TLS key allocated: {} with dtor {:?}", new_key, dtor);
 
         if max_size.bits() < 128 && new_key >= (1u128 << max_size.bits() as u128) {
@@ -173,7 +174,7 @@ impl<'tcx> TlsData<'tcx> {
         key: Option<TlsKey>,
         thread_id: ThreadId,
     ) -> Option<(ty::Instance<'tcx>, Scalar<Tag>, TlsKey)> {
-        use std::collections::Bound::*;
+        use std::ops::Bound::*;
 
         let thread_local = &mut self.keys;
         let start = match key {
@@ -244,8 +245,9 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
         this.call_function(
             thread_callback,
+            Abi::System { unwind: false },
             &[Scalar::null_ptr(this).into(), reason.into(), Scalar::null_ptr(this).into()],
-            Some(ret_place),
+            Some(&ret_place),
             StackPopCleanup::None { cleanup: true },
         )?;
 
@@ -266,8 +268,9 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
             this.call_function(
                 instance,
+                Abi::C { unwind: false },
                 &[data.into()],
-                Some(ret_place),
+                Some(&ret_place),
                 StackPopCleanup::None { cleanup: true },
             )?;
 
@@ -306,8 +309,9 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
             this.call_function(
                 instance,
+                Abi::C { unwind: false },
                 &[ptr.into()],
-                Some(ret_place),
+                Some(&ret_place),
                 StackPopCleanup::None { cleanup: true },
             )?;
 

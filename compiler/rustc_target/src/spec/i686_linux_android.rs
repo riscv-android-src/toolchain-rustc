@@ -11,7 +11,7 @@ pub fn target() -> Target {
     // http://developer.android.com/ndk/guides/abis.html#x86
     base.cpu = "pentiumpro".to_string();
     base.features = "+mmx,+sse,+sse2,+sse3,+ssse3".to_string();
-    // don't use probe-stack=inline-asm until rust-lang/rust#83139 is resolved.
+    // don't use probe-stack=inline-asm until rust#83139 and rust#84667 are resolved
     base.stack_probes = StackProbeType::Call;
 
     Target {

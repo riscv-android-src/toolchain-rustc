@@ -10,7 +10,9 @@ use stdx::panic_context;
 
 use crate::{db::HirDatabase, DebruijnIndex, Substs};
 
-use super::{Canonical, GenericPredicate, HirDisplay, ProjectionTy, TraitRef, Ty, TypeWalk};
+use super::{
+    Canonical, GenericPredicate, HirDisplay, ProjectionTy, TraitRef, Ty, TyKind, TypeWalk,
+};
 
 use self::chalk::{from_chalk, Interner, ToChalk};
 
@@ -38,23 +40,35 @@ fn create_chalk_solver() -> chalk_recursive::RecursiveSolver<Interner> {
 /// fn foo<T: Default>(t: T) {}
 /// ```
 /// we assume that `T: Default`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TraitEnvironment {
-    pub predicates: Vec<GenericPredicate>,
+    // When we're using Chalk's Ty we can make this a BTreeMap since it's Ord,
+    // but for now it's too annoying...
+    pub(crate) traits_from_clauses: Vec<(Ty, TraitId)>,
+    pub(crate) env: chalk_ir::Environment<Interner>,
 }
 
 impl TraitEnvironment {
-    /// Returns trait refs with the given self type which are supposed to hold
-    /// in this trait env. E.g. if we are in `foo<T: SomeTrait>()`, this will
-    /// find that `T: SomeTrait` if we call it for `T`.
-    pub(crate) fn trait_predicates_for_self_ty<'a>(
+    pub(crate) fn traits_in_scope_from_clauses<'a>(
         &'a self,
         ty: &'a Ty,
-    ) -> impl Iterator<Item = &'a TraitRef> + 'a {
-        self.predicates.iter().filter_map(move |pred| match pred {
-            GenericPredicate::Implemented(tr) if tr.self_ty() == ty => Some(tr),
-            _ => None,
+    ) -> impl Iterator<Item = TraitId> + 'a {
+        self.traits_from_clauses.iter().filter_map(move |(self_ty, trait_id)| {
+            if self_ty == ty {
+                Some(*trait_id)
+            } else {
+                None
+            }
         })
+    }
+}
+
+impl Default for TraitEnvironment {
+    fn default() -> Self {
+        TraitEnvironment {
+            traits_from_clauses: Vec::new(),
+            env: chalk_ir::Environment::new(&Interner),
+        }
     }
 }
 
@@ -129,7 +143,7 @@ pub(crate) fn trait_solve_query(
     log::info!("trait_solve_query({})", goal.value.value.display(db));
 
     if let Obligation::Projection(pred) = &goal.value.value {
-        if let Ty::Bound(_) = &pred.projection_ty.parameters[0] {
+        if let TyKind::BoundVar(_) = &pred.projection_ty.substitution[0].interned(&Interner) {
             // Hack: don't ask Chalk to normalize with an unknown self type, it'll say that's impossible
             return Some(Solution::Ambig(Guidance::Unknown));
         }

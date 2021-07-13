@@ -20,13 +20,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use std::convert::TryFrom;
 use std::fmt;
 use std::str::{CharIndices, FromStr};
-
-pub trait MyTryFrom<T>: Sized {
-    type Error;
-    fn try_from(value: T) -> Result<Self, Self::Error>;
-}
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum ReservedChar {
@@ -58,87 +54,92 @@ pub enum ReservedChar {
     SuperiorThan,
     Pipe,
     Ampersand,
+    BackTick,
 }
 
 impl ReservedChar {
     pub fn is_white_character(&self) -> bool {
-        *self == ReservedChar::Space ||
-        *self == ReservedChar::Tab ||
-        *self == ReservedChar::Backline
+        *self == ReservedChar::Space
+            || *self == ReservedChar::Tab
+            || *self == ReservedChar::Backline
     }
 }
 
 impl fmt::Display for ReservedChar {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}",
-               match *self {
-                   ReservedChar::Comma           => ',',
-                   ReservedChar::OpenParenthese  => '(',
-                   ReservedChar::CloseParenthese => ')',
-                   ReservedChar::OpenCurlyBrace  => '{',
-                   ReservedChar::CloseCurlyBrace => '}',
-                   ReservedChar::OpenBracket     => '[',
-                   ReservedChar::CloseBracket    => ']',
-                   ReservedChar::Colon           => ':',
-                   ReservedChar::SemiColon       => ';',
-                   ReservedChar::Dot             => '.',
-                   ReservedChar::Quote           => '\'',
-                   ReservedChar::DoubleQuote     => '"',
-                   ReservedChar::ExclamationMark => '!',
-                   ReservedChar::QuestionMark    => '?',
-                   ReservedChar::Slash           => '/',
-                   ReservedChar::Modulo          => '%',
-                   ReservedChar::Star            => '*',
-                   ReservedChar::Minus           => '-',
-                   ReservedChar::Plus            => '+',
-                   ReservedChar::EqualSign       => '=',
-                   ReservedChar::Backslash       => '\\',
-                   ReservedChar::Space           => ' ',
-                   ReservedChar::Tab             => '\t',
-                   ReservedChar::Backline        => '\n',
-                   ReservedChar::LessThan        => '<',
-                   ReservedChar::SuperiorThan    => '>',
-                   ReservedChar::Pipe            => '|',
-                   ReservedChar::Ampersand       => '&',
-               })
+        write!(
+            f,
+            "{}",
+            match *self {
+                ReservedChar::Comma => ',',
+                ReservedChar::OpenParenthese => '(',
+                ReservedChar::CloseParenthese => ')',
+                ReservedChar::OpenCurlyBrace => '{',
+                ReservedChar::CloseCurlyBrace => '}',
+                ReservedChar::OpenBracket => '[',
+                ReservedChar::CloseBracket => ']',
+                ReservedChar::Colon => ':',
+                ReservedChar::SemiColon => ';',
+                ReservedChar::Dot => '.',
+                ReservedChar::Quote => '\'',
+                ReservedChar::DoubleQuote => '"',
+                ReservedChar::ExclamationMark => '!',
+                ReservedChar::QuestionMark => '?',
+                ReservedChar::Slash => '/',
+                ReservedChar::Modulo => '%',
+                ReservedChar::Star => '*',
+                ReservedChar::Minus => '-',
+                ReservedChar::Plus => '+',
+                ReservedChar::EqualSign => '=',
+                ReservedChar::Backslash => '\\',
+                ReservedChar::Space => ' ',
+                ReservedChar::Tab => '\t',
+                ReservedChar::Backline => '\n',
+                ReservedChar::LessThan => '<',
+                ReservedChar::SuperiorThan => '>',
+                ReservedChar::Pipe => '|',
+                ReservedChar::Ampersand => '&',
+                ReservedChar::BackTick => '`',
+            }
+        )
     }
 }
 
-impl MyTryFrom<char> for ReservedChar {
+impl TryFrom<char> for ReservedChar {
     type Error = &'static str;
 
     fn try_from(value: char) -> Result<ReservedChar, Self::Error> {
         match value {
-            ','  => Ok(ReservedChar::Comma),
-            '('  => Ok(ReservedChar::OpenParenthese),
-            ')'  => Ok(ReservedChar::CloseParenthese),
-            '{'  => Ok(ReservedChar::OpenCurlyBrace),
-            '}'  => Ok(ReservedChar::CloseCurlyBrace),
-            '['  => Ok(ReservedChar::OpenBracket),
-            ']'  => Ok(ReservedChar::CloseBracket),
-            ':'  => Ok(ReservedChar::Colon),
-            ';'  => Ok(ReservedChar::SemiColon),
-            '.'  => Ok(ReservedChar::Dot),
+            ',' => Ok(ReservedChar::Comma),
+            '(' => Ok(ReservedChar::OpenParenthese),
+            ')' => Ok(ReservedChar::CloseParenthese),
+            '{' => Ok(ReservedChar::OpenCurlyBrace),
+            '}' => Ok(ReservedChar::CloseCurlyBrace),
+            '[' => Ok(ReservedChar::OpenBracket),
+            ']' => Ok(ReservedChar::CloseBracket),
+            ':' => Ok(ReservedChar::Colon),
+            ';' => Ok(ReservedChar::SemiColon),
+            '.' => Ok(ReservedChar::Dot),
             '\'' => Ok(ReservedChar::Quote),
-            '"'  => Ok(ReservedChar::DoubleQuote),
-            '!'  => Ok(ReservedChar::ExclamationMark),
-            '?'  => Ok(ReservedChar::QuestionMark),
-            '/'  => Ok(ReservedChar::Slash),
-            '%'  => Ok(ReservedChar::Modulo),
-            '*'  => Ok(ReservedChar::Star),
-            '-'  => Ok(ReservedChar::Minus),
-            '+'  => Ok(ReservedChar::Plus),
-            '='  => Ok(ReservedChar::EqualSign),
+            '"' => Ok(ReservedChar::DoubleQuote),
+            '!' => Ok(ReservedChar::ExclamationMark),
+            '?' => Ok(ReservedChar::QuestionMark),
+            '/' => Ok(ReservedChar::Slash),
+            '%' => Ok(ReservedChar::Modulo),
+            '*' => Ok(ReservedChar::Star),
+            '-' => Ok(ReservedChar::Minus),
+            '+' => Ok(ReservedChar::Plus),
+            '=' => Ok(ReservedChar::EqualSign),
             '\\' => Ok(ReservedChar::Backslash),
-            ' '  => Ok(ReservedChar::Space),
+            ' ' => Ok(ReservedChar::Space),
             '\t' => Ok(ReservedChar::Tab),
-            '\n' |
-            '\r' => Ok(ReservedChar::Backline),
-            '<'  => Ok(ReservedChar::LessThan),
-            '>'  => Ok(ReservedChar::SuperiorThan),
-            '|'  => Ok(ReservedChar::Pipe),
-            '&'  => Ok(ReservedChar::Ampersand),
-            _    => Err("Unknown reserved char"),
+            '\n' | '\r' => Ok(ReservedChar::Backline),
+            '<' => Ok(ReservedChar::LessThan),
+            '>' => Ok(ReservedChar::SuperiorThan),
+            '|' => Ok(ReservedChar::Pipe),
+            '&' => Ok(ReservedChar::Ampersand),
+            '`' => Ok(ReservedChar::BackTick),
+            _ => Err("Unknown reserved char"),
         }
     }
 }
@@ -180,53 +181,53 @@ pub enum Keyword {
 
 impl Keyword {
     fn requires_before(&self) -> bool {
-        match *self {
-            Keyword::In | Keyword::InstanceOf => true,
-            _ => false,
-        }
+        matches!(*self, Keyword::In | Keyword::InstanceOf)
     }
 }
 
 impl fmt::Display for Keyword {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}",
-               match *self {
-                   Keyword::Break => "break",
-                   Keyword::Case => "case",
-                   Keyword::Catch => "catch",
-                   Keyword::Const => "const",
-                   Keyword::Continue => "continue",
-                   Keyword::Default => "default",
-                   Keyword::Do => "do",
-                   Keyword::Else => "else",
-                   Keyword::False => "false",
-                   Keyword::Finally => "finally",
-                   Keyword::Function => "function",
-                   Keyword::For => "for",
-                   Keyword::If => "if",
-                   Keyword::In => "in",
-                   Keyword::InstanceOf => "instanceof",
-                   Keyword::Let => "let",
-                   Keyword::New => "new",
-                   Keyword::Null => "null",
-                   Keyword::Private => "private",
-                   Keyword::Protected => "protected",
-                   Keyword::Public => "public",
-                   Keyword::Return => "return",
-                   Keyword::Switch => "switch",
-                   Keyword::This => "this",
-                   Keyword::Throw => "throw",
-                   Keyword::True => "true",
-                   Keyword::Try => "try",
-                   Keyword::Typeof => "typeof",
-                   Keyword::Static => "static",
-                   Keyword::Var => "var",
-                   Keyword::While => "while",
-               })
+        write!(
+            f,
+            "{}",
+            match *self {
+                Keyword::Break => "break",
+                Keyword::Case => "case",
+                Keyword::Catch => "catch",
+                Keyword::Const => "const",
+                Keyword::Continue => "continue",
+                Keyword::Default => "default",
+                Keyword::Do => "do",
+                Keyword::Else => "else",
+                Keyword::False => "false",
+                Keyword::Finally => "finally",
+                Keyword::Function => "function",
+                Keyword::For => "for",
+                Keyword::If => "if",
+                Keyword::In => "in",
+                Keyword::InstanceOf => "instanceof",
+                Keyword::Let => "let",
+                Keyword::New => "new",
+                Keyword::Null => "null",
+                Keyword::Private => "private",
+                Keyword::Protected => "protected",
+                Keyword::Public => "public",
+                Keyword::Return => "return",
+                Keyword::Switch => "switch",
+                Keyword::This => "this",
+                Keyword::Throw => "throw",
+                Keyword::True => "true",
+                Keyword::Try => "try",
+                Keyword::Typeof => "typeof",
+                Keyword::Static => "static",
+                Keyword::Var => "var",
+                Keyword::While => "while",
+            }
+        )
     }
 }
 
-impl<'a> MyTryFrom<&'a str> for Keyword {
+impl<'a> TryFrom<&'a str> for Keyword {
     type Error = &'static str;
 
     fn try_from(value: &str) -> Result<Keyword, Self::Error> {
@@ -283,23 +284,26 @@ pub enum Condition {
 
 impl fmt::Display for Condition {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}",
-               match *self {
-                   Condition::And => "&&",
-                   Condition::Or => "||",
-                   Condition::DifferentThan => "!=",
-                   Condition::SuperDifferentThan => "!==",
-                   Condition::EqualTo => "==",
-                   Condition::SuperEqualTo => "===",
-                   Condition::SuperiorThan => ">",
-                   Condition::SuperiorOrEqualTo => ">=",
-                   Condition::InferiorThan => "<",
-                   Condition::InferiorOrEqualTo => "<=",
-               })
+        write!(
+            f,
+            "{}",
+            match *self {
+                Condition::And => "&&",
+                Condition::Or => "||",
+                Condition::DifferentThan => "!=",
+                Condition::SuperDifferentThan => "!==",
+                Condition::EqualTo => "==",
+                Condition::SuperEqualTo => "===",
+                Condition::SuperiorThan => ">",
+                Condition::SuperiorOrEqualTo => ">=",
+                Condition::InferiorThan => "<",
+                Condition::InferiorOrEqualTo => "<=",
+            }
+        )
     }
 }
 
-impl MyTryFrom<ReservedChar> for Condition {
+impl TryFrom<ReservedChar> for Condition {
     type Error = &'static str;
 
     fn try_from(value: ReservedChar) -> Result<Condition, Self::Error> {
@@ -326,26 +330,43 @@ pub enum Operation {
     Equal,
 }
 
-impl fmt::Display for Operation {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}",
-               match *self {
-                   Operation::Addition => "+",
-                   Operation::AdditionEqual => "+=",
-                   Operation::Subtract => "-",
-                   Operation::SubtractEqual => "-=",
-                   Operation::Multiply => "*",
-                   Operation::MultiplyEqual => "*=",
-                   Operation::Divide => "/",
-                   Operation::DivideEqual => "/=",
-                   Operation::Modulo => "%",
-                   Operation::ModuloEqual => "%=",
-                   Operation::Equal => "=",
-               })
+impl Operation {
+    pub fn is_assign(&self) -> bool {
+        matches!(
+            *self,
+            Operation::AdditionEqual
+                | Operation::SubtractEqual
+                | Operation::MultiplyEqual
+                | Operation::DivideEqual
+                | Operation::ModuloEqual
+                | Operation::Equal
+        )
     }
 }
 
-impl MyTryFrom<ReservedChar> for Operation {
+impl fmt::Display for Operation {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match *self {
+                Operation::Addition => "+",
+                Operation::AdditionEqual => "+=",
+                Operation::Subtract => "-",
+                Operation::SubtractEqual => "-=",
+                Operation::Multiply => "*",
+                Operation::MultiplyEqual => "*=",
+                Operation::Divide => "/",
+                Operation::DivideEqual => "/=",
+                Operation::Modulo => "%",
+                Operation::ModuloEqual => "%=",
+                Operation::Equal => "=",
+            }
+        )
+    }
+}
+
+impl TryFrom<ReservedChar> for Operation {
     type Error = &'static str;
 
     fn try_from(value: ReservedChar) -> Result<Operation, Self::Error> {
@@ -387,11 +408,13 @@ impl<'a> fmt::Display for Token<'a> {
         match *self {
             Token::Keyword(x) => write!(f, "{}", x),
             Token::Char(x) => write!(f, "{}", x),
-            Token::String(x) |
-            Token::Comment(x) |
-            Token::Other(x) => write!(f, "{}", x),
+            Token::String(x) | Token::Comment(x) | Token::Other(x) => write!(f, "{}", x),
             Token::License(x) => write!(f, "/*!{}*/", x),
-            Token::Regex { regex, is_global, is_interactive } => {
+            Token::Regex {
+                regex,
+                is_global,
+                is_interactive,
+            } => {
                 let x = write!(f, "/{}/", regex);
                 if is_global {
                     write!(f, "g")?;
@@ -413,24 +436,15 @@ impl<'a> fmt::Display for Token<'a> {
 
 impl<'a> Token<'a> {
     pub fn is_comment(&self) -> bool {
-        match *self {
-            Token::Comment(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::Comment(_))
     }
 
     pub fn is_license(&self) -> bool {
-        match *self {
-            Token::License(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::License(_))
     }
 
     pub fn is_reserved_char(&self) -> bool {
-        match *self {
-            Token::Char(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::Char(_))
     }
 
     pub fn get_char(&self) -> Option<ReservedChar> {
@@ -455,10 +469,7 @@ impl<'a> Token<'a> {
     }
 
     pub fn is_operation(&self) -> bool {
-        match *self {
-            Token::Operation(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::Operation(_))
     }
 
     pub fn eq_condition(&self, cond: Condition) -> bool {
@@ -469,17 +480,11 @@ impl<'a> Token<'a> {
     }
 
     pub fn is_condition(&self) -> bool {
-        match *self {
-            Token::Condition(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::Condition(_))
     }
 
     pub fn is_other(&self) -> bool {
-        match *self {
-            Token::Other(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::Other(_))
     }
 
     pub fn get_other(&self) -> Option<&str> {
@@ -497,10 +502,7 @@ impl<'a> Token<'a> {
     }
 
     pub fn is_keyword(&self) -> bool {
-        match *self {
-            Token::Keyword(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::Keyword(_))
     }
 
     pub fn get_keyword(&self) -> Option<Keyword> {
@@ -511,10 +513,7 @@ impl<'a> Token<'a> {
     }
 
     pub fn is_string(&self) -> bool {
-        match *self {
-            Token::String(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::String(_))
     }
 
     pub fn get_string(&self) -> Option<&str> {
@@ -525,47 +524,32 @@ impl<'a> Token<'a> {
     }
 
     pub fn is_regex(&self) -> bool {
-        match *self {
-            Token::Regex { .. } => true,
-            _ => false,
-        }
+        matches!(*self, Token::Regex { .. })
     }
 
     pub fn is_created_var_decl(&self) -> bool {
-        match *self {
-            Token::CreatedVarDecl(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::CreatedVarDecl(_))
     }
 
     pub fn is_created_var(&self) -> bool {
-        match *self {
-            Token::CreatedVar(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::CreatedVar(_))
     }
 
     pub fn is_number(&self) -> bool {
-        match *self {
-            Token::Number(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::Number(_))
     }
 
     pub fn is_floating_number(&self) -> bool {
-        match *self {
-            Token::FloatingNumber(_) => true,
-            _ => false,
-        }
+        matches!(*self, Token::FloatingNumber(_))
     }
 
     fn get_required(&self) -> Option<char> {
         match *self {
-            Token::Keyword(_) |
-            Token::Other(_) |
-            Token::CreatedVarDecl(_) |
-            Token::Number(_) |
-            Token::FloatingNumber(_) => Some(' '),
+            Token::Keyword(_)
+            | Token::Other(_)
+            | Token::CreatedVarDecl(_)
+            | Token::Number(_)
+            | Token::FloatingNumber(_) => Some(' '),
             _ => None,
         }
     }
@@ -578,10 +562,13 @@ impl<'a> Token<'a> {
     }
 }
 
-fn get_line_comment<'a>(source: &'a str, iterator: &mut MyPeekable<'_>,
-                        start_pos: &mut usize) -> Option<Token<'a>> {
+fn get_line_comment<'a>(
+    source: &'a str,
+    iterator: &mut MyPeekable<'_>,
+    start_pos: &mut usize,
+) -> Option<Token<'a>> {
     *start_pos += 1;
-    while let Some((pos, c)) = iterator.next() {
+    for (pos, c) in iterator {
         if let Ok(c) = ReservedChar::try_from(c) {
             if c == ReservedChar::Backline {
                 let ret = Some(Token::Comment(&source[*start_pos..pos]));
@@ -593,34 +580,34 @@ fn get_line_comment<'a>(source: &'a str, iterator: &mut MyPeekable<'_>,
     None
 }
 
-fn get_regex<'a>(source: &'a str, iterator: &mut MyPeekable<'_>,
-                 start_pos: &mut usize, v: &[Token]) -> Option<Token<'a>> {
+fn get_regex<'a>(
+    source: &'a str,
+    iterator: &mut MyPeekable<'_>,
+    start_pos: &mut usize,
+    v: &[Token],
+) -> Option<Token<'a>> {
     let mut back = v.len();
     while back > 0 {
         back -= 1;
         if v[back].is_white_character() || v[back].is_comment() || v[back].is_license() {
-            continue
+            continue;
         }
         match &v[back] {
-            Token::Char(ReservedChar::SemiColon) |
-            Token::Char(ReservedChar::Colon) |
-            Token::Char(ReservedChar::Comma) |
-            Token::Char(ReservedChar::OpenBracket) |
-            Token::Char(ReservedChar::CloseBracket) |
-            Token::Char(ReservedChar::OpenParenthese) |
-            Token::Char(ReservedChar::CloseParenthese) => break,
-            x if x.is_operation() || x.is_number() || x.is_floating_number() ||
-                 x.is_condition() || x.is_other() => break,
+            Token::Char(ReservedChar::SemiColon)
+            | Token::Char(ReservedChar::Colon)
+            | Token::Char(ReservedChar::Comma)
+            | Token::Char(ReservedChar::OpenBracket)
+            | Token::Char(ReservedChar::OpenParenthese)
+            | Token::Operation(Operation::Equal) => break,
             _ => return None,
         }
     }
     iterator.start_save();
-    *start_pos += 1;
     while let Some((pos, c)) = iterator.next() {
         if c == '\\' {
             // we skip next character
             iterator.next();
-            continue
+            continue;
         }
         if let Ok(c) = ReservedChar::try_from(c) {
             if c == ReservedChar::Slash {
@@ -637,14 +624,14 @@ fn get_regex<'a>(source: &'a str, iterator: &mut MyPeekable<'_>,
                     add += 1;
                 }
                 let ret = Some(Token::Regex {
-                                   regex: &source[*start_pos..pos],
-                                   is_interactive: is_interactive,
-                                   is_global: is_global,
-                               });
+                    regex: &source[*start_pos + 1..pos],
+                    is_interactive,
+                    is_global,
+                });
                 *start_pos = pos + add;
                 iterator.drop_save();
                 return ret;
-            } else if c.is_white_character() {
+            } else if c == ReservedChar::Backline {
                 break;
             }
         }
@@ -653,8 +640,11 @@ fn get_regex<'a>(source: &'a str, iterator: &mut MyPeekable<'_>,
     None
 }
 
-fn get_comment<'a>(source: &'a str, iterator: &mut MyPeekable<'_>,
-                   start_pos: &mut usize) -> Option<Token<'a>> {
+fn get_comment<'a>(
+    source: &'a str,
+    iterator: &mut MyPeekable<'_>,
+    start_pos: &mut usize,
+) -> Option<Token<'a>> {
     let mut prev = ReservedChar::Quote;
     *start_pos += 1;
     let builder = if let Some((_, c)) = iterator.next() {
@@ -671,7 +661,7 @@ fn get_comment<'a>(source: &'a str, iterator: &mut MyPeekable<'_>,
         Token::Comment
     };
 
-    while let Some((pos, c)) = iterator.next() {
+    for (pos, c) in iterator {
         if let Ok(c) = ReservedChar::try_from(c) {
             if c == ReservedChar::Slash && prev == ReservedChar::Star {
                 let ret = Some(builder(&source[*start_pos..pos - 1]));
@@ -686,13 +676,17 @@ fn get_comment<'a>(source: &'a str, iterator: &mut MyPeekable<'_>,
     None
 }
 
-fn get_string<'a>(source: &'a str, iterator: &mut MyPeekable<'_>, start_pos: &mut usize,
-                  start: ReservedChar) -> Option<Token<'a>> {
+fn get_string<'a>(
+    source: &'a str,
+    iterator: &mut MyPeekable<'_>,
+    start_pos: &mut usize,
+    start: ReservedChar,
+) -> Option<Token<'a>> {
     while let Some((pos, c)) = iterator.next() {
         if c == '\\' {
             // we skip next character
             iterator.next();
-            continue
+            continue;
         }
         if let Ok(c) = ReservedChar::try_from(c) {
             if c == start {
@@ -705,10 +699,62 @@ fn get_string<'a>(source: &'a str, iterator: &mut MyPeekable<'_>, start_pos: &mu
     None
 }
 
+fn get_backtick_string<'a>(
+    source: &'a str,
+    iterator: &mut MyPeekable<'_>,
+    start_pos: &mut usize,
+) -> Option<Token<'a>> {
+    while let Some((pos, c)) = iterator.next() {
+        if c == '\\' {
+            // we skip next character
+            iterator.next();
+            continue;
+        }
+        if c == '$' && iterator.peek().map(|(_, c)| c == '{').unwrap_or(false) {
+            let mut count = 0;
+
+            loop {
+                if let Some((mut pos, c)) = iterator.next() {
+                    if c == '\\' {
+                        // we skip next character
+                        iterator.next();
+                        continue;
+                    } else if c == '"' || c == '\'' {
+                        // We don't care about the result
+                        get_string(
+                            source,
+                            iterator,
+                            &mut pos,
+                            ReservedChar::try_from(c)
+                                .expect("ReservedChar::try_from unexpectedly failed..."),
+                        );
+                    } else if c == '`' {
+                        get_backtick_string(source, iterator, &mut pos);
+                    } else if c == '{' {
+                        count += 1;
+                    } else if c == '}' {
+                        count -= 1;
+                        if count == 0 {
+                            break;
+                        }
+                    }
+                } else {
+                    return None;
+                }
+            }
+        } else if c == '`' {
+            let ret = Some(Token::String(&source[*start_pos..pos + 1]));
+            *start_pos = pos;
+            return ret;
+        }
+    }
+    None
+}
+
 fn first_useful<'a>(v: &'a [Token<'a>]) -> Option<&'a Token<'a>> {
     for x in v.iter().rev() {
         if x.is_white_character() {
-            continue
+            continue;
         }
         return Some(x);
     }
@@ -873,7 +919,7 @@ impl<'a> Iterator for MyPeekable<'a> {
     }
 }
 
-pub fn tokenize<'a>(source: &'a str) -> Tokens<'a> {
+pub fn tokenize(source: &str) -> Tokens<'_> {
     let mut v = Vec::with_capacity(1000);
     let mut start = 0;
     let mut iterator = MyPeekable::new(source.char_indices());
@@ -883,7 +929,7 @@ pub fn tokenize<'a>(source: &'a str) -> Tokens<'a> {
             Some(x) => x,
             None => {
                 fill_other(source, &mut v, start, source.len());
-                break
+                break;
             }
         };
         if let Ok(c) = ReservedChar::try_from(c) {
@@ -897,13 +943,17 @@ pub fn tokenize<'a>(source: &'a str) -> Tokens<'a> {
                     }
                 }
                 if cont {
-                    continue
+                    continue;
                 }
             }
             fill_other(source, &mut v, start, pos);
             if_match! {
                 c == ReservedChar::Quote || c == ReservedChar::DoubleQuote =>
                     if let Some(s) = get_string(source, &mut iterator, &mut pos, c) {
+                        v.push(s);
+                    },
+                c == ReservedChar::BackTick =>
+                    if let Some(s) = get_backtick_string(source, &mut iterator, &mut pos) {
                         v.push(s);
                     },
                 c == ReservedChar::Slash &&
@@ -965,18 +1015,20 @@ impl<'a> fmt::Display for Tokens<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let tokens = &self.0;
         for i in 0..tokens.len() {
-            if i > 0 &&
-               tokens[i].requires_before() &&
-               !tokens[i - 1].is_keyword() &&
-               !tokens[i - 1].is_other() &&
-               !tokens[i - 1].is_reserved_char() &&
-               !tokens[i - 1].is_string() {
+            if i > 0
+                && tokens[i].requires_before()
+                && !tokens[i - 1].is_keyword()
+                && !tokens[i - 1].is_other()
+                && !tokens[i - 1].is_reserved_char()
+                && !tokens[i - 1].is_string()
+            {
                 write!(f, " ")?;
             }
             write!(f, "{}", tokens[i])?;
             if let Some(c) = match tokens[i] {
-                Token::Keyword(_) |
-                Token::Other(_) if i + 1 < tokens.len() => tokens[i + 1].get_required(),
+                Token::Keyword(_) | Token::Other(_) if i + 1 < tokens.len() => {
+                    tokens[i + 1].get_required()
+                }
                 _ => None,
             } {
                 write!(f, "{}", c)?;
@@ -988,7 +1040,9 @@ impl<'a> fmt::Display for Tokens<'a> {
 
 impl<'a> Tokens<'a> {
     pub fn apply<F>(self, func: F) -> Tokens<'a>
-    where F: Fn(Tokens<'a>) -> Tokens<'a> {
+    where
+        F: Fn(Tokens<'a>) -> Tokens<'a>,
+    {
         func(self)
     }
 }
@@ -1003,9 +1057,7 @@ impl<'a> IntoIterator for Tokens<'a> {
 
     fn into_iter(mut self) -> Self::IntoIter {
         self.0.reverse();
-        IntoIterTokens {
-            inner: self,
-        }
+        IntoIterTokens { inner: self }
     }
 }
 
@@ -1051,24 +1103,28 @@ fn check_regex() {
     assert_eq!(::js::minify(source), expected_result);
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(v.0[3],
-               Token::Regex {
-                   regex: "\"\\.x",
-                   is_global: true,
-                   is_interactive: false,
-               });
+    assert_eq!(
+        v.0[3],
+        Token::Regex {
+            regex: "\"\\.x",
+            is_global: true,
+            is_interactive: false,
+        }
+    );
 
     let source = r#"var x = /"\.x/gigigigig;var x = "hello";"#;
     let expected_result = r#"var x=/"\.x/gi;var x="hello""#;
     assert_eq!(::js::minify(source), expected_result);
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(v.0[3],
-               Token::Regex {
-                   regex: "\"\\.x",
-                   is_global: true,
-                   is_interactive: true,
-               });
+    assert_eq!(
+        v.0[3],
+        Token::Regex {
+            regex: "\"\\.x",
+            is_global: true,
+            is_interactive: true,
+        }
+    );
 }
 
 #[test]
@@ -1078,24 +1134,43 @@ fn more_regex() {
     assert_eq!(::js::minify(source), expected_result);
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(v.0[3],
-               Token::Regex {
-                   regex: "\"\\.x\\/a",
-                   is_global: false,
-                   is_interactive: true,
-               });
+    assert_eq!(
+        v.0[3],
+        Token::Regex {
+            regex: "\"\\.x\\/a",
+            is_global: false,
+            is_interactive: true,
+        }
+    );
 
     let source = r#"var x = /\\/i;"#;
     let expected_result = r#"var x=/\\/i"#;
     assert_eq!(::js::minify(source), expected_result);
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(v.0[3],
-               Token::Regex {
-                   regex: "\\\\",
-                   is_global: false,
-                   is_interactive: true,
-               });
+    assert_eq!(
+        v.0[3],
+        Token::Regex {
+            regex: "\\\\",
+            is_global: false,
+            is_interactive: true,
+        }
+    );
+}
+
+#[test]
+fn even_more_regex() {
+    let source = r#"var x = /a-z /;"#;
+
+    let v = tokenize(source).apply(::js::clean_tokens);
+    assert_eq!(
+        v.0[3],
+        Token::Regex {
+            regex: "a-z ",
+            is_global: false,
+            is_interactive: false,
+        }
+    );
 }
 
 #[test]
@@ -1103,20 +1178,40 @@ fn not_regex_test() {
     let source = "( x ) / 2; x / y;x /= y";
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(&v.0,
-               &[Token::Char(ReservedChar::OpenParenthese),
-                 Token::Other("x"),
-                 Token::Char(ReservedChar::CloseParenthese),
-                 Token::Operation(Operation::Divide),
-                 Token::Number(2),
-                 Token::Char(ReservedChar::SemiColon),
-                 Token::Other("x"),
-                 Token::Operation(Operation::Divide),
-                 Token::Other("y"),
-                 Token::Char(ReservedChar::SemiColon),
-                 Token::Other("x"),
-                 Token::Operation(Operation::DivideEqual),
-                 Token::Other("y")]);
+    assert_eq!(
+        &v.0,
+        &[
+            Token::Char(ReservedChar::OpenParenthese),
+            Token::Other("x"),
+            Token::Char(ReservedChar::CloseParenthese),
+            Token::Operation(Operation::Divide),
+            Token::Number(2),
+            Token::Char(ReservedChar::SemiColon),
+            Token::Other("x"),
+            Token::Operation(Operation::Divide),
+            Token::Other("y"),
+            Token::Char(ReservedChar::SemiColon),
+            Token::Other("x"),
+            Token::Operation(Operation::DivideEqual),
+            Token::Other("y")
+        ]
+    );
+
+    let source = "let x = /x\ny/;";
+
+    let v = tokenize(source).apply(::js::clean_tokens);
+    assert_eq!(
+        &v.0,
+        &[
+            Token::Keyword(Keyword::Let),
+            Token::Other("x"),
+            Token::Operation(Operation::Equal),
+            Token::Operation(Operation::Divide),
+            Token::Other("x"),
+            Token::Other("y"),
+            Token::Operation(Operation::Divide)
+        ]
+    );
 }
 
 #[test]
@@ -1124,13 +1219,17 @@ fn test_tokens_parsing() {
     let source = "true = == 2.3 === 32";
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(&v.0,
-               &[Token::Keyword(Keyword::True),
-                 Token::Operation(Operation::Equal),
-                 Token::Condition(Condition::EqualTo),
-                 Token::FloatingNumber("2.3"),
-                 Token::Condition(Condition::SuperEqualTo),
-                 Token::Number(32)]);
+    assert_eq!(
+        &v.0,
+        &[
+            Token::Keyword(Keyword::True),
+            Token::Operation(Operation::Equal),
+            Token::Condition(Condition::EqualTo),
+            Token::FloatingNumber("2.3"),
+            Token::Condition(Condition::SuperEqualTo),
+            Token::Number(32)
+        ]
+    );
 }
 
 #[test]
@@ -1138,11 +1237,15 @@ fn test_string_parsing() {
     let source = "var x = 'hello people!'";
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(&v.0,
-               &[Token::Keyword(Keyword::Var),
-                 Token::Other("x"),
-                 Token::Operation(Operation::Equal),
-                 Token::String("\'hello people!\'")]);
+    assert_eq!(
+        &v.0,
+        &[
+            Token::Keyword(Keyword::Var),
+            Token::Other("x"),
+            Token::Operation(Operation::Equal),
+            Token::String("\'hello people!\'")
+        ]
+    );
 }
 
 #[test]
@@ -1150,29 +1253,33 @@ fn test_number_parsing() {
     let source = "var x = .12; let y = 4.; var z = 12; .3 4. 'a' let u = 12.2";
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(&v.0,
-               &[Token::Keyword(Keyword::Var),
-                 Token::Other("x"),
-                 Token::Operation(Operation::Equal),
-                 Token::FloatingNumber(".12"),
-                 Token::Char(ReservedChar::SemiColon),
-                 Token::Keyword(Keyword::Let),
-                 Token::Other("y"),
-                 Token::Operation(Operation::Equal),
-                 Token::FloatingNumber("4."),
-                 Token::Char(ReservedChar::SemiColon),
-                 Token::Keyword(Keyword::Var),
-                 Token::Other("z"),
-                 Token::Operation(Operation::Equal),
-                 Token::Number(12),
-                 Token::Char(ReservedChar::SemiColon),
-                 Token::FloatingNumber(".3"),
-                 Token::FloatingNumber("4."),
-                 Token::String("'a'"),
-                 Token::Keyword(Keyword::Let),
-                 Token::Other("u"),
-                 Token::Operation(Operation::Equal),
-                 Token::FloatingNumber("12.2")]);
+    assert_eq!(
+        &v.0,
+        &[
+            Token::Keyword(Keyword::Var),
+            Token::Other("x"),
+            Token::Operation(Operation::Equal),
+            Token::FloatingNumber(".12"),
+            Token::Char(ReservedChar::SemiColon),
+            Token::Keyword(Keyword::Let),
+            Token::Other("y"),
+            Token::Operation(Operation::Equal),
+            Token::FloatingNumber("4."),
+            Token::Char(ReservedChar::SemiColon),
+            Token::Keyword(Keyword::Var),
+            Token::Other("z"),
+            Token::Operation(Operation::Equal),
+            Token::Number(12),
+            Token::Char(ReservedChar::SemiColon),
+            Token::FloatingNumber(".3"),
+            Token::FloatingNumber("4."),
+            Token::String("'a'"),
+            Token::Keyword(Keyword::Let),
+            Token::Other("u"),
+            Token::Operation(Operation::Equal),
+            Token::FloatingNumber("12.2")
+        ]
+    );
 }
 
 #[test]
@@ -1180,13 +1287,17 @@ fn test_number_parsing2() {
     let source = "var x = 12.a;";
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(&v.0,
-               &[Token::Keyword(Keyword::Var),
-                 Token::Other("x"),
-                 Token::Operation(Operation::Equal),
-                 Token::Number(12),
-                 Token::Char(ReservedChar::Dot),
-                 Token::Other("a")]);
+    assert_eq!(
+        &v.0,
+        &[
+            Token::Keyword(Keyword::Var),
+            Token::Other("x"),
+            Token::Operation(Operation::Equal),
+            Token::Number(12),
+            Token::Char(ReservedChar::Dot),
+            Token::Other("a")
+        ]
+    );
 }
 
 #[test]
@@ -1194,8 +1305,27 @@ fn tokens_spaces() {
     let source = "t in e";
 
     let v = tokenize(source).apply(::js::clean_tokens);
-    assert_eq!(&v.0,
-               &[Token::Other("t"),
-                 Token::Keyword(Keyword::In),
-                 Token::Other("e")]);
+    assert_eq!(
+        &v.0,
+        &[
+            Token::Other("t"),
+            Token::Keyword(Keyword::In),
+            Token::Other("e")
+        ]
+    );
+}
+
+#[test]
+fn division_by_id() {
+    let source = "100/abc";
+
+    let v = tokenize(source).apply(::js::clean_tokens);
+    assert_eq!(
+        &v.0,
+        &[
+            Token::Number(100),
+            Token::Operation(Operation::Divide),
+            Token::Other("abc")
+        ]
+    );
 }

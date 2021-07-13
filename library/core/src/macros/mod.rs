@@ -1,26 +1,4 @@
-#[cfg(bootstrap)]
-#[doc(include = "panic.md")]
-#[macro_export]
-#[allow_internal_unstable(core_panic)]
-#[stable(feature = "core", since = "1.6.0")]
-#[rustc_diagnostic_item = "core_panic_macro"]
-macro_rules! panic {
-    () => (
-        $crate::panic!("explicit panic")
-    );
-    ($msg:literal $(,)?) => (
-        $crate::panicking::panic($msg)
-    );
-    ($msg:expr $(,)?) => (
-        $crate::panicking::panic_str($msg)
-    );
-    ($fmt:expr, $($arg:tt)+) => (
-        $crate::panicking::panic_fmt($crate::format_args!($fmt, $($arg)+))
-    );
-}
-
-#[cfg(not(bootstrap))]
-#[doc(include = "panic.md")]
+#[doc = include_str!("panic.md")]
 #[macro_export]
 #[rustc_builtin_macro = "core_panic"]
 #[allow_internal_unstable(edition_panic)]
@@ -53,32 +31,30 @@ macro_rules! panic {
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow_internal_unstable(core_panic)]
 macro_rules! assert_eq {
     ($left:expr, $right:expr $(,)?) => ({
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
+                    let kind = $crate::panicking::AssertKind::Eq;
                     // The reborrows below are intentional. Without them, the stack slot for the
                     // borrow is initialized even before the values are compared, leading to a
                     // noticeable slow down.
-                    $crate::panic!(r#"assertion failed: `(left == right)`
-  left: `{:?}`,
- right: `{:?}`"#, &*left_val, &*right_val)
+                    $crate::panicking::assert_failed(kind, &*left_val, &*right_val, $crate::option::Option::None);
                 }
             }
         }
     });
     ($left:expr, $right:expr, $($arg:tt)+) => ({
-        match (&($left), &($right)) {
+        match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
+                    let kind = $crate::panicking::AssertKind::Eq;
                     // The reborrows below are intentional. Without them, the stack slot for the
                     // borrow is initialized even before the values are compared, leading to a
                     // noticeable slow down.
-                    $crate::panic!(r#"assertion failed: `(left == right)`
-  left: `{:?}`,
- right: `{:?}`: {}"#, &*left_val, &*right_val,
-                           $crate::format_args!($($arg)+))
+                    $crate::panicking::assert_failed(kind, &*left_val, &*right_val, $crate::option::Option::Some($crate::format_args!($($arg)+)));
                 }
             }
         }
@@ -104,17 +80,17 @@ macro_rules! assert_eq {
 /// ```
 #[macro_export]
 #[stable(feature = "assert_ne", since = "1.13.0")]
+#[allow_internal_unstable(core_panic)]
 macro_rules! assert_ne {
     ($left:expr, $right:expr $(,)?) => ({
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
+                    let kind = $crate::panicking::AssertKind::Ne;
                     // The reborrows below are intentional. Without them, the stack slot for the
                     // borrow is initialized even before the values are compared, leading to a
                     // noticeable slow down.
-                    $crate::panic!(r#"assertion failed: `(left != right)`
-  left: `{:?}`,
- right: `{:?}`"#, &*left_val, &*right_val)
+                    $crate::panicking::assert_failed(kind, &*left_val, &*right_val, $crate::option::Option::None);
                 }
             }
         }
@@ -123,13 +99,11 @@ macro_rules! assert_ne {
         match (&($left), &($right)) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
+                    let kind = $crate::panicking::AssertKind::Ne;
                     // The reborrows below are intentional. Without them, the stack slot for the
                     // borrow is initialized even before the values are compared, leading to a
                     // noticeable slow down.
-                    $crate::panic!(r#"assertion failed: `(left != right)`
-  left: `{:?}`,
- right: `{:?}`: {}"#, &*left_val, &*right_val,
-                           $crate::format_args!($($arg)+))
+                    $crate::panicking::assert_failed(kind, &*left_val, &*right_val, $crate::option::Option::Some($crate::format_args!($($arg)+)));
                 }
             }
         }
@@ -816,6 +790,7 @@ pub(crate) mod builtin {
     #[macro_export]
     macro_rules! env {
         ($name:expr $(,)?) => {{ /* compiler built-in */ }};
+        ($name:expr, $error_msg:expr $(,)?) => {{ /* compiler built-in */ }};
     }
 
     /// Optionally inspects an environment variable at compile time.
@@ -1208,7 +1183,8 @@ pub(crate) mod builtin {
     ///
     /// This macro has a second form, where a custom panic message can
     /// be provided with or without arguments for formatting. See [`std::fmt`]
-    /// for syntax for this form.
+    /// for syntax for this form. Expressions used as format arguments will only
+    /// be evaluated if the assertion fails.
     ///
     /// [`std::fmt`]: ../std/fmt/index.html
     ///
@@ -1324,6 +1300,14 @@ pub(crate) mod builtin {
         (false) => {{ /* compiler built-in */ }};
     }
 
+    /// Attribute macro used to apply derive macros.
+    #[cfg(not(bootstrap))]
+    #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_builtin_macro]
+    pub macro derive($item:item) {
+        /* compiler built-in */
+    }
+
     /// Attribute macro applied to a function to turn it into a unit test.
     #[stable(feature = "rust1", since = "1.0.0")]
     #[allow_internal_unstable(test, rustc_attrs)]
@@ -1378,10 +1362,26 @@ pub(crate) mod builtin {
         /* compiler built-in */
     }
 
+    /// Expands all `#[cfg]` and `#[cfg_attr]` attributes in the code fragment it's applied to.
+    #[cfg(not(bootstrap))]
+    #[unstable(
+        feature = "cfg_eval",
+        issue = "82679",
+        reason = "`cfg_eval` is a recently implemented feature"
+    )]
+    #[rustc_builtin_macro]
+    pub macro cfg_eval($($tt:tt)*) {
+        /* compiler built-in */
+    }
+
     /// Unstable implementation detail of the `rustc` compiler, do not use.
     #[rustc_builtin_macro]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[allow_internal_unstable(core_intrinsics, libstd_sys_internals)]
+    #[rustc_deprecated(
+        since = "1.52.0",
+        reason = "rustc-serialize is deprecated and no longer supported"
+    )]
     pub macro RustcDecodable($item:item) {
         /* compiler built-in */
     }
@@ -1390,6 +1390,10 @@ pub(crate) mod builtin {
     #[rustc_builtin_macro]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[allow_internal_unstable(core_intrinsics)]
+    #[rustc_deprecated(
+        since = "1.52.0",
+        reason = "rustc-serialize is deprecated and no longer supported"
+    )]
     pub macro RustcEncodable($item:item) {
         /* compiler built-in */
     }

@@ -17,9 +17,10 @@ use la_arena::{Idx, RawIdx};
 use syntax::ast::RangeOp;
 
 use crate::{
-    builtin_type::{BuiltinFloat, BuiltinInt},
+    builtin_type::{BuiltinFloat, BuiltinInt, BuiltinUint},
     path::{GenericArgs, Path},
     type_ref::{Mutability, Rawness, TypeRef},
+    BlockId,
 };
 
 pub type ExprId = Idx<Expr>;
@@ -42,6 +43,7 @@ pub enum Literal {
     Char(char),
     Bool(bool),
     Int(u64, Option<BuiltinInt>),
+    Uint(u64, Option<BuiltinUint>),
     Float(u64, Option<BuiltinFloat>), // FIXME: f64 is not Eq
 }
 
@@ -56,6 +58,7 @@ pub enum Expr {
         else_branch: Option<ExprId>,
     },
     Block {
+        id: BlockId,
         statements: Vec<Statement>,
         tail: Option<ExprId>,
         label: Option<LabelId>,

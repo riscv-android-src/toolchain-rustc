@@ -12,7 +12,7 @@ import { PersistentState } from './persistent_state';
 import { fetchRelease, download } from './net';
 import { activateTaskProvider } from './tasks';
 import { setContextValue } from './util';
-import { exec } from 'child_process';
+import { exec, spawnSync } from 'child_process';
 
 let ctx: Ctx | undefined;
 
@@ -76,7 +76,7 @@ async function tryActivate(context: vscode.ExtensionContext) {
     // This a horribly, horribly wrong way to deal with this problem.
     ctx = await Ctx.create(config, context, serverPath, workspaceFolder.uri.fsPath);
 
-    setContextValue(RUST_PROJECT_CONTEXT_NAME, true);
+    await setContextValue(RUST_PROJECT_CONTEXT_NAME, true);
 
     // Commands which invokes manually via command palette, shortcut, etc.
 
@@ -108,10 +108,12 @@ async function tryActivate(context: vscode.ExtensionContext) {
     ctx.registerCommand('viewHir', commands.viewHir);
     ctx.registerCommand('expandMacro', commands.expandMacro);
     ctx.registerCommand('run', commands.run);
+    ctx.registerCommand('copyRunCommandLine', commands.copyRunCommandLine);
     ctx.registerCommand('debug', commands.debug);
     ctx.registerCommand('newDebugConfig', commands.newDebugConfig);
     ctx.registerCommand('openDocs', commands.openDocs);
     ctx.registerCommand('openCargoToml', commands.openCargoToml);
+    ctx.registerCommand('peekTests', commands.peekTests);
 
     defaultOnEnter.dispose();
     ctx.registerCommand('onEnter', commands.onEnter);
@@ -142,7 +144,7 @@ async function tryActivate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate() {
-    setContextValue(RUST_PROJECT_CONTEXT_NAME, undefined);
+    await setContextValue(RUST_PROJECT_CONTEXT_NAME, undefined);
     await ctx?.client.stop();
     ctx = undefined;
 }
@@ -182,11 +184,11 @@ async function bootstrapExtension(config: Config, state: PersistentState): Promi
     }
 
     const release = await downloadWithRetryDialog(state, async () => {
-        return await fetchRelease("nightly", state.githubToken);
-    }).catch((e) => {
+        return await fetchRelease("nightly", state.githubToken, config.httpProxy);
+    }).catch(async (e) => {
         log.error(e);
         if (state.releaseId === undefined) { // Show error only for the initial download
-            vscode.window.showErrorMessage(`Failed to download rust-analyzer nightly ${e}`);
+            await vscode.window.showErrorMessage(`Failed to download rust-analyzer nightly ${e}`);
         }
         return undefined;
     });
@@ -208,6 +210,7 @@ async function bootstrapExtension(config: Config, state: PersistentState): Promi
             url: artifact.browser_download_url,
             dest,
             progressTitle: "Downloading rust-analyzer extension",
+            httpProxy: config.httpProxy,
         });
     });
 
@@ -245,10 +248,10 @@ async function patchelf(dest: PathLike): Promise<void> {
         },
         async (progress, _) => {
             const expression = `
-            {src, pkgs ? import <nixpkgs> {}}:
+            {srcStr, pkgs ? import <nixpkgs> {}}:
                 pkgs.stdenv.mkDerivation {
                     name = "rust-analyzer";
-                    inherit src;
+                    src = /. + srcStr;
                     phases = [ "installPhase" "fixupPhase" ];
                     installPhase = "cp $src $out";
                     fixupPhase = ''
@@ -261,7 +264,7 @@ async function patchelf(dest: PathLike): Promise<void> {
             await fs.rename(dest, origFile);
             progress.report({ message: "Patching executable", increment: 20 });
             await new Promise((resolve, reject) => {
-                const handle = exec(`nix-build -E - --arg src '${origFile}' -o ${dest}`,
+                const handle = exec(`nix-build -E - --argstr srcStr '${origFile}' -o '${dest}'`,
                     (err, stdout, stderr) => {
                         if (err != null) {
                             reject(Error(stderr));
@@ -296,9 +299,9 @@ async function getServer(config: Config, state: PersistentState): Promise<string
         "arm64 linux": "aarch64-unknown-linux-gnu",
         "arm64 darwin": "aarch64-apple-darwin",
     };
-    const platform = platforms[`${process.arch} ${process.platform}`];
+    let platform = platforms[`${process.arch} ${process.platform}`];
     if (platform === undefined) {
-        vscode.window.showErrorMessage(
+        await vscode.window.showErrorMessage(
             "Unfortunately we don't ship binaries for your platform yet. " +
             "You need to manually clone rust-analyzer repository and " +
             "run `cargo xtask install --server` to build the language server from sources. " +
@@ -307,6 +310,9 @@ async function getServer(config: Config, state: PersistentState): Promise<string
             "will consider it."
         );
         return undefined;
+    }
+    if (platform === "x86_64-unknown-linux-gnu" && isMusl()) {
+        platform = "x86_64-unknown-linux-musl";
     }
     const ext = platform.indexOf("-windows-") !== -1 ? ".exe" : "";
     const dest = path.join(config.globalStoragePath, `rust-analyzer-${platform}${ext}`);
@@ -327,7 +333,7 @@ async function getServer(config: Config, state: PersistentState): Promise<string
 
     const releaseTag = config.package.releaseTag;
     const release = await downloadWithRetryDialog(state, async () => {
-        return await fetchRelease(releaseTag, state.githubToken);
+        return await fetchRelease(releaseTag, state.githubToken, config.httpProxy);
     });
     const artifact = release.assets.find(artifact => artifact.name === `rust-analyzer-${platform}.gz`);
     assert(!!artifact, `Bad release: ${JSON.stringify(release)}`);
@@ -339,6 +345,7 @@ async function getServer(config: Config, state: PersistentState): Promise<string
             progressTitle: "Downloading rust-analyzer server",
             gunzip: true,
             mode: 0o755,
+            httpProxy: config.httpProxy,
         });
     });
 
@@ -362,6 +369,13 @@ async function isNixOs(): Promise<boolean> {
     } catch (e) {
         return false;
     }
+}
+
+function isMusl(): boolean {
+    // We can detect Alpine by checking `/etc/os-release` but not Void Linux musl.
+    // Instead, we run `ldd` since it advertises the libc which it belongs to.
+    const res = spawnSync("ldd", ["--version"]);
+    return res.stderr != null && res.stderr.indexOf("musl libc") >= 0;
 }
 
 async function downloadWithRetryDialog<T>(state: PersistentState, downloadFunc: () => Promise<T>): Promise<T> {
@@ -433,6 +447,7 @@ function warnAboutExtensionConflicts() {
         vscode.window.showWarningMessage(
             `You have both the ${fst[0]} (${fst[1]}) and ${sec[0]} (${sec[1]}) ` +
             "plugins enabled. These are known to conflict and cause various functions of " +
-            "both plugins to not work correctly. You should disable one of them.", "Got it");
+            "both plugins to not work correctly. You should disable one of them.", "Got it")
+            .then(() => { }, console.error);
     };
 }

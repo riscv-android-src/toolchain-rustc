@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "notify"
-version = "5.0.0-pre.5"
+version = "5.0.0-pre.6"
 authors = ["Félix Saparelli <me@passcod.name>", "Daniel Faust <hessijames@gmail.com>"]
 exclude = ["/clippy.toml", ".github/*"]
 description = "Cross-platform filesystem notification library"

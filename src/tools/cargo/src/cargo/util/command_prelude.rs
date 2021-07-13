@@ -1,5 +1,5 @@
 use crate::core::compiler::{BuildConfig, MessageFormat};
-use crate::core::Workspace;
+use crate::core::{Edition, Workspace};
 use crate::ops::{CompileFilter, CompileOptions, NewOptions, Packages, VersionControl};
 use crate::sources::CRATES_IO_REGISTRY;
 use crate::util::important_paths::find_root_manifest_for_wd;
@@ -188,7 +188,7 @@ pub trait AppExt: Sized {
         ._arg(opt("lib", "Use a library template"))
         ._arg(
             opt("edition", "Edition to set for the crate generated")
-                .possible_values(&["2015", "2018", "2021"])
+                .possible_values(Edition::CLI_VALUES)
                 .value_name("YEAR"),
         )
         ._arg(
@@ -217,6 +217,13 @@ pub trait AppExt: Sized {
         self._arg(opt(
             "ignore-rust-version",
             "Ignore `rust-version` specification in packages (unstable)",
+        ))
+    }
+
+    fn arg_future_incompat_report(self) -> Self {
+        self._arg(opt(
+            "future-incompat-report",
+            "Ouputs a future incompatibility report at the end of the build (unstable)",
         ))
     }
 }
@@ -462,6 +469,7 @@ pub trait ArgMatchesExt {
         build_config.requested_profile = self.get_profile_name(config, "dev", profile_checking)?;
         build_config.build_plan = self._is_present("build-plan");
         build_config.unit_graph = self._is_present("unit-graph");
+        build_config.future_incompat_report = self._is_present("future-incompat-report");
         if build_config.build_plan {
             config
                 .cli_unstable()
@@ -471,6 +479,18 @@ pub trait ArgMatchesExt {
             config
                 .cli_unstable()
                 .fail_if_stable_opt("--unit-graph", 8002)?;
+        }
+        if build_config.future_incompat_report {
+            config
+                .cli_unstable()
+                // TODO: Tracking issue
+                .fail_if_stable_opt("--future-incompat-report", 9241)?;
+
+            if !config.cli_unstable().enable_future_incompat_feature {
+                anyhow::bail!(
+                    "Usage of `--future-incompat-report` requires `-Z future-incompat-report`"
+                )
+            }
         }
 
         let opts = CompileOptions {

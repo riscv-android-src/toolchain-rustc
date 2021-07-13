@@ -13,8 +13,9 @@
 [package]
 edition = "2018"
 name = "snap"
-version = "1.0.1"
+version = "1.0.4"
 authors = ["Andrew Gallant <jamslam@gmail.com>"]
+exclude = ["data/*"]
 description = "A pure Rust implementation of the Snappy compression algorithm. Includes\nstreaming compression and decompression.\n"
 homepage = "https://github.com/BurntSushi/rust-snappy"
 documentation = "https://docs.rs/snap"

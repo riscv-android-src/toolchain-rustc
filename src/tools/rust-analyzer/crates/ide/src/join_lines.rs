@@ -1,4 +1,4 @@
-use assists::utils::extract_trivial_expression;
+use ide_assists::utils::extract_trivial_expression;
 use itertools::Itertools;
 use syntax::{
     algo::non_trivia_sibling,
@@ -7,6 +7,7 @@ use syntax::{
     SyntaxKind::{self, USE_TREE, WHITESPACE},
     SyntaxNode, SyntaxToken, TextRange, TextSize, T,
 };
+
 use text_edit::{TextEdit, TextEditBuilder};
 
 // Feature: Join Lines
@@ -44,9 +45,9 @@ pub(crate) fn join_lines(file: &SourceFile, range: TextRange) -> TextEdit {
         let text = token.text();
         for (pos, _) in text[range].bytes().enumerate().filter(|&(_, b)| b == b'\n') {
             let pos: TextSize = (pos as u32).into();
-            let off = token.text_range().start() + range.start() + pos;
-            if !edit.invalidates_offset(off) {
-                remove_newline(&mut edit, &token, off);
+            let offset = token.text_range().start() + range.start() + pos;
+            if !edit.invalidates_offset(offset) {
+                remove_newline(&mut edit, &token, offset);
             }
         }
     }
@@ -56,14 +57,25 @@ pub(crate) fn join_lines(file: &SourceFile, range: TextRange) -> TextEdit {
 
 fn remove_newline(edit: &mut TextEditBuilder, token: &SyntaxToken, offset: TextSize) {
     if token.kind() != WHITESPACE || token.text().bytes().filter(|&b| b == b'\n').count() != 1 {
-        // The node is either the first or the last in the file
-        let suff = &token.text()[TextRange::new(
-            offset - token.text_range().start() + TextSize::of('\n'),
-            TextSize::of(token.text()),
-        )];
-        let spaces = suff.bytes().take_while(|&b| b == b' ').count();
+        let mut string_open_quote = false;
+        if let Some(string) = ast::String::cast(token.clone()) {
+            if let Some(range) = string.open_quote_text_range() {
+                cov_mark::hit!(join_string_literal);
+                string_open_quote = range.end() == offset;
+            }
+        }
 
-        edit.replace(TextRange::at(offset, ((spaces + 1) as u32).into()), " ".to_string());
+        let n_spaces_after_line_break = {
+            let suff = &token.text()[TextRange::new(
+                offset - token.text_range().start() + TextSize::of('\n'),
+                TextSize::of(token.text()),
+            )];
+            suff.bytes().take_while(|&b| b == b' ').count()
+        };
+
+        let range = TextRange::at(offset, ((n_spaces_after_line_break + 1) as u32).into());
+        let replace_with = if string_open_quote { "" } else { " " };
+        edit.replace(range, replace_with.to_string());
         return;
     }
 
@@ -270,27 +282,28 @@ fn foo() {
 
     #[test]
     fn test_join_lines_diverging_block() {
-        let before = r"
-            fn foo() {
-                loop {
-                    match x {
-                        92 => $0{
-                            continue;
-                        }
-                    }
-                }
+        check_join_lines(
+            r"
+fn foo() {
+    loop {
+        match x {
+            92 => $0{
+                continue;
             }
-        ";
-        let after = r"
-            fn foo() {
-                loop {
-                    match x {
-                        92 => $0continue,
-                    }
-                }
-            }
-        ";
-        check_join_lines(before, after);
+        }
+    }
+}
+        ",
+            r"
+fn foo() {
+    loop {
+        match x {
+            92 => $0continue,
+        }
+    }
+}
+        ",
+        );
     }
 
     #[test]
@@ -768,6 +781,44 @@ fn foo() {
     }
 }
         ",
+        );
+    }
+
+    #[test]
+    fn join_string_literal() {
+        cov_mark::check!(join_string_literal);
+        check_join_lines(
+            r#"
+fn main() {
+    $0"
+hello
+";
+}
+"#,
+            r#"
+fn main() {
+    $0"hello
+";
+}
+"#,
+        );
+
+        check_join_lines(
+            r#"
+fn main() {
+    "
+$0hello
+world
+";
+}
+"#,
+            r#"
+fn main() {
+    "
+$0hello world
+";
+}
+"#,
         );
     }
 }

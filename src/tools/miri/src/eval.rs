@@ -8,6 +8,7 @@ use log::info;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{self, layout::LayoutCx, TyCtxt};
 use rustc_target::abi::LayoutOf;
+use rustc_target::spec::abi::Abi;
 
 use crate::*;
 
@@ -138,8 +139,8 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
             ecx.layout_of(tcx.mk_array(tcx.mk_imm_ptr(tcx.types.u8), u64::try_from(argvs.len()).unwrap()))?;
         let argvs_place = ecx.allocate(argvs_layout, MiriMemoryKind::Machine.into());
         for (idx, arg) in argvs.into_iter().enumerate() {
-            let place = ecx.mplace_field(argvs_place, idx)?;
-            ecx.write_scalar(arg, place.into())?;
+            let place = ecx.mplace_field(&argvs_place, idx)?;
+            ecx.write_scalar(arg, &place.into())?;
         }
         ecx.memory.mark_immutable(argvs_place.ptr.assert_ptr().alloc_id)?;
         // A pointer to that place is the 3rd argument for main.
@@ -148,14 +149,14 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
         {
             let argc_place =
                 ecx.allocate(ecx.machine.layouts.isize, MiriMemoryKind::Machine.into());
-            ecx.write_scalar(argc, argc_place.into())?;
+            ecx.write_scalar(argc, &argc_place.into())?;
             ecx.machine.argc = Some(argc_place.ptr);
 
             let argv_place = ecx.allocate(
                 ecx.layout_of(tcx.mk_imm_ptr(tcx.types.unit))?,
                 MiriMemoryKind::Machine.into(),
             );
-            ecx.write_scalar(argv, argv_place.into())?;
+            ecx.write_scalar(argv, &argv_place.into())?;
             ecx.machine.argv = Some(argv_place.ptr);
         }
         // Store command line as UTF-16 for Windows `GetCommandLineW`.
@@ -177,8 +178,8 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
             ecx.machine.cmd_line = Some(cmd_place.ptr);
             // Store the UTF-16 string. We just allocated so we know the bounds are fine.
             for (idx, &c) in cmd_utf16.iter().enumerate() {
-                let place = ecx.mplace_field(cmd_place, idx)?;
-                ecx.write_scalar(Scalar::from_u16(c), place.into())?;
+                let place = ecx.mplace_field(&cmd_place, idx)?;
+                ecx.write_scalar(Scalar::from_u16(c), &place.into())?;
             }
         }
         argv
@@ -189,8 +190,9 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     // Call start function.
     ecx.call_function(
         start_instance,
+        Abi::Rust,
         &[main_ptr.into(), argc.into(), argv.into()],
-        Some(ret_place.into()),
+        Some(&ret_place.into()),
         StackPopCleanup::None { cleanup: true },
     )?;
 
@@ -208,7 +210,7 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
         Ok(v) => v,
         Err(err) => {
             err.print_backtrace();
-            panic!("Miri initialization error: {}", err.kind)
+            panic!("Miri initialization error: {}", err.kind())
         }
     };
 
@@ -239,7 +241,7 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
             }
             ecx.process_diagnostics(info);
         }
-        let return_code = ecx.read_scalar(ret_place.into())?.check_init()?.to_machine_isize(&ecx)?;
+        let return_code = ecx.read_scalar(&ret_place.into())?.check_init()?.to_machine_isize(&ecx)?;
         Ok(return_code)
     })();
 

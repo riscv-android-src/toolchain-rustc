@@ -10,17 +10,14 @@
 > | _IfExpression_
 > | _IfLetExpression_ ) )<sup>\?</sup>
 
-An `if` expression is a conditional branch in program control. The form of an
-`if` expression is a condition expression, followed by a consequent block, any
-number of `else if` conditions and blocks, and an optional trailing `else`
-block. The condition expressions must have type `bool`. If a condition
-expression evaluates to `true`, the consequent block is executed and any
-subsequent `else if` or `else` block is skipped. If a condition expression
-evaluates to `false`, the consequent block is skipped and any subsequent `else
-if` condition is evaluated. If all `if` and `else if` conditions evaluate to
-`false` then any `else` block is executed. An if expression evaluates to the
-same value as the executed block, or `()` if no block is evaluated. An `if`
-expression must have the same type in all situations.
+An `if` expression is a conditional branch in program control.
+The syntax of an `if` expression is a condition operand, followed by a consequent block, any number of `else if` conditions and blocks, and an optional trailing `else` block.
+The condition operands must have the [boolean type].
+If a condition operand evaluates to `true`, the consequent block is executed and any subsequent `else if` or `else` block is skipped.
+If a condition operand evaluates to `false`, the consequent block is skipped and any subsequent `else if` condition is evaluated.
+If all `if` and `else if` conditions evaluate to `false` then any `else` block is executed.
+An if expression evaluates to the same value as the executed block, or `()` if no block is evaluated.
+An `if` expression must have the same type in all situations.
 
 ```rust
 # let x = 3;
@@ -51,12 +48,10 @@ assert_eq!(y, "Bigger");
 > | _IfExpression_
 > | _IfLetExpression_ ) )<sup>\?</sup>
 
-An `if let` expression is semantically similar to an `if` expression but in
-place of a condition expression it expects the keyword `let` followed by a
-pattern, an `=` and a [scrutinee] expression. If the value of the scrutinee
-matches the pattern, the corresponding block will execute. Otherwise, flow
-proceeds to the following `else` block if it exists. Like `if` expressions,
-`if let` expressions have a value determined by the block that is evaluated.
+An `if let` expression is semantically similar to an `if` expression but in place of a condition operand it expects the keyword `let` followed by a pattern, an `=` and a [scrutinee] operand.
+If the value of the scrutinee matches the pattern, the corresponding block will execute.
+Otherwise, flow proceeds to the following `else` block if it exists.
+Like `if` expressions, `if let` expressions have a value determined by the block that is evaluated.
 
 ```rust
 let dish = ("Ham", "Eggs");
@@ -116,8 +111,7 @@ match EXPR {
 }
 ```
 
-Multiple patterns may be specified with the `|` operator. This has the same semantics
-as with `|` in `match` expressions:
+Multiple patterns may be specified with the `|` operator. This has the same semantics as with `|` in `match` expressions:
 
 ```rust
 enum E {
@@ -132,10 +126,8 @@ if let E::X(n) | E::Y(n) = v {
 ```
 
 The expression cannot be a [lazy boolean operator expression][_LazyBooleanOperatorExpression_].
-Use of a lazy boolean operator is ambiguous with a planned feature change
-of the language (the implementation of if-let chains - see [eRFC 2947][_eRFCIfLetChain_]).
-When lazy boolean operator expression is desired, this can be achieved
-by using parenthesis as below:
+Use of a lazy boolean operator is ambiguous with a planned feature change of the language (the implementation of if-let chains - see [eRFC 2947][_eRFCIfLetChain_]).
+When lazy boolean operator expression is desired, this can be achieved by using parenthesis as below:
 
 <!-- ignore: psuedo code -->
 ```rust,ignore
@@ -158,4 +150,5 @@ if let PAT = ( EXPR || EXPR ) { .. }
 [_MatchArmPatterns_]: match-expr.md
 [_eRFCIfLetChain_]: https://github.com/rust-lang/rfcs/blob/master/text/2497-if-let-chains.md#rollout-plan-and-transitioning-to-rust-2018
 [`match` expression]: match-expr.md
+[boolean type]: ../types/boolean.md
 [scrutinee]: ../glossary.md#scrutinee

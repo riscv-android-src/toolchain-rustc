@@ -12,9 +12,10 @@ use log::{info, warn};
 
 use crate::{
     db::HirDatabase,
+    to_assoc_type_id,
     traits::{InEnvironment, Solution},
     utils::generics,
-    BoundVar, Canonical, DebruijnIndex, Obligation, Substs, TraitRef, Ty,
+    BoundVar, Canonical, DebruijnIndex, Interner, Obligation, Substs, TraitRef, Ty, TyKind,
 };
 
 const AUTODEREF_RECURSION_LIMIT: usize = 10;
@@ -81,16 +82,22 @@ fn deref_by_trait(
 
     // Now do the assoc type projection
     let projection = super::traits::ProjectionPredicate {
-        ty: Ty::Bound(BoundVar::new(DebruijnIndex::INNERMOST, ty.value.kinds.len())),
-        projection_ty: super::ProjectionTy { associated_ty: target, parameters },
+        ty: TyKind::BoundVar(BoundVar::new(DebruijnIndex::INNERMOST, ty.value.kinds.len()))
+            .intern(&Interner),
+        projection_ty: super::ProjectionTy {
+            associated_ty_id: to_assoc_type_id(target),
+            substitution: parameters,
+        },
     };
 
     let obligation = super::Obligation::Projection(projection);
 
     let in_env = InEnvironment { value: obligation, environment: ty.environment };
 
-    let canonical =
-        Canonical::new(in_env, ty.value.kinds.iter().copied().chain(Some(super::TyKind::General)));
+    let canonical = Canonical::new(
+        in_env,
+        ty.value.kinds.iter().copied().chain(Some(chalk_ir::TyVariableKind::General)),
+    );
 
     let solution = db.trait_solve(krate, canonical)?;
 
@@ -112,7 +119,8 @@ fn deref_by_trait(
             // new variables in that case
 
             for i in 1..vars.0.kinds.len() {
-                if vars.0.value[i - 1] != Ty::Bound(BoundVar::new(DebruijnIndex::INNERMOST, i - 1))
+                if vars.0.value[i - 1].interned(&Interner)
+                    != &TyKind::BoundVar(BoundVar::new(DebruijnIndex::INNERMOST, i - 1))
                 {
                     warn!("complex solution for derefing {:?}: {:?}, ignoring", ty.value, solution);
                     return None;

@@ -5,22 +5,32 @@ use std::{
 };
 
 use ide::{
-    Assist, AssistKind, CallInfo, CompletionItem, CompletionItemKind, Documentation, FileId,
-    FileRange, FileSystemEdit, Fold, FoldKind, Highlight, HlMod, HlPunct, HlRange, HlTag, Indel,
-    InlayHint, InlayKind, InsertTextFormat, LineIndex, Markup, NavigationTarget, ReferenceAccess,
-    RenameError, Runnable, Severity, SourceChange, TextEdit, TextRange, TextSize,
+    Annotation, AnnotationKind, Assist, AssistKind, CallInfo, CompletionItem, CompletionItemKind,
+    CompletionRelevance, Documentation, FileId, FileRange, FileSystemEdit, Fold, FoldKind,
+    Highlight, HlMod, HlPunct, HlRange, HlTag, Indel, InlayHint, InlayKind, InsertTextFormat,
+    Markup, NavigationTarget, ReferenceAccess, RenameError, Runnable, Severity, SourceChange,
+    TextEdit, TextRange, TextSize,
 };
 use ide_db::SymbolKind;
 use itertools::Itertools;
+use serde_json::to_value;
 
 use crate::{
-    cargo_target_spec::CargoTargetSpec, global_state::GlobalStateSnapshot,
-    line_endings::LineEndings, lsp_ext, semantic_tokens, Result,
+    cargo_target_spec::CargoTargetSpec,
+    global_state::GlobalStateSnapshot,
+    line_index::{LineEndings, LineIndex, OffsetEncoding},
+    lsp_ext, semantic_tokens, Result,
 };
 
 pub(crate) fn position(line_index: &LineIndex, offset: TextSize) -> lsp_types::Position {
-    let line_col = line_index.line_col(offset);
-    lsp_types::Position::new(line_col.line, line_col.col_utf16)
+    let line_col = line_index.index.line_col(offset);
+    match line_index.encoding {
+        OffsetEncoding::Utf8 => lsp_types::Position::new(line_col.line, line_col.col),
+        OffsetEncoding::Utf16 => {
+            let line_col = line_index.index.to_utf16(line_col);
+            lsp_types::Position::new(line_col.line, line_col.col)
+        }
+    }
 }
 
 pub(crate) fn range(line_index: &LineIndex, range: TextRange) -> lsp_types::Range {
@@ -120,13 +130,9 @@ pub(crate) fn completion_item_kind(
     }
 }
 
-pub(crate) fn text_edit(
-    line_index: &LineIndex,
-    line_endings: LineEndings,
-    indel: Indel,
-) -> lsp_types::TextEdit {
+pub(crate) fn text_edit(line_index: &LineIndex, indel: Indel) -> lsp_types::TextEdit {
     let range = range(line_index, indel.delete);
-    let new_text = match line_endings {
+    let new_text = match line_index.endings {
         LineEndings::Unix => indel.insert,
         LineEndings::Dos => indel.insert.replace('\n', "\r\n"),
     };
@@ -135,11 +141,10 @@ pub(crate) fn text_edit(
 
 pub(crate) fn snippet_text_edit(
     line_index: &LineIndex,
-    line_endings: LineEndings,
     is_snippet: bool,
     indel: Indel,
 ) -> lsp_ext::SnippetTextEdit {
-    let text_edit = text_edit(line_index, line_endings, indel);
+    let text_edit = text_edit(line_index, indel);
     let insert_text_format =
         if is_snippet { Some(lsp_types::InsertTextFormat::Snippet) } else { None };
     lsp_ext::SnippetTextEdit {
@@ -151,105 +156,107 @@ pub(crate) fn snippet_text_edit(
 
 pub(crate) fn text_edit_vec(
     line_index: &LineIndex,
-    line_endings: LineEndings,
     text_edit: TextEdit,
 ) -> Vec<lsp_types::TextEdit> {
-    text_edit.into_iter().map(|indel| self::text_edit(line_index, line_endings, indel)).collect()
+    text_edit.into_iter().map(|indel| self::text_edit(line_index, indel)).collect()
 }
 
 pub(crate) fn snippet_text_edit_vec(
     line_index: &LineIndex,
-    line_endings: LineEndings,
     is_snippet: bool,
     text_edit: TextEdit,
 ) -> Vec<lsp_ext::SnippetTextEdit> {
     text_edit
         .into_iter()
-        .map(|indel| self::snippet_text_edit(line_index, line_endings, is_snippet, indel))
+        .map(|indel| self::snippet_text_edit(line_index, is_snippet, indel))
         .collect()
 }
 
 pub(crate) fn completion_item(
     line_index: &LineIndex,
-    line_endings: LineEndings,
-    completion_item: CompletionItem,
+    item: CompletionItem,
 ) -> Vec<lsp_types::CompletionItem> {
-    fn set_score(res: &mut lsp_types::CompletionItem, label: &str) {
-        res.preselect = Some(true);
-        // HACK: sort preselect items first
-        res.sort_text = Some(format!(" {}", label));
-    }
-
     let mut additional_text_edits = Vec::new();
     let mut text_edit = None;
     // LSP does not allow arbitrary edits in completion, so we have to do a
     // non-trivial mapping here.
-    let source_range = completion_item.source_range();
-    for indel in completion_item.text_edit().iter() {
+    let source_range = item.source_range();
+    for indel in item.text_edit().iter() {
         if indel.delete.contains_range(source_range) {
             text_edit = Some(if indel.delete == source_range {
-                self::text_edit(line_index, line_endings, indel.clone())
+                self::text_edit(line_index, indel.clone())
             } else {
                 assert!(source_range.end() == indel.delete.end());
                 let range1 = TextRange::new(indel.delete.start(), source_range.start());
                 let range2 = source_range;
                 let indel1 = Indel::replace(range1, String::new());
                 let indel2 = Indel::replace(range2, indel.insert.clone());
-                additional_text_edits.push(self::text_edit(line_index, line_endings, indel1));
-                self::text_edit(line_index, line_endings, indel2)
+                additional_text_edits.push(self::text_edit(line_index, indel1));
+                self::text_edit(line_index, indel2)
             })
         } else {
             assert!(source_range.intersect(indel.delete).is_none());
-            let text_edit = self::text_edit(line_index, line_endings, indel.clone());
+            let text_edit = self::text_edit(line_index, indel.clone());
             additional_text_edits.push(text_edit);
         }
     }
     let text_edit = text_edit.unwrap();
 
-    let mut res = lsp_types::CompletionItem {
-        label: completion_item.label().to_string(),
-        detail: completion_item.detail().map(|it| it.to_string()),
-        filter_text: Some(completion_item.lookup().to_string()),
-        kind: completion_item.kind().map(completion_item_kind),
+    let mut lsp_item = lsp_types::CompletionItem {
+        label: item.label().to_string(),
+        detail: item.detail().map(|it| it.to_string()),
+        filter_text: Some(item.lookup().to_string()),
+        kind: item.kind().map(completion_item_kind),
         text_edit: Some(text_edit.into()),
         additional_text_edits: Some(additional_text_edits),
-        documentation: completion_item.documentation().map(documentation),
-        deprecated: Some(completion_item.deprecated()),
+        documentation: item.documentation().map(documentation),
+        deprecated: Some(item.deprecated()),
         ..Default::default()
     };
 
-    if completion_item.score().is_some() {
-        set_score(&mut res, completion_item.label());
-    }
-
-    if completion_item.deprecated() {
-        res.tags = Some(vec![lsp_types::CompletionItemTag::Deprecated])
-    }
-
-    if completion_item.trigger_call_info() {
-        res.command = Some(lsp_types::Command {
-            title: "triggerParameterHints".into(),
-            command: "editor.action.triggerParameterHints".into(),
-            arguments: None,
-        });
-    }
-
-    let mut all_results = match completion_item.ref_match() {
-        Some(ref_match) => {
-            let mut refed = res.clone();
-            let (mutability, _score) = ref_match;
-            let label = format!("&{}{}", mutability.as_keyword_for_ref(), refed.label);
-            set_score(&mut refed, &label);
-            refed.label = label;
-            vec![res, refed]
+    fn set_score(res: &mut lsp_types::CompletionItem, relevance: CompletionRelevance) {
+        if relevance.is_relevant() {
+            res.preselect = Some(true);
         }
-        None => vec![res],
+        // The relevance needs to be inverted to come up with a sort score
+        // because the client will sort ascending.
+        let sort_score = relevance.score() ^ 0xFF_FF_FF_FF;
+        // Zero pad the string to ensure values can be properly sorted
+        // by the client. Hex format is used because it is easier to
+        // visually compare very large values, which the sort text
+        // tends to be since it is the opposite of the score.
+        res.sort_text = Some(format!("{:08x}", sort_score));
+    }
+
+    set_score(&mut lsp_item, item.relevance());
+
+    if item.deprecated() {
+        lsp_item.tags = Some(vec![lsp_types::CompletionItemTag::Deprecated])
+    }
+
+    if item.trigger_call_info() {
+        lsp_item.command = Some(command::trigger_parameter_hints());
+    }
+
+    let mut res = match item.ref_match() {
+        Some((mutability, relevance)) => {
+            let mut lsp_item_with_ref = lsp_item.clone();
+            set_score(&mut lsp_item_with_ref, relevance);
+            lsp_item_with_ref.label =
+                format!("&{}{}", mutability.as_keyword_for_ref(), lsp_item_with_ref.label);
+            if let Some(lsp_types::CompletionTextEdit::Edit(it)) = &mut lsp_item_with_ref.text_edit
+            {
+                it.new_text = format!("&{}{}", mutability.as_keyword_for_ref(), it.new_text);
+            }
+            vec![lsp_item_with_ref, lsp_item]
+        }
+        None => vec![lsp_item],
     };
 
-    for mut r in all_results.iter_mut() {
-        r.insert_text_format = Some(insert_text_format(completion_item.insert_text_format()));
+    for lsp_item in res.iter_mut() {
+        lsp_item.insert_text_format = Some(insert_text_format(item.insert_text_format()));
     }
-    all_results
+    res
 }
 
 pub(crate) fn signature_help(
@@ -360,7 +367,7 @@ pub(crate) fn semantic_tokens(
         let token_index = semantic_tokens::type_index(type_);
         let modifier_bitset = mods.0;
 
-        for mut text_range in line_index.lines(highlight_range.range) {
+        for mut text_range in line_index.index.lines(highlight_range.range) {
             if text[text_range].ends_with('\n') {
                 text_range =
                     TextRange::new(text_range.start(), text_range.end() - TextSize::of('\n'));
@@ -426,7 +433,8 @@ fn semantic_token_type_and_modifiers(
         HlTag::None => semantic_tokens::GENERIC,
         HlTag::ByteLiteral | HlTag::NumericLiteral => lsp_types::SemanticTokenType::NUMBER,
         HlTag::BoolLiteral => semantic_tokens::BOOLEAN,
-        HlTag::CharLiteral | HlTag::StringLiteral => lsp_types::SemanticTokenType::STRING,
+        HlTag::StringLiteral => lsp_types::SemanticTokenType::STRING,
+        HlTag::CharLiteral => semantic_tokens::CHAR_LITERAL,
         HlTag::Comment => lsp_types::SemanticTokenType::COMMENT,
         HlTag::Attribute => semantic_tokens::ATTRIBUTE,
         HlTag::Keyword => lsp_types::SemanticTokenType::KEYWORD,
@@ -476,6 +484,7 @@ pub(crate) fn folding_range(
     let kind = match fold.kind {
         FoldKind::Comment => Some(lsp_types::FoldingRangeKind::Comment),
         FoldKind::Imports => Some(lsp_types::FoldingRangeKind::Imports),
+        FoldKind::Region => Some(lsp_types::FoldingRangeKind::Region),
         FoldKind::Mods | FoldKind::Block | FoldKind::ArgList => None,
     };
 
@@ -527,7 +536,8 @@ pub(crate) fn url_from_abs_path(path: &Path) -> lsp_types::Url {
     assert!(path.is_absolute());
     let url = lsp_types::Url::from_file_path(path).unwrap();
     match path.components().next() {
-        Some(path::Component::Prefix(prefix)) if matches!(prefix.kind(), path::Prefix::Disk(_) | path::Prefix::VerbatimDisk(_)) =>
+        Some(path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), path::Prefix::Disk(_) | path::Prefix::VerbatimDisk(_)) =>
         {
             // Need to lowercase driver letter
         }
@@ -565,7 +575,7 @@ pub(crate) fn location(
     frange: FileRange,
 ) -> Result<lsp_types::Location> {
     let url = url(snap, frange.file_id);
-    let line_index = snap.analysis.file_line_index(frange.file_id)?;
+    let line_index = snap.file_line_index(frange.file_id)?;
     let range = range(&line_index, frange.range);
     let loc = lsp_types::Location::new(url, range);
     Ok(loc)
@@ -577,7 +587,7 @@ pub(crate) fn location_from_nav(
     nav: NavigationTarget,
 ) -> Result<lsp_types::Location> {
     let url = url(snap, nav.file_id);
-    let line_index = snap.analysis.file_line_index(nav.file_id)?;
+    let line_index = snap.file_line_index(nav.file_id)?;
     let range = range(&line_index, nav.full_range);
     let loc = lsp_types::Location::new(url, range);
     Ok(loc)
@@ -590,7 +600,7 @@ pub(crate) fn location_link(
 ) -> Result<lsp_types::LocationLink> {
     let origin_selection_range = match src {
         Some(src) => {
-            let line_index = snap.analysis.file_line_index(src.file_id)?;
+            let line_index = snap.file_line_index(src.file_id)?;
             let range = range(&line_index, src.range);
             Some(range)
         }
@@ -610,7 +620,7 @@ fn location_info(
     snap: &GlobalStateSnapshot,
     target: NavigationTarget,
 ) -> Result<(lsp_types::Url, lsp_types::Range, lsp_types::Range)> {
-    let line_index = snap.analysis.file_line_index(target.file_id)?;
+    let line_index = snap.file_line_index(target.file_id)?;
 
     let target_uri = url(snap, target.file_id);
     let target_range = range(&line_index, target.full_range);
@@ -648,12 +658,8 @@ pub(crate) fn snippet_text_document_edit(
     edit: TextEdit,
 ) -> Result<lsp_ext::SnippetTextDocumentEdit> {
     let text_document = optional_versioned_text_document_identifier(snap, file_id);
-    let line_index = snap.analysis.file_line_index(file_id)?;
-    let line_endings = snap.file_line_endings(file_id);
-    let edits = edit
-        .into_iter()
-        .map(|it| snippet_text_edit(&line_index, line_endings, is_snippet, it))
-        .collect();
+    let line_index = snap.file_line_index(file_id)?;
+    let edits = edit.into_iter().map(|it| snippet_text_edit(&line_index, is_snippet, it)).collect();
     Ok(lsp_ext::SnippetTextDocumentEdit { text_document, edits })
 }
 
@@ -674,9 +680,8 @@ pub(crate) fn snippet_text_document_ops(
             if !initial_contents.is_empty() {
                 let text_document =
                     lsp_types::OptionalVersionedTextDocumentIdentifier { uri, version: None };
-                let range = range(&LineIndex::new(""), TextRange::empty(TextSize::from(0)));
                 let text_edit = lsp_ext::SnippetTextEdit {
-                    range,
+                    range: lsp_types::Range::default(),
                     new_text: initial_contents,
                     insert_text_format: Some(lsp_types::InsertTextFormat::PlainText),
                 };
@@ -834,11 +839,10 @@ pub(crate) fn resolved_code_action(
 
 pub(crate) fn runnable(
     snap: &GlobalStateSnapshot,
-    file_id: FileId,
     runnable: Runnable,
 ) -> Result<lsp_ext::Runnable> {
     let config = snap.config.runnables();
-    let spec = CargoTargetSpec::for_file(snap, file_id)?;
+    let spec = CargoTargetSpec::for_file(snap, runnable.nav.file_id)?;
     let workspace_root = spec.as_ref().map(|it| it.workspace_root.clone());
     let target = spec.as_ref().map(|s| s.target.clone());
     let (cargo_args, executable_args) =
@@ -861,6 +865,194 @@ pub(crate) fn runnable(
     })
 }
 
+pub(crate) fn code_lens(
+    snap: &GlobalStateSnapshot,
+    annotation: Annotation,
+) -> Result<lsp_types::CodeLens> {
+    match annotation.kind {
+        AnnotationKind::Runnable { debug, runnable: run } => {
+            let line_index = snap.file_line_index(run.nav.file_id)?;
+            let annotation_range = range(&line_index, annotation.range);
+
+            let action = run.action();
+            let r = runnable(&snap, run)?;
+
+            let command = if debug {
+                command::debug_single(&r)
+            } else {
+                let title = action.run_title.to_string();
+                command::run_single(&r, &title)
+            };
+
+            Ok(lsp_types::CodeLens { range: annotation_range, command: Some(command), data: None })
+        }
+        AnnotationKind::HasImpls { position: file_position, data } => {
+            let line_index = snap.file_line_index(file_position.file_id)?;
+            let annotation_range = range(&line_index, annotation.range);
+            let url = url(snap, file_position.file_id);
+
+            let position = position(&line_index, file_position.offset);
+
+            let id = lsp_types::TextDocumentIdentifier { uri: url.clone() };
+
+            let doc_pos = lsp_types::TextDocumentPositionParams::new(id, position);
+
+            let goto_params = lsp_types::request::GotoImplementationParams {
+                text_document_position_params: doc_pos,
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+
+            let command = data.map(|ranges| {
+                let locations: Vec<lsp_types::Location> = ranges
+                    .into_iter()
+                    .filter_map(|target| {
+                        location(
+                            snap,
+                            FileRange { file_id: target.file_id, range: target.full_range },
+                        )
+                        .ok()
+                    })
+                    .collect();
+
+                command::show_references(
+                    implementation_title(locations.len()),
+                    &url,
+                    position,
+                    locations,
+                )
+            });
+
+            Ok(lsp_types::CodeLens {
+                range: annotation_range,
+                command,
+                data: Some(to_value(lsp_ext::CodeLensResolveData::Impls(goto_params)).unwrap()),
+            })
+        }
+        AnnotationKind::HasReferences { position: file_position, data } => {
+            let line_index = snap.file_line_index(file_position.file_id)?;
+            let annotation_range = range(&line_index, annotation.range);
+            let url = url(snap, file_position.file_id);
+
+            let position = position(&line_index, file_position.offset);
+
+            let id = lsp_types::TextDocumentIdentifier { uri: url.clone() };
+
+            let doc_pos = lsp_types::TextDocumentPositionParams::new(id, position);
+
+            let command = data.map(|ranges| {
+                let locations: Vec<lsp_types::Location> =
+                    ranges.into_iter().filter_map(|range| location(snap, range).ok()).collect();
+
+                command::show_references(
+                    reference_title(locations.len()),
+                    &url,
+                    position,
+                    locations,
+                )
+            });
+
+            Ok(lsp_types::CodeLens {
+                range: annotation_range,
+                command,
+                data: Some(to_value(lsp_ext::CodeLensResolveData::References(doc_pos)).unwrap()),
+            })
+        }
+    }
+}
+
+pub(crate) mod command {
+    use ide::{FileRange, NavigationTarget};
+    use serde_json::to_value;
+
+    use crate::{
+        global_state::GlobalStateSnapshot,
+        lsp_ext,
+        to_proto::{location, location_link},
+    };
+
+    pub(crate) fn show_references(
+        title: String,
+        uri: &lsp_types::Url,
+        position: lsp_types::Position,
+        locations: Vec<lsp_types::Location>,
+    ) -> lsp_types::Command {
+        // We cannot use the 'editor.action.showReferences' command directly
+        // because that command requires vscode types which we convert in the handler
+        // on the client side.
+
+        lsp_types::Command {
+            title,
+            command: "rust-analyzer.showReferences".into(),
+            arguments: Some(vec![
+                to_value(uri).unwrap(),
+                to_value(position).unwrap(),
+                to_value(locations).unwrap(),
+            ]),
+        }
+    }
+
+    pub(crate) fn run_single(runnable: &lsp_ext::Runnable, title: &str) -> lsp_types::Command {
+        lsp_types::Command {
+            title: title.to_string(),
+            command: "rust-analyzer.runSingle".into(),
+            arguments: Some(vec![to_value(runnable).unwrap()]),
+        }
+    }
+
+    pub(crate) fn debug_single(runnable: &lsp_ext::Runnable) -> lsp_types::Command {
+        lsp_types::Command {
+            title: "Debug".into(),
+            command: "rust-analyzer.debugSingle".into(),
+            arguments: Some(vec![to_value(runnable).unwrap()]),
+        }
+    }
+
+    pub(crate) fn goto_location(
+        snap: &GlobalStateSnapshot,
+        nav: &NavigationTarget,
+    ) -> Option<lsp_types::Command> {
+        let value = if snap.config.location_link() {
+            let link = location_link(snap, None, nav.clone()).ok()?;
+            to_value(link).ok()?
+        } else {
+            let range = FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() };
+            let location = location(snap, range).ok()?;
+            to_value(location).ok()?
+        };
+
+        Some(lsp_types::Command {
+            title: nav.name.to_string(),
+            command: "rust-analyzer.gotoLocation".into(),
+            arguments: Some(vec![value]),
+        })
+    }
+
+    pub(crate) fn trigger_parameter_hints() -> lsp_types::Command {
+        lsp_types::Command {
+            title: "triggerParameterHints".into(),
+            command: "editor.action.triggerParameterHints".into(),
+            arguments: None,
+        }
+    }
+}
+
+pub(crate) fn implementation_title(count: usize) -> String {
+    if count == 1 {
+        "1 implementation".into()
+    } else {
+        format!("{} implementations", count)
+    }
+}
+
+pub(crate) fn reference_title(count: usize) -> String {
+    if count == 1 {
+        "1 reference".into()
+    } else {
+        format!("{} references", count)
+    }
+}
+
 pub(crate) fn markup_content(markup: Markup) -> lsp_types::MarkupContent {
     let value = crate::markdown::format_docs(markup.as_str());
     lsp_types::MarkupContent { kind: lsp_types::MarkupKind::Markdown, value }
@@ -872,6 +1064,8 @@ pub(crate) fn rename_error(err: RenameError) -> crate::LspError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use hir::PrefixKind;
     use ide::Analysis;
     use ide_db::helpers::{insert_use::InsertUseConfig, SnippetCap};
@@ -889,7 +1083,11 @@ mod tests {
         }"#;
 
         let (offset, text) = test_utils::extract_offset(fixture);
-        let line_index = LineIndex::new(&text);
+        let line_index = LineIndex {
+            index: Arc::new(ide::LineIndex::new(&text)),
+            endings: LineEndings::Unix,
+            encoding: OffsetEncoding::Utf16,
+        };
         let (analysis, file_id) = Analysis::from_single_file(text);
         let completions: Vec<(String, Option<String>)> = analysis
             .completions(
@@ -899,7 +1097,11 @@ mod tests {
                     add_call_parenthesis: true,
                     add_call_argument_snippets: true,
                     snippet_cap: SnippetCap::new(true),
-                    insert_use: InsertUseConfig { merge: None, prefix_kind: PrefixKind::Plain },
+                    insert_use: InsertUseConfig {
+                        merge: None,
+                        prefix_kind: PrefixKind::Plain,
+                        group: true,
+                    },
                 },
                 ide_db::base_db::FilePosition { file_id, offset },
             )
@@ -907,19 +1109,21 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter(|c| c.label().ends_with("arg"))
-            .map(|c| completion_item(&line_index, LineEndings::Unix, c))
+            .map(|c| completion_item(&line_index, c))
             .flat_map(|comps| comps.into_iter().map(|c| (c.label, c.sort_text)))
             .collect();
         expect_test::expect![[r#"
             [
                 (
-                    "arg",
-                    None,
-                ),
-                (
                     "&arg",
                     Some(
-                        " &arg",
+                        "fffffffa",
+                    ),
+                ),
+                (
+                    "arg",
+                    Some(
+                        "fffffffd",
                     ),
                 ),
             ]
@@ -945,7 +1149,11 @@ fn main() {
         let folds = analysis.folding_ranges(file_id).unwrap();
         assert_eq!(folds.len(), 4);
 
-        let line_index = LineIndex::new(&text);
+        let line_index = LineIndex {
+            index: Arc::new(ide::LineIndex::new(&text)),
+            endings: LineEndings::Unix,
+            encoding: OffsetEncoding::Utf16,
+        };
         let converted: Vec<lsp_types::FoldingRange> =
             folds.into_iter().map(|it| folding_range(&text, &line_index, true, it)).collect();
 

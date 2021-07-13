@@ -58,8 +58,23 @@ pub trait DefDatabase: InternDatabase + AstDatabase + Upcast<dyn AstDatabase> {
     #[salsa::invoke(DefMap::crate_def_map_query)]
     fn crate_def_map_query(&self, krate: CrateId) -> Arc<DefMap>;
 
+    /// Computes the block-level `DefMap`, returning `None` when `block` doesn't contain any inner
+    /// items directly.
+    ///
+    /// For example:
+    ///
+    /// ```
+    /// fn f() { // (0)
+    ///     { // (1)
+    ///         fn inner() {}
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The `block_def_map` for block 0 would return `None`, while `block_def_map` of block 1 would
+    /// return a `DefMap` containing `inner`.
     #[salsa::invoke(DefMap::block_def_map_query)]
-    fn block_def_map(&self, block: BlockId) -> Arc<DefMap>;
+    fn block_def_map(&self, block: BlockId) -> Option<Arc<DefMap>>;
 
     #[salsa::invoke(StructData::struct_data_query)]
     fn struct_data(&self, id: StructId) -> Arc<StructData>;
@@ -118,7 +133,7 @@ pub trait DefDatabase: InternDatabase + AstDatabase + Upcast<dyn AstDatabase> {
     fn import_map(&self, krate: CrateId) -> Arc<ImportMap>;
 }
 
-fn crate_def_map_wait(db: &impl DefDatabase, krate: CrateId) -> Arc<DefMap> {
+fn crate_def_map_wait(db: &dyn DefDatabase, krate: CrateId) -> Arc<DefMap> {
     let _p = profile::span("crate_def_map:wait");
     db.crate_def_map_query(krate)
 }

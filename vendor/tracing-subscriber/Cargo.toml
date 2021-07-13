@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "tracing-subscriber"
-version = "0.2.15"
+version = "0.2.16"
 authors = ["Eliza Weisman <eliza@buoyant.io>", "David Barsky <me@davidbarsky.com>", "Tokio Contributors <team@tokio.rs>"]
 description = "Utilities for implementing and composing `tracing` subscribers.\n"
 homepage = "https://tokio.rs"
@@ -46,8 +46,10 @@ version = "0.12"
 optional = true
 
 [dependencies.chrono]
-version = "0.4"
+version = "0.4.16"
+features = ["clock", "std"]
 optional = true
+default-features = false
 
 [dependencies.lazy_static]
 version = "1"
@@ -89,13 +91,15 @@ optional = true
 
 [dependencies.tracing]
 version = "0.1"
+features = ["std"]
 optional = true
+default-features = false
 
 [dependencies.tracing-core]
 version = "0.1.17"
 
 [dependencies.tracing-log]
-version = "0.1"
+version = "0.1.2"
 features = ["log-tracer", "std"]
 optional = true
 default-features = false
@@ -128,7 +132,7 @@ features = ["std-future", "std"]
 default-features = false
 
 [dev-dependencies.tracing-log]
-version = "0.1"
+version = "0.1.2"
 
 [features]
 ansi = ["fmt", "ansi_term"]

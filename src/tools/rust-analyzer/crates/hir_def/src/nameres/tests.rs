@@ -4,16 +4,15 @@ mod macros;
 mod mod_resolution;
 mod diagnostics;
 mod primitives;
-mod block;
 
 use std::sync::Arc;
 
-use base_db::{fixture::WithFixture, FilePosition, SourceDatabase};
+use base_db::{fixture::WithFixture, SourceDatabase};
 use expect_test::{expect, Expect};
-use syntax::AstNode;
-use test_utils::mark;
 
-use crate::{db::DefDatabase, nameres::*, test_db::TestDB, Lookup};
+use crate::{db::DefDatabase, test_db::TestDB};
+
+use super::DefMap;
 
 fn compute_crate_def_map(ra_fixture: &str) -> Arc<DefMap> {
     let db = TestDB::with_files(ra_fixture);
@@ -21,71 +20,14 @@ fn compute_crate_def_map(ra_fixture: &str) -> Arc<DefMap> {
     db.crate_def_map(krate)
 }
 
-fn compute_block_def_map(ra_fixture: &str) -> Arc<DefMap> {
-    let (db, position) = TestDB::with_position(ra_fixture);
-
-    // FIXME: perhaps we should make this use body lowering tests instead?
-
-    let module = db.module_for_file(position.file_id);
-    let mut def_map = db.crate_def_map(module.krate);
-    while let Some(new_def_map) = descend_def_map_at_position(&db, position, def_map.clone()) {
-        def_map = new_def_map;
-    }
-
-    // FIXME: select the right module, not the root
-
-    def_map
-}
-
-fn descend_def_map_at_position(
-    db: &dyn DefDatabase,
-    position: FilePosition,
-    def_map: Arc<DefMap>,
-) -> Option<Arc<DefMap>> {
-    for (local_id, module_data) in def_map.modules() {
-        let mod_def = module_data.origin.definition_source(db);
-        let ast_map = db.ast_id_map(mod_def.file_id);
-        let item_tree = db.item_tree(mod_def.file_id);
-        let root = db.parse_or_expand(mod_def.file_id).unwrap();
-        for item in module_data.scope.declarations() {
-            match item {
-                ModuleDefId::FunctionId(it) => {
-                    // Technically blocks can be inside any type (due to arrays and const generics),
-                    // and also in const/static initializers. For tests we only really care about
-                    // functions though.
-
-                    let ast = ast_map.get(item_tree[it.lookup(db).id.value].ast_id).to_node(&root);
-
-                    if ast.syntax().text_range().contains(position.offset) {
-                        // Cursor inside function, descend into its body's DefMap.
-                        // Note that we don't handle block *expressions* inside function bodies.
-                        let ast_map = db.ast_id_map(position.file_id.into());
-                        let ast_id = ast_map.ast_id(&ast.body().unwrap());
-                        let block = BlockLoc {
-                            ast_id: InFile::new(position.file_id.into(), ast_id),
-                            module: def_map.module_id(local_id),
-                        };
-                        let block_id = db.intern_block(block);
-                        return Some(db.block_def_map(block_id));
-                    }
-                }
-                _ => continue,
-            }
-        }
-    }
-
-    None
+fn render_crate_def_map(ra_fixture: &str) -> String {
+    let db = TestDB::with_files(ra_fixture);
+    let krate = db.crate_graph().iter().next().unwrap();
+    db.crate_def_map(krate).dump(&db)
 }
 
 fn check(ra_fixture: &str, expect: Expect) {
-    let def_map = compute_crate_def_map(ra_fixture);
-    let actual = def_map.dump();
-    expect.assert_eq(&actual);
-}
-
-fn check_at(ra_fixture: &str, expect: Expect) {
-    let def_map = compute_block_def_map(ra_fixture);
-    let actual = def_map.dump();
+    let actual = render_crate_def_map(ra_fixture);
     expect.assert_eq(&actual);
 }
 
@@ -193,7 +135,7 @@ mod m {
 
 #[test]
 fn bogus_paths() {
-    mark::check!(bogus_paths);
+    cov_mark::check!(bogus_paths);
     check(
         r#"
 //- /lib.rs
@@ -300,7 +242,7 @@ pub struct Baz;
 
 #[test]
 fn std_prelude() {
-    mark::check!(std_prelude);
+    cov_mark::check!(std_prelude);
     check(
         r#"
 //- /main.rs crate:main deps:test_crate
@@ -324,7 +266,7 @@ pub enum Foo { Bar, Baz };
 
 #[test]
 fn can_import_enum_variant() {
-    mark::check!(can_import_enum_variant);
+    cov_mark::check!(can_import_enum_variant);
     check(
         r#"
 enum E { V }
@@ -685,7 +627,7 @@ use crate::reex::*;
 
 #[test]
 fn underscore_pub_crate_reexport() {
-    mark::check!(upgrade_underscore_visibility);
+    cov_mark::check!(upgrade_underscore_visibility);
     check(
         r#"
 //- /main.rs crate:main deps:lib

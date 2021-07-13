@@ -22,8 +22,7 @@ pub enum RawVisibility {
 
 impl RawVisibility {
     pub(crate) const fn private() -> RawVisibility {
-        let path = ModPath { kind: PathKind::Super(0), segments: Vec::new() };
-        RawVisibility::Module(path)
+        RawVisibility::Module(ModPath::from_kind(PathKind::Super(0)))
     }
 
     pub(crate) fn from_ast(
@@ -59,15 +58,15 @@ impl RawVisibility {
                 RawVisibility::Module(path)
             }
             ast::VisibilityKind::PubCrate => {
-                let path = ModPath { kind: PathKind::Crate, segments: Vec::new() };
+                let path = ModPath::from_kind(PathKind::Crate);
                 RawVisibility::Module(path)
             }
             ast::VisibilityKind::PubSuper => {
-                let path = ModPath { kind: PathKind::Super(1), segments: Vec::new() };
+                let path = ModPath::from_kind(PathKind::Super(1));
                 RawVisibility::Module(path)
             }
             ast::VisibilityKind::PubSelf => {
-                let path = ModPath { kind: PathKind::Plain, segments: Vec::new() };
+                let path = ModPath::from_kind(PathKind::Plain);
                 RawVisibility::Module(path)
             }
             ast::VisibilityKind::Pub => RawVisibility::Public,
@@ -104,7 +103,7 @@ impl Visibility {
             return false;
         }
         let def_map = from_module.def_map(db);
-        self.is_visible_from_def_map(&def_map, from_module.local_id)
+        self.is_visible_from_def_map(db, &def_map, from_module.local_id)
     }
 
     pub(crate) fn is_visible_from_other_crate(self) -> bool {
@@ -116,19 +115,41 @@ impl Visibility {
 
     pub(crate) fn is_visible_from_def_map(
         self,
+        db: &dyn DefDatabase,
         def_map: &DefMap,
-        from_module: crate::LocalModuleId,
+        mut from_module: crate::LocalModuleId,
     ) -> bool {
         let to_module = match self {
             Visibility::Module(m) => m,
             Visibility::Public => return true,
         };
+
         // from_module needs to be a descendant of to_module
-        let mut ancestors = std::iter::successors(Some(from_module), |m| {
-            let parent_id = def_map[*m].parent?;
-            Some(parent_id)
-        });
-        ancestors.any(|m| m == to_module.local_id)
+        let mut def_map = def_map;
+        let mut parent_arc;
+        loop {
+            if def_map.module_id(from_module) == to_module {
+                return true;
+            }
+            match def_map[from_module].parent {
+                Some(parent) => {
+                    from_module = parent;
+                }
+                None => {
+                    match def_map.parent() {
+                        Some(module) => {
+                            parent_arc = module.def_map(db);
+                            def_map = &*parent_arc;
+                            from_module = module.local_id;
+                        }
+                        None => {
+                            // Reached the root module, nothing left to check.
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Returns the most permissive visibility of `self` and `other`.

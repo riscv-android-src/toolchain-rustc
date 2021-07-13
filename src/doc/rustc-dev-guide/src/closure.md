@@ -5,7 +5,7 @@ effectively "desugared" into structs that contain the values they use (or
 references to the values they use) from their creator's stack frame. rustc has
 the job of figuring out which values a closure uses and how, so it can decide
 whether to capture a given variable by shared reference, mutable reference, or
-by move. rustc also has to figure out which the closure traits ([`Fn`][fn],
+by move. rustc also has to figure out which of the closure traits ([`Fn`][fn],
 [`FnMut`][fn_mut], or [`FnOnce`][fn_once]) a closure is capable of
 implementing.
 
@@ -32,10 +32,10 @@ fn main() {
 ```
 
 Let's say the above is the content of a file called `immut.rs`. If we compile
-`immut.rs` using the following command. The [`-Zdump-mir=all`][dump-mir] flag will cause
+`immut.rs` using the following command. The [`-Z dump-mir=all`][dump-mir] flag will cause
 `rustc` to generate and dump the [MIR][mir] to a directory called `mir_dump`.
 ```console
-> rustc +stage1 immut.rs -Zdump-mir=all
+> rustc +stage1 immut.rs -Z dump-mir=all
 ```
 
 [mir]: ./mir/index.md
@@ -115,11 +115,12 @@ Let's start with defining a term that we will be using quite a bit in the rest o
 *upvar*. An **upvar** is a variable that is local to the function where the closure is defined. So,
 in the above examples, **x** will be an upvar to the closure. They are also sometimes referred to as
 the *free variables* meaning they are not bound to the context of the closure.
-[`src/librustc_middle/ty/query/mod.rs`][upvars] defines a query called *upvars* for this purpose.
+[`compiler/rustc_middle/src/ty/query/mod.rs`][upvars] defines a query called *upv.rs_mentioned*
+for this purpose.
 
-[upvars]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/query/queries/struct.upvars.html
+[upvars]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_query_impl/queries/struct.upvars_mentioned.html
 
-Other than lazy invocation, one other thing that the distinguishes a closure from a
+Other than lazy invocation, one other thing that distinguishes a closure from a
 normal function is that it can use the upvars. It borrows these upvars from its surrounding
 context; therefore the compiler has to determine the upvar's borrow type. The compiler starts with
 assigning an immutable borrow type and lowers the restriction (that is, changes it from
@@ -134,8 +135,8 @@ appropriate trait: `Fn` trait for immutable borrow, `FnMut` for mutable borrow,
 and `FnOnce` for move semantics.
 
 Most of the code related to the closure is in the
-[`src/librustc_typeck/check/upvar.rs`][upvar] file and the data structures are
-declared in the file [`src/librustc_middle/ty/mod.rs`][ty].
+[`compiler/rustc_typeck/src/check/upvar.rs`][upvar] file and the data structures are
+declared in the file [`compiler/rustc_middle/src/ty/mod.rs`][ty].
 
 [upvar]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_typeck/check/upvar/index.html
 [ty]:https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/index.html
@@ -145,7 +146,7 @@ codebase. For closures specifically, set the `RUST_LOG` env variable as below an
 output in a file:
 
 ```console
-> RUST_LOG=rustc_typeck::check::upvar rustc +stage1 -Zdump-mir=all \
+> RUST_LOG=rustc_typeck::check::upvar rustc +stage1 -Z dump-mir=all \
     <.rs file to compile> 2> <file where the output will be dumped>
 ```
 
@@ -180,20 +181,21 @@ shared borrow and another one for a mutable borrow. It will also tell us what wa
 
 The callbacks are defined by implementing the [`Delegate`] trait. The
 [`InferBorrowKind`][ibk] type implements `Delegate` and keeps a map that
-records for each upvar which mode of borrow was required. The modes of borrow
-can be `ByValue` (moved) or `ByRef` (borrowed). For `ByRef` borrows, it can be
-`shared`, `shallow`, `unique` or `mut` as defined in the
-[`src/librustc_middle/mir/mod.rs`][mir_mod].
+records for each upvar which mode of capture was required. The modes of capture
+can be `ByValue` (moved) or `ByRef` (borrowed). For `ByRef` borrows, the possible
+[`BorrowKind`]s are `ImmBorrow`, `UniqueImmBorrow`, `MutBorrow` as defined in the
+[`compiler/rustc_middle/src/ty/mod.rs`][middle_ty].
 
-[mir_mod]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/index.html
+[`BorrowKind`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/enum.BorrowKind.html
+[middle_ty]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/index.html
 
 `Delegate` defines a few different methods (the different callbacks):
-**consume**: for *move* of a variable, **borrow** for a *borrow* of some kind
+**consume** for *move* of a variable, **borrow** for a *borrow* of some kind
 (shared or mutable), and **mutate** when we see an *assignment* of something.
 
 All of these callbacks have a common argument *cmt* which stands for Category,
 Mutability and Type and is defined in
-[`src/librustc_middle/middle/mem_categorization.rs`][cmt]. Borrowing from the code
+[`compiler/rustc_middle/src/middle/mem_categorization.rs`][cmt]. Borrowing from the code
 comments, "`cmt` is a complete categorization of a value indicating where it
 originated and how it is located, as well as the mutability of the memory in
 which the value is stored". Based on the callback (consume, borrow etc.), we

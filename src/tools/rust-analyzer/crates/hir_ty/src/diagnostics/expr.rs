@@ -2,9 +2,7 @@
 
 use std::sync::Arc;
 
-use hir_def::{
-    expr::Statement, path::path, resolver::HasResolver, AdtId, AssocItemId, DefWithBodyId,
-};
+use hir_def::{expr::Statement, path::path, resolver::HasResolver, AssocItemId, DefWithBodyId};
 use hir_expand::{diagnostics::DiagnosticSink, name};
 use rustc_hash::FxHashSet;
 use syntax::{ast, AstPtr};
@@ -17,7 +15,7 @@ use crate::{
         MissingPatFields, RemoveThisSemicolon,
     },
     utils::variant_data,
-    ApplicationTy, InferenceResult, Ty, TypeCtor,
+    AdtId, InferenceResult, Interner, Ty, TyKind,
 };
 
 pub(crate) use hir_def::{
@@ -291,11 +289,10 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         let (body, source_map): (Arc<Body>, Arc<BodySourceMap>) =
             db.body_with_source_map(self.owner.into());
 
-        let match_expr_ty = match infer.type_of_expr.get(match_expr) {
-            // If we can't resolve the type of the match expression
-            // we cannot perform exhaustiveness checks.
-            None | Some(Ty::Unknown) => return,
-            Some(ty) => ty,
+        let match_expr_ty = if infer.type_of_expr[match_expr].is_unknown() {
+            return;
+        } else {
+            &infer.type_of_expr[match_expr]
         };
 
         let cx = MatchCheckCtx { match_expr, body, infer: infer.clone(), db };
@@ -381,14 +378,15 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
             _ => return,
         };
 
-        let core_result_ctor = TypeCtor::Adt(AdtId::EnumId(core_result_enum));
-        let core_option_ctor = TypeCtor::Adt(AdtId::EnumId(core_option_enum));
-
-        let (params, required) = match &mismatch.expected {
-            Ty::Apply(ApplicationTy { ctor, parameters }) if ctor == &core_result_ctor => {
+        let (params, required) = match mismatch.expected.interned(&Interner) {
+            TyKind::Adt(AdtId(hir_def::AdtId::EnumId(enum_id)), ref parameters)
+                if *enum_id == core_result_enum =>
+            {
                 (parameters, "Ok".to_string())
             }
-            Ty::Apply(ApplicationTy { ctor, parameters }) if ctor == &core_option_ctor => {
+            TyKind::Adt(AdtId(hir_def::AdtId::EnumId(enum_id)), ref parameters)
+                if *enum_id == core_option_enum =>
+            {
                 (parameters, "Some".to_string())
             }
             _ => return,

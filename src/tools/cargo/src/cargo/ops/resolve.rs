@@ -12,7 +12,9 @@
 
 use crate::core::compiler::{CompileKind, RustcTargetData};
 use crate::core::registry::PackageRegistry;
-use crate::core::resolver::features::{FeatureResolver, ForceAllTargets, ResolvedFeatures};
+use crate::core::resolver::features::{
+    FeatureOpts, FeatureResolver, ForceAllTargets, ResolvedFeatures,
+};
 use crate::core::resolver::{self, HasDevUnits, Resolve, ResolveOpts};
 use crate::core::summary::Summary;
 use crate::core::Feature;
@@ -141,6 +143,7 @@ pub fn resolve_ws_with_opts<'cfg>(
         force_all_targets,
     )?;
 
+    let feature_opts = FeatureOpts::new(ws, has_dev_units, force_all_targets)?;
     let resolved_features = FeatureResolver::resolve(
         ws,
         target_data,
@@ -149,8 +152,7 @@ pub fn resolve_ws_with_opts<'cfg>(
         &opts.features,
         specs,
         requested_targets,
-        has_dev_units,
-        force_all_targets,
+        feature_opts,
     )?;
 
     Ok(WorkspaceResolve {
@@ -238,7 +240,7 @@ pub fn resolve_with_previous<'cfg>(
     // locked.
     let mut avoid_patch_ids = HashSet::new();
     if register_patches {
-        for (url, patches) in ws.root_patch() {
+        for (url, patches) in ws.root_patch()?.iter() {
             let previous = match previous {
                 Some(r) => r,
                 None => {

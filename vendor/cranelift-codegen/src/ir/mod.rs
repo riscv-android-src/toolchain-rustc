@@ -58,6 +58,7 @@ pub use crate::ir::table::TableData;
 pub use crate::ir::trapcode::TrapCode;
 pub use crate::ir::types::Type;
 pub use crate::ir::valueloc::{ArgumentLoc, ValueLoc};
+pub use crate::value_label::LabelValueLoc;
 pub use cranelift_codegen_shared::condcodes;
 
 use crate::binemit;
@@ -90,6 +91,7 @@ entity_impl!(ValueLabel, "val");
 
 /// A label of a Value.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct ValueLabelStart {
     /// Source location when it is in effect
     pub from: SourceLoc,
@@ -100,6 +102,7 @@ pub struct ValueLabelStart {
 
 /// Value label assignements: label starts or value aliases.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum ValueLabelAssignments {
     /// Original value labels assigned at transform.
     Starts(alloc::vec::Vec<ValueLabelStart>),

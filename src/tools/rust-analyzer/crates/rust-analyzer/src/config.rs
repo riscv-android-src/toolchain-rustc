@@ -16,14 +16,16 @@ use ide_db::helpers::{
     insert_use::{InsertUseConfig, MergeBehavior},
     SnippetCap,
 };
-use itertools::Itertools;
 use lsp_types::{ClientCapabilities, MarkupKind};
-use project_model::{CargoConfig, ProjectJson, ProjectJsonData, ProjectManifest};
+use project_model::{CargoConfig, ProjectJson, ProjectJsonData, ProjectManifest, RustcSource};
 use rustc_hash::FxHashSet;
 use serde::{de::DeserializeOwned, Deserialize};
 use vfs::AbsPathBuf;
 
-use crate::{caps::completion_item_edit_resolve, diagnostics::DiagnosticsMapConfig};
+use crate::{
+    caps::completion_item_edit_resolve, diagnostics::DiagnosticsMapConfig,
+    line_index::OffsetEncoding, lsp_ext::supports_utf8,
+};
 
 config_data! {
     struct ConfigData {
@@ -32,7 +34,8 @@ config_data! {
         assist_importMergeBehaviour: MergeBehaviorDef  = "\"full\"",
         /// The path structure for newly inserted paths to use.
         assist_importPrefix: ImportPrefixDef           = "\"plain\"",
-
+        /// Group inserted imports by the [following order](https://rust-analyzer.github.io/manual.html#auto-import). Groups are separated by newlines.
+        assist_importGroup: bool                       = "true",
         /// Show function name and docs in parameter hints.
         callInfo_full: bool = "true",
 
@@ -43,9 +46,9 @@ config_data! {
         cargo_allFeatures: bool          = "false",
         /// List of features to activate.
         cargo_features: Vec<String>      = "[]",
-        /// Run `cargo check` on startup to get the correct value for package
-        /// OUT_DIRs.
-        cargo_loadOutDirsFromCheck: bool = "false",
+        /// Run build scripts (`build.rs`) for more precise code analysis.
+        cargo_runBuildScripts |
+        cargo_loadOutDirsFromCheck: bool = "true",
         /// Do not activate the `default` feature.
         cargo_noDefaultFeatures: bool    = "false",
         /// Compilation target (target triple).
@@ -94,13 +97,15 @@ config_data! {
         diagnostics_enableExperimental: bool    = "true",
         /// List of rust-analyzer diagnostics to disable.
         diagnostics_disabled: FxHashSet<String> = "[]",
-        /// List of warnings that should be displayed with info severity.\n\nThe
-        /// warnings will be indicated by a blue squiggly underline in code and
-        /// a blue icon in the `Problems Panel`.
+        /// List of warnings that should be displayed with info severity.
+        ///
+        /// The warnings will be indicated by a blue squiggly underline in code
+        /// and a blue icon in the `Problems Panel`.
         diagnostics_warningsAsHint: Vec<String> = "[]",
-        /// List of warnings that should be displayed with hint severity.\n\nThe
-        /// warnings will be indicated by faded text or three dots in code and
-        /// will not show up in the `Problems Panel`.
+        /// List of warnings that should be displayed with hint severity.
+        ///
+        /// The warnings will be indicated by faded text or three dots in code
+        /// and will not show up in the `Problems Panel`.
         diagnostics_warningsAsInfo: Vec<String> = "[]",
 
         /// Controls file watching implementation.
@@ -154,7 +159,9 @@ config_data! {
         lens_references: bool = "false",
 
         /// Disable project auto-discovery in favor of explicitly specified set
-        /// of projects.\n\nElements must be paths pointing to `Cargo.toml`,
+        /// of projects.
+        ///
+        /// Elements must be paths pointing to `Cargo.toml`,
         /// `rust-project.json`, or JSON objects in `rust-project.json` format.
         linkedProjects: Vec<ManifestOrProjectJson> = "[]",
 
@@ -164,8 +171,7 @@ config_data! {
         /// Whether to show `can't find Cargo.toml` error message.
         notifications_cargoTomlNotFound: bool      = "true",
 
-        /// Enable Proc macro support, `#rust-analyzer.cargo.loadOutDirsFromCheck#` must be
-        /// enabled.
+        /// Enable support for procedural macros, implies `#rust-analyzer.cargo.runBuildScripts#`.
         procMacro_enable: bool                     = "false",
         /// Internal config, path to proc-macro server executable (typically,
         /// this is rust-analyzer itself, but we override this in tests).
@@ -174,11 +180,17 @@ config_data! {
         /// Command to be executed instead of 'cargo' for runnables.
         runnables_overrideCargo: Option<String> = "null",
         /// Additional arguments to be passed to cargo for runnables such as
-        /// tests or binaries.\nFor example, it may be `--release`.
+        /// tests or binaries. For example, it may be `--release`.
         runnables_cargoExtraArgs: Vec<String>   = "[]",
 
-        /// Path to the rust compiler sources, for usage in rustc_private projects.
-        rustcSource : Option<PathBuf> = "null",
+        /// Path to the Cargo.toml of the rust compiler workspace, for usage in rustc_private
+        /// projects, or "discover" to try to automatically find it.
+        ///
+        /// Any project which uses rust-analyzer with the rustcPrivate
+        /// crates must set `[package.metadata.rust-analyzer] rustc_private=true` to use it.
+        ///
+        /// This option is not reloaded automatically; you must restart rust-analyzer for it to take effect.
+        rustcSource: Option<String> = "null",
 
         /// Additional arguments to `rustfmt`.
         rustfmt_extraArgs: Vec<String>               = "[]",
@@ -383,6 +395,9 @@ impl Config {
     pub fn work_done_progress(&self) -> bool {
         try_or!(self.caps.window.as_ref()?.work_done_progress?, false)
     }
+    pub fn will_rename(&self) -> bool {
+        try_or!(self.caps.workspace.as_ref()?.file_operations.as_ref()?.will_rename?, false)
+    }
     pub fn code_action_resolve(&self) -> bool {
         try_or!(
             self.caps
@@ -413,6 +428,13 @@ impl Config {
                 .label_offset_support?,
             false
         )
+    }
+    pub fn offset_encoding(&self) -> OffsetEncoding {
+        if supports_utf8(&self.caps) {
+            OffsetEncoding::Utf8
+        } else {
+            OffsetEncoding::Utf16
+        }
     }
 
     fn experimental(&self, index: &'static str) -> bool {
@@ -469,11 +491,17 @@ impl Config {
     pub fn cargo_autoreload(&self) -> bool {
         self.data.cargo_autoreload
     }
-    pub fn load_out_dirs_from_check(&self) -> bool {
-        self.data.cargo_loadOutDirsFromCheck
+    pub fn run_build_scripts(&self) -> bool {
+        self.data.cargo_runBuildScripts || self.data.procMacro_enable
     }
     pub fn cargo(&self) -> CargoConfig {
-        let rustc_source = self.data.rustcSource.as_ref().map(|it| self.root_path.join(&it));
+        let rustc_source = self.data.rustcSource.as_ref().map(|rustc_src| {
+            if rustc_src == "discover" {
+                RustcSource::Discover
+            } else {
+                RustcSource::Path(self.root_path.join(rustc_src))
+            }
+        });
 
         CargoConfig {
             no_default_features: self.data.cargo_noDefaultFeatures,
@@ -512,7 +540,7 @@ impl Config {
                     .data
                     .checkOnSave_target
                     .clone()
-                    .or(self.data.cargo_target.clone()),
+                    .or_else(|| self.data.cargo_target.clone()),
                 all_targets: self.data.checkOnSave_allTargets,
                 no_default_features: self
                     .data
@@ -526,7 +554,7 @@ impl Config {
                     .data
                     .checkOnSave_features
                     .clone()
-                    .unwrap_or(self.data.cargo_features.clone()),
+                    .unwrap_or_else(|| self.data.cargo_features.clone()),
                 extra_args: self.data.checkOnSave_extraArgs.clone(),
             },
         };
@@ -558,6 +586,7 @@ impl Config {
                 ImportPrefixDef::ByCrate => PrefixKind::ByCrate,
                 ImportPrefixDef::BySelf => PrefixKind::BySelf,
             },
+            group: self.data.assist_importGroup,
         }
     }
     pub fn completion(&self) -> CompletionConfig {
@@ -724,7 +753,7 @@ fn get_field<T: DeserializeOwned>(
 fn schema(fields: &[(&'static str, &'static str, &[&str], &str)]) -> serde_json::Value {
     for ((f1, ..), (f2, ..)) in fields.iter().zip(&fields[1..]) {
         fn key(f: &str) -> &str {
-            f.splitn(2, "_").next().unwrap()
+            f.splitn(2, '_').next().unwrap()
         }
         assert!(key(f1) <= key(f2), "wrong field order: {:?} {:?}", f1, f2);
     }
@@ -742,7 +771,8 @@ fn schema(fields: &[(&'static str, &'static str, &[&str], &str)]) -> serde_json:
 }
 
 fn field_props(field: &str, ty: &str, doc: &[&str], default: &str) -> serde_json::Value {
-    let doc = doc.iter().map(|it| it.trim()).join(" ");
+    let doc = doc_comment_to_string(doc);
+    let doc = doc.trim_end_matches('\n');
     assert!(
         doc.ends_with('.') && doc.starts_with(char::is_uppercase),
         "bad docs for {}: {:?}",
@@ -831,21 +861,26 @@ fn manual(fields: &[(&'static str, &'static str, &[&str], &str)]) -> String {
         .iter()
         .map(|(field, _ty, doc, default)| {
             let name = format!("rust-analyzer.{}", field.replace("_", "."));
-            format!("[[{}]]{} (default: `{}`)::\n{}\n", name, name, default, doc.join(" "))
+            let doc = doc_comment_to_string(*doc);
+            format!("[[{}]]{} (default: `{}`)::\n+\n--\n{}--\n", name, name, default, doc)
         })
         .collect::<String>()
+}
+
+fn doc_comment_to_string(doc: &[&str]) -> String {
+    doc.iter().map(|it| it.strip_prefix(' ').unwrap_or(it)).map(|it| format!("{}\n", it)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use test_utils::project_dir;
+    use test_utils::{ensure_file_contents, project_root};
 
     use super::*;
 
     #[test]
-    fn schema_in_sync_with_package_json() {
+    fn generate_package_json_config() {
         let s = Config::json_schema();
         let schema = format!("{:#}", s);
         let mut schema = schema
@@ -858,7 +893,7 @@ mod tests {
             .to_string();
         schema.push_str(",\n");
 
-        let package_json_path = project_dir().join("editors/code/package.json");
+        let package_json_path = project_root().join("editors/code/package.json");
         let mut package_json = fs::read_to_string(&package_json_path).unwrap();
 
         let start_marker = "                \"$generated-start\": false,\n";
@@ -866,26 +901,20 @@ mod tests {
 
         let start = package_json.find(start_marker).unwrap() + start_marker.len();
         let end = package_json.find(end_marker).unwrap();
+
         let p = remove_ws(&package_json[start..end]);
         let s = remove_ws(&schema);
-
         if !p.contains(&s) {
             package_json.replace_range(start..end, &schema);
-            fs::write(&package_json_path, &mut package_json).unwrap();
-            panic!("new config, updating package.json")
+            ensure_file_contents(&package_json_path, &package_json)
         }
     }
 
     #[test]
-    fn schema_in_sync_with_docs() {
-        let docs_path = project_dir().join("docs/user/generated_config.adoc");
-        let current = fs::read_to_string(&docs_path).unwrap();
+    fn generate_config_documentation() {
+        let docs_path = project_root().join("docs/user/generated_config.adoc");
         let expected = ConfigData::manual();
-
-        if remove_ws(&current) != remove_ws(&expected) {
-            fs::write(&docs_path, expected).unwrap();
-            panic!("updated config manual");
-        }
+        ensure_file_contents(&docs_path, &expected);
     }
 
     fn remove_ws(text: &str) -> String {

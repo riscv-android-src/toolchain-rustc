@@ -15,9 +15,12 @@ Unfortunately, a lot of the documentation we have refers to both of these as jus
 
 First, we have the lint declarations themselves: this is where the name and default lint level and
 other metadata come from. These are normally defined by way of the [`declare_lint!`] macro, which
-boils down to a static with type `&rustc::lint::Lint`. We lint against direct declarations without
-the use of the macro today (though this may change in the future, as the macro is somewhat unwieldy
-to add new fields to, like all macros by example).
+boils down to a static with type `&rustc_session::lint::Lint`.
+
+As of <!-- date: 2021-01 --> January 2021, we lint against direct declarations
+without the use of the macro today (although this may change in the future, as
+the macro is somewhat unwieldy to add new fields to, like all macros by
+example).
 
 Lint declarations don't carry any "state" - they are merely global identifers and descriptions of
 lints. We assert at runtime that they are not registered twice (by lint name).
@@ -55,9 +58,9 @@ internally.
 Note, these include both rustc-internal lints, and the traditional lints, like, for example the dead
 code lint.
 
-These are primarily described in two places: `rustc::lint::builtin` and `rustc_lint::builtin`. The
-first provides the definitions for the lints themselves, and the latter provides the lint pass
-definitions (and implementations).
+These are primarily described in two places: `rustc_session::lint::builtin` and
+`rustc_lint::builtin`. The first provides the definitions for the lints themselves,
+and the latter provides the lint pass definitions (and implementations).
 
 The internal lint registration happens in the [`rustc_lint::register_builtins`] function, along with
 the [`rustc_lint::register_internals`] function. More generally, the LintStore "constructor"
@@ -92,7 +95,7 @@ understanding the code. However, with the current type-erased lint store
 approach, it is beneficial to do so for performance reasons.
 
 New lints being added likely want to join one of the existing declarations like
-`late_lint_mod_passes` in `librustc_lint/lib.rs`, which would then
+`late_lint_mod_passes` in `rustc_lint/src/lib.rs`, which would then
 auto-propagate into the other.
 
 [`LintStore::register_lint`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_lint/struct.LintStore.html#method.register_lints

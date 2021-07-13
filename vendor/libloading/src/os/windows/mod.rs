@@ -28,7 +28,6 @@ mod windows_imports {
     extern crate winapi;
     pub(super) use self::winapi::shared::minwindef::{WORD, DWORD, HMODULE, FARPROC};
     pub(super) use self::winapi::shared::ntdef::WCHAR;
-    pub(super) use self::winapi::shared::winerror;
     pub(super) use self::winapi::um::{errhandlingapi, libloaderapi};
     pub(super) use std::os::windows::ffi::{OsStrExt, OsStringExt};
     pub(super) const SEM_FAILCE: DWORD = 1;
@@ -55,7 +54,6 @@ use self::windows_imports::*;
 use util::{ensure_compatible_types, cstr_cow_from_bytes};
 use std::ffi::{OsStr, OsString};
 use std::{fmt, io, marker, mem, ptr};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A platform-specific counterpart of the cross-platform [`Library`](crate::Library).
 pub struct Library(HMODULE);
@@ -88,15 +86,26 @@ impl Library {
     /// `.dll` extension is implicitly added. This behaviour may be suppressed by appending a
     /// trailing `.` to the `filename`.
     ///
-    /// This is equivalent to [`Library::load_with_flags`]`(filename, 0)`.
+    /// This is equivalent to <code>[Library::load_with_flags](filename, 0)</code>.
     ///
     /// [msdn]: https://docs.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryw#remarks
+    ///
+    /// # Safety
+    ///
+    /// When a library is loaded initialization routines contained within the library are executed.
+    /// For the purposes of safety, execution of these routines is conceptually the same calling an
+    /// unknown foreign function and may impose arbitrary requirements on the caller for the call
+    /// to be sound.
+    ///
+    /// Additionally, the callers of this function must also ensure that execution of the
+    /// termination routines contained within the library is safe as well. These routines may be
+    /// executed when the library is unloaded.
     #[inline]
-    pub fn new<P: AsRef<OsStr>>(filename: P) -> Result<Library, crate::Error> {
+    pub unsafe fn new<P: AsRef<OsStr>>(filename: P) -> Result<Library, crate::Error> {
         Library::load_with_flags(filename, 0)
     }
 
-    /// Load the `Library` representing the original program executable.
+    /// Get the `Library` representing the original program executable.
     ///
     /// Note that behaviour of `Library` loaded with this method is different from
     /// Libraries loaded with [`os::unix::Library::this`]. For more information refer to [MSDN].
@@ -119,7 +128,7 @@ impl Library {
         }
     }
 
-    /// Load a module that is already loaded by the program.
+    /// Get a module that is already loaded by the program.
     ///
     /// This function returns a `Library` corresponding to a module with the given name that is
     /// already mapped into the address space of the process. If the module isn't found an error is
@@ -166,22 +175,32 @@ impl Library {
     /// Corresponds to `LoadLibraryExW(filename, reserved: NULL, flags)`.
     ///
     /// [flags]: https://docs.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw#parameters
-    pub fn load_with_flags<P: AsRef<OsStr>>(filename: P, flags: DWORD) -> Result<Library, crate::Error> {
+    ///
+    /// # Safety
+    ///
+    /// When a library is loaded initialization routines contained within the library are executed.
+    /// For the purposes of safety, execution of these routines is conceptually the same calling an
+    /// unknown foreign function and may impose arbitrary requirements on the caller for the call
+    /// to be sound.
+    ///
+    /// Additionally, the callers of this function must also ensure that execution of the
+    /// termination routines contained within the library is safe as well. These routines may be
+    /// executed when the library is unloaded.
+    pub unsafe fn load_with_flags<P: AsRef<OsStr>>(filename: P, flags: DWORD) -> Result<Library, crate::Error> {
         let wide_filename: Vec<u16> = filename.as_ref().encode_wide().chain(Some(0)).collect();
         let _guard = ErrorModeGuard::new();
 
-        let ret = with_get_last_error(|source| crate::Error::LoadLibraryW { source }, || {
+        let ret = with_get_last_error(|source| crate::Error::LoadLibraryExW { source }, || {
             // Make sure no winapi calls as a result of drop happen inside this closure, because
             // otherwise that might change the return value of the GetLastError.
-            let handle = unsafe {
-                libloaderapi::LoadLibraryExW(wide_filename.as_ptr(), std::ptr::null_mut(), flags)
-            };
+            let handle =
+                libloaderapi::LoadLibraryExW(wide_filename.as_ptr(), std::ptr::null_mut(), flags);
             if handle.is_null()  {
                 None
             } else {
                 Some(Library(handle))
             }
-        }).map_err(|e| e.unwrap_or(crate::Error::LoadLibraryWUnknown));
+        }).map_err(|e| e.unwrap_or(crate::Error::LoadLibraryExWUnknown));
         drop(wide_filename); // Drop wide_filename here to ensure it doesn’t get moved and dropped
                              // inside the closure by mistake. See comment inside the closure.
         ret
@@ -197,9 +216,8 @@ impl Library {
     ///
     /// # Safety
     ///
-    /// This function does not validate the type `T`. It is up to the user of this function to
-    /// ensure that the loaded symbol is in fact a `T`. Using a value with a wrong type has no
-    /// definied behaviour.
+    /// Users of this API must specify the correct type of the function or variable loaded. Using a
+    /// `Symbol` with a wrong type is undefined.
     pub unsafe fn get<T>(&self, symbol: &[u8]) -> Result<Symbol<T>, crate::Error> {
         ensure_compatible_types::<T, FARPROC>()?;
         let symbol = cstr_cow_from_bytes(symbol)?;
@@ -220,8 +238,8 @@ impl Library {
     ///
     /// # Safety
     ///
-    /// Pointer to a value of arbitrary type is returned. Using a value with wrong type is
-    /// undefined.
+    /// Users of this API must specify the correct type of the function or variable loaded. Using a
+    /// `Symbol` with a wrong type is undefined.
     pub unsafe fn get_ordinal<T>(&self, ordinal: WORD) -> Result<Symbol<T>, crate::Error> {
         ensure_compatible_types::<T, FARPROC>()?;
         with_get_last_error(|source| crate::Error::GetProcAddress { source }, || {
@@ -249,8 +267,9 @@ impl Library {
     ///
     /// # Safety
     ///
-    /// The handle shall be a result of a successful call of `LoadLibraryW` or a
-    /// handle previously returned by the `Library::into_raw` call.
+    /// The handle shall be a result of a successful call of `LoadLibraryA`, `LoadLibraryW`,
+    /// `LoadLibraryExW`, `LoadLibraryExA` or a handle previously returned by the
+    /// `Library::into_raw` call.
     pub unsafe fn from_raw(handle: HMODULE) -> Library {
         Library(handle)
     }
@@ -361,49 +380,23 @@ impl<T> fmt::Debug for Symbol<T> {
     }
 }
 
-static USE_ERRORMODE: AtomicBool = AtomicBool::new(false);
 struct ErrorModeGuard(DWORD);
 
 impl ErrorModeGuard {
     #[allow(clippy::if_same_then_else)]
     fn new() -> Option<ErrorModeGuard> {
         unsafe {
-            if !USE_ERRORMODE.load(Ordering::Acquire) {
-                let mut previous_mode = 0;
-                let success = errhandlingapi::SetThreadErrorMode(SEM_FAILCE, &mut previous_mode) != 0;
-                if !success && errhandlingapi::GetLastError() == winerror::ERROR_CALL_NOT_IMPLEMENTED {
-                    USE_ERRORMODE.store(true, Ordering::Release);
-                } else if !success {
-                    // SetThreadErrorMode failed with some other error? How in the world is it
-                    // possible for what is essentially a simple variable swap to fail?
-                    // For now we just ignore the error -- the worst that can happen here is
-                    // the previous mode staying on and user seeing a dialog error on older Windows
-                    // machines.
-                    return None;
-                } else if previous_mode == SEM_FAILCE {
-                    return None;
-                } else {
-                    return Some(ErrorModeGuard(previous_mode));
-                }
-            }
-            match errhandlingapi::SetErrorMode(SEM_FAILCE) {
-                SEM_FAILCE => {
-                    // This is important to reduce racy-ness when this library is used on multiple
-                    // threads. In particular this helps with following race condition:
-                    //
-                    // T1: SetErrorMode(SEM_FAILCE)
-                    // T2: SetErrorMode(SEM_FAILCE)
-                    // T1: SetErrorMode(old_mode) # not SEM_FAILCE
-                    // T2: SetErrorMode(SEM_FAILCE) # restores to SEM_FAILCE on drop
-                    //
-                    // This is still somewhat racy in a sense that T1 might restore the error
-                    // mode before T2 finishes loading the library, but that is less of a
-                    // concern – it will only end up in end user seeing a dialog.
-                    //
-                    // Also, SetErrorMode itself is probably not an atomic operation.
-                    None
-                }
-                a => Some(ErrorModeGuard(a))
+            let mut previous_mode = 0;
+            if errhandlingapi::SetThreadErrorMode(SEM_FAILCE, &mut previous_mode) == 0 {
+                // How in the world is it possible for what is essentially a simple variable swap
+                // to fail?  For now we just ignore the error -- the worst that can happen here is
+                // the previous mode staying on and user seeing a dialog error on older Windows
+                // machines.
+                None
+            } else if previous_mode == SEM_FAILCE {
+                None
+            } else {
+                Some(ErrorModeGuard(previous_mode))
             }
         }
     }
@@ -412,11 +405,7 @@ impl ErrorModeGuard {
 impl Drop for ErrorModeGuard {
     fn drop(&mut self) {
         unsafe {
-            if !USE_ERRORMODE.load(Ordering::Relaxed) {
-                errhandlingapi::SetThreadErrorMode(self.0, ptr::null_mut());
-            } else {
-                errhandlingapi::SetErrorMode(self.0);
-            }
+            errhandlingapi::SetThreadErrorMode(self.0, ptr::null_mut());
         }
     }
 }

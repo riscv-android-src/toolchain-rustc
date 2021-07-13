@@ -78,13 +78,17 @@
 //! let output = command.wait().expect("Couldn't get cargo's exit status");
 //! ```
 
+use camino::Utf8PathBuf;
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::from_utf8;
+#[cfg(feature = "builder")]
+use derive_builder::Builder;
 
+pub use camino;
 pub use semver::Version;
 
 pub use dependency::{Dependency, DependencyKind};
@@ -129,6 +133,9 @@ fn is_null(value: &serde_json::Value) -> bool {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+#[cfg_attr(feature = "builder", derive(Builder))]
+#[non_exhaustive]
+#[cfg_attr(feature = "builder", builder(pattern = "owned", setter(into)))]
 /// Starting point for metadata returned by `cargo metadata`
 pub struct Metadata {
     /// A list of all crates referenced by this crate (and the crate itself)
@@ -138,16 +145,14 @@ pub struct Metadata {
     /// Dependencies graph
     pub resolve: Option<Resolve>,
     /// Workspace root
-    pub workspace_root: PathBuf,
+    pub workspace_root: Utf8PathBuf,
     /// Build directory
-    pub target_directory: PathBuf,
+    pub target_directory: Utf8PathBuf,
     /// The workspace-level metadata object. Null if non-existent.
     #[serde(rename = "metadata", default, skip_serializing_if = "is_null")]
     pub workspace_metadata: serde_json::Value,
+    /// The metadata format version
     version: usize,
-    #[doc(hidden)]
-    #[serde(skip)]
-    __do_not_match_exhaustively: (),
 }
 
 impl Metadata {
@@ -170,6 +175,9 @@ impl<'a> std::ops::Index<&'a PackageId> for Metadata {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+#[cfg_attr(feature = "builder", derive(Builder))]
+#[non_exhaustive]
+#[cfg_attr(feature = "builder", builder(pattern = "owned", setter(into)))]
 /// A dependency graph
 pub struct Resolve {
     /// Nodes in a dependencies graph
@@ -177,12 +185,12 @@ pub struct Resolve {
 
     /// The crate for which the metadata was read.
     pub root: Option<PackageId>,
-    #[doc(hidden)]
-    #[serde(skip)]
-    __do_not_match_exhaustively: (),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+#[cfg_attr(feature = "builder", derive(Builder))]
+#[non_exhaustive]
+#[cfg_attr(feature = "builder", builder(pattern = "owned", setter(into)))]
 /// A node in a dependencies graph
 pub struct Node {
     /// An opaque identifier for a package
@@ -200,12 +208,12 @@ pub struct Node {
     /// Features enabled on the crate
     #[serde(default)]
     pub features: Vec<String>,
-    #[doc(hidden)]
-    #[serde(skip)]
-    __do_not_match_exhaustively: (),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+#[cfg_attr(feature = "builder", derive(Builder))]
+#[non_exhaustive]
+#[cfg_attr(feature = "builder", builder(pattern = "owned", setter(into)))]
 /// A dependency in a node
 pub struct NodeDep {
     /// The name of the dependency's library target.
@@ -218,12 +226,12 @@ pub struct NodeDep {
     /// This field was added in Rust 1.41.
     #[serde(default)]
     pub dep_kinds: Vec<DepKindInfo>,
-    #[doc(hidden)]
-    #[serde(skip)]
-    __do_not_match_exhaustively: (),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+#[cfg_attr(feature = "builder", derive(Builder))]
+#[non_exhaustive]
+#[cfg_attr(feature = "builder", builder(pattern = "owned", setter(into)))]
 /// Information about a dependency kind.
 pub struct DepKindInfo {
     /// The kind of dependency.
@@ -241,12 +249,12 @@ pub struct DepKindInfo {
     ///
     /// [`Display`]: std::fmt::Display
     pub target: Option<dependency::Platform>,
-    #[doc(hidden)]
-    #[serde(skip)]
-    __do_not_match_exhaustively: (),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+#[cfg_attr(feature = "builder", derive(Builder))]
+#[non_exhaustive]
+#[cfg_attr(feature = "builder", builder(pattern = "owned", setter(into)))]
 /// One or more crates described by a single `Cargo.toml`
 ///
 /// Each [`target`][Package::targets] of a `Package` will be built as a crate.
@@ -272,13 +280,13 @@ pub struct Package {
     pub license: Option<String>,
     /// If the package is using a nonstandard license, this key may be specified instead of
     /// `license`, and must point to a file relative to the manifest.
-    pub license_file: Option<PathBuf>,
+    pub license_file: Option<Utf8PathBuf>,
     /// Targets provided by the crate (lib, bin, example, test, ...)
     pub targets: Vec<Target>,
     /// Features provided by the crate, mapped to the features required by that feature.
     pub features: HashMap<String, Vec<String>>,
     /// Path containing the `Cargo.toml`
-    pub manifest_path: PathBuf,
+    pub manifest_path: Utf8PathBuf,
     /// Categories as given in the `Cargo.toml`
     #[serde(default)]
     pub categories: Vec<String>,
@@ -286,7 +294,7 @@ pub struct Package {
     #[serde(default)]
     pub keywords: Vec<String>,
     /// Readme as given in the `Cargo.toml`
-    pub readme: Option<PathBuf>,
+    pub readme: Option<Utf8PathBuf>,
     /// Repository as given in the `Cargo.toml`
     // can't use `url::Url` because that requires a more recent stable compiler
     pub repository: Option<String>,
@@ -337,14 +345,11 @@ pub struct Package {
     ///
     /// This is always `None` if running with a version of Cargo older than 1.39.
     pub publish: Option<Vec<String>>,
-    #[doc(hidden)]
-    #[serde(skip)]
-    __do_not_match_exhaustively: (),
 }
 
 impl Package {
     /// Full path to the license file if one is present in the manifest
-    pub fn license_file(&self) -> Option<PathBuf> {
+    pub fn license_file(&self) -> Option<Utf8PathBuf> {
         self.license_file.as_ref().map(|file| {
             self.manifest_path
                 .parent()
@@ -354,7 +359,7 @@ impl Package {
     }
 
     /// Full path to the readme file if one is present in the manifest
-    pub fn readme(&self) -> Option<PathBuf> {
+    pub fn readme(&self) -> Option<Utf8PathBuf> {
         self.readme
             .as_ref()
             .map(|file| self.manifest_path.join(file))
@@ -383,6 +388,9 @@ impl std::fmt::Display for Source {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "builder", derive(Builder))]
+#[cfg_attr(feature = "builder", builder(pattern = "owned", setter(into)))]
+#[non_exhaustive]
 /// A single target (lib, bin, example, ...) provided by a crate
 pub struct Target {
     /// Name as given in the `Cargo.toml` or generated from the file name
@@ -392,32 +400,34 @@ pub struct Target {
     /// Almost the same as `kind`, except when an example is a library instead of an executable.
     /// In that case `crate_types` contains things like `rlib` and `dylib` while `kind` is `example`
     #[serde(default)]
+    #[cfg_attr(feature = "builder", builder(default))]
     pub crate_types: Vec<String>,
 
     #[serde(default)]
+    #[cfg_attr(feature = "builder", builder(default))]
     #[serde(rename = "required-features")]
     /// This target is built only if these features are enabled.
     /// It doesn't apply to `lib` targets.
     pub required_features: Vec<String>,
     /// Path to the main source file of the target
-    pub src_path: PathBuf,
+    pub src_path: Utf8PathBuf,
     /// Rust edition for this target
     #[serde(default = "edition_default")]
+    #[cfg_attr(feature = "builder", builder(default = "edition_default()"))]
     pub edition: String,
     /// Whether or not this target has doc tests enabled, and the target is
     /// compatible with doc testing.
     ///
     /// This is always `true` if running with a version of Cargo older than 1.37.
     #[serde(default = "default_true")]
+    #[cfg_attr(feature = "builder", builder(default = "true"))]
     pub doctest: bool,
     /// Whether or not this target is tested by default by `cargo test`.
     ///
     /// This is always `true` if running with a version of Cargo older than 1.47.
     #[serde(default = "default_true")]
+    #[cfg_attr(feature = "builder", builder(default = "true"))]
     pub test: bool,
-    #[doc(hidden)]
-    #[serde(skip)]
-    __do_not_match_exhaustively: (),
 }
 
 fn default_true() -> bool {
@@ -442,9 +452,15 @@ pub enum CargoOpt {
 /// A builder for configurating `cargo metadata` invocation.
 #[derive(Debug, Clone, Default)]
 pub struct MetadataCommand {
+    /// Path to `cargo` executable.  If not set, this will use the
+    /// the `$CARGO` environment variable, and if that is not set, will
+    /// simply be `cargo`.
     cargo_path: Option<PathBuf>,
+    /// Path to `Cargo.toml`
     manifest_path: Option<PathBuf>,
+    /// Current directory of the `cargo metadata` process.
     current_dir: Option<PathBuf>,
+    /// Output information only about the root package and don't fetch dependencies.
     no_deps: bool,
     /// Collections of `CargoOpt::SomeFeatures(..)`
     features: Vec<String>,
@@ -452,6 +468,8 @@ pub struct MetadataCommand {
     all_features: bool,
     /// Latched `CargoOpt::NoDefaultFeatures`
     no_default_features: bool,
+    /// Arbitrary command line flags to pass to `cargo`.  These will be added
+    /// to the end of the command line invocation.
     other_options: Vec<String>,
 }
 

@@ -9,19 +9,27 @@ use core::ops::{Index, RangeBounds};
 use core::ptr;
 
 use super::borrow::DormantMutRef;
+use super::navigate::LeafRange;
 use super::node::{self, marker, ForceResult::*, Handle, NodeRef, Root};
 use super::search::SearchResult::*;
-use super::unwrap_unchecked;
 
 mod entry;
-pub use entry::{Entry, OccupiedEntry, VacantEntry};
+pub use entry::{Entry, OccupiedEntry, OccupiedError, VacantEntry};
 use Entry::*;
 
 /// Minimum number of elements in nodes that are not a root.
 /// We might temporarily have fewer elements during methods.
 pub(super) const MIN_LEN: usize = node::MIN_LEN_AFTER_SPLIT;
 
-/// A map based on a B-Tree.
+// A tree in a `BTreeMap` is a tree in the `node` module with additional invariants:
+// - Keys must appear in ascending order (according to the key's type).
+// - If the root node is internal, it must contain at least 1 element.
+// - Every non-root node contains at least MIN_LEN elements.
+//
+// An empty map may be represented both by the absence of a root node or by a
+// root node that is an empty leaf.
+
+/// A map based on a [B-Tree].
 ///
 /// B-Trees represent a fundamental compromise between cache-efficiency and actually minimizing
 /// the amount of work performed in a search. In theory, a binary search tree (BST) is the optimal
@@ -55,6 +63,7 @@ pub(super) const MIN_LEN: usize = node::MIN_LEN_AFTER_SPLIT;
 /// undefined behavior. This could include panics, incorrect results, aborts, memory leaks, and
 /// non-termination.
 ///
+/// [B-Tree]: https://en.wikipedia.org/wiki/B-tree
 /// [`Cell`]: core::cell::Cell
 /// [`RefCell`]: core::cell::RefCell
 ///
@@ -130,6 +139,7 @@ pub(super) const MIN_LEN: usize = node::MIN_LEN_AFTER_SPLIT;
 /// *stat += random_stat_buff();
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "BTreeMap")]
 pub struct BTreeMap<K, V> {
     root: Option<Root<K, V>>,
     length: usize,
@@ -138,8 +148,8 @@ pub struct BTreeMap<K, V> {
 #[stable(feature = "btree_drop", since = "1.7.0")]
 unsafe impl<#[may_dangle] K, #[may_dangle] V> Drop for BTreeMap<K, V> {
     fn drop(&mut self) {
-        unsafe {
-            drop(ptr::read(self).into_iter());
+        if let Some(root) = self.root.take() {
+            Dropper { front: root.into_dying().first_leaf_edge(), remaining_length: self.length };
         }
     }
 }
@@ -300,8 +310,7 @@ pub struct IterMut<'a, K: 'a, V: 'a> {
 /// [`into_iter`]: IntoIterator::into_iter
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IntoIter<K, V> {
-    front: Option<Handle<NodeRef<marker::Dying, K, V, marker::Leaf>, marker::Edge>>,
-    back: Option<Handle<NodeRef<marker::Dying, K, V, marker::Leaf>, marker::Edge>>,
+    range: LeafRange<marker::Dying, K, V>,
     length: usize,
 }
 
@@ -309,11 +318,7 @@ impl<K, V> IntoIter<K, V> {
     /// Returns an iterator of references over the remaining items.
     #[inline]
     pub(super) fn iter(&self) -> Iter<'_, K, V> {
-        let range = Range {
-            front: self.front.as_ref().map(|f| f.reborrow()),
-            back: self.back.as_ref().map(|b| b.reborrow()),
-        };
-
+        let range = Range { inner: self.range.reborrow() };
         Iter { range: range, length: self.length }
     }
 }
@@ -323,6 +328,14 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for IntoIter<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
+}
+
+/// A simplified version of `IntoIter` that is not double-ended and has only one
+/// purpose: to drop the remainder of an `IntoIter`. Therefore it also serves to
+/// drop an entire tree without the need to first look up a `back` leaf edge.
+struct Dropper<K, V> {
+    front: Handle<NodeRef<marker::Dying, K, V, marker::Leaf>, marker::Edge>,
+    remaining_length: usize,
 }
 
 /// An iterator over the keys of a `BTreeMap`.
@@ -423,8 +436,7 @@ impl<K, V: fmt::Debug> fmt::Debug for IntoValues<K, V> {
 /// [`range`]: BTreeMap::range
 #[stable(feature = "btree_range", since = "1.17.0")]
 pub struct Range<'a, K: 'a, V: 'a> {
-    front: Option<Handle<NodeRef<marker::Immut<'a>, K, V, marker::Leaf>, marker::Edge>>,
-    back: Option<Handle<NodeRef<marker::Immut<'a>, K, V, marker::Leaf>, marker::Edge>>,
+    inner: LeafRange<marker::Immut<'a>, K, V>,
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
@@ -442,8 +454,7 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Range<'_, K, V> {
 /// [`range_mut`]: BTreeMap::range_mut
 #[stable(feature = "btree_range", since = "1.17.0")]
 pub struct RangeMut<'a, K: 'a, V: 'a> {
-    front: Option<Handle<NodeRef<marker::ValMut<'a>, K, V, marker::Leaf>, marker::Edge>>,
-    back: Option<Handle<NodeRef<marker::ValMut<'a>, K, V, marker::Leaf>, marker::Edge>>,
+    inner: LeafRange<marker::ValMut<'a>, K, V>,
 
     // Be invariant in `K` and `V`
     _marker: PhantomData<&'a mut (K, V)>,
@@ -452,10 +463,7 @@ pub struct RangeMut<'a, K: 'a, V: 'a> {
 #[stable(feature = "collection_debug", since = "1.17.0")]
 impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for RangeMut<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let range = Range {
-            front: self.front.as_ref().map(|f| f.reborrow()),
-            back: self.back.as_ref().map(|b| b.reborrow()),
-        };
+        let range = Range { inner: self.inner.reborrow() };
         f.debug_list().entries(range).finish()
     }
 }
@@ -501,11 +509,8 @@ impl<K, V> BTreeMap<K, V> {
     /// assert!(a.is_empty());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn clear(&mut self)
-    where
-        K: Ord,
-    {
-        *self = BTreeMap::new();
+    pub fn clear(&mut self) {
+        *self = BTreeMap { root: None, length: 0 };
     }
 
     /// Returns a reference to the value corresponding to the key.
@@ -832,6 +837,40 @@ impl<K, V> BTreeMap<K, V> {
         }
     }
 
+    /// Tries to insert a key-value pair into the map, and returns
+    /// a mutable reference to the value in the entry.
+    ///
+    /// If the map already had this key present, nothing is updated, and
+    /// an error containing the occupied entry and the value is returned.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// #![feature(map_try_insert)]
+    ///
+    /// use std::collections::BTreeMap;
+    ///
+    /// let mut map = BTreeMap::new();
+    /// assert_eq!(map.try_insert(37, "a").unwrap(), &"a");
+    ///
+    /// let err = map.try_insert(37, "b").unwrap_err();
+    /// assert_eq!(err.entry.key(), &37);
+    /// assert_eq!(err.entry.get(), &"a");
+    /// assert_eq!(err.value, "b");
+    /// ```
+    #[unstable(feature = "map_try_insert", issue = "82766")]
+    pub fn try_insert(&mut self, key: K, value: V) -> Result<&mut V, OccupiedError<'_, K, V>>
+    where
+        K: Ord,
+    {
+        match self.entry(key) {
+            Occupied(entry) => Err(OccupiedError { entry, value }),
+            Vacant(entry) => Ok(entry.insert(value)),
+        }
+    }
+
     /// Removes a key from the map, returning the value at the key if the key
     /// was previously in the map.
     ///
@@ -1006,11 +1045,9 @@ impl<K, V> BTreeMap<K, V> {
         R: RangeBounds<T>,
     {
         if let Some(root) = &self.root {
-            let (f, b) = root.reborrow().range_search(range);
-
-            Range { front: Some(f), back: Some(b) }
+            Range { inner: root.reborrow().range_search(range) }
         } else {
-            Range { front: None, back: None }
+            Range { inner: LeafRange::none() }
         }
     }
 
@@ -1052,11 +1089,9 @@ impl<K, V> BTreeMap<K, V> {
         R: RangeBounds<T>,
     {
         if let Some(root) = &mut self.root {
-            let (f, b) = root.borrow_valmut().range_search(range);
-
-            RangeMut { front: Some(f), back: Some(b), _marker: PhantomData }
+            RangeMut { inner: root.borrow_valmut().range_search(range), _marker: PhantomData }
         } else {
-            RangeMut { front: None, back: None, _marker: PhantomData }
+            RangeMut { inner: LeafRange::none(), _marker: PhantomData }
         }
     }
 
@@ -1135,37 +1170,31 @@ impl<K, V> BTreeMap<K, V> {
         let total_num = self.len();
         let left_root = self.root.as_mut().unwrap(); // unwrap succeeds because not empty
 
-        let mut right = Self::new();
-        let right_root = Self::ensure_is_owned(&mut right.root);
+        let right_root = left_root.split_off(key);
 
-        left_root.split_off(right_root, key);
+        let (new_left_len, right_len) = Root::calc_split_length(total_num, &left_root, &right_root);
+        self.length = new_left_len;
 
-        if left_root.height() < right_root.height() {
-            self.length = left_root.reborrow().calc_length();
-            right.length = total_num - self.len();
-        } else {
-            right.length = right_root.reborrow().calc_length();
-            self.length = total_num - right.len();
-        }
-
-        right
+        BTreeMap { root: Some(right_root), length: right_len }
     }
 
-    /// Creates an iterator which uses a closure to determine if an element should be removed.
+    /// Creates an iterator that visits all elements (key-value pairs) in
+    /// ascending key order and uses a closure to determine if an element should
+    /// be removed. If the closure returns `true`, the element is removed from
+    /// the map and yielded. If the closure returns `false`, or panics, the
+    /// element remains in the map and will not be yielded.
     ///
-    /// If the closure returns true, the element is removed from the map and yielded.
-    /// If the closure returns false, or panics, the element remains in the map and will not be
-    /// yielded.
+    /// The iterator also lets you mutate the value of each element in the
+    /// closure, regardless of whether you choose to keep or remove it.
     ///
-    /// Note that `drain_filter` lets you mutate every value in the filter closure, regardless of
-    /// whether you choose to keep or remove it.
+    /// If the iterator is only partially consumed or not consumed at all, each
+    /// of the remaining elements is still subjected to the closure, which may
+    /// change its value and, by returning `true`, have the element removed and
+    /// dropped.
     ///
-    /// If the iterator is only partially consumed or not consumed at all, each of the remaining
-    /// elements will still be subjected to the closure and removed and dropped if it returns true.
-    ///
-    /// It is unspecified how many more elements will be subjected to the closure
-    /// if a panic occurs in the closure, or a panic occurs while dropping an element,
-    /// or if the `DrainFilter` value is leaked.
+    /// It is unspecified how many more elements will be subjected to the
+    /// closure if a panic occurs in the closure, or a panic occurs while
+    /// dropping an element, or if the `DrainFilter` value is leaked.
     ///
     /// # Examples
     ///
@@ -1226,10 +1255,7 @@ impl<K, V> BTreeMap<K, V> {
     /// ```
     #[inline]
     #[unstable(feature = "map_into_keys_values", issue = "75294")]
-    pub fn into_keys(self) -> IntoKeys<K, V>
-    where
-        K: Ord,
-    {
+    pub fn into_keys(self) -> IntoKeys<K, V> {
         IntoKeys { inner: self.into_iter() }
     }
 
@@ -1252,10 +1278,7 @@ impl<K, V> BTreeMap<K, V> {
     /// ```
     #[inline]
     #[unstable(feature = "map_into_keys_values", issue = "75294")]
-    pub fn into_values(self) -> IntoValues<K, V>
-    where
-        K: Ord,
-    {
+    pub fn into_values(self) -> IntoValues<K, V> {
         IntoValues { inner: self.into_iter() }
     }
 }
@@ -1279,7 +1302,7 @@ impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
             None
         } else {
             self.length -= 1;
-            unsafe { Some(self.range.next_unchecked()) }
+            Some(unsafe { self.range.next_unchecked() })
         }
     }
 
@@ -1310,7 +1333,7 @@ impl<'a, K: 'a, V: 'a> DoubleEndedIterator for Iter<'a, K, V> {
             None
         } else {
             self.length -= 1;
-            unsafe { Some(self.range.next_back_unchecked()) }
+            Some(unsafe { self.range.next_back_unchecked() })
         }
     }
 }
@@ -1348,8 +1371,7 @@ impl<'a, K: 'a, V: 'a> Iterator for IterMut<'a, K, V> {
             None
         } else {
             self.length -= 1;
-            let (k, v) = unsafe { self.range.next_unchecked() };
-            Some((k, v)) // coerce k from `&mut K` to `&K`
+            Some(unsafe { self.range.next_unchecked() })
         }
     }
 
@@ -1377,8 +1399,7 @@ impl<'a, K: 'a, V: 'a> DoubleEndedIterator for IterMut<'a, K, V> {
             None
         } else {
             self.length -= 1;
-            let (k, v) = unsafe { self.range.next_back_unchecked() };
-            Some((k, v)) // coerce k from `&mut K` to `&K`
+            Some(unsafe { self.range.next_back_unchecked() })
         }
     }
 }
@@ -1409,11 +1430,42 @@ impl<K, V> IntoIterator for BTreeMap<K, V> {
     fn into_iter(self) -> IntoIter<K, V> {
         let mut me = ManuallyDrop::new(self);
         if let Some(root) = me.root.take() {
-            let (f, b) = root.into_dying().full_range();
+            let full_range = root.into_dying().full_range();
 
-            IntoIter { front: Some(f), back: Some(b), length: me.length }
+            IntoIter { range: full_range, length: me.length }
         } else {
-            IntoIter { front: None, back: None, length: 0 }
+            IntoIter { range: LeafRange::none(), length: 0 }
+        }
+    }
+}
+
+impl<K, V> Drop for Dropper<K, V> {
+    fn drop(&mut self) {
+        // Similar to advancing a non-fusing iterator.
+        fn next_or_end<K, V>(this: &mut Dropper<K, V>) -> Option<(K, V)> {
+            if this.remaining_length == 0 {
+                unsafe { ptr::read(&this.front).deallocating_end() }
+                None
+            } else {
+                this.remaining_length -= 1;
+                Some(unsafe { this.front.deallocating_next_unchecked() })
+            }
+        }
+
+        struct DropGuard<'a, K, V>(&'a mut Dropper<K, V>);
+
+        impl<'a, K, V> Drop for DropGuard<'a, K, V> {
+            fn drop(&mut self) {
+                // Continue the same loop we perform below. This only runs when unwinding, so we
+                // don't have to care about panics this time (they'll abort).
+                while let Some(_pair) = next_or_end(&mut self.0) {}
+            }
+        }
+
+        while let Some(pair) = next_or_end(self) {
+            let guard = DropGuard(self);
+            drop(pair);
+            mem::forget(guard);
         }
     }
 }
@@ -1421,39 +1473,8 @@ impl<K, V> IntoIterator for BTreeMap<K, V> {
 #[stable(feature = "btree_drop", since = "1.7.0")]
 impl<K, V> Drop for IntoIter<K, V> {
     fn drop(&mut self) {
-        struct DropGuard<'a, K, V>(&'a mut IntoIter<K, V>);
-
-        impl<'a, K, V> Drop for DropGuard<'a, K, V> {
-            fn drop(&mut self) {
-                // Continue the same loop we perform below. This only runs when unwinding, so we
-                // don't have to care about panics this time (they'll abort).
-                while let Some(_) = self.0.next() {}
-
-                unsafe {
-                    let mut node =
-                        unwrap_unchecked(ptr::read(&self.0.front)).into_node().forget_type();
-                    while let Some(parent) = node.deallocate_and_ascend() {
-                        node = parent.into_node().forget_type();
-                    }
-                }
-            }
-        }
-
-        while let Some(pair) = self.next() {
-            let guard = DropGuard(self);
-            drop(pair);
-            mem::forget(guard);
-        }
-
-        unsafe {
-            if let Some(front) = ptr::read(&self.front) {
-                let mut node = front.into_node().forget_type();
-                // Most of the nodes have been deallocated while traversing
-                // but one pile from a leaf up to the root is left standing.
-                while let Some(parent) = node.deallocate_and_ascend() {
-                    node = parent.into_node().forget_type();
-                }
-            }
+        if let Some(front) = self.range.front.take() {
+            Dropper { front, remaining_length: self.length };
         }
     }
 }
@@ -1467,7 +1488,7 @@ impl<K, V> Iterator for IntoIter<K, V> {
             None
         } else {
             self.length -= 1;
-            Some(unsafe { self.front.as_mut().unwrap().next_unchecked() })
+            Some(unsafe { self.range.front.as_mut().unwrap().deallocating_next_unchecked() })
         }
     }
 
@@ -1483,7 +1504,7 @@ impl<K, V> DoubleEndedIterator for IntoIter<K, V> {
             None
         } else {
             self.length -= 1;
-            Some(unsafe { self.back.as_mut().unwrap().next_back_unchecked() })
+            Some(unsafe { self.range.back.as_mut().unwrap().deallocating_next_back_unchecked() })
         }
     }
 }
@@ -1700,7 +1721,7 @@ impl<'a, K, V> Iterator for Range<'a, K, V> {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<(&'a K, &'a V)> {
-        if self.is_empty() { None } else { unsafe { Some(self.next_unchecked()) } }
+        if self.inner.is_empty() { None } else { Some(unsafe { self.next_unchecked() }) }
     }
 
     fn last(mut self) -> Option<(&'a K, &'a V)> {
@@ -1751,12 +1772,8 @@ impl<K, V> ExactSizeIterator for ValuesMut<'_, K, V> {
 impl<K, V> FusedIterator for ValuesMut<'_, K, V> {}
 
 impl<'a, K, V> Range<'a, K, V> {
-    fn is_empty(&self) -> bool {
-        self.front == self.back
-    }
-
     unsafe fn next_unchecked(&mut self) -> (&'a K, &'a V) {
-        unsafe { unwrap_unchecked(self.front.as_mut()).next_unchecked() }
+        unsafe { self.inner.front.as_mut().unwrap_unchecked().next_unchecked() }
     }
 }
 
@@ -1839,13 +1856,13 @@ impl<K, V> FusedIterator for IntoValues<K, V> {}
 #[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, K, V> DoubleEndedIterator for Range<'a, K, V> {
     fn next_back(&mut self) -> Option<(&'a K, &'a V)> {
-        if self.is_empty() { None } else { Some(unsafe { self.next_back_unchecked() }) }
+        if self.inner.is_empty() { None } else { Some(unsafe { self.next_back_unchecked() }) }
     }
 }
 
 impl<'a, K, V> Range<'a, K, V> {
     unsafe fn next_back_unchecked(&mut self) -> (&'a K, &'a V) {
-        unsafe { unwrap_unchecked(self.back.as_mut()).next_back_unchecked() }
+        unsafe { self.inner.back.as_mut().unwrap_unchecked().next_back_unchecked() }
     }
 }
 
@@ -1855,7 +1872,7 @@ impl<K, V> FusedIterator for Range<'_, K, V> {}
 #[stable(feature = "btree_range", since = "1.17.0")]
 impl<K, V> Clone for Range<'_, K, V> {
     fn clone(&self) -> Self {
-        Range { front: self.front, back: self.back }
+        Range { inner: LeafRange { front: self.inner.front, back: self.inner.back } }
     }
 }
 
@@ -1864,12 +1881,7 @@ impl<'a, K, V> Iterator for RangeMut<'a, K, V> {
     type Item = (&'a K, &'a mut V);
 
     fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
-        if self.is_empty() {
-            None
-        } else {
-            let (k, v) = unsafe { self.next_unchecked() };
-            Some((k, v)) // coerce k from `&mut K` to `&K`
-        }
+        if self.inner.is_empty() { None } else { Some(unsafe { self.next_unchecked() }) }
     }
 
     fn last(mut self) -> Option<(&'a K, &'a mut V)> {
@@ -1886,33 +1898,21 @@ impl<'a, K, V> Iterator for RangeMut<'a, K, V> {
 }
 
 impl<'a, K, V> RangeMut<'a, K, V> {
-    fn is_empty(&self) -> bool {
-        self.front == self.back
-    }
-
     unsafe fn next_unchecked(&mut self) -> (&'a K, &'a mut V) {
-        unsafe { unwrap_unchecked(self.front.as_mut()).next_unchecked() }
+        unsafe { self.inner.front.as_mut().unwrap_unchecked().next_unchecked() }
     }
 
     /// Returns an iterator of references over the remaining items.
     #[inline]
     pub(super) fn iter(&self) -> Range<'_, K, V> {
-        Range {
-            front: self.front.as_ref().map(|f| f.reborrow()),
-            back: self.back.as_ref().map(|b| b.reborrow()),
-        }
+        Range { inner: self.inner.reborrow() }
     }
 }
 
 #[stable(feature = "btree_range", since = "1.17.0")]
 impl<'a, K, V> DoubleEndedIterator for RangeMut<'a, K, V> {
     fn next_back(&mut self) -> Option<(&'a K, &'a mut V)> {
-        if self.is_empty() {
-            None
-        } else {
-            let (k, v) = unsafe { self.next_back_unchecked() };
-            Some((k, v)) // coerce k from `&mut K` to `&K`
-        }
+        if self.inner.is_empty() { None } else { Some(unsafe { self.next_back_unchecked() }) }
     }
 }
 
@@ -1921,7 +1921,7 @@ impl<K, V> FusedIterator for RangeMut<'_, K, V> {}
 
 impl<'a, K, V> RangeMut<'a, K, V> {
     unsafe fn next_back_unchecked(&mut self) -> (&'a K, &'a mut V) {
-        unsafe { unwrap_unchecked(self.back.as_mut()).next_back_unchecked() }
+        unsafe { self.inner.back.as_mut().unwrap_unchecked().next_back_unchecked() }
     }
 }
 
@@ -2055,11 +2055,11 @@ impl<K, V> BTreeMap<K, V> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn iter(&self) -> Iter<'_, K, V> {
         if let Some(root) = &self.root {
-            let (f, b) = root.reborrow().full_range();
+            let full_range = root.reborrow().full_range();
 
-            Iter { range: Range { front: Some(f), back: Some(b) }, length: self.length }
+            Iter { range: Range { inner: full_range }, length: self.length }
         } else {
-            Iter { range: Range { front: None, back: None }, length: 0 }
+            Iter { range: Range { inner: LeafRange::none() }, length: 0 }
         }
     }
 
@@ -2087,14 +2087,17 @@ impl<K, V> BTreeMap<K, V> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
         if let Some(root) = &mut self.root {
-            let (f, b) = root.borrow_valmut().full_range();
+            let full_range = root.borrow_valmut().full_range();
 
             IterMut {
-                range: RangeMut { front: Some(f), back: Some(b), _marker: PhantomData },
+                range: RangeMut { inner: full_range, _marker: PhantomData },
                 length: self.length,
             }
         } else {
-            IterMut { range: RangeMut { front: None, back: None, _marker: PhantomData }, length: 0 }
+            IterMut {
+                range: RangeMut { inner: LeafRange::none(), _marker: PhantomData },
+                length: 0,
+            }
         }
     }
 

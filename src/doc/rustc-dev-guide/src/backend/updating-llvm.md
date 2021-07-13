@@ -1,5 +1,7 @@
 # Updating LLVM
 
+<!-- toc -->
+
 The Rust compiler uses LLVM as its primary codegen backend today, and naturally
 we want to at least occasionally update this dependency! Currently we do not
 have a strict policy about when to update LLVM or what it can be updated to, but
@@ -64,9 +66,9 @@ Example PRs look like:
 
 ## Feature updates
 
-> Note that this is all information as applies to the current day in age. This
-> process for updating LLVM changes with practically all LLVM updates, so this
-> may be out of date!
+> Note that this information is as of the time of this writing <!-- date:
+2018-12 --> (December 2018). The process for updating LLVM changes with
+practically all LLVM updates, so this may be out of date!
 
 Unlike bugfixes, updating to pick up a new feature of LLVM typically requires a
 lot more work. This is where we can't reasonably cherry-pick commits backwards
@@ -96,9 +98,18 @@ through each in detail.
    * `./x.py build src/tools/lld` - same for LLD
    * `./x.py build` - build the rest of rustc
 
-   You'll likely need to update `src/rustllvm/*.cpp` to compile with updated
-   LLVM bindings. Note that you should use `#ifdef` and such to ensure that the
-   bindings still compile on older LLVM versions.
+   You'll likely need to update [`llvm-wrapper/*.cpp`][`llvm-wrapper`] to compile
+   with updated LLVM bindings. Note that you should use `#ifdef` and such to ensure
+   that the bindings still compile on older LLVM versions.
+
+   Note that `profile = "compiler"` and other defaults set by `x.py setup`
+   download LLVM from CI instead of building it from source. You should
+   disable this temporarily to make sure your changes are being used, by setting
+   ```toml
+   [llvm]
+   download-ci-llvm = false
+   ```
+   in config.toml.
 
 4. Test for regressions across other platforms. LLVM often has at least one bug
    for non-tier-1 architectures, so it's good to do some more testing before
@@ -122,17 +133,19 @@ through each in detail.
 5. Prepare a PR to `rust-lang/rust`. Work with maintainers of
    `rust-lang/llvm-project` to get your commit in a branch of that repository,
    and then you can send a PR to `rust-lang/rust`. You'll change at least
-   `src/llvm-project` and will likely also change `src/rustllvm/*` as well.
+   `src/llvm-project` and will likely also change [`llvm-wrapper`] as well.
 
 For prior art, previous LLVM updates look like
 [#55835](https://github.com/rust-lang/rust/pull/55835)
 [#47828](https://github.com/rust-lang/rust/pull/47828)
 [#62474](https://github.com/rust-lang/rust/pull/62474)
 [#62592](https://github.com/rust-lang/rust/pull/62592). Note that sometimes it's
-easiest to land `src/rustllvm/*` compatibility as a PR before actually updating
+easiest to land [`llvm-wrapper`] compatibility as a PR before actually updating
 `src/llvm-project`. This way while you're working through LLVM issues others
 interested in trying out the new LLVM can benefit from work you've done to
 update the C++ bindings.
+
+[`llvm-wrapper`]: https://github.com/rust-lang/rust/tree/master/compiler/rustc_llvm/llvm-wrapper
 
 ### Caveats and gotchas
 

@@ -262,7 +262,7 @@ pub(crate) fn strerror(code: u16) -> &'static str {
 pub type Rights = u64;
 /// The right to invoke `fd_datasync`.
 /// If `path_open` is set, includes the right to invoke
-/// `path_open` with `fdflags::dsync`.
+/// `path_open` with `fdflag::dsync`.
 pub const RIGHTS_FD_DATASYNC: Rights = 0x1;
 /// The right to invoke `fd_read` and `sock_recv`.
 /// If `rights::fd_seek` is set, includes the right to invoke `fd_pread`.
@@ -273,10 +273,10 @@ pub const RIGHTS_FD_SEEK: Rights = 0x4;
 pub const RIGHTS_FD_FDSTAT_SET_FLAGS: Rights = 0x8;
 /// The right to invoke `fd_sync`.
 /// If `path_open` is set, includes the right to invoke
-/// `path_open` with `fdflags::rsync` and `fdflags::dsync`.
+/// `path_open` with `fdflag::rsync` and `fdflag::dsync`.
 pub const RIGHTS_FD_SYNC: Rights = 0x10;
 /// The right to invoke `fd_seek` in such a way that the file offset
-/// remains unaltered (i.e., `whence::cur` with offset zero), or to
+/// remains unaltered (i.e., `WHENCE_CUR` with offset zero), or to
 /// invoke `fd_tell`.
 pub const RIGHTS_FD_TELL: Rights = 0x20;
 /// The right to invoke `fd_write` and `sock_send`.
@@ -332,7 +332,7 @@ pub const RIGHTS_POLL_FD_READWRITE: Rights = 0x8000000;
 pub const RIGHTS_SOCK_SHUTDOWN: Rights = 0x10000000;
 pub type Fd = u32;
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct Iovec {
     /// The address of the buffer to be filled.
     pub buf: *mut u8,
@@ -340,7 +340,7 @@ pub struct Iovec {
     pub buf_len: Size,
 }
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct Ciovec {
     /// The address of the buffer to be written.
     pub buf: *const u8,
@@ -378,7 +378,7 @@ pub const FILETYPE_SOCKET_STREAM: Filetype = 6;
 /// The file refers to a symbolic link inode.
 pub const FILETYPE_SYMBOLIC_LINK: Filetype = 7;
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct Dirent {
     /// The offset of the next directory entry stored in this directory.
     pub d_next: Dircookie,
@@ -416,7 +416,7 @@ pub const FDFLAGS_RSYNC: Fdflags = 0x8;
 /// may also synchronously update the file's metadata.
 pub const FDFLAGS_SYNC: Fdflags = 0x10;
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct Fdstat {
     /// File type.
     pub fs_filetype: Filetype,
@@ -430,13 +430,13 @@ pub struct Fdstat {
 }
 pub type Device = u64;
 pub type Fstflags = u16;
-/// Adjust the last data access timestamp to the value stored in `filestat::atim`.
+/// Adjust the last data access timestamp to the value stored in `filestat::st_atim`.
 pub const FSTFLAGS_ATIM: Fstflags = 0x1;
-/// Adjust the last data access timestamp to the time of clock `clockid::realtime`.
+/// Adjust the last data access timestamp to the time of clock `clock::realtime`.
 pub const FSTFLAGS_ATIM_NOW: Fstflags = 0x2;
-/// Adjust the last data modification timestamp to the value stored in `filestat::mtim`.
+/// Adjust the last data modification timestamp to the value stored in `filestat::st_mtim`.
 pub const FSTFLAGS_MTIM: Fstflags = 0x4;
-/// Adjust the last data modification timestamp to the time of clock `clockid::realtime`.
+/// Adjust the last data modification timestamp to the time of clock `clock::realtime`.
 pub const FSTFLAGS_MTIM_NOW: Fstflags = 0x8;
 pub type Lookupflags = u32;
 /// As long as the resolved path corresponds to a symbolic link, it is expanded.
@@ -452,7 +452,7 @@ pub const OFLAGS_EXCL: Oflags = 0x4;
 pub const OFLAGS_TRUNC: Oflags = 0x8;
 pub type Linkcount = u64;
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct Filestat {
     /// Device ID of device containing the file.
     pub dev: Device,
@@ -473,20 +473,20 @@ pub struct Filestat {
 }
 pub type Userdata = u64;
 pub type Eventtype = u8;
-/// The time value of clock `subscription_clock::id` has
-/// reached timestamp `subscription_clock::timeout`.
+/// The time value of clock `subscription::u.clock.clock_id` has
+/// reached timestamp `subscription::u.clock.timeout`.
 pub const EVENTTYPE_CLOCK: Eventtype = 0;
-/// File descriptor `subscription_fd_readwrite::file_descriptor` has data
+/// File descriptor `subscription::u.fd_readwrite.fd` has data
 /// available for reading. This event always triggers for regular files.
 pub const EVENTTYPE_FD_READ: Eventtype = 1;
-/// File descriptor `subscription_fd_readwrite::file_descriptor` has capacity
+/// File descriptor `subscription::u.fd_readwrite.fd` has capacity
 /// available for writing. This event always triggers for regular files.
 pub const EVENTTYPE_FD_WRITE: Eventtype = 2;
 pub type Eventrwflags = u16;
 /// The peer of this socket has closed or disconnected.
 pub const EVENTRWFLAGS_FD_READWRITE_HANGUP: Eventrwflags = 0x1;
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct EventFdReadwrite {
     /// The number of bytes available for reading or writing.
     pub nbytes: Filesize,
@@ -494,27 +494,32 @@ pub struct EventFdReadwrite {
     pub flags: Eventrwflags,
 }
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
+pub union EventU {
+    /// When type is `eventtype::fd_read` or `eventtype::fd_write`:
+    pub fd_readwrite: EventFdReadwrite,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct Event {
     /// User-provided value that got attached to `subscription::userdata`.
     pub userdata: Userdata,
     /// If non-zero, an error that occurred while processing the subscription request.
     pub error: Errno,
-    /// The type of event that occured
+    /// The type of the event that occurred.
     pub r#type: Eventtype,
-    /// The contents of the event, if it is an `eventtype::fd_read` or
-    /// `eventtype::fd_write`. `eventtype::clock` events ignore this field.
-    pub fd_readwrite: EventFdReadwrite,
+    /// The contents of the event.
+    pub u: EventU,
 }
 pub type Subclockflags = u16;
 /// If set, treat the timestamp provided in
-/// `subscription_clock::timeout` as an absolute timestamp of clock
-/// `subscription_clock::id`. If clear, treat the timestamp
-/// provided in `subscription_clock::timeout` relative to the
-/// current time value of clock `subscription_clock::id`.
+/// `subscription::u.clock.timeout` as an absolute timestamp of clock
+/// `subscription::u.clock.clock_id.` If clear, treat the timestamp
+/// provided in `subscription::u.clock.timeout` relative to the
+/// current time value of clock `subscription::u.clock.clock_id.`
 pub const SUBCLOCKFLAGS_SUBSCRIPTION_CLOCK_ABSTIME: Subclockflags = 0x1;
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct SubscriptionClock {
     /// The clock against which to compare the timestamp.
     pub id: Clockid,
@@ -527,32 +532,28 @@ pub struct SubscriptionClock {
     pub flags: Subclockflags,
 }
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct SubscriptionFdReadwrite {
     /// The file descriptor on which to wait for it to become ready for reading or writing.
     pub file_descriptor: Fd,
 }
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub union SubscriptionUU {
+pub union SubscriptionU {
+    /// When type is `eventtype::clock`:
     pub clock: SubscriptionClock,
-    pub fd_read: SubscriptionFdReadwrite,
-    pub fd_write: SubscriptionFdReadwrite,
+    /// When type is `eventtype::fd_read` or `eventtype::fd_write`:
+    pub fd_readwrite: SubscriptionFdReadwrite,
 }
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct SubscriptionU {
-    pub tag: Eventtype,
-    pub u: SubscriptionUU,
-}
-
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Subscription {
     /// User-provided value that is attached to the subscription in the
     /// implementation and returned through `event::userdata`.
     pub userdata: Userdata,
-    /// The type of the event to which to subscribe, and its contents
+    /// The type of the event to which to subscribe.
+    pub r#type: Eventtype,
+    /// The contents of the subscription.
     pub u: SubscriptionU,
 }
 pub type Exitcode = u32;
@@ -668,7 +669,7 @@ pub type Preopentype = u8;
 /// A pre-opened directory.
 pub const PREOPENTYPE_DIR: Preopentype = 0;
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct PrestatDir {
     /// The length of the directory name for use with `fd_prestat_dir_name`.
     pub pr_name_len: Size,
@@ -676,17 +677,19 @@ pub struct PrestatDir {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union PrestatU {
+    /// When type is `preopentype::dir`:
     pub dir: PrestatDir,
 }
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Prestat {
-    pub tag: Preopentype,
+    /// The type of the pre-opened capability.
+    pub pr_type: Preopentype,
+    /// The contents of the information.
     pub u: PrestatU,
 }
-
 /// Read command-line argument data.
-/// The size of the array should match that returned by `args_sizes_get`
+/// The size of the array should match that returned by `wasi_args_sizes_get()`
 pub unsafe fn args_get(argv: *mut *mut u8, argv_buf: *mut u8) -> Result<()> {
     let rc = wasi_snapshot_preview1::args_get(argv, argv_buf);
     if let Some(err) = Error::from_raw_error(rc) {
@@ -714,7 +717,7 @@ pub unsafe fn args_sizes_get() -> Result<(Size, Size)> {
 }
 
 /// Read environment variable data.
-/// The sizes of the buffers should match that returned by `environ_sizes_get`.
+/// The sizes of the buffers should match that returned by `environ.sizes_get()`.
 pub unsafe fn environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> Result<()> {
     let rc = wasi_snapshot_preview1::environ_get(environ, environ_buf);
     if let Some(err) = Error::from_raw_error(rc) {
@@ -724,29 +727,26 @@ pub unsafe fn environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> Result
     }
 }
 
-/// Return environment variable data sizes.
+/// Return command-line argument data sizes.
 ///
 /// ## Return
 ///
-/// * `environc` - The number of environment variable arguments.
-/// * `environ_buf_size` - The size of the environment variable data.
+/// * `argc` - The number of arguments.
+/// * `argv_buf_size` - The size of the argument string data.
 pub unsafe fn environ_sizes_get() -> Result<(Size, Size)> {
-    let mut environc = MaybeUninit::uninit();
-    let mut environ_buf_size = MaybeUninit::uninit();
-    let rc = wasi_snapshot_preview1::environ_sizes_get(
-        environc.as_mut_ptr(),
-        environ_buf_size.as_mut_ptr(),
-    );
+    let mut argc = MaybeUninit::uninit();
+    let mut argv_buf_size = MaybeUninit::uninit();
+    let rc =
+        wasi_snapshot_preview1::environ_sizes_get(argc.as_mut_ptr(), argv_buf_size.as_mut_ptr());
     if let Some(err) = Error::from_raw_error(rc) {
         Err(err)
     } else {
-        Ok((environc.assume_init(), environ_buf_size.assume_init()))
+        Ok((argc.assume_init(), argv_buf_size.assume_init()))
     }
 }
 
 /// Return the resolution of a clock.
-/// Implementations are required to provide a non-zero value for supported clocks. For unsupported clocks,
-/// return `errno::inval`.
+/// Implementations are required to provide a non-zero value for supported clocks. For unsupported clocks, return `WASI_EINVAL`
 /// Note: This is similar to `clock_getres` in POSIX.
 ///
 /// ## Parameters
@@ -874,7 +874,7 @@ pub unsafe fn fd_fdstat_set_flags(fd: Fd, flags: Fdflags) -> Result<()> {
 }
 
 /// Adjust the rights associated with a file descriptor.
-/// This can only be used to remove rights, and returns `errno::notcapable` if called in a way that would attempt to add rights
+/// This can only be used to remove rights, and returns `ENOTCAPABLE` if called in a way that would attempt to add rights
 ///
 /// ## Parameters
 ///
@@ -1279,7 +1279,7 @@ pub unsafe fn path_link(
 ///
 /// * `dirflags` - Flags determining the method of how the path is resolved.
 /// * `path` - The relative path of the file or directory to open, relative to the
-///   `path_open::fd` directory.
+///   `dirfd` directory.
 /// * `oflags` - The method by which to open the file.
 /// * `fs_rights_base` - The initial rights of the newly created file descriptor. The
 ///   implementation is allowed to return a file descriptor with fewer rights
@@ -1349,7 +1349,7 @@ pub unsafe fn path_readlink(fd: Fd, path: &str, buf: *mut u8, buf_len: Size) -> 
 }
 
 /// Remove a directory.
-/// Return `errno::notempty` if the directory is not empty.
+/// Return `ENOTEMPTY` if the directory is not empty.
 /// Note: This is similar to `unlinkat(fd, path, AT_REMOVEDIR)` in POSIX.
 ///
 /// ## Parameters
@@ -1411,7 +1411,7 @@ pub unsafe fn path_symlink(old_path: &str, fd: Fd, new_path: &str) -> Result<()>
 }
 
 /// Unlink a file.
-/// Return `errno::isdir` if the path refers to a directory.
+/// Return `EISDIR` if the path refers to a directory.
 /// Note: This is similar to `unlinkat(fd, path, 0)` in POSIX.
 ///
 /// ## Parameters
@@ -1586,18 +1586,17 @@ pub mod wasi_snapshot_preview1 {
     #[link(wasm_import_module = "wasi_snapshot_preview1")]
     extern "C" {
         /// Read command-line argument data.
-        /// The size of the array should match that returned by `args_sizes_get`
+        /// The size of the array should match that returned by `wasi_args_sizes_get()`
         pub fn args_get(argv: *mut *mut u8, argv_buf: *mut u8) -> Errno;
         /// Return command-line argument data sizes.
         pub fn args_sizes_get(argc: *mut Size, argv_buf_size: *mut Size) -> Errno;
         /// Read environment variable data.
-        /// The sizes of the buffers should match that returned by `environ_sizes_get`.
+        /// The sizes of the buffers should match that returned by `environ.sizes_get()`.
         pub fn environ_get(environ: *mut *mut u8, environ_buf: *mut u8) -> Errno;
-        /// Return environment variable data sizes.
-        pub fn environ_sizes_get(environc: *mut Size, environ_buf_size: *mut Size) -> Errno;
+        /// Return command-line argument data sizes.
+        pub fn environ_sizes_get(argc: *mut Size, argv_buf_size: *mut Size) -> Errno;
         /// Return the resolution of a clock.
-        /// Implementations are required to provide a non-zero value for supported clocks. For unsupported clocks,
-        /// return `errno::inval`.
+        /// Implementations are required to provide a non-zero value for supported clocks. For unsupported clocks, return `WASI_EINVAL`
         /// Note: This is similar to `clock_getres` in POSIX.
         pub fn clock_res_get(id: Clockid, resolution: *mut Timestamp) -> Errno;
         /// Return the time value of a clock.
@@ -1622,7 +1621,7 @@ pub mod wasi_snapshot_preview1 {
         /// Note: This is similar to `fcntl(fd, F_SETFL, flags)` in POSIX.
         pub fn fd_fdstat_set_flags(fd: Fd, flags: Fdflags) -> Errno;
         /// Adjust the rights associated with a file descriptor.
-        /// This can only be used to remove rights, and returns `errno::notcapable` if called in a way that would attempt to add rights
+        /// This can only be used to remove rights, and returns `ENOTCAPABLE` if called in a way that would attempt to add rights
         pub fn fd_fdstat_set_rights(
             fd: Fd,
             fs_rights_base: Rights,
@@ -1776,7 +1775,7 @@ pub mod wasi_snapshot_preview1 {
             bufused: *mut Size,
         ) -> Errno;
         /// Remove a directory.
-        /// Return `errno::notempty` if the directory is not empty.
+        /// Return `ENOTEMPTY` if the directory is not empty.
         /// Note: This is similar to `unlinkat(fd, path, AT_REMOVEDIR)` in POSIX.
         pub fn path_remove_directory(fd: Fd, path_ptr: *const u8, path_len: usize) -> Errno;
         /// Rename a file or directory.
@@ -1799,7 +1798,7 @@ pub mod wasi_snapshot_preview1 {
             new_path_len: usize,
         ) -> Errno;
         /// Unlink a file.
-        /// Return `errno::isdir` if the path refers to a directory.
+        /// Return `EISDIR` if the path refers to a directory.
         /// Note: This is similar to `unlinkat(fd, path, 0)` in POSIX.
         pub fn path_unlink_file(fd: Fd, path_ptr: *const u8, path_len: usize) -> Errno;
         /// Concurrently poll for the occurrence of a set of events.

@@ -41,7 +41,7 @@ For the second group, the change would be subjected to quite a bit of scrutiny a
 The new API needs to be right (or at least easy to change later).
 The actual implementation doesn't matter that much.
 It's very important to minimize the amount of changed lines of code for changes of the second kind.
-Often, you start doing a change of the first kind, only to realise that you need to elevate to a change of the second kind.
+Often, you start doing a change of the first kind, only to realize that you need to elevate to a change of the second kind.
 In this case, we'll probably ask you to split API changes into a separate PR.
 
 Changes of the third group should be pretty rare, so we don't specify any specific process for them.
@@ -91,8 +91,8 @@ But many users read changelogs.
 We don't enforce Clippy.
 A number of default lints have high false positive rate.
 Selectively patching false-positives with `allow(clippy)` is considered worse than not using Clippy at all.
-There's `cargo xtask lint` command which runs a subset of low-FPR lints.
-Careful tweaking of `xtask lint` is welcome.
+There's a `cargo lint` command which runs a subset of low-FPR lints.
+Careful tweaking of `lint` is welcome.
 Of course, applying Clippy suggestions is welcome as long as they indeed improve the code.
 
 **Rationale:** see [rust-lang/clippy#5537](https://github.com/rust-lang/rust-clippy/issues/5537).
@@ -102,7 +102,7 @@ Of course, applying Clippy suggestions is welcome as long as they indeed improve
 ## Minimal Tests
 
 Most tests in rust-analyzer start with a snippet of Rust code.
-This snippets should be minimal -- if you copy-paste a snippet of real code into the tests, make sure to remove everything which could be removed.
+These snippets should be minimal -- if you copy-paste a snippet of real code into the tests, make sure to remove everything which could be removed.
 
 It also makes sense to format snippets more compactly (for example, by placing enum definitions like `enum E { Foo, Bar }` on a single line),
 as long as they are still readable.
@@ -145,7 +145,7 @@ Formatting ensures that you can use your editor's "number of selected characters
 ## Marked Tests
 
 Use
-[`mark::hit! / mark::check!`](https://github.com/rust-analyzer/rust-analyzer/blob/71fe719dd5247ed8615641d9303d7ca1aa201c2f/crates/test_utils/src/mark.rs)
+[`cov_mark::hit! / cov_mark::check!`](https://github.com/matklad/cov-mark)
 when testing specific conditions.
 Do not place several marks into a single test or condition.
 Do not reuse marks between several tests.
@@ -159,7 +159,7 @@ Express function preconditions in types and force the caller to provide them (ra
 
 ```rust
 // GOOD
-fn frbonicate(walrus: Walrus) {
+fn frobnicate(walrus: Walrus) {
     ...
 }
 
@@ -227,7 +227,7 @@ if idx >= len {
 }
 ```
 
-**Rationale:** its useful to see the invariant relied upon by the rest of the function clearly spelled out.
+**Rationale:** it's useful to see the invariant relied upon by the rest of the function clearly spelled out.
 
 ## Assertions
 
@@ -266,6 +266,20 @@ impl Person {
 Non-local code properties degrade under change, privacy makes invariant local.
 Borrowed own data discloses irrelevant details about origin of data.
 Irrelevant (neither right nor wrong) things obscure correctness.
+
+## Useless Types
+
+More generally, always prefer types on the left
+
+```rust
+// GOOD      BAD
+&[T]         &Vec<T>
+&str         &String
+Option<&T>   &Option<T>
+```
+
+**Rationale:** types on the left are strictly more general.
+Even when generality is not required, consistency is important.
 
 ## Constructors
 
@@ -354,13 +368,73 @@ impl ThingDoer {
 
 **Rationale:** not bothering the caller with irrelevant details, not mixing user API with implementor API.
 
+## Functions with many parameters
+
+Avoid creating functions with many optional or boolean parameters.
+Introduce a `Config` struct instead.
+
+```rust
+// GOOD
+pub struct AnnotationConfig {
+    pub binary_target: bool,
+    pub annotate_runnables: bool,
+    pub annotate_impls: bool,
+}
+
+pub fn annotations(
+    db: &RootDatabase,
+    file_id: FileId,
+    config: AnnotationConfig
+) -> Vec<Annotation> {
+    ...
+}
+
+// BAD
+pub fn annotations(
+    db: &RootDatabase,
+    file_id: FileId,
+    binary_target: bool,
+    annotate_runnables: bool,
+    annotate_impls: bool,
+) -> Vec<Annotation> {
+    ...
+}
+```
+
+**Rationale:** reducing churn.
+If the function has many parameters, they most likely change frequently.
+By packing them into a struct we protect all intermediary functions from changes.
+
+Do not implement `Default` for the `Config` struct, the caller has more context to determine better defaults.
+Do not store `Config` as a part of the `state`, pass it explicitly.
+This gives more flexibility for the caller.
+
+If there is variation not only in the input parameters, but in the return type as well, consider introducing a `Command` type.
+
+```rust
+// MAYBE GOOD
+pub struct Query {
+    pub name: String,
+    pub case_sensitive: bool,
+}
+
+impl Query {
+    pub fn all(self) -> Vec<Item> { ... }
+    pub fn first(self) -> Option<Item> { ... }
+}
+
+// MAYBE BAD
+fn query_all(name: String, case_sensitive: bool) -> Vec<Item> { ... }
+fn query_first(name: String, case_sensitive: bool) -> Option<Item> { ... }
+```
+
 ## Avoid Monomorphization
 
 Avoid making a lot of code type parametric, *especially* on the boundaries between crates.
 
 ```rust
 // GOOD
-fn frbonicate(f: impl FnMut()) {
+fn frobnicate(f: impl FnMut()) {
     frobnicate_impl(&mut f)
 }
 fn frobnicate_impl(f: &mut dyn FnMut()) {
@@ -368,7 +442,7 @@ fn frobnicate_impl(f: &mut dyn FnMut()) {
 }
 
 // BAD
-fn frbonicate(f: impl FnMut()) {
+fn frobnicate(f: impl FnMut()) {
     // lots of code
 }
 ```
@@ -377,11 +451,11 @@ Avoid `AsRef` polymorphism, it pays back only for widely used libraries:
 
 ```rust
 // GOOD
-fn frbonicate(f: &Path) {
+fn frobnicate(f: &Path) {
 }
 
 // BAD
-fn frbonicate(f: impl AsRef<Path>) {
+fn frobnicate(f: impl AsRef<Path>) {
 }
 ```
 
@@ -691,18 +765,24 @@ fn foo() -> Option<Bar> {
 }
 ```
 
-**Rationale:** reduce congnitive stack usage.
+**Rationale:** reduce cognitive stack usage.
 
 ## Comparisons
 
-Use `<`/`<=`, avoid `>`/`>=`.
+When doing multiple comparisons use `<`/`<=`, avoid `>`/`>=`.
 
 ```rust
 // GOOD
 assert!(lo <= x && x <= hi);
+assert!(r1 < l2 || r2 < l1);
+assert!(x < y);
+assert!(x > 0);
 
 // BAD
 assert!(x >= lo && x <= hi>);
+assert!(r1 < l2 || l1 > r2);
+assert!(y > x);
+assert!(0 > x);
 ```
 
 **Rationale:** Less-then comparisons are more intuitive, they correspond spatially to [real line](https://en.wikipedia.org/wiki/Real_line).

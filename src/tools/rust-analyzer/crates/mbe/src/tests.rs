@@ -6,7 +6,7 @@ use syntax::{
     SyntaxKind::{ERROR, IDENT},
     SyntaxNode, WalkEvent, T,
 };
-use test_utils::{assert_eq_text, mark};
+use test_utils::assert_eq_text;
 
 use super::*;
 
@@ -457,6 +457,17 @@ fn test_match_group_with_multichar_sep() {
 }
 
 #[test]
+fn test_match_group_with_multichar_sep2() {
+    parse_macro(
+        r#"
+        macro_rules! foo {
+            (fn $name:ident {$($i:literal)&&*} ) => ( fn $name() -> bool { $($i)&&*} );
+        }"#,
+    )
+    .assert_expand_items("foo! (fn baz {true && true} );", "fn baz () -> bool {true &&true}");
+}
+
+#[test]
 fn test_match_group_zero_match() {
     parse_macro(
         r#"
@@ -676,7 +687,7 @@ fn test_match_literal() {
 
 #[test]
 fn test_parse_macro_def_simple() {
-    mark::check!(parse_macro_def_simple);
+    cov_mark::check!(parse_macro_def_simple);
 
     parse_macro2(
         r#"
@@ -690,7 +701,7 @@ macro foo($id:ident) {
 
 #[test]
 fn test_parse_macro_def_rules() {
-    mark::check!(parse_macro_def_rules);
+    cov_mark::check!(parse_macro_def_rules);
 
     parse_macro2(
         r#"
@@ -943,7 +954,8 @@ fn test_meta() {
     .assert_expand_items(
         r#"foo! { cfg(target_os = "windows") }"#,
         r#"# [cfg (target_os = "windows")] fn bar () {}"#,
-    );
+    )
+    .assert_expand_items(r#"foo! { hello::world }"#, r#"# [hello :: world] fn bar () {}"#);
 }
 
 #[test]
@@ -966,6 +978,29 @@ fn test_meta_doc_comments() {
             */
         }"#,
         "# [doc = \" Single Line Doc 1\"] # [doc = \"\\\\n                MultiLines Doc\\\\n            \"] fn bar () {}",
+    );
+}
+
+#[test]
+fn test_meta_doc_comments_non_latin() {
+    parse_macro(
+        r#"
+        macro_rules! foo {
+            ($(#[$ i:meta])+) => (
+                $(#[$ i])+
+                fn bar() {}
+            )
+        }
+"#,
+    ).
+    assert_expand_items(
+        r#"foo! {
+            /// 錦瑟無端五十弦，一弦一柱思華年。
+            /**
+                莊生曉夢迷蝴蝶，望帝春心託杜鵑。
+            */
+        }"#,
+        "# [doc = \" 錦瑟無端五十弦，一弦一柱思華年。\"] # [doc = \"\\\\n                莊生曉夢迷蝴蝶，望帝春心託杜鵑。\\\\n            \"] fn bar () {}",
     );
 }
 
@@ -1242,6 +1277,18 @@ macro_rules! m {
     .descendants()
     .find(|token| token.kind() == ERROR)
     .is_some());
+}
+
+#[test]
+fn test_match_is_not_greedy() {
+    parse_macro(
+        r#"
+macro_rules! foo {
+    ($($i:ident $(,)*),*) => {};
+}
+"#,
+    )
+    .assert_expand_items(r#"foo!(a,b);"#, r#""#);
 }
 
 // The following tests are based on real world situations

@@ -13,15 +13,29 @@ use vfs::{loader::Handle, AbsPath, AbsPathBuf};
 
 use crate::reload::{ProjectFolders, SourceRootConfig};
 
-pub fn load_cargo(
+pub struct LoadCargoConfig {
+    pub load_out_dirs_from_check: bool,
+    pub with_proc_macro: bool,
+}
+
+pub fn load_workspace_at(
     root: &Path,
-    load_out_dirs_from_check: bool,
-    with_proc_macro: bool,
-) -> Result<(AnalysisHost, vfs::Vfs)> {
+    cargo_config: &CargoConfig,
+    load_config: &LoadCargoConfig,
+    progress: &dyn Fn(String),
+) -> Result<(AnalysisHost, vfs::Vfs, Option<ProcMacroClient>)> {
     let root = AbsPathBuf::assert(std::env::current_dir()?.join(root));
     let root = ProjectManifest::discover_single(&root)?;
-    let ws = ProjectWorkspace::load(root, &CargoConfig::default(), &|_| {})?;
+    let workspace = ProjectWorkspace::load(root, cargo_config, progress)?;
 
+    load_workspace(workspace, load_config, progress)
+}
+
+pub fn load_workspace(
+    ws: ProjectWorkspace,
+    config: &LoadCargoConfig,
+    progress: &dyn Fn(String),
+) -> Result<(AnalysisHost, vfs::Vfs, Option<ProcMacroClient>)> {
     let (sender, receiver) = unbounded();
     let mut vfs = vfs::Vfs::default();
     let mut loader = {
@@ -30,17 +44,17 @@ pub fn load_cargo(
         Box::new(loader)
     };
 
-    let proc_macro_client = if with_proc_macro {
+    let proc_macro_client = if config.with_proc_macro {
         let path = std::env::current_exe()?;
         Some(ProcMacroClient::extern_process(path, &["proc-macro"]).unwrap())
     } else {
         None
     };
 
-    let build_data = if load_out_dirs_from_check {
+    let build_data = if config.load_out_dirs_from_check {
         let mut collector = BuildDataCollector::default();
         ws.collect_build_data_configs(&mut collector);
-        Some(collector.collect(&|_| {})?)
+        Some(collector.collect(progress)?)
     } else {
         None
     };
@@ -57,14 +71,19 @@ pub fn load_cargo(
     );
 
     let project_folders = ProjectFolders::new(&[ws], &[], build_data.as_ref());
-    loader.set_config(vfs::loader::Config { load: project_folders.load, watch: vec![] });
+    loader.set_config(vfs::loader::Config {
+        load: project_folders.load,
+        watch: vec![],
+        version: 0,
+    });
 
     log::debug!("crate graph: {:?}", crate_graph);
-    let host = load(crate_graph, project_folders.source_root_config, &mut vfs, &receiver);
-    Ok((host, vfs))
+    let host =
+        load_crate_graph(crate_graph, project_folders.source_root_config, &mut vfs, &receiver);
+    Ok((host, vfs, proc_macro_client))
 }
 
-fn load(
+fn load_crate_graph(
     crate_graph: CrateGraph,
     source_root_config: SourceRootConfig,
     vfs: &mut vfs::Vfs,
@@ -77,7 +96,7 @@ fn load(
     // wait until Vfs has loaded all roots
     for task in receiver {
         match task {
-            vfs::loader::Message::Progress { n_done, n_total } => {
+            vfs::loader::Message::Progress { n_done, n_total, config_version: _ } => {
                 if n_done == n_total {
                     break;
                 }
@@ -114,11 +133,18 @@ mod tests {
     use hir::Crate;
 
     #[test]
-    fn test_loading_rust_analyzer() {
+    fn test_loading_rust_analyzer() -> Result<()> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-        let (host, _vfs) = load_cargo(path, false, false).unwrap();
+        let cargo_config = Default::default();
+        let load_cargo_config =
+            LoadCargoConfig { load_out_dirs_from_check: false, with_proc_macro: false };
+        let (host, _vfs, _proc_macro) =
+            load_workspace_at(path, &cargo_config, &load_cargo_config, &|_| {})?;
+
         let n_crates = Crate::all(host.raw_database()).len();
         // RA has quite a few crates, but the exact count doesn't matter
         assert!(n_crates > 20);
+
+        Ok(())
     }
 }

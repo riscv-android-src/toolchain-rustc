@@ -6,15 +6,20 @@ description = "A guide to developing rustc"
 [build]
 create-missing = false
 
+[preprocessor.toc]
+command = "mdbook-toc"
+renderer = ["html"]
+
 [output.html]
 git-repository-url = "https://github.com/rust-lang/rustc-dev-guide"
 
 [output.html.fold]
 enable = true
-level = 1
+level = 0
 
 [output.linkcheck]
+command = "../../ci/linkcheck.sh"
 follow-web-links = true
-exclude = [ "crates\\.io", "gcc\\.godbolt\\.org", "youtube\\.com", "youtu\\.be", "dl\\.acm\\.org", "cs\\.bgu\\.ac\\.il" ]
-cache-timeout = 172800
+exclude = [ "crates\\.io", "gcc\\.godbolt\\.org", "youtube\\.com", "youtu\\.be", "dl\\.acm\\.org", "cs\\.bgu\\.ac\\.il", "www\\.amazon\\.com", "www\\.rustaceans\\.org", "play\\.rust-lang\\.org" ]
+cache-timeout = 86400
 warning-policy = "error"

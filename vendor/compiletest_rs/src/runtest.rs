@@ -9,10 +9,10 @@
 // except according to those terms.
 
 use common::{Config, TestPaths};
-use common::{UI_FIXED, UI_STDERR, UI_STDOUT};
+use common::{expected_output_path, UI_FIXED, UI_STDERR, UI_STDOUT};
 use common::{CompileFail, ParseFail, Pretty, RunFail, RunPass, RunPassValgrind};
 use common::{Codegen, DebugInfoLldb, DebugInfoGdb, Rustdoc, CodegenUnits};
-use common::{Incremental, RunMake, Ui, MirOpt};
+use common::{Incremental, RunMake, Ui, MirOpt, Assembly};
 use diff;
 use errors::{self, ErrorKind, Error};
 use filetime::FileTime;
@@ -20,7 +20,7 @@ use json;
 use regex::Regex;
 use rustfix::{apply_suggestions, get_suggestions_from_json, Filter};
 use header::TestProps;
-use util::logv;
+use crate::util::{logv, PathBufExt};
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -142,6 +142,7 @@ impl<'test> TestCx<'test> {
             RunMake => self.run_rmake_test(),
             Ui => self.run_ui_test(),
             MirOpt => self.run_mir_opt_test(),
+            Assembly => self.run_assembly_test(),
         }
     }
 
@@ -1441,7 +1442,8 @@ actual:\n\
             Codegen |
             Rustdoc |
             RunMake |
-            CodegenUnits => {
+            CodegenUnits |
+            Assembly => {
                 // do not use JSON output
             }
         }
@@ -1712,10 +1714,35 @@ actual:\n\
         self.compose_and_run_compiler(rustc, None)
     }
 
-    fn check_ir_with_filecheck(&self) -> ProcRes {
-        let irfile = self.output_base_name().with_extension("ll");
+    fn compile_test_and_save_assembly(&self) -> (ProcRes, PathBuf) {
+        // This works with both `--emit asm` (as default output name for the assembly)
+        // and `ptx-linker` because the latter can write output at requested location.
+        let output_path = self.output_base_name().with_extension("s");
+
+        let output_file = TargetLocation::ThisFile(output_path.clone());
+        let mut rustc = self.make_compile_args(&self.testpaths.file, output_file, AllowUnused::No);
+
+        rustc.arg("-L").arg(self.aux_output_dir_name());
+
+        match self.props.assembly_output.as_ref().map(AsRef::as_ref) {
+            Some("emit-asm") => {
+                rustc.arg("--emit=asm");
+            }
+
+            Some("ptx-linker") => {
+                // No extra flags needed.
+            }
+
+            Some(_) => self.fatal("unknown 'assembly-output' header"),
+            None => self.fatal("missing 'assembly-output' header"),
+        }
+
+        (self.compose_and_run_compiler(rustc, None), output_path)
+    }
+
+    fn verify_with_filecheck(&self, output: &Path) -> ProcRes {
         let mut filecheck = Command::new(self.config.llvm_filecheck.as_ref().unwrap());
-        filecheck.arg("--input-file").arg(irfile)
+        filecheck.arg("--input-file").arg(output)
             .arg(&self.testpaths.file);
         self.compose_and_run(filecheck, "", None, None)
     }
@@ -1727,12 +1754,29 @@ actual:\n\
             self.fatal("missing --llvm-filecheck");
         }
 
-        let mut proc_res = self.compile_test_and_save_ir();
+        let proc_res = self.compile_test_and_save_ir();
         if !proc_res.status.success() {
             self.fatal_proc_rec("compilation failed!", &proc_res);
         }
 
-        proc_res = self.check_ir_with_filecheck();
+        let output_path = self.output_base_name().with_extension("ll");
+        let proc_res = self.verify_with_filecheck(&output_path);
+        if !proc_res.status.success() {
+            self.fatal_proc_rec("verification with 'FileCheck' failed", &proc_res);
+        }
+    }
+
+    fn run_assembly_test(&self) {
+        if self.config.llvm_filecheck.is_none() {
+            self.fatal("missing --llvm-filecheck");
+        }
+
+        let (proc_res, output_path) = self.compile_test_and_save_assembly();
+        if !proc_res.status.success() {
+            self.fatal_proc_rec("compilation failed!", &proc_res);
+        }
+
+        let proc_res = self.verify_with_filecheck(&output_path);
         if !proc_res.status.success() {
             self.fatal_proc_rec("verification with 'FileCheck' failed", &proc_res);
         }
@@ -2167,6 +2211,18 @@ actual:\n\
         // compiler flags set in the test cases:
         cmd.env_remove("RUSTFLAGS");
 
+        if self.config.bless {
+            cmd.env("RUSTC_BLESS_TEST", "--bless");
+            // Assume this option is active if the environment variable is "defined", with _any_ value.
+            // As an example, a `Makefile` can use this option by:
+            //
+            //   ifdef RUSTC_BLESS_TEST
+            //       cp "$(TMPDIR)"/actual_something.ext expected_something.ext
+            //   else
+            //       $(DIFF) expected_something.ext "$(TMPDIR)"/actual_something.ext
+            //   endif
+        }
+
         if self.config.target.contains("msvc") {
             // We need to pass a path to `lib.exe`, so assume that `cc` is `cl.exe`
             // and that `lib.exe` lives next to it.
@@ -2323,16 +2379,17 @@ actual:\n\
         }
 
         if errors > 0 {
-            println!("To update references, run this command from build directory:");
+            println!("To update references, rerun the tests and pass the `--bless` flag");
             let relative_path_to_file =
-                self.testpaths.relative_dir
-                              .join(self.testpaths.file.file_name().unwrap());
-            println!("{}/update-references.sh '{}' '{}'",
-                     self.config.src_base.display(),
-                     self.config.build_base.display(),
-                     relative_path_to_file.display());
-            self.fatal_proc_rec(&format!("{} errors occurred comparing output.", errors),
-                                &proc_res);
+                self.testpaths.relative_dir.join(self.testpaths.file.file_name().unwrap());
+            println!(
+                "To only update this specific test, also pass `--test-args {}`",
+                relative_path_to_file.display(),
+            );
+            self.fatal_proc_rec(
+                &format!("{} errors occurred comparing output.", errors),
+                &proc_res,
+            );
         }
 
         if self.props.run_pass {
@@ -2566,11 +2623,14 @@ actual:\n\
     }
 
     fn expected_output_path(&self, kind: &str) -> PathBuf {
-        let extension = match self.revision {
-            Some(r) => format!("{}.{}", r, kind),
-            None => kind.to_string(),
-        };
-        self.testpaths.file.with_extension(extension)
+        let mut path =
+            expected_output_path(&self.testpaths, self.revision, kind);
+
+        if !path.exists() {
+            path = expected_output_path(&self.testpaths, self.revision, kind);
+        }
+
+        path
     }
 
     fn load_expected_output(&self, path: &Path) -> String {
@@ -2594,35 +2654,68 @@ actual:\n\
         })
     }
 
+    fn delete_file(&self, file: &PathBuf) {
+        if !file.exists() {
+            // Deleting a nonexistant file would error.
+            return;
+        }
+        if let Err(e) = fs::remove_file(file) {
+            self.fatal(&format!("failed to delete `{}`: {}", file.display(), e,));
+        }
+    }
+
     fn compare_output(&self, kind: &str, actual: &str, expected: &str) -> usize {
         if actual == expected {
             return 0;
         }
 
-        println!("normalized {}:\n{}\n", kind, actual);
-        println!("expected {}:\n{}\n", kind, expected);
-        println!("diff of {}:\n", kind);
-
-        for diff in diff::lines(expected, actual) {
-            match diff {
-                diff::Result::Left(l)    => println!("-{}", l),
-                diff::Result::Both(l, _) => println!(" {}", l),
-                diff::Result::Right(r)   => println!("+{}", r),
+        if !self.config.bless {
+            if expected.is_empty() {
+                println!("normalized {}:\n{}\n", kind, actual);
+            } else {
+                println!("diff of {}:\n", kind);
+                for diff in diff::lines(expected, actual) {
+                    match diff {
+                        diff::Result::Left(l)    => println!("-{}", l),
+                        diff::Result::Both(l, _) => println!(" {}", l),
+                        diff::Result::Right(r)   => println!("+{}", r),
+                    }
+                }
             }
         }
 
-        let output_file = self.output_base_name().with_extension(kind);
-        match File::create(&output_file).and_then(|mut f| f.write_all(actual.as_bytes())) {
-            Ok(()) => { }
-            Err(e) => {
-                self.fatal(&format!("failed to write {} to `{}`: {}",
-                                    kind, output_file.display(), e))
+        let output_file = self
+            .output_base_name()
+            .with_extra_extension(self.revision.unwrap_or(""))
+            .with_extra_extension(kind);
+
+        let mut files = vec![output_file];
+        if self.config.bless {
+            files.push(expected_output_path(
+                self.testpaths,
+                self.revision,
+                kind,
+            ));
+        }
+
+        for output_file in &files {
+            if actual.is_empty() {
+                self.delete_file(output_file);
+            } else if let Err(err) = fs::write(&output_file, &actual) {
+                self.fatal(&format!(
+                    "failed to write {} to `{}`: {}",
+                    kind,
+                    output_file.display(),
+                    err,
+                ));
             }
         }
 
         println!("\nThe actual {0} differed from the expected {0}.", kind);
-        println!("Actual {} saved to {}", kind, output_file.display());
-        1
+        for output_file in files {
+            println!("Actual {} saved to {}", kind, output_file.display());
+        }
+        if self.config.bless { 0 } else { 1 }
     }
 }
 

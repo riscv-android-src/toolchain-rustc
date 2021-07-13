@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "mdbook"
-version = "0.4.6"
+version = "0.4.7"
 authors = ["Mathieu David <mathieudavid@mathieudavid.org>", "Michael-F-Bryan <michaelfbryan@gmail.com>", "Matt Ickstadt <mattico8@gmail.com>"]
 exclude = ["/guide/*"]
 description = "Creates a book from markdown files"
@@ -90,7 +90,7 @@ version = "1.0"
 version = "1.0"
 
 [dependencies.shlex]
-version = "0.1"
+version = "1"
 
 [dependencies.tempfile]
 version = "3.0"

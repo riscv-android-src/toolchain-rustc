@@ -55,20 +55,8 @@ impl IntoIterator for UsageSearchResult {
 #[derive(Debug, Clone)]
 pub struct FileReference {
     pub range: TextRange,
-    pub kind: ReferenceKind,
+    pub name: ast::NameLike,
     pub access: Option<ReferenceAccess>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ReferenceKind {
-    FieldShorthandForField,
-    FieldShorthandForLocal,
-    StructLiteral,
-    RecordFieldExprOrPat,
-    SelfParam,
-    EnumLiteral,
-    Lifetime,
-    Other,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -96,6 +84,10 @@ impl SearchScope {
 
     pub fn single_file(file: FileId) -> SearchScope {
         SearchScope::new(std::iter::once((file, None)).collect())
+    }
+
+    pub fn file_range(range: FileRange) -> SearchScope {
+        SearchScope::new(std::iter::once((range.file_id, Some(range.range))).collect())
     }
 
     pub fn files(files: &[FileId]) -> SearchScope {
@@ -288,6 +280,7 @@ impl<'a> FindUsages<'a> {
     pub fn in_scope(self, scope: SearchScope) -> FindUsages<'a> {
         self.set_scope(Some(scope))
     }
+
     pub fn set_scope(mut self, scope: Option<SearchScope>) -> FindUsages<'a> {
         assert!(self.scope.is_none());
         self.scope = scope;
@@ -333,7 +326,7 @@ impl<'a> FindUsages<'a> {
         for (file_id, search_range) in search_scope {
             let text = sema.db.file_text(file_id);
             let search_range =
-                search_range.unwrap_or(TextRange::up_to(TextSize::of(text.as_str())));
+                search_range.unwrap_or_else(|| TextRange::up_to(TextSize::of(text.as_str())));
 
             let tree = Lazy::new(|| sema.parse(file_id).syntax().clone());
 
@@ -343,18 +336,23 @@ impl<'a> FindUsages<'a> {
                     continue;
                 }
 
-                if let Some(name_ref) = sema.find_node_at_offset_with_descend(&tree, offset) {
-                    if self.found_name_ref(&name_ref, sink) {
-                        return;
-                    }
-                } else if let Some(name) = sema.find_node_at_offset_with_descend(&tree, offset) {
-                    if self.found_name(&name, sink) {
-                        return;
-                    }
-                } else if let Some(lifetime) = sema.find_node_at_offset_with_descend(&tree, offset)
-                {
-                    if self.found_lifetime(&lifetime, sink) {
-                        return;
+                if let Some(name) = sema.find_node_at_offset_with_descend(&tree, offset) {
+                    match name {
+                        ast::NameLike::NameRef(name_ref) => {
+                            if self.found_name_ref(&name_ref, sink) {
+                                return;
+                            }
+                        }
+                        ast::NameLike::Name(name) => {
+                            if self.found_name(&name, sink) {
+                                return;
+                            }
+                        }
+                        ast::NameLike::Lifetime(lifetime) => {
+                            if self.found_lifetime(&lifetime, sink) {
+                                return;
+                            }
+                        }
                     }
                 }
             }
@@ -369,8 +367,11 @@ impl<'a> FindUsages<'a> {
         match NameRefClass::classify_lifetime(self.sema, lifetime) {
             Some(NameRefClass::Definition(def)) if &def == self.def => {
                 let FileRange { file_id, range } = self.sema.original_range(lifetime.syntax());
-                let reference =
-                    FileReference { range, kind: ReferenceKind::Lifetime, access: None };
+                let reference = FileReference {
+                    range,
+                    name: ast::NameLike::Lifetime(lifetime.clone()),
+                    access: None,
+                };
                 sink(file_id, reference)
             }
             _ => false, // not a usage
@@ -384,19 +385,12 @@ impl<'a> FindUsages<'a> {
     ) -> bool {
         match NameRefClass::classify(self.sema, &name_ref) {
             Some(NameRefClass::Definition(def)) if &def == self.def => {
-                let kind = if is_record_field_expr_or_pat(&name_ref) {
-                    ReferenceKind::RecordFieldExprOrPat
-                } else if is_record_lit_name_ref(&name_ref) || is_call_expr_name_ref(&name_ref) {
-                    ReferenceKind::StructLiteral
-                } else if is_enum_lit_name_ref(&name_ref) {
-                    ReferenceKind::EnumLiteral
-                } else {
-                    ReferenceKind::Other
-                };
-
                 let FileRange { file_id, range } = self.sema.original_range(name_ref.syntax());
-                let reference =
-                    FileReference { range, kind, access: reference_access(&def, &name_ref) };
+                let reference = FileReference {
+                    range,
+                    name: ast::NameLike::NameRef(name_ref.clone()),
+                    access: reference_access(&def, &name_ref),
+                };
                 sink(file_id, reference)
             }
             Some(NameRefClass::FieldShorthand { local_ref: local, field_ref: field }) => {
@@ -404,12 +398,12 @@ impl<'a> FindUsages<'a> {
                 let reference = match self.def {
                     Definition::Field(_) if &field == self.def => FileReference {
                         range,
-                        kind: ReferenceKind::FieldShorthandForField,
+                        name: ast::NameLike::NameRef(name_ref.clone()),
                         access: reference_access(&field, &name_ref),
                     },
                     Definition::Local(l) if &local == l => FileReference {
                         range,
-                        kind: ReferenceKind::FieldShorthandForLocal,
+                        name: ast::NameLike::NameRef(name_ref.clone()),
                         access: reference_access(&Definition::Local(local), &name_ref),
                     },
                     _ => return false, // not a usage
@@ -426,17 +420,24 @@ impl<'a> FindUsages<'a> {
         sink: &mut dyn FnMut(FileId, FileReference) -> bool,
     ) -> bool {
         match NameClass::classify(self.sema, name) {
-            Some(NameClass::PatFieldShorthand { local_def: _, field_ref }) => {
-                if !matches!(self.def, Definition::Field(_) if &field_ref == self.def) {
-                    return false;
-                }
+            Some(NameClass::PatFieldShorthand { local_def: _, field_ref })
+                if matches!(
+                    self.def, Definition::Field(_) if &field_ref == self.def
+                ) =>
+            {
                 let FileRange { file_id, range } = self.sema.original_range(name.syntax());
                 let reference = FileReference {
                     range,
-                    kind: ReferenceKind::FieldShorthandForField,
+                    name: ast::NameLike::Name(name.clone()),
                     // FIXME: mutable patterns should have `Write` access
                     access: Some(ReferenceAccess::Read),
                 };
+                sink(file_id, reference)
+            }
+            Some(NameClass::ConstReference(def)) if *self.def == def => {
+                let FileRange { file_id, range } = self.sema.original_range(name.syntax());
+                let reference =
+                    FileReference { range, name: ast::NameLike::Name(name.clone()), access: None };
                 sink(file_id, reference)
             }
             _ => false, // not a usage
@@ -472,55 +473,4 @@ fn reference_access(def: &Definition, name_ref: &ast::NameRef) -> Option<Referen
 
     // Default Locals and Fields to read
     mode.or(Some(ReferenceAccess::Read))
-}
-
-fn is_call_expr_name_ref(name_ref: &ast::NameRef) -> bool {
-    name_ref
-        .syntax()
-        .ancestors()
-        .find_map(ast::CallExpr::cast)
-        .and_then(|c| match c.expr()? {
-            ast::Expr::PathExpr(p) => {
-                Some(p.path()?.segment()?.name_ref().as_ref() == Some(name_ref))
-            }
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
-fn is_record_lit_name_ref(name_ref: &ast::NameRef) -> bool {
-    name_ref
-        .syntax()
-        .ancestors()
-        .find_map(ast::RecordExpr::cast)
-        .and_then(|l| l.path())
-        .and_then(|p| p.segment())
-        .map(|p| p.name_ref().as_ref() == Some(name_ref))
-        .unwrap_or(false)
-}
-
-fn is_record_field_expr_or_pat(name_ref: &ast::NameRef) -> bool {
-    if let Some(parent) = name_ref.syntax().parent() {
-        match_ast! {
-            match parent {
-                ast::RecordExprField(it) => true,
-                ast::RecordPatField(_it) => true,
-                _ => false,
-            }
-        }
-    } else {
-        false
-    }
-}
-
-fn is_enum_lit_name_ref(name_ref: &ast::NameRef) -> bool {
-    name_ref
-        .syntax()
-        .ancestors()
-        .find_map(ast::PathExpr::cast)
-        .and_then(|p| p.path())
-        .and_then(|p| p.qualifier())
-        .and_then(|p| p.segment())
-        .map(|p| p.name_ref().as_ref() == Some(name_ref))
-        .unwrap_or(false)
 }

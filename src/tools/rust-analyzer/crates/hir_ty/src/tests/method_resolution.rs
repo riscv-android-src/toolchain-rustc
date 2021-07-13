@@ -913,7 +913,7 @@ fn test() { S2.into(); }
 
 #[test]
 fn method_resolution_overloaded_method() {
-    test_utils::mark::check!(impl_self_type_match_without_receiver);
+    cov_mark::check!(impl_self_type_match_without_receiver);
     check_types(
         r#"
 struct Wrapper<T>(T);
@@ -952,6 +952,51 @@ trait FnOnce { fn call(self); }
 fn test() { foo.call(); }
                    //^ {unknown}
 "#,
+    );
+}
+
+#[test]
+fn super_trait_impl_return_trait_method_resolution() {
+    check_infer(
+        r#"
+        trait Base {
+            fn foo(self) -> usize;
+        }
+
+        trait Super : Base {}
+
+        fn base1() -> impl Base { loop {} }
+        fn super1() -> impl Super { loop {} }
+
+        fn test(base2: impl Base, super2: impl Super) {
+            base1().foo();
+            super1().foo();
+            base2.foo();
+            super2.foo();
+        }
+        "#,
+        expect![[r#"
+            24..28 'self': Self
+            90..101 '{ loop {} }': !
+            92..99 'loop {}': !
+            97..99 '{}': ()
+            128..139 '{ loop {} }': !
+            130..137 'loop {}': !
+            135..137 '{}': ()
+            149..154 'base2': impl Base
+            167..173 'super2': impl Super
+            187..264 '{     ...o(); }': ()
+            193..198 'base1': fn base1() -> impl Base
+            193..200 'base1()': impl Base
+            193..206 'base1().foo()': usize
+            212..218 'super1': fn super1() -> impl Super
+            212..220 'super1()': impl Super
+            212..226 'super1().foo()': usize
+            232..237 'base2': impl Base
+            232..243 'base2.foo()': usize
+            249..255 'super2': impl Super
+            249..261 'super2.foo()': usize
+        "#]],
     );
 }
 
@@ -1103,6 +1148,28 @@ fn main() {
     let foo: Slice<u32>;
     (foo.into_vec()); // we don't actually support arbitrary self types, but we shouldn't crash at least
 } //^ {unknown}
+"#,
+    );
+}
+
+#[test]
+fn method_on_dyn_impl() {
+    check_types(
+        r#"
+trait Foo {}
+
+impl Foo for u32 {}
+impl dyn Foo + '_ {
+    pub fn dyn_foo(&self) -> u32 {
+        0
+    }
+}
+
+fn main() {
+    let f = &42u32 as &dyn Foo;
+    f.dyn_foo();
+  // ^u32
+}
 "#,
     );
 }

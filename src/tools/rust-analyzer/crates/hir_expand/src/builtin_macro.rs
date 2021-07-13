@@ -5,8 +5,9 @@ use crate::{
 };
 
 use base_db::{AnchoredPath, FileId};
+use cfg::CfgExpr;
 use either::Either;
-use mbe::{parse_to_token_tree, ExpandResult};
+use mbe::{parse_exprs_with_sep, parse_to_token_tree, ExpandResult};
 use parser::FragmentKind;
 use syntax::ast::{self, AstToken};
 
@@ -97,6 +98,7 @@ register_builtin! {
     (format_args_nl, FormatArgsNl) => format_args_expand,
     (llvm_asm, LlvmAsm) => asm_expand,
     (asm, Asm) => asm_expand,
+    (cfg, Cfg) => cfg_expand,
 
     EAGER:
     (compile_error, CompileError) => compile_error_expand,
@@ -182,25 +184,10 @@ fn assert_expand(
     // ```,
     // which is wrong but useful.
 
-    let mut args = Vec::new();
-    let mut current = Vec::new();
-    for tt in tt.token_trees.iter().cloned() {
-        match tt {
-            tt::TokenTree::Leaf(tt::Leaf::Punct(p)) if p.char == ',' => {
-                args.push(current);
-                current = Vec::new();
-            }
-            _ => {
-                current.push(tt);
-            }
-        }
-    }
-    if !current.is_empty() {
-        args.push(current);
-    }
+    let args = parse_exprs_with_sep(tt, ',');
 
     let arg_tts = args.into_iter().flat_map(|arg| {
-        quote! { &(##arg), }
+        quote! { &(#arg), }
     }.token_trees).collect::<Vec<_>>();
 
     let expanded = quote! {
@@ -238,35 +225,21 @@ fn format_args_expand(
     // ])
     // ```,
     // which is still not really correct, but close enough for now
-    let mut args = Vec::new();
-    let mut current = Vec::new();
-    for tt in tt.token_trees.iter().cloned() {
-        match tt {
-            tt::TokenTree::Leaf(tt::Leaf::Punct(p)) if p.char == ',' => {
-                args.push(current);
-                current = Vec::new();
-            }
-            _ => {
-                current.push(tt);
-            }
-        }
-    }
-    if !current.is_empty() {
-        args.push(current);
-    }
+    let mut args = parse_exprs_with_sep(tt, ',');
+
     if args.is_empty() {
         return ExpandResult::only_err(mbe::ExpandError::NoMatchingRule);
     }
     for arg in &mut args {
         // Remove `key =`.
-        if matches!(arg.get(1), Some(tt::TokenTree::Leaf(tt::Leaf::Punct(p))) if p.char == '=' && p.spacing != tt::Spacing::Joint)
+        if matches!(arg.token_trees.get(1), Some(tt::TokenTree::Leaf(tt::Leaf::Punct(p))) if p.char == '=' && p.spacing != tt::Spacing::Joint)
         {
-            arg.drain(..2);
+            arg.token_trees.drain(..2);
         }
     }
     let _format_string = args.remove(0);
     let arg_tts = args.into_iter().flat_map(|arg| {
-        quote! { std::fmt::ArgumentV1::new(&(##arg), std::fmt::Display::fmt), }
+        quote! { std::fmt::ArgumentV1::new(&(#arg), std::fmt::Display::fmt), }
     }.token_trees).collect::<Vec<_>>();
     let expanded = quote! {
         std::fmt::Arguments::new_v1(&[], &[##arg_tts])
@@ -284,6 +257,18 @@ fn asm_expand(
     let expanded = quote! {
         ()
     };
+    ExpandResult::ok(expanded)
+}
+
+fn cfg_expand(
+    db: &dyn AstDatabase,
+    id: LazyMacroId,
+    tt: &tt::Subtree,
+) -> ExpandResult<tt::Subtree> {
+    let loc = db.lookup_intern_macro(id);
+    let expr = CfgExpr::parse(tt);
+    let enabled = db.crate_graph()[loc.krate].cfg_options.check(&expr) != Some(false);
+    let expanded = if enabled { quote!(true) } else { quote!(false) };
     ExpandResult::ok(expanded)
 }
 
@@ -506,6 +491,7 @@ mod tests {
         MacroCallLoc,
     };
     use base_db::{fixture::WithFixture, SourceDatabase};
+    use expect_test::{expect, Expect};
     use std::sync::Arc;
     use syntax::ast::NameOwner;
 
@@ -589,87 +575,86 @@ mod tests {
         db.parse_or_expand(file_id).unwrap().to_string()
     }
 
+    fn check_expansion(ra_fixture: &str, expect: Expect) {
+        let expansion = expand_builtin_macro(ra_fixture);
+        expect.assert_eq(&expansion);
+    }
+
     #[test]
     fn test_column_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! column {() => {}}
             column!()
             "#,
+            expect![["0"]],
         );
-
-        assert_eq!(expanded, "0");
     }
 
     #[test]
     fn test_line_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! line {() => {}}
             line!()
             "#,
+            expect![["0"]],
         );
-
-        assert_eq!(expanded, "0");
     }
 
     #[test]
     fn test_stringify_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! stringify {() => {}}
             stringify!(a b c)
             "#,
+            expect![["\"a b c\""]],
         );
-
-        assert_eq!(expanded, "\"a b c\"");
     }
 
     #[test]
     fn test_env_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! env {() => {}}
             env!("TEST_ENV_VAR")
             "#,
+            expect![["\"__RA_UNIMPLEMENTED__\""]],
         );
-
-        assert_eq!(expanded, "\"__RA_UNIMPLEMENTED__\"");
     }
 
     #[test]
     fn test_option_env_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! option_env {() => {}}
             option_env!("TEST_ENV_VAR")
             "#,
+            expect![["std::option::Option::None:: < &str>"]],
         );
-
-        assert_eq!(expanded, "std::option::Option::None:: < &str>");
     }
 
     #[test]
     fn test_file_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! file {() => {}}
             file!()
             "#,
+            expect![[r#""""#]],
         );
-
-        assert_eq!(expanded, "\"\"");
     }
 
     #[test]
     fn test_assert_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! assert {
@@ -678,14 +663,13 @@ mod tests {
             }
             assert!(true, "{} {:?}", arg1(a, b, c), arg2);
             "#,
+            expect![["{{(&(true), &(\"{} {:?}\"), &(arg1(a,b,c)), &(arg2),);}}"]],
         );
-
-        assert_eq!(expanded, "{{(&(true), &(\"{} {:?}\"), &(arg1(a,b,c)), &(arg2),);}}");
     }
 
     #[test]
     fn test_compile_error_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! compile_error {
@@ -694,15 +678,14 @@ mod tests {
             }
             compile_error!("error!");
             "#,
+            // This expands to nothing (since it's in item position), but emits an error.
+            expect![[""]],
         );
-
-        // This expands to nothing (since it's in item position), but emits an error.
-        assert_eq!(expanded, "");
     }
 
     #[test]
     fn test_format_args_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! format_args {
@@ -711,17 +694,32 @@ mod tests {
             }
             format_args!("{} {:?}", arg1(a, b, c), arg2);
             "#,
+            expect![[
+                r#"std::fmt::Arguments::new_v1(&[], &[std::fmt::ArgumentV1::new(&(arg1(a,b,c)),std::fmt::Display::fmt),std::fmt::ArgumentV1::new(&(arg2),std::fmt::Display::fmt),])"#
+            ]],
         );
+    }
 
-        assert_eq!(
-            expanded,
-            r#"std::fmt::Arguments::new_v1(&[], &[std::fmt::ArgumentV1::new(&(arg1(a,b,c)),std::fmt::Display::fmt),std::fmt::ArgumentV1::new(&(arg2),std::fmt::Display::fmt),])"#
+    #[test]
+    fn test_format_args_expand_with_comma_exprs() {
+        check_expansion(
+            r#"
+            #[rustc_builtin_macro]
+            macro_rules! format_args {
+                ($fmt:expr) => ({ /* compiler built-in */ });
+                ($fmt:expr, $($args:tt)*) => ({ /* compiler built-in */ })
+            }
+            format_args!("{} {:?}", a::<A,B>(), b);
+            "#,
+            expect![[
+                r#"std::fmt::Arguments::new_v1(&[], &[std::fmt::ArgumentV1::new(&(a::<A,B>()),std::fmt::Display::fmt),std::fmt::ArgumentV1::new(&(b),std::fmt::Display::fmt),])"#
+            ]],
         );
     }
 
     #[test]
     fn test_include_bytes_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r#"
             #[rustc_builtin_macro]
             macro_rules! include_bytes {
@@ -730,21 +728,19 @@ mod tests {
             }
             include_bytes("foo");
             "#,
+            expect![[r#"b"""#]],
         );
-
-        assert_eq!(expanded, r#"b"""#);
     }
 
     #[test]
     fn test_concat_expand() {
-        let expanded = expand_builtin_macro(
+        check_expansion(
             r##"
             #[rustc_builtin_macro]
             macro_rules! concat {}
             concat!("foo", "r", 0, r#"bar"#, false);
             "##,
+            expect![[r#""foor0barfalse""#]],
         );
-
-        assert_eq!(expanded, r#""foor0barfalse""#);
     }
 }

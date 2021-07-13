@@ -56,7 +56,6 @@
         - [Array and index expressions](expressions/array-expr.md)
         - [Tuple and index expressions](expressions/tuple-expr.md)
         - [Struct expressions](expressions/struct-expr.md)
-        - [Enum variant expressions](expressions/enum-variant-expr.md)
         - [Call expressions](expressions/call-expr.md)
         - [Method call expressions](expressions/method-call-expr.md)
         - [Field access expressions](expressions/field-expr.md)
@@ -111,7 +110,6 @@
 
 - [Memory model](memory-model.md)
     - [Memory allocation and lifetime](memory-allocation-and-lifetime.md)
-    - [Memory ownership](memory-ownership.md)
     - [Variables](variables.md)
 
 - [Linkage](linkage.md)

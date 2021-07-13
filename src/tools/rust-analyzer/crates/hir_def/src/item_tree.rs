@@ -24,8 +24,7 @@ use la_arena::{Arena, Idx, RawIdx};
 use profile::Count;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use syntax::{ast, match_ast};
-use test_utils::mark;
+use syntax::{ast, match_ast, SyntaxKind};
 
 use crate::{
     attr::{Attrs, RawAttrs},
@@ -80,6 +79,10 @@ impl ItemTree {
     pub(crate) fn item_tree_query(db: &dyn DefDatabase, file_id: HirFileId) -> Arc<ItemTree> {
         let _p = profile::span("item_tree_query").detail(|| format!("{:?}", file_id));
         let syntax = if let Some(node) = db.parse_or_expand(file_id) {
+            if node.kind() == SyntaxKind::ERROR {
+                // FIXME: not 100% sure why these crop up, but return an empty tree to avoid a panic
+                return Default::default();
+            }
             node
         } else {
             return Default::default();
@@ -142,6 +145,7 @@ impl ItemTree {
                 macro_defs,
                 vis,
                 generics,
+                type_refs,
                 inner_items,
             } = &mut **data;
 
@@ -165,6 +169,8 @@ impl ItemTree {
 
             vis.arena.shrink_to_fit();
             generics.arena.shrink_to_fit();
+            type_refs.arena.shrink_to_fit();
+            type_refs.map.shrink_to_fit();
 
             inner_items.shrink_to_fit();
         }
@@ -203,18 +209,6 @@ impl ItemTree {
         }
     }
 
-    pub fn source<S: ItemTreeNode>(&self, db: &dyn DefDatabase, of: ItemTreeId<S>) -> S::Source {
-        // This unwrap cannot fail, since it has either succeeded above, or resulted in an empty
-        // ItemTree (in which case there is no valid `FileItemTreeId` to call this method with).
-        let root =
-            db.parse_or_expand(of.file_id).expect("parse_or_expand failed on constructed ItemTree");
-
-        let id = self[of.value].ast_id();
-        let map = db.ast_id_map(of.file_id);
-        let ptr = map.get(id);
-        ptr.to_node(&root)
-    }
-
     fn data(&self) -> &ItemTreeData {
         self.data.as_ref().expect("attempted to access data of empty ItemTree")
     }
@@ -233,7 +227,7 @@ impl ItemVisibilities {
     fn alloc(&mut self, vis: RawVisibility) -> RawVisibilityId {
         match &vis {
             RawVisibility::Public => RawVisibilityId::PUB,
-            RawVisibility::Module(path) if path.segments.is_empty() => match &path.kind {
+            RawVisibility::Module(path) if path.segments().is_empty() => match &path.kind {
                 PathKind::Super(0) => RawVisibilityId::PRIV,
                 PathKind::Crate => RawVisibilityId::PUB_CRATE,
                 _ => RawVisibilityId(self.arena.alloc(vis).into_raw().into()),
@@ -244,10 +238,8 @@ impl ItemVisibilities {
 }
 
 static VIS_PUB: RawVisibility = RawVisibility::Public;
-static VIS_PRIV: RawVisibility =
-    RawVisibility::Module(ModPath { kind: PathKind::Super(0), segments: Vec::new() });
-static VIS_PUB_CRATE: RawVisibility =
-    RawVisibility::Module(ModPath { kind: PathKind::Crate, segments: Vec::new() });
+static VIS_PRIV: RawVisibility = RawVisibility::Module(ModPath::from_kind(PathKind::Super(0)));
+static VIS_PUB_CRATE: RawVisibility = RawVisibility::Module(ModPath::from_kind(PathKind::Crate));
 
 #[derive(Default, Debug, Eq, PartialEq)]
 struct GenericParamsStorage {
@@ -275,6 +267,32 @@ static EMPTY_GENERICS: GenericParams = GenericParams {
     where_predicates: Vec::new(),
 };
 
+/// `TypeRef` interner.
+#[derive(Default, Debug, Eq, PartialEq)]
+struct TypeRefStorage {
+    arena: Arena<Arc<TypeRef>>,
+    map: FxHashMap<Arc<TypeRef>, Idx<Arc<TypeRef>>>,
+}
+
+impl TypeRefStorage {
+    // Note: We lie about the `Idx<TypeRef>` to hide the interner details.
+
+    fn intern(&mut self, ty: TypeRef) -> Idx<TypeRef> {
+        if let Some(id) = self.map.get(&ty) {
+            return Idx::from_raw(id.into_raw());
+        }
+
+        let ty = Arc::new(ty);
+        let idx = self.arena.alloc(ty.clone());
+        self.map.insert(ty, idx);
+        Idx::from_raw(idx.into_raw())
+    }
+
+    fn lookup(&self, id: Idx<TypeRef>) -> &TypeRef {
+        &self.arena[Idx::from_raw(id.into_raw())]
+    }
+}
+
 #[derive(Default, Debug, Eq, PartialEq)]
 struct ItemTreeData {
     imports: Arena<Import>,
@@ -297,6 +315,7 @@ struct ItemTreeData {
 
     vis: ItemVisibilities,
     generics: GenericParamsStorage,
+    type_refs: TypeRefStorage,
 
     inner_items: FxHashMap<FileAstId<ast::BlockExpr>, SmallVec<[ModItem; 1]>>,
 }
@@ -485,6 +504,14 @@ impl Index<GenericParamsId> for ItemTree {
     }
 }
 
+impl Index<Idx<TypeRef>> for ItemTree {
+    type Output = TypeRef;
+
+    fn index(&self, id: Idx<TypeRef>) -> &Self::Output {
+        self.data().type_refs.lookup(id)
+    }
+}
+
 impl<N: ItemTreeNode> Index<FileItemTreeId<N>> for ItemTree {
     type Output = N;
     fn index(&self, id: FileItemTreeId<N>) -> &N {
@@ -528,9 +555,9 @@ pub struct Function {
     /// Whether the function is located in an `extern` block (*not* whether it is an
     /// `extern "abi" fn`).
     pub is_extern: bool,
-    pub params: Box<[TypeRef]>,
+    pub params: Box<[Idx<TypeRef>]>,
     pub is_varargs: bool,
-    pub ret_type: TypeRef,
+    pub ret_type: Idx<TypeRef>,
     pub ast_id: FileAstId<ast::Fn>,
 }
 
@@ -577,7 +604,7 @@ pub struct Const {
     /// const _: () = ();
     pub name: Option<Name>,
     pub visibility: RawVisibilityId,
-    pub type_ref: TypeRef,
+    pub type_ref: Idx<TypeRef>,
     pub ast_id: FileAstId<ast::Const>,
 }
 
@@ -588,7 +615,7 @@ pub struct Static {
     pub mutable: bool,
     /// Whether the static is in an `extern` block.
     pub is_extern: bool,
-    pub type_ref: TypeRef,
+    pub type_ref: Idx<TypeRef>,
     pub ast_id: FileAstId<ast::Static>,
 }
 
@@ -605,8 +632,8 @@ pub struct Trait {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Impl {
     pub generic_params: GenericParamsId,
-    pub target_trait: Option<TypeRef>,
-    pub target_type: TypeRef,
+    pub target_trait: Option<Idx<TypeRef>>,
+    pub target_type: Idx<TypeRef>,
     pub is_negative: bool,
     pub items: Box<[AssocItem]>,
     pub ast_id: FileAstId<ast::Impl>,
@@ -619,7 +646,7 @@ pub struct TypeAlias {
     /// Bounds on the type alias itself. Only valid in trait declarations, eg. `type Assoc: Copy;`.
     pub bounds: Box<[TypeBound]>,
     pub generic_params: GenericParamsId,
-    pub type_ref: Option<TypeRef>,
+    pub type_ref: Option<Idx<TypeRef>>,
     pub is_extern: bool,
     pub ast_id: FileAstId<ast::TypeAlias>,
 }
@@ -802,6 +829,6 @@ pub enum Fields {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
     pub name: Name,
-    pub type_ref: TypeRef,
+    pub type_ref: Idx<TypeRef>,
     pub visibility: RawVisibilityId,
 }

@@ -1,5 +1,7 @@
 # Profile Guided Optimization
 
+<!-- toc -->
+
 `rustc` supports doing profile-guided optimization (PGO).
 This chapter describes what PGO is and how the support for it is
 implemented in `rustc`.
@@ -29,7 +31,8 @@ LLVM actually [supports multiple forms][clang-pgo] of PGO:
 - GCOV-based profiling, where code coverage infrastructure is used to collect
   profiling information.
 - Front-end based instrumentation, where the compiler front-end (e.g. Clang)
-  inserts instrumentation intrinsics into the LLVM IR it generates.
+  inserts instrumentation intrinsics into the LLVM IR it generates (but see the
+  [^note-instrument-coverage]"Note").
 - IR-level instrumentation, where LLVM inserts the instrumentation intrinsics
   itself during optimization passes.
 
@@ -44,15 +47,20 @@ optimized. Instrumentation-based PGO has two components: a compile-time
 component and run-time component, and one needs to understand the overall
 workflow to see how they interact.
 
+[^note-instrument-coverage]: Note: `rustc` now supports front-end-based coverage
+instrumentation, via the experimental option
+[`-Z instrument-coverage`](./llvm-coverage-instrumentation.md), but using these
+coverage results for PGO has not been attempted at this time.
+
 ### Overall Workflow
 
 Generating a PGO-optimized program involves the following four steps:
 
-1. Compile the program with instrumentation enabled (e.g. `rustc -Cprofile-generate main.rs`)
+1. Compile the program with instrumentation enabled (e.g. `rustc -C profile-generate main.rs`)
 2. Run the instrumented program (e.g. `./main`) which generates a `default-<id>.profraw` file
 3. Convert the `.profraw` file into a `.profdata` file using LLVM's `llvm-profdata` tool.
 4. Compile the program again, this time making use of the profiling data
-   (e.g. `rustc -Cprofile-use=merged.profdata main.rs`)
+   (e.g. `rustc -C profile-use=merged.profdata main.rs`)
 
 ### Compile-Time Aspects
 
@@ -108,13 +116,13 @@ data needs some infrastructure in place.
 In the case of LLVM, these runtime components are implemented in
 [compiler-rt][compiler-rt-profile] and statically linked into any instrumented
 binaries.
-The `rustc` version of this can be found in `src/libprofiler_builtins` which
+The `rustc` version of this can be found in `library/profiler_builtins` which
 basically packs the C code from `compiler-rt` into a Rust crate.
 
-In order for `libprofiler_builtins` to be built, `profiler = true` must be set
+In order for `profiler_builtins` to be built, `profiler = true` must be set
 in `rustc`'s `config.toml`.
 
-[compiler-rt-profile]: https://github.com/llvm/llvm-project/tree/master/compiler-rt/lib/profile
+[compiler-rt-profile]: https://github.com/llvm/llvm-project/tree/main/compiler-rt/lib/profile
 
 ## Testing PGO
 

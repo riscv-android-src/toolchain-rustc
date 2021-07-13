@@ -1,5 +1,7 @@
 # The MIR (Mid-level IR)
 
+<!-- toc -->
+
 MIR is Rust's _Mid-level Intermediate Representation_. It is
 constructed from [HIR](../hir.html). MIR was introduced in
 [RFC 1211]. It is a radically simplified form of Rust that is used for
@@ -15,8 +17,8 @@ graphs and desugaring), you may enjoy the
 
 ## Introduction to MIR
 
-MIR is defined in the [`src/librustc_middle/mir/`][mir] module, but much of the code
-that manipulates it is found in [`src/librustc_mir`][mirmanip].
+MIR is defined in the [`compiler/rustc_middle/src/mir/`][mir] module, but much of the code
+that manipulates it is found in [`compiler/rustc_mir`][mirmanip].
 
 [RFC 1211]: https://rust-lang.github.io/rfcs/1211-mir.html
 
@@ -212,35 +214,37 @@ over the overflow checks.)
 
 ## MIR data types
 
-The MIR data types are defined in the [`src/librustc_middle/mir/`][mir]
+The MIR data types are defined in the [`compiler/rustc_middle/src/mir/`][mir]
 module.  Each of the key concepts mentioned in the previous section
 maps in a fairly straightforward way to a Rust type.
 
-The main MIR data type is `Mir`. It contains the data for a single
+The main MIR data type is [`Body`]. It contains the data for a single
 function (along with sub-instances of Mir for "promoted constants",
 but [you can read about those below](#promoted)).
 
 - **Basic blocks**: The basic blocks are stored in the field
-  `basic_blocks`; this is a vector of `BasicBlockData`
-  structures. Nobody ever references a basic block directly: instead,
-  we pass around `BasicBlock` values, which are
-  [newtype'd] indices into this vector.
-- **Statements** are represented by the type `Statement`.
-- **Terminators** are represented by the `Terminator`.
-- **Locals** are represented by a [newtype'd] index type `Local`. The
-  data for a local variable is found in the `Mir` (the `local_decls`
-  vector). There is also a special constant `RETURN_PLACE` identifying
-  the special "local" representing the return value.
-- **Places** are identified by the enum `Place`. There are a few variants:
+  [`Body::basic_blocks`][basicblocks]; this is a vector
+  of [`BasicBlockData`] structures. Nobody ever references a
+  basic block directly: instead, we pass around [`BasicBlock`]
+  values, which are [newtype'd] indices into this vector.
+- **Statements** are represented by the type [`Statement`].
+- **Terminators** are represented by the [`Terminator`].
+- **Locals** are represented by a [newtype'd] index type [`Local`].
+  The data for a local variable is found in the
+  [`Body::local_decls`][localdecls] vector). There is also a special constant
+  [`RETURN_PLACE`] identifying the special "local" representing the return value.
+- **Places** are identified by the enum [`Place`]. There are a few
+  variants:
   - Local variables like `_1`
   - Static variables `FOO`
   - **Projections**, which are fields or other things that "project
-    out" from a base place. So e.g. the place `_1.f` is a projection,
-    with `f` being the "projection element and `_1` being the base
+    out" from a base place. These are represented by the type
+    [`ProjectionElem`].  So e.g. the place `_1.f` is a projection,
+    with `f` being the "projection element" and `_1` being the base
     path. `*_1` is also a projection, with the `*` being represented
-    by the `ProjectionElem::Deref` element.
-- **Rvalues** are represented by the enum `Rvalue`.
-- **Operands** are represented by the enum `Operand`.
+    by the [`ProjectionElem::Deref`] element.
+- **Rvalues** are represented by the enum [`Rvalue`].
+- **Operands** are represented by the enum [`Operand`].
 
 ## Representing constants
 
@@ -250,10 +254,23 @@ but [you can read about those below](#promoted)).
 
 ### Promoted constants
 
-*to be written*
+See the const-eval WG's [docs on promotion](https://github.com/rust-lang/const-eval/blob/master/promotion.md).
 
 
-[mir]: https://github.com/rust-lang/rust/tree/master/src/librustc_middle/mir
-[mirmanip]: https://github.com/rust-lang/rust/tree/master/src/librustc_mir
-[mir]: https://github.com/rust-lang/rust/tree/master/src/librustc_middle/mir
+[mir]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/index.html
+[mirmanip]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/index.html
+[`Body`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/struct.Body.html
 [newtype'd]: ../appendix/glossary.html#newtype
+[basicblocks]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/struct.Body.html#structfield.basic_blocks
+[`BasicBlock`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/struct.BasicBlock.html
+[`BasicBlockData`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/struct.BasicBlockData.html
+[`Statement`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/struct.Statement.html
+[`Terminator`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/terminator/struct.Terminator.html
+[`Local`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/struct.Local.html
+[localdecls]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/struct.Body.html#structfield.local_decls
+[`RETURN_PLACE`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/constant.RETURN_PLACE.html
+[`Place`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/struct.Place.html
+[`ProjectionElem`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/enum.ProjectionElem.html
+[`ProjectionElem::Deref`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/enum.ProjectionElem.html#variant.Deref
+[`Rvalue`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/enum.Rvalue.html
+[`Operand`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/mir/enum.Operand.html

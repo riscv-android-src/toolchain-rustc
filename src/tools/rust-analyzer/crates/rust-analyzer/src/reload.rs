@@ -50,6 +50,16 @@ impl GlobalState {
             Status::Loading | Status::NeedsReload => return,
             Status::Ready { .. } | Status::Invalid => (),
         }
+        log::info!(
+            "Reloading workspace because of the following changes: {}",
+            itertools::join(
+                changes
+                    .iter()
+                    .filter(|(path, kind)| is_interesting(path, *kind))
+                    .map(|(path, kind)| format!("{}/{:?}", path.display(), kind)),
+                ", "
+            )
+        );
         if self.config.cargo_autoreload() {
             self.fetch_workspaces_request();
         } else {
@@ -269,26 +279,33 @@ impl GlobalState {
         let project_folders =
             ProjectFolders::new(&workspaces, &files_config.exclude, workspace_build_data.as_ref());
 
-        self.proc_macro_client = match self.config.proc_macro_srv() {
-            None => None,
-            Some((path, args)) => match ProcMacroClient::extern_process(path.clone(), args) {
-                Ok(it) => Some(it),
-                Err(err) => {
-                    log::error!(
-                        "Failed to run proc_macro_srv from path {}, error: {:?}",
-                        path.display(),
-                        err
-                    );
-                    None
-                }
-            },
-        };
+        if self.proc_macro_client.is_none() {
+            self.proc_macro_client = match self.config.proc_macro_srv() {
+                None => None,
+                Some((path, args)) => match ProcMacroClient::extern_process(path.clone(), args) {
+                    Ok(it) => Some(it),
+                    Err(err) => {
+                        log::error!(
+                            "Failed to run proc_macro_srv from path {}, error: {:?}",
+                            path.display(),
+                            err
+                        );
+                        None
+                    }
+                },
+            };
+        }
 
         let watch = match files_config.watcher {
             FilesWatcher::Client => vec![],
             FilesWatcher::Notify => project_folders.watch,
         };
-        self.loader.handle.set_config(vfs::loader::Config { load: project_folders.load, watch });
+        self.vfs_config_version += 1;
+        self.loader.handle.set_config(vfs::loader::Config {
+            load: project_folders.load,
+            watch,
+            version: self.vfs_config_version,
+        });
 
         // Create crate graph from all the workspaces
         let crate_graph = {
@@ -320,7 +337,7 @@ impl GlobalState {
         };
         change.set_crate_graph(crate_graph);
 
-        if self.config.load_out_dirs_from_check() && workspace_build_data.is_none() {
+        if self.config.run_build_scripts() && workspace_build_data.is_none() {
             let mut collector = BuildDataCollector::default();
             for ws in &workspaces {
                 ws.collect_build_data_configs(&mut collector);

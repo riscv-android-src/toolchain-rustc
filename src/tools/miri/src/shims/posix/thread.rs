@@ -2,15 +2,16 @@ use std::convert::TryInto;
 
 use crate::*;
 use rustc_target::abi::LayoutOf;
+use rustc_target::spec::abi::Abi;
 
 impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn pthread_create(
         &mut self,
-        thread: OpTy<'tcx, Tag>,
-        _attr: OpTy<'tcx, Tag>,
-        start_routine: OpTy<'tcx, Tag>,
-        arg: OpTy<'tcx, Tag>,
+        thread: &OpTy<'tcx, Tag>,
+        _attr: &OpTy<'tcx, Tag>,
+        start_routine: &OpTy<'tcx, Tag>,
+        arg: &OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
@@ -26,7 +27,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let thread_info_place = this.deref_operand(thread)?;
         this.write_scalar(
             Scalar::from_uint(new_thread_id.to_u32(), thread_info_place.layout.size),
-            thread_info_place.into(),
+            &thread_info_place.into(),
         )?;
 
         // Read the function argument that will be sent to the new thread
@@ -50,8 +51,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.call_function(
             instance,
+            Abi::C { unwind: false },
             &[*func_arg],
-            Some(ret_place.into()),
+            Some(&ret_place.into()),
             StackPopCleanup::None { cleanup: true },
         )?;
 
@@ -63,8 +65,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     fn pthread_join(
         &mut self,
-        thread: OpTy<'tcx, Tag>,
-        retval: OpTy<'tcx, Tag>,
+        thread: &OpTy<'tcx, Tag>,
+        retval: &OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
@@ -79,7 +81,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         Ok(0)
     }
 
-    fn pthread_detach(&mut self, thread: OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
+    fn pthread_detach(&mut self, thread: &OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
         let thread_id = this.read_scalar(thread)?.to_machine_usize(this)?;
@@ -88,7 +90,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         Ok(0)
     }
 
-    fn pthread_self(&mut self, dest: PlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
+    fn pthread_self(&mut self, dest: &PlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
         let thread_id = this.get_active_thread();
@@ -97,11 +99,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     fn prctl(
         &mut self,
-        option: OpTy<'tcx, Tag>,
-        arg2: OpTy<'tcx, Tag>,
-        _arg3: OpTy<'tcx, Tag>,
-        _arg4: OpTy<'tcx, Tag>,
-        _arg5: OpTy<'tcx, Tag>,
+        option: &OpTy<'tcx, Tag>,
+        arg2: &OpTy<'tcx, Tag>,
+        _arg3: &OpTy<'tcx, Tag>,
+        _arg4: &OpTy<'tcx, Tag>,
+        _arg5: &OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
         this.assert_target_os("linux", "prctl");

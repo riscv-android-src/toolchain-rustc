@@ -45,7 +45,7 @@ export async function selectRunnable(ctx: Ctx, prevRunnable?: RunnableQuickPick,
     if (items.length === 0) {
         // it is the debug case, run always has at least 'cargo check ...'
         // see crates\rust-analyzer\src\main_loop\handlers.rs, handle_runnables
-        vscode.window.showErrorMessage("There's no debug target!");
+        await vscode.window.showErrorMessage("There's no debug target!");
         return;
     }
 
@@ -65,8 +65,8 @@ export async function selectRunnable(ctx: Ctx, prevRunnable?: RunnableQuickPick,
         disposables.push(
             quickPick.onDidHide(() => close()),
             quickPick.onDidAccept(() => close(quickPick.selectedItems[0])),
-            quickPick.onDidTriggerButton((_button) => {
-                (async () => await makeDebugConfig(ctx, quickPick.activeItems[0].runnable))();
+            quickPick.onDidTriggerButton(async (_button) => {
+                await makeDebugConfig(ctx, quickPick.activeItems[0].runnable);
                 close();
             }),
             quickPick.onDidChangeActive((active) => {
@@ -128,13 +128,7 @@ export async function createTask(runnable: ra.Runnable, config: Config): Promise
         throw `Unexpected runnable kind: ${runnable.kind}`;
     }
 
-    const args = [...runnable.args.cargoArgs]; // should be a copy!
-    if (runnable.args.cargoExtraArgs) {
-        args.push(...runnable.args.cargoExtraArgs); // Append user-specified cargo options.
-    }
-    if (runnable.args.executableArgs.length > 0) {
-        args.push('--', ...runnable.args.executableArgs);
-    }
+    const args = createArgs(runnable);
 
     const definition: tasks.CargoTaskDefinition = {
         type: tasks.TASK_TYPE,
@@ -145,9 +139,21 @@ export async function createTask(runnable: ra.Runnable, config: Config): Promise
         overrideCargo: runnable.args.overrideCargo,
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
     const target = vscode.workspace.workspaceFolders![0]; // safe, see main activate()
     const cargoTask = await tasks.buildCargoTask(target, definition, runnable.label, args, config.cargoRunner, true);
     cargoTask.presentationOptions.clear = true;
 
     return cargoTask;
+}
+
+export function createArgs(runnable: ra.Runnable): string[] {
+    const args = [...runnable.args.cargoArgs]; // should be a copy!
+    if (runnable.args.cargoExtraArgs) {
+        args.push(...runnable.args.cargoExtraArgs); // Append user-specified cargo options.
+    }
+    if (runnable.args.executableArgs.length > 0) {
+        args.push('--', ...runnable.args.executableArgs);
+    }
+    return args;
 }

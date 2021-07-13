@@ -222,12 +222,12 @@ use hir_def::{
     adt::VariantData,
     body::Body,
     expr::{Expr, Literal, Pat, PatId},
-    AdtId, EnumVariantId, StructId, VariantId,
+    EnumVariantId, StructId, VariantId,
 };
 use la_arena::Idx;
 use smallvec::{smallvec, SmallVec};
 
-use crate::{db::HirDatabase, ApplicationTy, InferenceResult, Ty, TypeCtor};
+use crate::{db::HirDatabase, AdtId, InferenceResult, Interner, TyKind};
 
 #[derive(Debug, Clone, Copy)]
 /// Either a pattern from the source code being analyzed, represented as
@@ -626,15 +626,13 @@ pub(super) fn is_useful(
     // - enum with no variants
     // - `!` type
     // In those cases, no match arm is useful.
-    match cx.infer[cx.match_expr].strip_references() {
-        Ty::Apply(ApplicationTy { ctor: TypeCtor::Adt(AdtId::EnumId(enum_id)), .. }) => {
+    match cx.infer[cx.match_expr].strip_references().interned(&Interner) {
+        TyKind::Adt(AdtId(hir_def::AdtId::EnumId(enum_id)), ..) => {
             if cx.db.enum_data(*enum_id).variants.is_empty() {
                 return Ok(Usefulness::NotUseful);
             }
         }
-        Ty::Apply(ApplicationTy { ctor: TypeCtor::Never, .. }) => {
-            return Ok(Usefulness::NotUseful);
-        }
+        TyKind::Never => return Ok(Usefulness::NotUseful),
         _ => (),
     }
 
@@ -1495,6 +1493,20 @@ fn main(f: Foo) {
         );
     }
 
+    #[test]
+    fn internal_or() {
+        check_diagnostics(
+            r#"
+fn main() {
+    enum Either { A(bool), B }
+    match Either::B {
+        //^^^^^^^^^ Missing match arm
+        Either::A(true | false) => (),
+    }
+}
+"#,
+        );
+    }
     mod false_negatives {
         //! The implementation of match checking here is a work in progress. As we roll this out, we
         //! prefer false negatives to false positives (ideally there would be no false positives). This
@@ -1516,21 +1528,6 @@ fn main() {
     match 5 {
         10 => (),
         11..20 => (),
-    }
-}
-"#,
-            );
-        }
-
-        #[test]
-        fn internal_or() {
-            // We do not currently handle patterns with internal `or`s.
-            check_diagnostics(
-                r#"
-fn main() {
-    enum Either { A(bool), B }
-    match Either::B {
-        Either::A(true | false) => (),
     }
 }
 "#,

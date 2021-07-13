@@ -13,12 +13,13 @@ use std::{env, sync::Arc};
 use base_db::{fixture::WithFixture, FileRange, SourceDatabase, SourceDatabaseExt};
 use expect_test::Expect;
 use hir_def::{
-    body::{BodySourceMap, SyntheticSyntax},
+    body::{Body, BodySourceMap, SyntheticSyntax},
     child_by_source::ChildBySource,
     db::DefDatabase,
     item_scope::ItemScope,
     keys,
     nameres::DefMap,
+    src::HasSource,
     AssocItemId, DefWithBodyId, LocalModuleId, Lookup, ModuleDefId,
 };
 use hir_expand::{db::AstDatabase, InFile};
@@ -195,18 +196,15 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
     defs.sort_by_key(|def| match def {
         DefWithBodyId::FunctionId(it) => {
             let loc = it.lookup(&db);
-            let tree = db.item_tree(loc.id.file_id);
-            tree.source(&db, loc.id).syntax().text_range().start()
+            loc.source(&db).value.syntax().text_range().start()
         }
         DefWithBodyId::ConstId(it) => {
             let loc = it.lookup(&db);
-            let tree = db.item_tree(loc.id.file_id);
-            tree.source(&db, loc.id).syntax().text_range().start()
+            loc.source(&db).value.syntax().text_range().start()
         }
         DefWithBodyId::StaticId(it) => {
             let loc = it.lookup(&db);
-            let tree = db.item_tree(loc.id.file_id);
-            tree.source(&db, loc.id).syntax().text_range().start()
+            loc.source(&db).value.syntax().text_range().start()
         }
     });
     for def in defs {
@@ -234,13 +232,13 @@ fn visit_module(
                     let def = it.into();
                     cb(def);
                     let body = db.body(def);
-                    visit_scope(db, crate_def_map, &body.item_scope, cb);
+                    visit_body(db, &body, cb);
                 }
                 AssocItemId::ConstId(it) => {
                     let def = it.into();
                     cb(def);
                     let body = db.body(def);
-                    visit_scope(db, crate_def_map, &body.item_scope, cb);
+                    visit_body(db, &body, cb);
                 }
                 AssocItemId::TypeAliasId(_) => (),
             }
@@ -259,19 +257,19 @@ fn visit_module(
                     let def = it.into();
                     cb(def);
                     let body = db.body(def);
-                    visit_scope(db, crate_def_map, &body.item_scope, cb);
+                    visit_body(db, &body, cb);
                 }
                 ModuleDefId::ConstId(it) => {
                     let def = it.into();
                     cb(def);
                     let body = db.body(def);
-                    visit_scope(db, crate_def_map, &body.item_scope, cb);
+                    visit_body(db, &body, cb);
                 }
                 ModuleDefId::StaticId(it) => {
                     let def = it.into();
                     cb(def);
                     let body = db.body(def);
-                    visit_scope(db, crate_def_map, &body.item_scope, cb);
+                    visit_body(db, &body, cb);
                 }
                 ModuleDefId::TraitId(it) => {
                     let trait_data = db.trait_data(it);
@@ -285,6 +283,14 @@ fn visit_module(
                 }
                 ModuleDefId::ModuleId(it) => visit_module(db, crate_def_map, it.local_id, cb),
                 _ => (),
+            }
+        }
+    }
+
+    fn visit_body(db: &TestDB, body: &Body, cb: &mut dyn FnMut(DefWithBodyId)) {
+        for def_map in body.block_scopes.iter().filter_map(|block| db.block_def_map(*block)) {
+            for (mod_id, _) in def_map.modules() {
+                visit_module(db, &def_map, mod_id, cb);
             }
         }
     }

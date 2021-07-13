@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "rustc-rayon"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Niko Matsakis <niko@alum.mit.edu>", "Josh Stone <cuviper@gmail.com>"]
 exclude = ["/ci/*", "/scripts/*", "/.travis.yml", "/appveyor.yml", "/bors.toml"]
 description = "Simple work-stealing parallelism for Rust - fork for rustc"
@@ -23,14 +24,15 @@ categories = ["concurrency"]
 license = "Apache-2.0/MIT"
 repository = "https://github.com/rust-lang/rustc-rayon"
 [dependencies.crossbeam-deque]
-version = "0.7"
+version = "0.7.2"
 
 [dependencies.either]
 version = "1.0"
 default-features = false
 
-[dependencies.rustc-rayon-core]
+[dependencies.rayon-core]
 version = "0.3"
+package = "rustc-rayon-core"
 [dev-dependencies.doc-comment]
 version = "0.3"
 
@@ -41,13 +43,11 @@ version = "1"
 version = "1"
 
 [dev-dependencies.rand]
-version = "0.6"
+version = "0.7"
 
 [dev-dependencies.rand_xorshift]
-version = "0.1"
+version = "0.2"
 
 [dev-dependencies.serde]
-version = "1"
-
-[dev-dependencies.serde_derive]
-version = "1"
+version = "1.0.85"
+features = ["derive"]

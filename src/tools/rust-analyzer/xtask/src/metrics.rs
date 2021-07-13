@@ -9,14 +9,12 @@ use std::{
 use anyhow::{bail, format_err, Result};
 use xshell::{cmd, mkdir_p, pushd, pushenv, read_file, rm_rf};
 
+use crate::flags;
+
 type Unit = String;
 
-pub struct MetricsCmd {
-    pub dry_run: bool,
-}
-
-impl MetricsCmd {
-    pub fn run(self) -> Result<()> {
+impl flags::Metrics {
+    pub(crate) fn run(self) -> Result<()> {
         let mut metrics = Metrics::new()?;
         if !self.dry_run {
             rm_rf("./target/release")?;
@@ -82,7 +80,7 @@ impl Metrics {
     fn measure_analysis_stats_path(&mut self, name: &str, path: &str) -> Result<()> {
         eprintln!("\nMeasuring analysis-stats/{}", name);
         let output =
-            cmd!("./target/release/rust-analyzer analysis-stats --quiet --memory-usage {path}")
+            cmd!("./target/release/rust-analyzer --quiet analysis-stats --memory-usage {path}")
                 .read()?;
         for (metric, value, unit) in parse_metrics(&output) {
             self.report(&format!("analysis-stats/{}/{}", name, metric), value, unit.into());

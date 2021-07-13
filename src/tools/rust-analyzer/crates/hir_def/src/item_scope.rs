@@ -8,11 +8,11 @@ use hir_expand::name::Name;
 use hir_expand::MacroDefKind;
 use once_cell::sync::Lazy;
 use rustc_hash::{FxHashMap, FxHashSet};
-use test_utils::mark;
+use stdx::format_to;
 
 use crate::{
-    db::DefDatabase, per_ns::PerNs, visibility::Visibility, AdtId, BuiltinType, HasModule, ImplId,
-    LocalModuleId, Lookup, MacroDefId, ModuleDefId, ModuleId, TraitId,
+    db::DefDatabase, per_ns::PerNs, visibility::Visibility, AdtId, BuiltinType, ImplId,
+    LocalModuleId, MacroDefId, ModuleDefId, ModuleId, TraitId,
 };
 
 #[derive(Copy, Clone)]
@@ -168,37 +168,6 @@ impl ItemScope {
         self.unnamed_trait_imports.insert(tr, vis);
     }
 
-    pub(crate) fn push_res(&mut self, name: Name, def: PerNs) -> bool {
-        let mut changed = false;
-
-        if let Some(types) = def.types {
-            self.types.entry(name.clone()).or_insert_with(|| {
-                changed = true;
-                types
-            });
-        }
-        if let Some(values) = def.values {
-            self.values.entry(name.clone()).or_insert_with(|| {
-                changed = true;
-                values
-            });
-        }
-        if let Some(macros) = def.macros {
-            self.macros.entry(name.clone()).or_insert_with(|| {
-                changed = true;
-                macros
-            });
-        }
-
-        if def.is_none() {
-            if self.unresolved.insert(name) {
-                changed = true;
-            }
-        }
-
-        changed
-    }
-
     pub(crate) fn push_res_with_import(
         &mut self,
         glob_imports: &mut PerNsGlobImports,
@@ -236,7 +205,7 @@ impl ItemScope {
                         if $glob_imports.$field.contains(&$lookup)
                             && matches!($def_import_type, ImportType::Named) =>
                     {
-                        mark::hit!(import_shadowed);
+                        cov_mark::hit!(import_shadowed);
                         $glob_imports.$field.remove(&$lookup);
                         if let Some(fld) = $def.$field {
                             entry.insert(fld);
@@ -290,6 +259,30 @@ impl ItemScope {
             }
 
             *vis = Visibility::Module(this_module);
+        }
+    }
+
+    pub(crate) fn dump(&self, buf: &mut String) {
+        let mut entries: Vec<_> = self.resolutions().collect();
+        entries.sort_by_key(|(name, _)| name.clone());
+
+        for (name, def) in entries {
+            format_to!(buf, "{}:", name.map_or("_".to_string(), |name| name.to_string()));
+
+            if def.types.is_some() {
+                buf.push_str(" t");
+            }
+            if def.values.is_some() {
+                buf.push_str(" v");
+            }
+            if def.macros.is_some() {
+                buf.push_str(" m");
+            }
+            if def.is_none() {
+                buf.push_str(" _");
+            }
+
+            buf.push('\n');
         }
     }
 }
@@ -350,19 +343,9 @@ impl ItemInNs {
 
     /// Returns the crate defining this item (or `None` if `self` is built-in).
     pub fn krate(&self, db: &dyn DefDatabase) -> Option<CrateId> {
-        Some(match self {
-            ItemInNs::Types(did) | ItemInNs::Values(did) => match did {
-                ModuleDefId::ModuleId(id) => id.krate,
-                ModuleDefId::FunctionId(id) => id.lookup(db).module(db).krate,
-                ModuleDefId::AdtId(id) => id.module(db).krate,
-                ModuleDefId::EnumVariantId(id) => id.parent.lookup(db).container.module(db).krate,
-                ModuleDefId::ConstId(id) => id.lookup(db).container.module(db).krate,
-                ModuleDefId::StaticId(id) => id.lookup(db).container.module(db).krate,
-                ModuleDefId::TraitId(id) => id.lookup(db).container.module(db).krate,
-                ModuleDefId::TypeAliasId(id) => id.lookup(db).module(db).krate,
-                ModuleDefId::BuiltinType(_) => return None,
-            },
-            ItemInNs::Macros(id) => return Some(id.krate),
-        })
+        match self {
+            ItemInNs::Types(did) | ItemInNs::Values(did) => did.module(db).map(|m| m.krate),
+            ItemInNs::Macros(id) => Some(id.krate),
+        }
     }
 }

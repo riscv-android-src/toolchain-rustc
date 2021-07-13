@@ -78,6 +78,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     if let Some(path) = args.value_of_path("path", config) {
         config.reload_rooted_at(path)?;
     } else {
+        // TODO: Consider calling set_search_stop_path(home).
         config.reload_rooted_at(config.home().clone().into_path_unlocked())?;
     }
 
@@ -116,7 +117,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     let version = args.value_of("version");
     let root = args.value_of("root");
 
-    // We only provide worksapce information for local crate installation from
+    // We only provide workspace information for local crate installation from
     // one of the following sources:
     // - From current working directory (only work for edition 2015).
     // - From a specific local file path.

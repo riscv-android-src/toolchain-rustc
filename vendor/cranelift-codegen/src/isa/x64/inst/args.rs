@@ -3,7 +3,7 @@
 use super::regs::{self, show_ireg_sized};
 use super::EmitState;
 use crate::ir::condcodes::{FloatCC, IntCC};
-use crate::ir::MemFlags;
+use crate::ir::{MemFlags, Type};
 use crate::isa::x64::inst::Inst;
 use crate::machinst::*;
 use regalloc::{
@@ -402,6 +402,23 @@ pub enum UnaryRmROpcode {
     Bsr,
     /// Bit-scan forward.
     Bsf,
+    /// Counts leading zeroes (Leading Zero CouNT).
+    Lzcnt,
+    /// Counts trailing zeroes (Trailing Zero CouNT).
+    Tzcnt,
+    /// Counts the number of ones (POPulation CouNT).
+    Popcnt,
+}
+
+impl UnaryRmROpcode {
+    pub(crate) fn available_from(&self) -> Option<InstructionSet> {
+        match self {
+            UnaryRmROpcode::Bsr | UnaryRmROpcode::Bsf => None,
+            UnaryRmROpcode::Lzcnt => Some(InstructionSet::Lzcnt),
+            UnaryRmROpcode::Tzcnt => Some(InstructionSet::BMI1),
+            UnaryRmROpcode::Popcnt => Some(InstructionSet::Popcnt),
+        }
+    }
 }
 
 impl fmt::Debug for UnaryRmROpcode {
@@ -409,6 +426,9 @@ impl fmt::Debug for UnaryRmROpcode {
         match self {
             UnaryRmROpcode::Bsr => write!(fmt, "bsr"),
             UnaryRmROpcode::Bsf => write!(fmt, "bsf"),
+            UnaryRmROpcode::Lzcnt => write!(fmt, "lzcnt"),
+            UnaryRmROpcode::Tzcnt => write!(fmt, "tzcnt"),
+            UnaryRmROpcode::Popcnt => write!(fmt, "popcnt"),
         }
     }
 }
@@ -433,6 +453,10 @@ pub(crate) enum InstructionSet {
     SSSE3,
     SSE41,
     SSE42,
+    Popcnt,
+    Lzcnt,
+    BMI1,
+    BMI2,
 }
 
 /// Some SSE operations requiring 2 operands r/m and r.
@@ -1299,6 +1323,8 @@ impl RoundImm {
 /// An operand's size in bits.
 #[derive(Clone, Copy, PartialEq)]
 pub enum OperandSize {
+    Size8,
+    Size16,
     Size32,
     Size64,
 }
@@ -1306,24 +1332,36 @@ pub enum OperandSize {
 impl OperandSize {
     pub(crate) fn from_bytes(num_bytes: u32) -> Self {
         match num_bytes {
-            1 | 2 | 4 => OperandSize::Size32,
+            1 => OperandSize::Size8,
+            2 => OperandSize::Size16,
+            4 => OperandSize::Size32,
             8 => OperandSize::Size64,
-            _ => unreachable!(),
+            _ => unreachable!("Invalid OperandSize: {}", num_bytes),
         }
+    }
+
+    // Computes the OperandSize for a given type.
+    // For vectors, the OperandSize of the lanes is returned.
+    pub(crate) fn from_ty(ty: Type) -> Self {
+        Self::from_bytes(ty.lane_type().bytes())
+    }
+
+    // Check that the value of self is one of the allowed sizes.
+    pub(crate) fn is_one_of(&self, sizes: &[Self]) -> bool {
+        sizes.iter().any(|val| *self == *val)
     }
 
     pub(crate) fn to_bytes(&self) -> u8 {
         match self {
+            Self::Size8 => 1,
+            Self::Size16 => 2,
             Self::Size32 => 4,
             Self::Size64 => 8,
         }
     }
 
     pub(crate) fn to_bits(&self) -> u8 {
-        match self {
-            Self::Size32 => 32,
-            Self::Size64 => 64,
-        }
+        self.to_bytes() * 8
     }
 }
 

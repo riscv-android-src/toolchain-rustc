@@ -177,6 +177,19 @@ pub struct CargoRunnable {
     pub expect_test: Option<bool>,
 }
 
+pub enum RelatedTests {}
+
+impl Request for RelatedTests {
+    type Params = lsp_types::TextDocumentPositionParams;
+    type Result = Vec<TestInfo>;
+    const METHOD: &'static str = "rust-analyzer/relatedTests";
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestInfo {
+    pub runnable: Runnable,
+}
+
 pub enum InlayHints {}
 
 impl Request for InlayHints {
@@ -230,8 +243,8 @@ pub struct SsrParams {
 
 pub enum StatusNotification {}
 
-#[serde(rename_all = "camelCase")]
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Status {
     Loading,
     ReadyPartial,
@@ -376,4 +389,16 @@ impl Request for OpenCargoToml {
 #[serde(rename_all = "camelCase")]
 pub struct OpenCargoTomlParams {
     pub text_document: TextDocumentIdentifier,
+}
+
+/// Information about CodeLens, that is to be resolved.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CodeLensResolveData {
+    Impls(lsp_types::request::GotoImplementationParams),
+    References(lsp_types::TextDocumentPositionParams),
+}
+
+pub fn supports_utf8(caps: &lsp_types::ClientCapabilities) -> bool {
+    caps.offset_encoding.as_deref().unwrap_or_default().iter().any(|it| it == "utf-8")
 }

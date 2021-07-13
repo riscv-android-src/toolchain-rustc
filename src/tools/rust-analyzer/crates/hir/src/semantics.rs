@@ -16,17 +16,15 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::{
     algo::find_node_at_offset,
     ast::{self, GenericParamsOwner, LoopBodyOwner},
-    match_ast, AstNode, SyntaxNode, SyntaxToken, TextSize,
+    match_ast, AstNode, SyntaxNode, SyntaxNodePtr, SyntaxToken, TextSize,
 };
 
 use crate::{
-    code_model::Access,
     db::HirDatabase,
-    diagnostics::Diagnostic,
     semantics::source_to_def::{ChildContainer, SourceToDefCache, SourceToDefCtx},
     source_analyzer::{resolve_hir_path, SourceAnalyzer},
-    AssocItem, Callable, ConstParam, Crate, Field, Function, HirFileId, Impl, InFile, Label,
-    LifetimeParam, Local, MacroDef, Module, ModuleDef, Name, Path, ScopeDef, Trait, Type,
+    Access, AssocItem, Callable, ConstParam, Crate, Field, Function, HirFileId, Impl, InFile,
+    Label, LifetimeParam, Local, MacroDef, Module, ModuleDef, Name, Path, ScopeDef, Trait, Type,
     TypeAlias, TypeParam, VariantDef,
 };
 
@@ -49,7 +47,7 @@ impl PathResolution {
         match self {
             PathResolution::Def(ModuleDef::Adt(adt)) => Some(TypeNs::AdtId((*adt).into())),
             PathResolution::Def(ModuleDef::BuiltinType(builtin)) => {
-                Some(TypeNs::BuiltinType(*builtin))
+                Some(TypeNs::BuiltinType((*builtin).into()))
             }
             PathResolution::Def(ModuleDef::Const(_))
             | PathResolution::Def(ModuleDef::Variant(_))
@@ -141,7 +139,7 @@ impl<'db, DB: HirDatabase> Semantics<'db, DB> {
         self.imp.original_range(node)
     }
 
-    pub fn diagnostics_display_range(&self, diagnostics: &dyn Diagnostic) -> FileRange {
+    pub fn diagnostics_display_range(&self, diagnostics: InFile<SyntaxNodePtr>) -> FileRange {
         self.imp.diagnostics_display_range(diagnostics)
     }
 
@@ -385,8 +383,7 @@ impl<'db> SemanticsImpl<'db> {
         node.as_ref().original_file_range(self.db.upcast())
     }
 
-    fn diagnostics_display_range(&self, diagnostics: &dyn Diagnostic) -> FileRange {
-        let src = diagnostics.display_source();
+    fn diagnostics_display_range(&self, src: InFile<SyntaxNodePtr>) -> FileRange {
         let root = self.db.parse_or_expand(src.file_id).unwrap();
         let node = src.value.to_node(&root);
         self.cache(root, src.file_id);

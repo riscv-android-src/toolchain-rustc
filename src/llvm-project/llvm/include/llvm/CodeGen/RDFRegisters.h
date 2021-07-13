@@ -115,12 +115,6 @@ namespace rdf {
       return RegMasks.get(Register::stackSlot2Index(R));
     }
 
-    LLVM_ATTRIBUTE_DEPRECATED(RegisterRef normalize(RegisterRef RR),
-      "This function is now an identity function");
-    RegisterRef normalize(RegisterRef RR) const {
-      return RR;
-    }
-
     bool alias(RegisterRef RA, RegisterRef RB) const {
       if (!isRegMaskId(RA.Reg))
         return !isRegMaskId(RB.Reg) ? aliasRR(RA, RB) : aliasRM(RA, RB);
@@ -258,6 +252,8 @@ namespace rdf {
     LaneBitmask Mask;
   };
   raw_ostream &operator<< (raw_ostream &OS, const PrintLaneMaskOpt &P);
+
+  raw_ostream &operator<< (raw_ostream &OS, const RegisterAggr &A);
 } // end namespace rdf
 
 } // end namespace llvm

@@ -1,5 +1,4 @@
 use expect_test::expect;
-use test_utils::mark;
 
 use super::{check_infer, check_types};
 
@@ -2314,7 +2313,7 @@ fn generic_default_depending_on_other_type_arg_forward() {
 
 #[test]
 fn infer_operator_overload() {
-    mark::check!(infer_expr_inner_binary_operator_overload);
+    cov_mark::check!(infer_expr_inner_binary_operator_overload);
 
     check_infer(
         r#"
@@ -2414,4 +2413,135 @@ fn infer_const_params() {
             43..46 'FOO': usize
         "#]],
     );
+}
+
+#[test]
+fn infer_inner_type() {
+    check_infer(
+        r#"
+        fn foo() {
+            struct S { field: u32 }
+            let s = S { field: 0 };
+            let f = s.field;
+        }
+    "#,
+        expect![[r#"
+            9..89 '{     ...eld; }': ()
+            47..48 's': S
+            51..65 'S { field: 0 }': S
+            62..63 '0': u32
+            75..76 'f': u32
+            79..80 's': S
+            79..86 's.field': u32
+        "#]],
+    );
+}
+
+#[test]
+fn infer_nested_inner_type() {
+    check_infer(
+        r#"
+        fn foo() {
+            {
+                let s = S { field: 0 };
+                let f = s.field;
+            }
+            struct S { field: u32 }
+        }
+    "#,
+        expect![[r#"
+            9..109 '{     ...32 } }': ()
+            15..79 '{     ...     }': ()
+            29..30 's': S
+            33..47 'S { field: 0 }': S
+            44..45 '0': u32
+            61..62 'f': u32
+            65..66 's': S
+            65..72 's.field': u32
+        "#]],
+    );
+}
+
+#[test]
+fn inner_use_enum_rename() {
+    check_infer(
+        r#"
+        enum Request {
+            Info
+        }
+
+        fn f() {
+            use Request as R;
+
+            let r = R::Info;
+            match r {
+                R::Info => {}
+            }
+        }
+    "#,
+        expect![[r#"
+            34..123 '{     ...   } }': ()
+            67..68 'r': Request
+            71..78 'R::Info': Request
+            84..121 'match ...     }': ()
+            90..91 'r': Request
+            102..109 'R::Info': Request
+            113..115 '{}': ()
+        "#]],
+    )
+}
+
+#[test]
+fn box_into_vec() {
+    check_infer(
+        r#"
+#[lang = "sized"]
+pub trait Sized {}
+
+#[lang = "unsize"]
+pub trait Unsize<T: ?Sized> {}
+
+#[lang = "coerce_unsized"]
+pub trait CoerceUnsized<T> {}
+
+pub unsafe trait Allocator {}
+
+pub struct Global;
+unsafe impl Allocator for Global {}
+
+#[lang = "owned_box"]
+#[fundamental]
+pub struct Box<T: ?Sized, A: Allocator = Global>;
+
+impl<T: ?Sized + Unsize<U>, U: ?Sized, A: Allocator> CoerceUnsized<Box<U, A>> for Box<T, A> {}
+
+pub struct Vec<T, A: Allocator = Global> {}
+
+#[lang = "slice"]
+impl<T> [T] {}
+
+#[lang = "slice_alloc"]
+impl<T> [T] {
+    pub fn into_vec<A: Allocator>(self: Box<Self, A>) -> Vec<T, A> {
+        unimplemented!()
+    }
+}
+
+fn test() {
+    let vec = <[_]>::into_vec(box [1i32]);
+}
+"#,
+        expect![[r#"
+            569..573 'self': Box<[T], A>
+            602..634 '{     ...     }': Vec<T, A>
+            612..628 'unimpl...ted!()': Vec<T, A>
+            648..694 '{     ...2]); }': ()
+            658..661 'vec': Vec<i32, Global>
+            664..679 '<[_]>::into_vec': fn into_vec<i32, Global>(Box<[i32], Global>) -> Vec<i32, Global>
+            664..691 '<[_]>:...1i32])': Vec<i32, Global>
+            680..690 'box [1i32]': Box<[i32; _], Global>
+            684..690 '[1i32]': [i32; _]
+            685..689 '1i32': i32
+        "#]],
+    )
 }

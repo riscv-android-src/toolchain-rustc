@@ -1,5 +1,7 @@
 # The HIR
 
+<!-- toc -->
+
 The HIR – "High-Level Intermediate Representation" – is the primary IR used
 in most of rustc. It is a compiler-friendly representation of the abstract
 syntax tree (AST) that is generated after parsing, macro expansion, and name
@@ -12,13 +14,13 @@ the HIR. This makes HIR more amenable to analysis than a normal AST.
 This chapter covers the main concepts of the HIR.
 
 You can view the HIR representation of your code by passing the
-`-Zunpretty=hir-tree` flag to rustc:
+`-Z unpretty=hir-tree` flag to rustc:
 
 ```bash
-cargo rustc -- -Zunpretty=hir-tree
+cargo rustc -- -Z unpretty=hir-tree
 ```
 
-### Out-of-band storage and the `Crate` type
+## Out-of-band storage and the `Crate` type
 
 The top-level data-structure in the HIR is the [`Crate`], which stores
 the contents of the crate currently being compiled (we only ever
@@ -66,78 +68,52 @@ the compiler a chance to observe that you accessed the data for
 
 <a name="hir-id"></a>
 
-### Identifiers in the HIR
+## Identifiers in the HIR
 
-Most of the code that has to deal with things in HIR tends not to
-carry around references into the HIR, but rather to carry around
-*identifier numbers* (or just "ids"). Right now, you will find four
-sorts of identifiers in active use:
+There are a bunch of different identifiers to refer to other nodes or definitions
+in the HIR. In short:
+- A [`DefId`] refers to a *definition* in any crate.
+- A [`LocalDefId`] refers to a *definition* in the currently compiled crate.
+- A [`HirId`] refers to *any node* in the HIR.
 
-- [`DefId`], which primarily names "definitions" or top-level items.
-  - You can think of a [`DefId`] as being shorthand for a very explicit
-    and complete path, like `std::collections::HashMap`. However,
-    these paths are able to name things that are not nameable in
-    normal Rust (e.g. impls), and they also include extra information
-    about the crate (such as its version number, as two versions of
-    the same crate can co-exist).
-  - A [`DefId`] really consists of two parts, a `CrateNum` (which
-    identifies the crate) and a `DefIndex` (which indexes into a list
-    of items that is maintained per crate).
-- [`HirId`], which combines the index of a particular item with an
-  offset within that item.
-  - the key point of a [`HirId`] is that it is *relative* to some item
-    (which is named via a [`DefId`]).
-- [`BodyId`], this is an identifier that refers to a specific
-  body (definition of a function or constant) in the crate. It is currently
-  effectively a "newtype'd" [`HirId`].
-- [`NodeId`], which is an absolute id that identifies a single node in the HIR
-  tree.
-  - While these are still in common use, **they are being slowly phased out**.
-  - Since they are absolute within the crate, adding a new node anywhere in the
-    tree causes the [`NodeId`]s of all subsequent code in the crate to change.
-    This is terrible for incremental compilation, as you can perhaps imagine.
+For more detailed information, check out the [chapter on identifiers][ids].
 
 [`DefId`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_hir/def_id/struct.DefId.html
+[`LocalDefId`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_hir/def_id/struct.LocalDefId.html
 [`HirId`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_hir/hir_id/struct.HirId.html
-[`BodyId`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_hir/struct.BodyId.html
-[`NodeId`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_ast/node_id/struct.NodeId.html
+[ids]: ./identifiers.md#in-the-hir
 
-We also have an internal map to go from `DefId` to what’s called "Def path". "Def path" is like a
-module path but a bit more rich. For example, it may be `crate::foo::MyStruct` that identifies
-this definition uniquely. It’s a bit different than a module path because it might include a type
-parameter `T`, which you can't write in normal rust, like `crate::foo::MyStruct::T`. These are used
-in incremental compilation.
-
-### The HIR Map
+## The HIR Map
 
 Most of the time when you are working with the HIR, you will do so via
-the **HIR Map**, accessible in the tcx via [`tcx.hir_map`] (and defined in
+the **HIR Map**, accessible in the tcx via [`tcx.hir()`] (and defined in
 the [`hir::map`] module). The [HIR map] contains a [number of methods] to
 convert between IDs of various kinds and to lookup data associated
-with an HIR node.
+with a HIR node.
 
-[`tcx.hir_map`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/context/struct.GlobalCtxt.html#structfield.hir_map
+[`tcx.hir()`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/struct.TyCtxt.html#method.hir
 [`hir::map`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/hir/map/index.html
 [HIR map]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/hir/map/struct.Map.html
 [number of methods]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/hir/map/struct.Map.html#methods
 
 For example, if you have a [`DefId`], and you would like to convert it
 to a [`NodeId`], you can use
-[`tcx.hir.as_local_node_id(def_id)`][as_local_node_id]. This returns
+[`tcx.hir().as_local_node_id(def_id)`][as_local_node_id]. This returns
 an `Option<NodeId>` – this will be `None` if the def-id refers to
 something outside of the current crate (since then it has no HIR
 node), but otherwise returns `Some(n)` where `n` is the node-id of the
 definition.
 
+[`NodeId`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_ast/node_id/struct.NodeId.html
 [as_local_node_id]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/hir/map/struct.Map.html#method.as_local_node_id
 
-Similarly, you can use [`tcx.hir.find(n)`][find] to lookup the node for a
+Similarly, you can use [`tcx.hir().find(n)`][find] to lookup the node for a
 [`NodeId`]. This returns a `Option<Node<'tcx>>`, where [`Node`] is an enum
 defined in the map; by matching on this you can find out what sort of
 node the node-id referred to and also get a pointer to the data
 itself. Often, you know what sort of node `n` is – e.g. if you know
 that `n` must be some HIR expression, you can do
-[`tcx.hir.expect_expr(n)`][expect_expr], which will extract and return the
+[`tcx.hir().expect_expr(n)`][expect_expr], which will extract and return the
 [`&hir::Expr`][Expr], panicking if `n` is not in fact an expression.
 
 [find]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/hir/map/struct.Map.html#method.find
@@ -146,11 +122,11 @@ that `n` must be some HIR expression, you can do
 [Expr]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_hir/struct.Expr.html
 
 Finally, you can use the HIR map to find the parents of nodes, via
-calls like [`tcx.hir.get_parent_node(n)`][get_parent_node].
+calls like [`tcx.hir().get_parent_node(n)`][get_parent_node].
 
 [get_parent_node]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/hir/map/struct.Map.html#method.get_parent_node
 
-### HIR Bodies
+## HIR Bodies
 
 A [`rustc_hir::Body`] represents some kind of executable code, such as the body
 of a function/closure or the definition of a constant. Bodies are

@@ -1,5 +1,7 @@
 # Member constraints
 
+<!-- toc -->
+
 A member constraint `'m member of ['c_1..'c_N]` expresses that the
 region `'m` must be *equal* to some **choice regions** `'c_i` (for
 some `i`). These constraints cannot be expressed by users, but they
@@ -91,14 +93,13 @@ member constraints come in.
 
 ## Choices are always lifetime parameters
 
-At present, the "choice" regions from a member constraint are always
-lifetime parameters from the current function. This falls out from the
-placement of impl Trait, though in the future it may not be the case.
-We take some advantage of this fact, as it simplifies the current
-code. In particular, we don't have to consider a case like `'0 member
-of ['1, 'static]`, in which the value of both `'0` and `'1` are being
-inferred and hence changing. See [rust-lang/rust#61773][#61773] for more
-information.
+At present, the "choice" regions from a member constraint are always lifetime
+parameters from the current function. As of <!-- date: 2021-01 --> January 2021,
+this falls out from the placement of impl Trait, though in the future it may not
+be the case. We take some advantage of this fact, as it simplifies the current
+code. In particular, we don't have to consider a case like `'0 member of ['1,
+'static]`, in which the value of both `'0` and `'1` are being inferred and hence
+changing. See [rust-lang/rust#61773][#61773] for more information.
 
 [#61773]: https://github.com/rust-lang/rust/issues/61773
 
@@ -140,7 +141,7 @@ i.e., that `'0` must be *smaller* than. In our example, this would be
 examples, the chain may be more indirect.
 
 We can use upper bounds to rule out members in a very similar way to
-lower lower bounds. If UB is some upper bound, then we know that `UB:
+lower bounds. If UB is some upper bound, then we know that `UB:
 '0` must hold, so we can rule out any choice `'choice` where `UB:
 'choice` does not hold.
 

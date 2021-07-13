@@ -20,7 +20,6 @@ use la_arena::{Arena, ArenaMap};
 use profile::Count;
 use rustc_hash::FxHashMap;
 use syntax::{ast, AstNode, AstPtr};
-use test_utils::mark;
 
 pub(crate) use lower::LowerCtx;
 
@@ -29,11 +28,10 @@ use crate::{
     db::DefDatabase,
     expr::{Expr, ExprId, Label, LabelId, Pat, PatId},
     item_scope::BuiltinShadowMode,
-    item_scope::ItemScope,
     nameres::DefMap,
     path::{ModPath, Path},
     src::HasSource,
-    AsMacroCall, DefWithBodyId, HasModule, Lookup, ModuleId,
+    AsMacroCall, BlockId, DefWithBodyId, HasModule, LocalModuleId, Lookup, ModuleId,
 };
 
 /// A subset of Expander that only deals with cfg attributes. We only need it to
@@ -46,10 +44,10 @@ pub(crate) struct CfgExpander {
 
 pub(crate) struct Expander {
     cfg_expander: CfgExpander,
-    crate_def_map: Arc<DefMap>,
+    def_map: Arc<DefMap>,
     current_file_id: HirFileId,
     ast_id_map: Arc<AstIdMap>,
-    module: ModuleId,
+    module: LocalModuleId,
     recursion_limit: usize,
 }
 
@@ -87,14 +85,14 @@ impl Expander {
         module: ModuleId,
     ) -> Expander {
         let cfg_expander = CfgExpander::new(db, current_file_id, module.krate);
-        let crate_def_map = module.def_map(db);
+        let def_map = module.def_map(db);
         let ast_id_map = db.ast_id_map(current_file_id);
         Expander {
             cfg_expander,
-            crate_def_map,
+            def_map,
             current_file_id,
             ast_id_map,
-            module,
+            module: module.local_id,
             recursion_limit: 0,
         }
     }
@@ -102,35 +100,28 @@ impl Expander {
     pub(crate) fn enter_expand<T: ast::AstNode>(
         &mut self,
         db: &dyn DefDatabase,
-        local_scope: Option<&ItemScope>,
         macro_call: ast::MacroCall,
     ) -> ExpandResult<Option<(Mark, T)>> {
         if self.recursion_limit + 1 > EXPANSION_RECURSION_LIMIT {
-            mark::hit!(your_stack_belongs_to_me);
+            cov_mark::hit!(your_stack_belongs_to_me);
             return ExpandResult::str_err("reached recursion limit during macro expansion".into());
         }
 
         let macro_call = InFile::new(self.current_file_id, &macro_call);
 
-        let resolver = |path: ModPath| -> Option<MacroDefId> {
-            if let Some(local_scope) = local_scope {
-                if let Some(def) = path.as_ident().and_then(|n| local_scope.get_legacy_macro(n)) {
-                    return Some(def);
-                }
-            }
-            self.resolve_path_as_macro(db, &path)
-        };
+        let resolver =
+            |path: ModPath| -> Option<MacroDefId> { self.resolve_path_as_macro(db, &path) };
 
         let mut err = None;
         let call_id =
-            macro_call.as_call_id_with_errors(db, self.crate_def_map.krate(), resolver, &mut |e| {
+            macro_call.as_call_id_with_errors(db, self.def_map.krate(), resolver, &mut |e| {
                 err.get_or_insert(e);
             });
         let call_id = match call_id {
             Some(it) => it,
             None => {
                 if err.is_none() {
-                    eprintln!("no error despite `as_call_id_with_errors` returning `None`");
+                    log::warn!("no error despite `as_call_id_with_errors` returning `None`");
                 }
                 return ExpandResult { value: None, err };
             }
@@ -204,10 +195,7 @@ impl Expander {
     }
 
     fn resolve_path_as_macro(&self, db: &dyn DefDatabase, path: &ModPath) -> Option<MacroDefId> {
-        self.crate_def_map
-            .resolve_path(db, self.module.local_id, path, BuiltinShadowMode::Other)
-            .0
-            .take_macros()
+        self.def_map.resolve_path(db, self.module, path, BuiltinShadowMode::Other).0.take_macros()
     }
 
     fn ast_id<N: AstNode>(&self, item: &N) -> AstId<N> {
@@ -237,7 +225,8 @@ pub struct Body {
     pub params: Vec<PatId>,
     /// The `ExprId` of the actual body expression.
     pub body_expr: ExprId,
-    pub item_scope: ItemScope,
+    /// Block expressions in this body that may contain inner items.
+    pub block_scopes: Vec<BlockId>,
     _c: Count<Self>,
 }
 
@@ -306,7 +295,7 @@ impl Body {
             }
         };
         let expander = Expander::new(db, file_id, module);
-        let (body, source_map) = Body::new(db, def, expander, params, body);
+        let (body, source_map) = Body::new(db, expander, params, body);
         (Arc::new(body), Arc::new(source_map))
     }
 
@@ -316,12 +305,11 @@ impl Body {
 
     fn new(
         db: &dyn DefDatabase,
-        def: DefWithBodyId,
         expander: Expander,
         params: Option<ast::ParamList>,
         body: Option<ast::Expr>,
     ) -> (Body, BodySourceMap) {
-        lower::lower(db, def, expander, params, body)
+        lower::lower(db, expander, params, body)
     }
 }
 

@@ -112,6 +112,15 @@ pub struct CompletionItemCapability {
     /// @since 3.16.0
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insert_text_mode_support: Option<InsertTextModeSupport>,
+
+    /// The client has support for completion item label
+    /// details (see also `CompletionItemLabelDetails`).
+    ///
+    /// @since 3.17.0 - proposed state
+    ///
+    #[cfg(feature = "proposed")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_details_support: Option<bool>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
@@ -236,12 +245,54 @@ pub struct CompletionOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolve_provider: Option<bool>,
 
-    /// The characters that trigger completion automatically.
+    /// Most tools trigger completion request automatically without explicitly
+    /// requesting it using a keyboard shortcut (e.g. Ctrl+Space). Typically they
+    /// do so when the user starts to type an identifier. For example if the user
+    /// types `c` in a JavaScript file code complete will automatically pop up
+    /// present `console` besides others as a completion item. Characters that
+    /// make up identifiers don't need to be listed here.
+    ///
+    /// If code complete should automatically be trigger on characters not being
+    /// valid inside an identifier (for example `.` in JavaScript) list them in
+    /// `triggerCharacters`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger_characters: Option<Vec<String>>,
 
+    /// The list of all possible characters that commit a completion. This field
+    /// can be used if clients don't support individual commit characters per
+    /// completion item. See client capability
+    /// `completion.completionItem.commitCharactersSupport`.
+    ///
+    /// If a server provides both `allCommitCharacters` and commit characters on
+    /// an individual completion item the ones on the completion item win.
+    ///
+    /// @since 3.2.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all_commit_characters: Option<Vec<String>>,
+
     #[serde(flatten)]
     pub work_done_progress_options: WorkDoneProgressOptions,
+
+    /// The server supports the following `CompletionItem` specific
+    /// capabilities.
+    ///
+    /// @since 3.17.0 - proposed state
+    #[cfg(feature = "proposed")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_item: Option<CompletionOptionsCompletionItem>,
+}
+
+#[cfg(feature = "proposed")]
+#[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionOptionsCompletionItem {
+    /// The server has support for completion item label
+    /// details (see also `CompletionItemLabelDetails`) when receiving
+    /// a completion item in a resolve call.
+    ///
+    /// @since 3.17.0 - proposed state
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_details_support: Option<bool>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -331,6 +382,14 @@ pub struct CompletionItem {
     /// also the text that is inserted when selecting
     /// this completion.
     pub label: String,
+
+    /// Additional details for the label
+    ///
+    /// @since 3.17.0 - proposed state
+    ///
+    #[cfg(feature = "proposed")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_details: Option<CompletionItemLabelDetails>,
 
     /// The kind of this completion item. Based of the kind
     /// an icon is chosen by the editor.
@@ -429,6 +488,26 @@ impl CompletionItem {
             ..Self::default()
         }
     }
+}
+
+/// Additional details for a completion item label.
+///
+/// @since 3.17.0 - proposed state
+#[cfg(feature = "proposed")]
+#[derive(Debug, PartialEq, Default, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionItemLabelDetails {
+    /// The parameters without the return type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<String>,
+
+    /// The fully qualified name, like package name or file path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qualifier: Option<String>,
+
+    /// The return-type of a function or type of a property/variable.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
+    pub typ: Option<String>,
 }
 
 #[cfg(test)]

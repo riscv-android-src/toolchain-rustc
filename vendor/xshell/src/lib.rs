@@ -42,7 +42,7 @@
 //!
 //! ```
 //! # use xshell::cmd;
-//! let output = cmd!("date --iso").read()?;
+//! let output = cmd!("date +%Y-%m-%d").read()?;
 //! assert!(output.chars().all(|c| "01234567890-".contains(c)));
 //! # Ok::<(), xshell::Error>(())
 //! ```
@@ -177,7 +177,7 @@
 //!
 //! # Implementation details
 //!
-//! The design is heavily inspired by the Juila language:
+//! The design is heavily inspired by the Julia language:
 //!
 //! * [Shelling Out Sucks](https://julialang.org/blog/2012/03/shelling-out-sucks/)
 //! * [Put This In Your Pipe](https://julialang.org/blog/2013/04/put-this-in-your-pipe/)
@@ -190,7 +190,7 @@
 //!
 //! The `cmd!` macro uses a simple proc-macro internally. It doesn't depend on
 //! helper libraries, so the fixed-cost impact on compile times is moderate.
-//! Compiling a trivial program with `cmd!("date --iso")` takes one second.
+//! Compiling a trivial program with `cmd!("date +%Y-%m-%d")` takes one second.
 //! Equivalent program using only `std::process::Command` compiles in 0.25
 //! seconds.
 //!
@@ -236,6 +236,10 @@
 //! [`duct`]: https://github.com/oconnor663/duct.rs
 //! [`std::process::Command`]: https://doc.rust-lang.org/stable/std/process/struct.Command.html
 
+#![deny(missing_debug_implementations)]
+#![deny(missing_docs)]
+#![deny(rust_2018_idioms)]
+
 mod env;
 mod gsl;
 mod error;
@@ -257,9 +261,10 @@ pub use xshell_macros::__cmd;
 pub use crate::{
     env::{pushd, pushenv, Pushd, Pushenv},
     error::{Error, Result},
-    fs::{cp, cwd, mkdir_p, read_dir, read_file, rm_rf, write_file},
+    fs::{cp, cwd, mkdir_p, mktemp_d, read_dir, read_file, rm_rf, write_file, TempDir},
 };
 
+/// Constructs a [`Cmd`] from the given string.
 #[macro_export]
 macro_rules! cmd {
     ($cmd:tt) => {{
@@ -271,6 +276,7 @@ macro_rules! cmd {
     }};
 }
 
+/// A command.
 #[must_use]
 #[derive(Debug)]
 pub struct Cmd {
@@ -310,6 +316,7 @@ impl From<Cmd> for std::process::Command {
 }
 
 impl Cmd {
+    /// Creates a new `Cmd` that executes the given `program`.
     pub fn new(program: impl AsRef<Path>) -> Cmd {
         Cmd::_new(program.as_ref())
     }
@@ -323,10 +330,13 @@ impl Cmd {
         }
     }
 
+    /// Pushes an argument onto this `Cmd`.
     pub fn arg(mut self, arg: impl AsRef<OsStr>) -> Cmd {
         self._arg(arg.as_ref());
         self
     }
+
+    /// Pushes the arguments onto this `Cmd`.
     pub fn args<I>(mut self, args: I) -> Cmd
     where
         I: IntoIterator,
@@ -335,6 +345,7 @@ impl Cmd {
         args.into_iter().for_each(|it| self._arg(it.as_ref()));
         self
     }
+
     fn _arg(&mut self, arg: &OsStr) {
         self.args.push(arg.to_owned())
     }
@@ -348,11 +359,13 @@ impl Cmd {
         self.args.last_mut().unwrap().push(arg)
     }
 
+    /// Returns a `Cmd` that ignores its exit status.
     pub fn ignore_status(mut self) -> Cmd {
         self.ignore_status = true;
         self
     }
 
+    /// Returns a `Cmd` with the given stdin.
     pub fn stdin(mut self, stdin: impl AsRef<[u8]>) -> Cmd {
         self._stdin(stdin.as_ref());
         self
@@ -361,24 +374,32 @@ impl Cmd {
         self.stdin_contents = Some(stdin.to_vec());
     }
 
+    /// Returns a `Cmd` that echoes itself (or not) as specified.
     pub fn echo_cmd(mut self, echo: bool) -> Cmd {
         self.echo_cmd = echo;
         self
     }
 
+    /// Returns a `Cmd` that is secret (or not) as specified.
+    ///
+    /// If a command is secret, it echoes `<secret>` instead of the program and
+    /// its arguments.
     pub fn secret(mut self, secret: bool) -> Cmd {
         self.secret = secret;
         self
     }
 
+    /// Returns the stdout from running the command.
     pub fn read(self) -> Result<String> {
         self.read_stream(false)
     }
 
+    /// Returns the stderr from running the command.
     pub fn read_stderr(self) -> Result<String> {
         self.read_stream(true)
     }
 
+    /// Returns a [`std::process::Output`] from running the command.
     pub fn output(self) -> Result<Output> {
         match self.output_impl(true, true) {
             Ok(output) if output.status.success() || self.ignore_status => Ok(output),
@@ -387,6 +408,7 @@ impl Cmd {
         }
     }
 
+    /// Runs the command.
     pub fn run(self) -> Result<()> {
         let _guard = gsl::read();
         if self.echo_cmd {

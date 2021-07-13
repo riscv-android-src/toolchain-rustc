@@ -8,6 +8,7 @@ use crate::result::CodegenResult;
 use crate::settings;
 
 use alloc::boxed::Box;
+use core::hash::{Hash, Hasher};
 
 use regalloc::{PrettyPrint, RealRegUniverse};
 use target_lexicon::{Aarch64Architecture, Architecture, Triple};
@@ -65,6 +66,7 @@ impl MachBackend for AArch64Backend {
         let buffer = vcode.emit();
         let frame_size = vcode.frame_size();
         let unwind_info = vcode.unwind_info()?;
+        let stackslot_offsets = vcode.stackslot_offsets().clone();
 
         let disasm = if want_disasm {
             Some(vcode.show_rru(Some(&create_reg_universe(flags))))
@@ -79,6 +81,8 @@ impl MachBackend for AArch64Backend {
             frame_size,
             disasm,
             unwind_info,
+            value_labels_ranges: Default::default(),
+            stackslot_offsets,
         })
     }
 
@@ -92,6 +96,10 @@ impl MachBackend for AArch64Backend {
 
     fn flags(&self) -> &settings::Flags {
         &self.flags
+    }
+
+    fn hash_all_flags(&self, mut hasher: &mut dyn Hasher) {
+        self.flags.hash(&mut hasher);
     }
 
     fn reg_universe(&self) -> &RealRegUniverse {

@@ -585,6 +585,7 @@ fn preserve_top_comment() {
     lines.insert(2, "# some other comment");
     let mut lockfile = lines.join("\n");
     lockfile.push_str("\n\n"); // .lines/.join loses the last newline
+                               // >>>>>>> parent of 7dd9872c1... Change git dependencies to use `HEAD` by default
     println!("saving Cargo.lock contents:\n{}", lockfile);
 
     p.change_file("Cargo.lock", &lockfile);

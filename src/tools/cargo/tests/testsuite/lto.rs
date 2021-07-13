@@ -254,9 +254,9 @@ fn off_in_manifest_works() {
 [DOWNLOADING] [..]
 [DOWNLOADED] [..]
 [COMPILING] bar v0.0.1
-[RUNNING] `rustc --crate-name bar [..]--crate-type lib [..]-C embed-bitcode=no[..]
+[RUNNING] `rustc --crate-name bar [..]--crate-type lib [..]-C lto=off -C embed-bitcode=no[..]
 [COMPILING] test [..]
-[RUNNING] `rustc --crate-name test [..]--crate-type lib [..]-C embed-bitcode=no[..]
+[RUNNING] `rustc --crate-name test [..]--crate-type lib [..]-C lto=off -C embed-bitcode=no[..]
 [RUNNING] `rustc --crate-name test src/main.rs [..]--crate-type bin [..]-C lto=off[..]
 [FINISHED] [..]
 ",
@@ -493,8 +493,8 @@ fn cdylib_and_rlib() {
 [FRESH] registry-shared v0.0.1
 [FRESH] bar v0.0.0 [..]
 [COMPILING] foo [..]
-[RUNNING] `rustc --crate-name foo [..]-C embed-bitcode=no --test[..]
-[RUNNING] `rustc --crate-name a [..]-C embed-bitcode=no --test[..]
+[RUNNING] `rustc --crate-name foo [..]-C embed-bitcode=no [..]--test[..]
+[RUNNING] `rustc --crate-name a [..]-C embed-bitcode=no [..]--test[..]
 [FINISHED] [..]
 [RUNNING] [..]
 [RUNNING] [..]
@@ -520,13 +520,13 @@ fn cdylib_and_rlib() {
 [RUNNING] `rustc --crate-name registry_shared [..]-C embed-bitcode=no[..]
 [COMPILING] bar [..]
 [RUNNING] `rustc --crate-name bar [..]--crate-type cdylib --crate-type rlib [..]-C embed-bitcode=no[..]
-[RUNNING] `rustc --crate-name bar [..]-C embed-bitcode=no --test[..]
-[RUNNING] `rustc --crate-name b [..]-C embed-bitcode=no --test[..]
+[RUNNING] `rustc --crate-name bar [..]-C embed-bitcode=no [..]--test[..]
+[RUNNING] `rustc --crate-name b [..]-C embed-bitcode=no [..]--test[..]
 [FINISHED] [..]
 [RUNNING] [..]target/release/deps/bar-[..]
 [RUNNING] [..]target/release/deps/b-[..]
 [DOCTEST] bar
-[RUNNING] `rustdoc --crate-type cdylib --crate-type rlib --test [..]-C embed-bitcode=no[..]
+[RUNNING] `rustdoc --crate-type cdylib --crate-type rlib --crate-name bar --test [..]-C embed-bitcode=no[..]
 ",
         )
         .run();
@@ -552,8 +552,8 @@ fn dylib() {
 [FRESH] registry-shared v0.0.1
 [FRESH] bar v0.0.0 [..]
 [COMPILING] foo [..]
-[RUNNING] `rustc --crate-name foo [..]-C embed-bitcode=no --test[..]
-[RUNNING] `rustc --crate-name a [..]-C embed-bitcode=no --test[..]
+[RUNNING] `rustc --crate-name foo [..]-C embed-bitcode=no [..]--test[..]
+[RUNNING] `rustc --crate-name a [..]-C embed-bitcode=no [..]--test[..]
 [FINISHED] [..]
 [RUNNING] [..]
 [RUNNING] [..]
@@ -578,8 +578,8 @@ fn dylib() {
 [FRESH] registry-shared v0.0.1
 [FRESH] registry v0.0.1
 [COMPILING] bar [..]
-[RUNNING] `rustc --crate-name bar [..]-C embed-bitcode=no --test[..]
-[RUNNING] `rustc --crate-name b [..]-C embed-bitcode=no --test[..]
+[RUNNING] `rustc --crate-name bar [..]-C embed-bitcode=no [..]--test[..]
+[RUNNING] `rustc --crate-name b [..]-C embed-bitcode=no [..]--test[..]
 [FINISHED] [..]
 [RUNNING] [..]
 [RUNNING] [..]

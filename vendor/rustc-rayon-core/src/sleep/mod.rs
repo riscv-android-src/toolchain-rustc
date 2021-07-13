@@ -1,13 +1,13 @@
 //! Code that decides when workers should go to sleep. See README.md
 //! for an overview.
 
-use log::Event::*;
-use registry::Registry;
+use crate::log::Event::*;
+use crate::registry::Registry;
+use crate::DeadlockHandler;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::usize;
-use DeadlockHandler;
 
 struct SleepData {
     /// The number of threads in the thread pool.

@@ -119,20 +119,25 @@ brackets at the end of each author.
 <a id="the-edition-field-optional"></a>
 #### The `edition` field
 
-The `edition` key is an optional key that affects which edition your package
-is compiled with. [`cargo new`] will generate a package with the `edition` key
-set to the latest edition. Setting the `edition` key in
-`[package]` will affect all targets/crates in the package, including test
-suites, benchmarks, binaries, examples, etc.
-
-If the `edition` key is not set to a specific [Rust Edition] in your
-`Cargo.toml`, Cargo will default to 2015.
+The `edition` key is an optional key that affects which [Rust Edition] your package
+is compiled with. Setting the `edition` key in `[package]` will affect all
+targets/crates in the package, including test suites, benchmarks, binaries,
+examples, etc.
 
 ```toml
 [package]
 # ...
 edition = '2018'
 ```
+
+Most manifests have the `edition` field filled in automatically by [`cargo new`]
+with the latest stable edition. By default `cargo new` creates a manifest with
+the 2018 edition currently.
+
+If the `edition` field is not present in `Cargo.toml`, then the 2015 edition is
+assumed for backwards compatibility. Note that all manifests
+created with [`cargo new`] will not use this historical fallback because they
+will have `edition` explicitly specified to a newer value.
 
 #### The `description` field
 
@@ -209,7 +214,7 @@ containing the text of the license (relative to this `Cargo.toml`).
 
 [crates.io] interprets the `license` field as an [SPDX 2.1 license
 expression][spdx-2.1-license-expressions]. The name must be a known license
-from the [SPDX license list 3.6][spdx-license-list-3.6]. Parentheses are not
+from the [SPDX license list 3.11][spdx-license-list-3.11]. Parentheses are not
 currently supported. See the [SPDX site] for more information.
 
 SPDX license expressions support AND and OR operators to combine multiple
@@ -514,7 +519,7 @@ more detail.
 [publishing]: publishing.md
 [Rust Edition]: ../../edition-guide/index.html
 [spdx-2.1-license-expressions]: https://spdx.org/spdx-specification-21-web-version#h.jxpfx0ykyb60
-[spdx-license-list-3.6]: https://github.com/spdx/license-list-data/tree/v3.6
+[spdx-license-list-3.11]: https://github.com/spdx/license-list-data/tree/v3.11
 [SPDX site]: https://spdx.org/license-list
 [TOML]: https://toml.io/
 

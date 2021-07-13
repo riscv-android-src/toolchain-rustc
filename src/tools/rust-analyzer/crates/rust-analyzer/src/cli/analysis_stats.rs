@@ -12,21 +12,24 @@ use hir::{
     AssocItem, Crate, HasSource, HirDisplay, ModuleDef,
 };
 use hir_def::FunctionId;
-use hir_ty::{Ty, TypeWalk};
+use hir_ty::TypeWalk;
 use ide_db::base_db::{
     salsa::{self, ParallelDatabase},
     SourceDatabaseExt,
 };
 use itertools::Itertools;
 use oorandom::Rand32;
+use project_model::CargoConfig;
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
 use stdx::format_to;
 use syntax::AstNode;
 
 use crate::cli::{
-    load_cargo::load_cargo, print_memory_usage, progress_report::ProgressReport, report_metric,
-    Result, Verbosity,
+    load_cargo::{load_workspace_at, LoadCargoConfig},
+    print_memory_usage,
+    progress_report::ProgressReport,
+    report_metric, Result, Verbosity,
 };
 use profile::StopWatch;
 
@@ -44,6 +47,7 @@ pub struct AnalysisStatsCmd {
     pub memory_usage: bool,
     pub only: Option<String>,
     pub with_deps: bool,
+    pub no_sysroot: bool,
     pub path: PathBuf,
     pub load_output_dirs: bool,
     pub with_proc_macro: bool,
@@ -57,7 +61,14 @@ impl AnalysisStatsCmd {
         };
 
         let mut db_load_sw = self.stop_watch();
-        let (host, vfs) = load_cargo(&self.path, self.load_output_dirs, self.with_proc_macro)?;
+        let mut cargo_config = CargoConfig::default();
+        cargo_config.no_sysroot = self.no_sysroot;
+        let load_cargo_config = LoadCargoConfig {
+            load_out_dirs_from_check: self.load_output_dirs,
+            with_proc_macro: self.with_proc_macro,
+        };
+        let (host, vfs, _proc_macro) =
+            load_workspace_at(&self.path, &cargo_config, &load_cargo_config, &|_| {})?;
         let db = host.raw_database();
         eprintln!("{:<20} {}", "Database loaded:", db_load_sw.elapsed());
 
@@ -179,12 +190,12 @@ impl AnalysisStatsCmd {
             for (expr_id, _) in body.exprs.iter() {
                 let ty = &inference_result[expr_id];
                 num_exprs += 1;
-                if let Ty::Unknown = ty {
+                if ty.is_unknown() {
                     num_exprs_unknown += 1;
                 } else {
                     let mut is_partially_unknown = false;
                     ty.walk(&mut |ty| {
-                        if let Ty::Unknown = ty {
+                        if ty.is_unknown() {
                             is_partially_unknown = true;
                         }
                     });
@@ -211,9 +222,9 @@ impl AnalysisStatsCmd {
                         bar.println(format!(
                             "{}:{}-{}:{}: {}",
                             start.line + 1,
-                            start.col_utf16,
+                            start.col,
                             end.line + 1,
-                            end.col_utf16,
+                            end.col,
                             ty.display(db)
                         ));
                     } else {
@@ -243,9 +254,9 @@ impl AnalysisStatsCmd {
                                 "{} {}:{}-{}:{}: Expected {}, got {}",
                                 path,
                                 start.line + 1,
-                                start.col_utf16,
+                                start.col,
                                 end.line + 1,
-                                end.col_utf16,
+                                end.col,
                                 mismatch.expected.display(db),
                                 mismatch.actual.display(db)
                             ));

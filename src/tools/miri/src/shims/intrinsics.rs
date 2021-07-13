@@ -2,13 +2,19 @@ use std::iter;
 
 use log::trace;
 
-use rustc_middle::{mir, mir::BinOp, ty, ty::FloatTy};
-use rustc_middle::ty::layout::IntegerExt;
 use rustc_apfloat::{Float, Round};
+use rustc_middle::ty::layout::IntegerExt;
+use rustc_middle::{mir, mir::BinOp, ty, ty::FloatTy};
 use rustc_target::abi::{Align, Integer, LayoutOf};
 
 use crate::*;
 use helpers::check_arg_count;
+
+pub enum AtomicOp {
+    MirOp(mir::BinOp, bool),
+    Max,
+    Min,
+}
 
 impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
@@ -16,7 +22,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         &mut self,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
-        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
         _unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
@@ -36,39 +42,40 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         match intrinsic_name {
             // Miri overwriting CTFE intrinsics.
             "ptr_guaranteed_eq" => {
-                let &[left, right] = check_arg_count(args)?;
+                let &[ref left, ref right] = check_arg_count(args)?;
                 let left = this.read_immediate(left)?;
                 let right = this.read_immediate(right)?;
-                this.binop_ignore_overflow(mir::BinOp::Eq, left, right, dest)?;
+                this.binop_ignore_overflow(mir::BinOp::Eq, &left, &right, dest)?;
             }
             "ptr_guaranteed_ne" => {
-                let &[left, right] = check_arg_count(args)?;
+                let &[ref left, ref right] = check_arg_count(args)?;
                 let left = this.read_immediate(left)?;
                 let right = this.read_immediate(right)?;
-                this.binop_ignore_overflow(mir::BinOp::Ne, left, right, dest)?;
+                this.binop_ignore_overflow(mir::BinOp::Ne, &left, &right, dest)?;
             }
 
             // Raw memory accesses
             "volatile_load" => {
-                let &[place] = check_arg_count(args)?;
+                let &[ref place] = check_arg_count(args)?;
                 let place = this.deref_operand(place)?;
-                this.copy_op(place.into(), dest)?;
+                this.copy_op(&place.into(), dest)?;
             }
             "volatile_store" => {
-                let &[place, dest] = check_arg_count(args)?;
+                let &[ref place, ref dest] = check_arg_count(args)?;
                 let place = this.deref_operand(place)?;
-                this.copy_op(dest, place.into())?;
+                this.copy_op(dest, &place.into())?;
             }
 
             "write_bytes" => {
-                let &[ptr, val_byte, count] = check_arg_count(args)?;
+                let &[ref ptr, ref val_byte, ref count] = check_arg_count(args)?;
                 let ty = instance.substs.type_at(0);
                 let ty_layout = this.layout_of(ty)?;
                 let val_byte = this.read_scalar(val_byte)?.to_u8()?;
                 let ptr = this.read_scalar(ptr)?.check_init()?;
                 let count = this.read_scalar(count)?.to_machine_usize(this)?;
-                let byte_count = ty_layout.size.checked_mul(count, this)
-                    .ok_or_else(|| err_ub_format!("overflow computing total size of `write_bytes`"))?;
+                let byte_count = ty_layout.size.checked_mul(count, this).ok_or_else(|| {
+                    err_ub_format!("overflow computing total size of `write_bytes`")
+                })?;
                 this.memory
                     .write_bytes(ptr, iter::repeat(val_byte).take(byte_count.bytes() as usize))?;
             }
@@ -89,7 +96,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "truncf32"
             | "roundf32"
             => {
-                let &[f] = check_arg_count(args)?;
+                let &[ref f] = check_arg_count(args)?;
                 // FIXME: Using host floats.
                 let f = f32::from_bits(this.read_scalar(f)?.to_u32()?);
                 let f = match intrinsic_name {
@@ -126,7 +133,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "truncf64"
             | "roundf64"
             => {
-                let &[f] = check_arg_count(args)?;
+                let &[ref f] = check_arg_count(args)?;
                 // FIXME: Using host floats.
                 let f = f64::from_bits(this.read_scalar(f)?.to_u64()?);
                 let f = match intrinsic_name {
@@ -155,7 +162,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "fdiv_fast"
             | "frem_fast"
             => {
-                let &[a, b] = check_arg_count(args)?;
+                let &[ref a, ref b] = check_arg_count(args)?;
                 let a = this.read_immediate(a)?;
                 let b = this.read_immediate(b)?;
                 let op = match intrinsic_name {
@@ -166,7 +173,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     "frem_fast" => mir::BinOp::Rem,
                     _ => bug!(),
                 };
-                this.binop_ignore_overflow(op, a, b, dest)?;
+                this.binop_ignore_overflow(op, &a, &b, dest)?;
             }
 
             #[rustfmt::skip]
@@ -174,7 +181,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "maxnumf32"
             | "copysignf32"
             => {
-                let &[a, b] = check_arg_count(args)?;
+                let &[ref a, ref b] = check_arg_count(args)?;
                 let a = this.read_scalar(a)?.to_f32()?;
                 let b = this.read_scalar(b)?.to_f32()?;
                 let res = match intrinsic_name {
@@ -191,7 +198,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "maxnumf64"
             | "copysignf64"
             => {
-                let &[a, b] = check_arg_count(args)?;
+                let &[ref a, ref b] = check_arg_count(args)?;
                 let a = this.read_scalar(a)?.to_f64()?;
                 let b = this.read_scalar(b)?.to_f64()?;
                 let res = match intrinsic_name {
@@ -204,7 +211,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "powf32" => {
-                let &[f, f2] = check_arg_count(args)?;
+                let &[ref f, ref f2] = check_arg_count(args)?;
                 // FIXME: Using host floats.
                 let f = f32::from_bits(this.read_scalar(f)?.to_u32()?);
                 let f2 = f32::from_bits(this.read_scalar(f2)?.to_u32()?);
@@ -212,7 +219,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "powf64" => {
-                let &[f, f2] = check_arg_count(args)?;
+                let &[ref f, ref f2] = check_arg_count(args)?;
                 // FIXME: Using host floats.
                 let f = f64::from_bits(this.read_scalar(f)?.to_u64()?);
                 let f2 = f64::from_bits(this.read_scalar(f2)?.to_u64()?);
@@ -220,7 +227,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "fmaf32" => {
-                let &[a, b, c] = check_arg_count(args)?;
+                let &[ref a, ref b, ref c] = check_arg_count(args)?;
                 let a = this.read_scalar(a)?.to_f32()?;
                 let b = this.read_scalar(b)?.to_f32()?;
                 let c = this.read_scalar(c)?.to_f32()?;
@@ -229,7 +236,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "fmaf64" => {
-                let &[a, b, c] = check_arg_count(args)?;
+                let &[ref a, ref b, ref c] = check_arg_count(args)?;
                 let a = this.read_scalar(a)?.to_f64()?;
                 let b = this.read_scalar(b)?.to_f64()?;
                 let c = this.read_scalar(c)?.to_f64()?;
@@ -238,7 +245,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "powif32" => {
-                let &[f, i] = check_arg_count(args)?;
+                let &[ref f, ref i] = check_arg_count(args)?;
                 // FIXME: Using host floats.
                 let f = f32::from_bits(this.read_scalar(f)?.to_u32()?);
                 let i = this.read_scalar(i)?.to_i32()?;
@@ -246,7 +253,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "powif64" => {
-                let &[f, i] = check_arg_count(args)?;
+                let &[ref f, ref i] = check_arg_count(args)?;
                 // FIXME: Using host floats.
                 let f = f64::from_bits(this.read_scalar(f)?.to_u64()?);
                 let i = this.read_scalar(i)?.to_i32()?;
@@ -254,17 +261,18 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "float_to_int_unchecked" => {
-                let &[val] = check_arg_count(args)?;
+                let &[ref val] = check_arg_count(args)?;
                 let val = this.read_immediate(val)?;
 
                 let res = match val.layout.ty.kind() {
-                    ty::Float(FloatTy::F32) => {
-                        this.float_to_int_unchecked(val.to_scalar()?.to_f32()?, dest.layout.ty)?
-                    }
-                    ty::Float(FloatTy::F64) => {
-                        this.float_to_int_unchecked(val.to_scalar()?.to_f64()?, dest.layout.ty)?
-                    }
-                    _ => bug!("`float_to_int_unchecked` called with non-float input type {:?}", val.layout.ty),
+                    ty::Float(FloatTy::F32) =>
+                        this.float_to_int_unchecked(val.to_scalar()?.to_f32()?, dest.layout.ty)?,
+                    ty::Float(FloatTy::F64) =>
+                        this.float_to_int_unchecked(val.to_scalar()?.to_f64()?, dest.layout.ty)?,
+                    _ => bug!(
+                        "`float_to_int_unchecked` called with non-float input type {:?}",
+                        val.layout.ty
+                    ),
                 };
 
                 this.write_scalar(res, dest)?;
@@ -286,7 +294,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
             "atomic_singlethreadfence_acq" => this.compiler_fence(args, AtomicFenceOp::Acquire)?,
             "atomic_singlethreadfence_rel" => this.compiler_fence(args, AtomicFenceOp::Release)?,
-            "atomic_singlethreadfence_acqrel" => this.compiler_fence(args, AtomicFenceOp::AcqRel)?,
+            "atomic_singlethreadfence_acqrel" =>
+                this.compiler_fence(args, AtomicFenceOp::AcqRel)?,
             "atomic_singlethreadfence" => this.compiler_fence(args, AtomicFenceOp::SeqCst)?,
 
             "atomic_xchg" => this.atomic_exchange(args, dest, AtomicRwOp::SeqCst)?,
@@ -295,141 +304,383 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "atomic_xchg_acqrel" => this.atomic_exchange(args, dest, AtomicRwOp::AcqRel)?,
             "atomic_xchg_relaxed" => this.atomic_exchange(args, dest, AtomicRwOp::Relaxed)?,
 
-            "atomic_cxchg" => this.atomic_compare_exchange(
-                args, dest, AtomicRwOp::SeqCst, AtomicReadOp::SeqCst
-            )?,
+            "atomic_cxchg" =>
+                this.atomic_compare_exchange(args, dest, AtomicRwOp::SeqCst, AtomicReadOp::SeqCst)?,
             "atomic_cxchg_acq" => this.atomic_compare_exchange(
-                args, dest, AtomicRwOp::Acquire, AtomicReadOp::Acquire
+                args,
+                dest,
+                AtomicRwOp::Acquire,
+                AtomicReadOp::Acquire,
             )?,
             "atomic_cxchg_rel" => this.atomic_compare_exchange(
-                args, dest, AtomicRwOp::Release, AtomicReadOp::Relaxed
+                args,
+                dest,
+                AtomicRwOp::Release,
+                AtomicReadOp::Relaxed,
             )?,
-            "atomic_cxchg_acqrel" => this.atomic_compare_exchange
-            (args, dest, AtomicRwOp::AcqRel, AtomicReadOp::Acquire
-            )?,
+            "atomic_cxchg_acqrel" =>
+                this.atomic_compare_exchange(args, dest, AtomicRwOp::AcqRel, AtomicReadOp::Acquire)?,
             "atomic_cxchg_relaxed" => this.atomic_compare_exchange(
-                args, dest, AtomicRwOp::Relaxed, AtomicReadOp::Relaxed
+                args,
+                dest,
+                AtomicRwOp::Relaxed,
+                AtomicReadOp::Relaxed,
             )?,
             "atomic_cxchg_acq_failrelaxed" => this.atomic_compare_exchange(
-                args, dest, AtomicRwOp::Acquire, AtomicReadOp::Relaxed
+                args,
+                dest,
+                AtomicRwOp::Acquire,
+                AtomicReadOp::Relaxed,
             )?,
-            "atomic_cxchg_acqrel_failrelaxed" => this.atomic_compare_exchange(
-                args, dest, AtomicRwOp::AcqRel, AtomicReadOp::Relaxed
-            )?,
-            "atomic_cxchg_failrelaxed" => this.atomic_compare_exchange(
-                args, dest, AtomicRwOp::SeqCst, AtomicReadOp::Relaxed
-            )?,
-            "atomic_cxchg_failacq" => this.atomic_compare_exchange(
-                args, dest, AtomicRwOp::SeqCst, AtomicReadOp::Acquire
-            )?,
+            "atomic_cxchg_acqrel_failrelaxed" =>
+                this.atomic_compare_exchange(args, dest, AtomicRwOp::AcqRel, AtomicReadOp::Relaxed)?,
+            "atomic_cxchg_failrelaxed" =>
+                this.atomic_compare_exchange(args, dest, AtomicRwOp::SeqCst, AtomicReadOp::Relaxed)?,
+            "atomic_cxchg_failacq" =>
+                this.atomic_compare_exchange(args, dest, AtomicRwOp::SeqCst, AtomicReadOp::Acquire)?,
 
             "atomic_cxchgweak" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::SeqCst, AtomicReadOp::SeqCst
+                args,
+                dest,
+                AtomicRwOp::SeqCst,
+                AtomicReadOp::SeqCst,
             )?,
             "atomic_cxchgweak_acq" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::Acquire, AtomicReadOp::Acquire
+                args,
+                dest,
+                AtomicRwOp::Acquire,
+                AtomicReadOp::Acquire,
             )?,
             "atomic_cxchgweak_rel" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::Release, AtomicReadOp::Relaxed
+                args,
+                dest,
+                AtomicRwOp::Release,
+                AtomicReadOp::Relaxed,
             )?,
             "atomic_cxchgweak_acqrel" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::AcqRel, AtomicReadOp::Acquire
+                args,
+                dest,
+                AtomicRwOp::AcqRel,
+                AtomicReadOp::Acquire,
             )?,
             "atomic_cxchgweak_relaxed" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::Relaxed, AtomicReadOp::Relaxed
+                args,
+                dest,
+                AtomicRwOp::Relaxed,
+                AtomicReadOp::Relaxed,
             )?,
             "atomic_cxchgweak_acq_failrelaxed" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::Acquire, AtomicReadOp::Relaxed
+                args,
+                dest,
+                AtomicRwOp::Acquire,
+                AtomicReadOp::Relaxed,
             )?,
             "atomic_cxchgweak_acqrel_failrelaxed" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::AcqRel, AtomicReadOp::Relaxed
+                args,
+                dest,
+                AtomicRwOp::AcqRel,
+                AtomicReadOp::Relaxed,
             )?,
             "atomic_cxchgweak_failrelaxed" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::SeqCst, AtomicReadOp::Relaxed
+                args,
+                dest,
+                AtomicRwOp::SeqCst,
+                AtomicReadOp::Relaxed,
             )?,
             "atomic_cxchgweak_failacq" => this.atomic_compare_exchange_weak(
-                args, dest, AtomicRwOp::SeqCst, AtomicReadOp::Acquire
+                args,
+                dest,
+                AtomicRwOp::SeqCst,
+                AtomicReadOp::Acquire,
             )?,
 
-            "atomic_or" => this.atomic_op(args, dest, BinOp::BitOr, false, AtomicRwOp::SeqCst)?,
-            "atomic_or_acq" => this.atomic_op(args, dest, BinOp::BitOr, false, AtomicRwOp::Acquire)?,
-            "atomic_or_rel" => this.atomic_op(args, dest, BinOp::BitOr, false, AtomicRwOp::Release)?,
-            "atomic_or_acqrel" => this.atomic_op(args, dest, BinOp::BitOr, false, AtomicRwOp::AcqRel)?,
-            "atomic_or_relaxed" => this.atomic_op(args, dest, BinOp::BitOr, false, AtomicRwOp::Relaxed)?,
-            "atomic_xor" => this.atomic_op(args, dest, BinOp::BitXor, false, AtomicRwOp::SeqCst)?,
-            "atomic_xor_acq" => this.atomic_op(args, dest, BinOp::BitXor, false, AtomicRwOp::Acquire)?,
-            "atomic_xor_rel" => this.atomic_op(args, dest, BinOp::BitXor, false, AtomicRwOp::Release)?,
-            "atomic_xor_acqrel" => this.atomic_op(args, dest, BinOp::BitXor, false, AtomicRwOp::AcqRel)?,
-            "atomic_xor_relaxed" => this.atomic_op(args, dest, BinOp::BitXor, false, AtomicRwOp::Relaxed)?,
-            "atomic_and" => this.atomic_op(args, dest, BinOp::BitAnd, false, AtomicRwOp::SeqCst)?,
-            "atomic_and_acq" => this.atomic_op(args, dest, BinOp::BitAnd, false, AtomicRwOp::Acquire)?,
-            "atomic_and_rel" => this.atomic_op(args, dest, BinOp::BitAnd, false, AtomicRwOp::Release)?,
-            "atomic_and_acqrel" => this.atomic_op(args, dest, BinOp::BitAnd, false, AtomicRwOp::AcqRel)?,
-            "atomic_and_relaxed" => this.atomic_op(args, dest, BinOp::BitAnd, false, AtomicRwOp::Relaxed)?,
-            "atomic_nand" => this.atomic_op(args, dest, BinOp::BitAnd, true, AtomicRwOp::SeqCst)?,
-            "atomic_nand_acq" => this.atomic_op(args, dest, BinOp::BitAnd, true, AtomicRwOp::Acquire)?,
-            "atomic_nand_rel" => this.atomic_op(args, dest, BinOp::BitAnd, true, AtomicRwOp::Release)?,
-            "atomic_nand_acqrel" => this.atomic_op(args, dest, BinOp::BitAnd, true, AtomicRwOp::AcqRel)?,
-            "atomic_nand_relaxed" => this.atomic_op(args, dest, BinOp::BitAnd, true, AtomicRwOp::Relaxed)?,
-            "atomic_xadd" => this.atomic_op(args, dest, BinOp::Add, false, AtomicRwOp::SeqCst)?,
-            "atomic_xadd_acq" => this.atomic_op(args, dest, BinOp::Add, false, AtomicRwOp::Acquire)?,
-            "atomic_xadd_rel" => this.atomic_op(args, dest, BinOp::Add, false, AtomicRwOp::Release)?,
-            "atomic_xadd_acqrel" => this.atomic_op(args, dest, BinOp::Add, false, AtomicRwOp::AcqRel)?,
-            "atomic_xadd_relaxed" => this.atomic_op(args, dest, BinOp::Add, false, AtomicRwOp::Relaxed)?,
-            "atomic_xsub" => this.atomic_op(args, dest, BinOp::Sub, false, AtomicRwOp::SeqCst)?,
-            "atomic_xsub_acq" => this.atomic_op(args, dest, BinOp::Sub, false, AtomicRwOp::Acquire)?,
-            "atomic_xsub_rel" => this.atomic_op(args, dest, BinOp::Sub, false, AtomicRwOp::Release)?,
-            "atomic_xsub_acqrel" => this.atomic_op(args, dest, BinOp::Sub, false, AtomicRwOp::AcqRel)?,
-            "atomic_xsub_relaxed" => this.atomic_op(args, dest, BinOp::Sub, false, AtomicRwOp::Relaxed)?,
-
+            "atomic_or" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitOr, false),
+                AtomicRwOp::SeqCst,
+            )?,
+            "atomic_or_acq" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitOr, false),
+                AtomicRwOp::Acquire,
+            )?,
+            "atomic_or_rel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitOr, false),
+                AtomicRwOp::Release,
+            )?,
+            "atomic_or_acqrel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitOr, false),
+                AtomicRwOp::AcqRel,
+            )?,
+            "atomic_or_relaxed" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitOr, false),
+                AtomicRwOp::Relaxed,
+            )?,
+            "atomic_xor" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitXor, false),
+                AtomicRwOp::SeqCst,
+            )?,
+            "atomic_xor_acq" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitXor, false),
+                AtomicRwOp::Acquire,
+            )?,
+            "atomic_xor_rel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitXor, false),
+                AtomicRwOp::Release,
+            )?,
+            "atomic_xor_acqrel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitXor, false),
+                AtomicRwOp::AcqRel,
+            )?,
+            "atomic_xor_relaxed" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitXor, false),
+                AtomicRwOp::Relaxed,
+            )?,
+            "atomic_and" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, false),
+                AtomicRwOp::SeqCst,
+            )?,
+            "atomic_and_acq" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, false),
+                AtomicRwOp::Acquire,
+            )?,
+            "atomic_and_rel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, false),
+                AtomicRwOp::Release,
+            )?,
+            "atomic_and_acqrel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, false),
+                AtomicRwOp::AcqRel,
+            )?,
+            "atomic_and_relaxed" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, false),
+                AtomicRwOp::Relaxed,
+            )?,
+            "atomic_nand" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, true),
+                AtomicRwOp::SeqCst,
+            )?,
+            "atomic_nand_acq" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, true),
+                AtomicRwOp::Acquire,
+            )?,
+            "atomic_nand_rel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, true),
+                AtomicRwOp::Release,
+            )?,
+            "atomic_nand_acqrel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, true),
+                AtomicRwOp::AcqRel,
+            )?,
+            "atomic_nand_relaxed" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::BitAnd, true),
+                AtomicRwOp::Relaxed,
+            )?,
+            "atomic_xadd" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Add, false),
+                AtomicRwOp::SeqCst,
+            )?,
+            "atomic_xadd_acq" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Add, false),
+                AtomicRwOp::Acquire,
+            )?,
+            "atomic_xadd_rel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Add, false),
+                AtomicRwOp::Release,
+            )?,
+            "atomic_xadd_acqrel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Add, false),
+                AtomicRwOp::AcqRel,
+            )?,
+            "atomic_xadd_relaxed" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Add, false),
+                AtomicRwOp::Relaxed,
+            )?,
+            "atomic_xsub" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Sub, false),
+                AtomicRwOp::SeqCst,
+            )?,
+            "atomic_xsub_acq" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Sub, false),
+                AtomicRwOp::Acquire,
+            )?,
+            "atomic_xsub_rel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Sub, false),
+                AtomicRwOp::Release,
+            )?,
+            "atomic_xsub_acqrel" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Sub, false),
+                AtomicRwOp::AcqRel,
+            )?,
+            "atomic_xsub_relaxed" => this.atomic_op(
+                args,
+                dest,
+                AtomicOp::MirOp(BinOp::Sub, false),
+                AtomicRwOp::Relaxed,
+            )?,
+            "atomic_min" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::SeqCst)?,
+            "atomic_min_acq" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::Acquire)?,
+            "atomic_min_rel" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::Release)?,
+            "atomic_min_acqrel" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::AcqRel)?,
+            "atomic_min_relaxed" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::Relaxed)?,
+            "atomic_max" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::SeqCst)?,
+            "atomic_max_acq" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::Acquire)?,
+            "atomic_max_rel" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::Release)?,
+            "atomic_max_acqrel" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::AcqRel)?,
+            "atomic_max_relaxed" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::Relaxed)?,
+            "atomic_umin" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::SeqCst)?,
+            "atomic_umin_acq" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::Acquire)?,
+            "atomic_umin_rel" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::Release)?,
+            "atomic_umin_acqrel" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::AcqRel)?,
+            "atomic_umin_relaxed" =>
+                this.atomic_op(args, dest, AtomicOp::Min, AtomicRwOp::Relaxed)?,
+            "atomic_umax" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::SeqCst)?,
+            "atomic_umax_acq" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::Acquire)?,
+            "atomic_umax_rel" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::Release)?,
+            "atomic_umax_acqrel" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::AcqRel)?,
+            "atomic_umax_relaxed" =>
+                this.atomic_op(args, dest, AtomicOp::Max, AtomicRwOp::Relaxed)?,
 
             // Query type information
-            "assert_zero_valid" |
-            "assert_uninit_valid" => {
+            "assert_zero_valid" | "assert_uninit_valid" => {
                 let &[] = check_arg_count(args)?;
                 let ty = instance.substs.type_at(0);
                 let layout = this.layout_of(ty)?;
                 // Abort here because the caller might not be panic safe.
                 if layout.abi.is_uninhabited() {
                     // Use this message even for the other intrinsics, as that's what codegen does
-                    throw_machine_stop!(TerminationInfo::Abort(format!("aborted execution: attempted to instantiate uninhabited type `{}`", ty)))
+                    throw_machine_stop!(TerminationInfo::Abort(format!(
+                        "aborted execution: attempted to instantiate uninhabited type `{}`",
+                        ty
+                    )))
                 }
-                if intrinsic_name == "assert_zero_valid" && !layout.might_permit_raw_init(this, /*zero:*/ true).unwrap() {
-                    throw_machine_stop!(TerminationInfo::Abort(format!("aborted execution: attempted to zero-initialize type `{}`, which is invalid", ty)))
+                if intrinsic_name == "assert_zero_valid"
+                    && !layout.might_permit_raw_init(this, /*zero:*/ true).unwrap()
+                {
+                    throw_machine_stop!(TerminationInfo::Abort(format!(
+                        "aborted execution: attempted to zero-initialize type `{}`, which is invalid",
+                        ty
+                    )))
                 }
-                if intrinsic_name == "assert_uninit_valid" && !layout.might_permit_raw_init(this, /*zero:*/ false).unwrap() {
-                    throw_machine_stop!(TerminationInfo::Abort(format!("aborted execution: attempted to leave type `{}` uninitialized, which is invalid", ty)))
+                if intrinsic_name == "assert_uninit_valid"
+                    && !layout.might_permit_raw_init(this, /*zero:*/ false).unwrap()
+                {
+                    throw_machine_stop!(TerminationInfo::Abort(format!(
+                        "aborted execution: attempted to leave type `{}` uninitialized, which is invalid",
+                        ty
+                    )))
                 }
             }
 
             // Other
             "exact_div" => {
-                let &[num, denom] = check_arg_count(args)?;
-                this.exact_div(this.read_immediate(num)?, this.read_immediate(denom)?, dest)?;
+                let &[ref num, ref denom] = check_arg_count(args)?;
+                this.exact_div(&this.read_immediate(num)?, &this.read_immediate(denom)?, dest)?;
             }
 
             "try" => return this.handle_try(args, dest, ret),
 
+            "breakpoint" => {
+                let &[] = check_arg_count(args)?;
+                // normally this would raise a SIGTRAP, which aborts if no debugger is connected
+                throw_machine_stop!(TerminationInfo::Abort("Trace/breakpoint trap".to_string()))
+            }
+
             name => throw_unsup_format!("unimplemented intrinsic: {}", name),
         }
 
-        trace!("{:?}", this.dump_place(*dest));
+        trace!("{:?}", this.dump_place(**dest));
         this.go_to_block(ret);
         Ok(())
     }
 
     fn atomic_load(
-        &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>,
-        atomic: AtomicReadOp
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        dest: &PlaceTy<'tcx, Tag>,
+        atomic: AtomicReadOp,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
-
-        let &[place] = check_arg_count(args)?;
+        let &[ref place] = check_arg_count(args)?;
         let place = this.deref_operand(place)?;
 
         // make sure it fits into a scalar; otherwise it cannot be atomic
-        let val = this.read_scalar_atomic(place, atomic)?;
+        let val = this.read_scalar_atomic(&place, atomic)?;
 
         // Check alignment requirements. Atomics must always be aligned to their size,
         // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
@@ -440,10 +691,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         Ok(())
     }
 
-    fn atomic_store(&mut self, args: &[OpTy<'tcx, Tag>], atomic: AtomicWriteOp) -> InterpResult<'tcx> {
+    fn atomic_store(
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        atomic: AtomicWriteOp,
+    ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
-        let &[place, val] = check_arg_count(args)?;
+        let &[ref place, ref val] = check_arg_count(args)?;
         let place = this.deref_operand(place)?;
         let val = this.read_scalar(val)?; // make sure it fits into a scalar; otherwise it cannot be atomic
 
@@ -454,18 +709,26 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
 
         // Perform atomic store
-        this.write_scalar_atomic(val, place, atomic)?;
+        this.write_scalar_atomic(val, &place, atomic)?;
         Ok(())
     }
 
-    fn compiler_fence(&mut self, args: &[OpTy<'tcx, Tag>], atomic: AtomicFenceOp) -> InterpResult<'tcx> {
+    fn compiler_fence(
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        atomic: AtomicFenceOp,
+    ) -> InterpResult<'tcx> {
         let &[] = check_arg_count(args)?;
         let _ = atomic;
         //FIXME: compiler fences are currently ignored
         Ok(())
     }
 
-    fn atomic_fence(&mut self, args: &[OpTy<'tcx, Tag>], atomic: AtomicFenceOp) -> InterpResult<'tcx> {
+    fn atomic_fence(
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        atomic: AtomicFenceOp,
+    ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         let &[] = check_arg_count(args)?;
         this.validate_atomic_fence(atomic)?;
@@ -473,13 +736,17 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     }
 
     fn atomic_op(
-        &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>,
-        op: mir::BinOp, neg: bool, atomic: AtomicRwOp
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        dest: &PlaceTy<'tcx, Tag>,
+        atomic_op: AtomicOp,
+        atomic: AtomicRwOp,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
-        let &[place, rhs] = check_arg_count(args)?;
+        let &[ref place, ref rhs] = check_arg_count(args)?;
         let place = this.deref_operand(place)?;
+
         if !place.layout.ty.is_integral() {
             bug!("Atomic arithmetic operations only work on integer types");
         }
@@ -490,18 +757,35 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // be 8-aligned).
         let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
         this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
-        
-        let old = this.atomic_op_immediate(place, rhs, op, neg, atomic)?;
-        this.write_immediate(*old, dest)?; // old value is returned
-        Ok(())
+
+        match atomic_op {
+            AtomicOp::Min => {
+                let old = this.atomic_min_max_scalar(&place, rhs, true, atomic)?;
+                this.write_immediate(*old, &dest)?; // old value is returned
+                Ok(())
+            }
+            AtomicOp::Max => {
+                let old = this.atomic_min_max_scalar(&place, rhs, false, atomic)?;
+                this.write_immediate(*old, &dest)?; // old value is returned
+                Ok(())
+            }
+            AtomicOp::MirOp(op, neg) => {
+                let old = this.atomic_op_immediate(&place, &rhs, op, neg, atomic)?;
+                this.write_immediate(*old, dest)?; // old value is returned
+                Ok(())
+            }
+        }
     }
-    
+
     fn atomic_exchange(
-        &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>, atomic: AtomicRwOp
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        dest: &PlaceTy<'tcx, Tag>,
+        atomic: AtomicRwOp,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
-        let &[place, new] = check_arg_count(args)?;
+        let &[ref place, ref new] = check_arg_count(args)?;
         let place = this.deref_operand(place)?;
         let new = this.read_scalar(new)?;
 
@@ -511,22 +795,25 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
         this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
 
-        let old = this.atomic_exchange_scalar(place, new, atomic)?;
+        let old = this.atomic_exchange_scalar(&place, new, atomic)?;
         this.write_scalar(old, dest)?; // old value is returned
         Ok(())
     }
 
     fn atomic_compare_exchange_impl(
-        &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>,
-        success: AtomicRwOp, fail: AtomicReadOp, can_fail_spuriously: bool
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        dest: &PlaceTy<'tcx, Tag>,
+        success: AtomicRwOp,
+        fail: AtomicReadOp,
+        can_fail_spuriously: bool,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
 
-        let &[place, expect_old, new] = check_arg_count(args)?;
+        let &[ref place, ref expect_old, ref new] = check_arg_count(args)?;
         let place = this.deref_operand(place)?;
         let expect_old = this.read_immediate(expect_old)?; // read as immediate for the sake of `binary_op()`
         let new = this.read_scalar(new)?;
-
 
         // Check alignment requirements. Atomics must always be aligned to their size,
         // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
@@ -534,9 +821,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
         this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
 
-        
         let old = this.atomic_compare_exchange_scalar(
-            place, expect_old, new, success, fail, can_fail_spuriously
+            &place,
+            &expect_old,
+            new,
+            success,
+            fail,
+            can_fail_spuriously,
         )?;
 
         // Return old value.
@@ -545,15 +836,21 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     }
 
     fn atomic_compare_exchange(
-        &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>,
-        success: AtomicRwOp, fail: AtomicReadOp
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        dest: &PlaceTy<'tcx, Tag>,
+        success: AtomicRwOp,
+        fail: AtomicReadOp,
     ) -> InterpResult<'tcx> {
         self.atomic_compare_exchange_impl(args, dest, success, fail, false)
     }
 
     fn atomic_compare_exchange_weak(
-        &mut self, args: &[OpTy<'tcx, Tag>], dest: PlaceTy<'tcx, Tag>,
-        success: AtomicRwOp, fail: AtomicReadOp
+        &mut self,
+        args: &[OpTy<'tcx, Tag>],
+        dest: &PlaceTy<'tcx, Tag>,
+        success: AtomicRwOp,
+        fail: AtomicReadOp,
     ) -> InterpResult<'tcx> {
         self.atomic_compare_exchange_impl(args, dest, success, fail, true)
     }
@@ -564,7 +861,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         dest_ty: ty::Ty<'tcx>,
     ) -> InterpResult<'tcx, Scalar<Tag>>
     where
-        F: Float + Into<Scalar<Tag>>
+        F: Float + Into<Scalar<Tag>>,
     {
         let this = self.eval_context_ref();
 
@@ -585,7 +882,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     // `f` was not representable in this integer type.
                     throw_ub_format!(
                         "`float_to_int_unchecked` intrinsic called on {} which cannot be represented in target type `{:?}`",
-                        f, dest_ty,
+                        f,
+                        dest_ty,
                     );
                 }
             }
@@ -600,7 +898,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     // `f` was not representable in this integer type.
                     throw_ub_format!(
                         "`float_to_int_unchecked` intrinsic called on {} which cannot be represented in target type `{:?}`",
-                        f, dest_ty,
+                        f,
+                        dest_ty,
                     );
                 }
             }

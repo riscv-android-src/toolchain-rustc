@@ -13,15 +13,15 @@ use crate::core::features::Features;
 use crate::core::registry::PackageRegistry;
 use crate::core::resolver::features::RequestedFeatures;
 use crate::core::resolver::ResolveBehavior;
-use crate::core::{Dependency, PackageId, PackageIdSpec};
+use crate::core::{Dependency, Edition, PackageId, PackageIdSpec};
 use crate::core::{EitherManifest, Package, SourceId, VirtualManifest};
 use crate::ops;
-use crate::sources::PathSource;
+use crate::sources::{PathSource, CRATES_IO_INDEX, CRATES_IO_REGISTRY};
 use crate::util::errors::{CargoResult, CargoResultExt, ManifestError};
 use crate::util::interning::InternedString;
 use crate::util::paths;
-use crate::util::toml::{read_manifest, TomlProfiles};
-use crate::util::{Config, Filesystem};
+use crate::util::toml::{read_manifest, TomlDependency, TomlProfiles};
+use crate::util::{config::ConfigRelativePath, Config, Filesystem, IntoUrl};
 
 /// The core abstraction in Cargo for working with a workspace of crates.
 ///
@@ -88,7 +88,7 @@ pub struct Workspace<'cfg> {
     ignore_lock: bool,
 
     /// The resolver behavior specified with the `resolver` field.
-    resolve_behavior: Option<ResolveBehavior>,
+    resolve_behavior: ResolveBehavior,
 
     /// Workspace-level custom metadata
     custom_metadata: Option<toml::Value>,
@@ -103,7 +103,7 @@ struct Packages<'cfg> {
 }
 
 #[derive(Debug)]
-enum MaybePackage {
+pub enum MaybePackage {
     Package(Package),
     Virtual(VirtualManifest),
 }
@@ -164,10 +164,7 @@ impl<'cfg> Workspace<'cfg> {
             .load_workspace_config()?
             .and_then(|cfg| cfg.custom_metadata);
         ws.find_members()?;
-        ws.resolve_behavior = match ws.root_maybe() {
-            MaybePackage::Package(p) => p.manifest().resolve_behavior(),
-            MaybePackage::Virtual(vm) => vm.resolve_behavior(),
-        };
+        ws.set_resolve_behavior();
         ws.validate()?;
         Ok(ws)
     }
@@ -189,7 +186,7 @@ impl<'cfg> Workspace<'cfg> {
             require_optional_deps: true,
             loaded_packages: RefCell::new(HashMap::new()),
             ignore_lock: false,
-            resolve_behavior: None,
+            resolve_behavior: ResolveBehavior::V1,
             custom_metadata: None,
         }
     }
@@ -203,11 +200,11 @@ impl<'cfg> Workspace<'cfg> {
         let mut ws = Workspace::new_default(current_manifest, config);
         ws.root_manifest = Some(root_path.join("Cargo.toml"));
         ws.target_dir = config.target_dir()?;
-        ws.resolve_behavior = manifest.resolve_behavior();
         ws.packages
             .packages
             .insert(root_path, MaybePackage::Virtual(manifest));
         ws.find_members()?;
+        ws.set_resolve_behavior();
         // TODO: validation does not work because it walks up the directory
         // tree looking for the root which is a fake file that doesn't exist.
         Ok(ws)
@@ -231,7 +228,6 @@ impl<'cfg> Workspace<'cfg> {
         let mut ws = Workspace::new_default(package.manifest_path().to_path_buf(), config);
         ws.is_ephemeral = true;
         ws.require_optional_deps = require_optional_deps;
-        ws.resolve_behavior = package.manifest().resolve_behavior();
         let key = ws.current_manifest.parent().unwrap();
         let id = package.package_id();
         let package = MaybePackage::Package(package);
@@ -244,7 +240,26 @@ impl<'cfg> Workspace<'cfg> {
         ws.members.push(ws.current_manifest.clone());
         ws.member_ids.insert(id);
         ws.default_members.push(ws.current_manifest.clone());
+        ws.set_resolve_behavior();
         Ok(ws)
+    }
+
+    fn set_resolve_behavior(&mut self) {
+        // - If resolver is specified in the workspace definition, use that.
+        // - If the root package specifies the resolver, use that.
+        // - If the root package specifies edition 2021, use v2.
+        // - Otherwise, use the default v1.
+        self.resolve_behavior = match self.root_maybe() {
+            MaybePackage::Package(p) => p.manifest().resolve_behavior().or_else(|| {
+                if p.manifest().edition() >= Edition::Edition2021 {
+                    Some(ResolveBehavior::V2)
+                } else {
+                    None
+                }
+            }),
+            MaybePackage::Virtual(vm) => vm.resolve_behavior(),
+        }
+        .unwrap_or(ResolveBehavior::V1);
     }
 
     /// Returns the current package of this workspace.
@@ -327,7 +342,7 @@ impl<'cfg> Workspace<'cfg> {
     }
 
     /// Returns the root Package or VirtualManifest.
-    fn root_maybe(&self) -> &MaybePackage {
+    pub fn root_maybe(&self) -> &MaybePackage {
         self.packages.get(self.root_manifest())
     }
 
@@ -347,14 +362,105 @@ impl<'cfg> Workspace<'cfg> {
         }
     }
 
+    fn config_patch(&self) -> CargoResult<HashMap<Url, Vec<Dependency>>> {
+        let config_patch: Option<
+            BTreeMap<String, BTreeMap<String, TomlDependency<ConfigRelativePath>>>,
+        > = self.config.get("patch")?;
+
+        if config_patch.is_some() && !self.config.cli_unstable().patch_in_config {
+            self.config.shell().warn("`[patch]` in cargo config was ignored, the -Zpatch-in-config command-line flag is required".to_owned())?;
+            return Ok(HashMap::new());
+        }
+
+        let source = SourceId::for_path(self.root())?;
+
+        let mut warnings = Vec::new();
+        let mut nested_paths = Vec::new();
+
+        let mut patch = HashMap::new();
+        for (url, deps) in config_patch.into_iter().flatten() {
+            let url = match &url[..] {
+                CRATES_IO_REGISTRY => CRATES_IO_INDEX.parse().unwrap(),
+                url => self
+                    .config
+                    .get_registry_index(url)
+                    .or_else(|_| url.into_url())
+                    .chain_err(|| {
+                        format!("[patch] entry `{}` should be a URL or registry name", url)
+                    })?,
+            };
+            patch.insert(
+                url,
+                deps.iter()
+                    .map(|(name, dep)| {
+                        dep.to_dependency_split(
+                            name,
+                            /* pkg_id */ None,
+                            source,
+                            &mut nested_paths,
+                            self.config,
+                            &mut warnings,
+                            /* platform */ None,
+                            // NOTE: Since we use ConfigRelativePath, this root isn't used as
+                            // any relative paths are resolved before they'd be joined with root.
+                            &Path::new("unused-relative-path"),
+                            self.unstable_features(),
+                            /* kind */ None,
+                        )
+                    })
+                    .collect::<CargoResult<Vec<_>>>()?,
+            );
+        }
+
+        for message in warnings {
+            self.config
+                .shell()
+                .warn(format!("[patch] in cargo config: {}", message))?
+        }
+
+        Ok(patch)
+    }
+
     /// Returns the root `[patch]` section of this workspace.
     ///
     /// This may be from a virtual crate or an actual crate.
-    pub fn root_patch(&self) -> &HashMap<Url, Vec<Dependency>> {
-        match self.root_maybe() {
+    pub fn root_patch(&self) -> CargoResult<HashMap<Url, Vec<Dependency>>> {
+        let from_manifest = match self.root_maybe() {
             MaybePackage::Package(p) => p.manifest().patch(),
             MaybePackage::Virtual(vm) => vm.patch(),
+        };
+
+        let from_config = self.config_patch()?;
+        if from_config.is_empty() {
+            return Ok(from_manifest.clone());
         }
+        if from_manifest.is_empty() {
+            return Ok(from_config.clone());
+        }
+
+        // We could just chain from_manifest and from_config,
+        // but that's not quite right as it won't deal with overlaps.
+        let mut combined = from_manifest.clone();
+        for (url, cdeps) in from_config {
+            if let Some(deps) = combined.get_mut(&url) {
+                // We want from_manifest to take precedence for each patched name.
+                // NOTE: This is inefficient if the number of patches is large!
+                let mut left = cdeps.clone();
+                for dep in &mut *deps {
+                    if let Some(i) = left.iter().position(|cdep| {
+                        // XXX: should this also take into account version numbers?
+                        dep.name_in_toml() == cdep.name_in_toml()
+                    }) {
+                        left.swap_remove(i);
+                    }
+                }
+                // Whatever is left does not exist in manifest dependencies.
+                deps.extend(left);
+            } else {
+                combined.insert(url.clone(), cdeps.clone());
+            }
+        }
+        Ok(combined)
     }
 
     /// Returns an iterator over all packages in this workspace
@@ -461,7 +567,7 @@ impl<'cfg> Workspace<'cfg> {
             }
         }
 
-        for path in paths::ancestors(manifest_path).skip(2) {
+        for path in paths::ancestors(manifest_path, None).skip(2) {
             if path.ends_with("target/package") {
                 break;
             }
@@ -634,7 +740,7 @@ impl<'cfg> Workspace<'cfg> {
     }
 
     pub fn resolve_behavior(&self) -> ResolveBehavior {
-        self.resolve_behavior.unwrap_or(ResolveBehavior::V1)
+        self.resolve_behavior
     }
 
     /// Returns `true` if this workspace uses the new CLI features behavior.
@@ -843,11 +949,11 @@ impl<'cfg> Workspace<'cfg> {
                 if !manifest.patch().is_empty() {
                     emit_warning("patch")?;
                 }
-                if manifest.resolve_behavior().is_some()
-                    && manifest.resolve_behavior() != self.resolve_behavior
-                {
-                    // Only warn if they don't match.
-                    emit_warning("resolver")?;
+                if let Some(behavior) = manifest.resolve_behavior() {
+                    if behavior != self.resolve_behavior {
+                        // Only warn if they don't match.
+                        emit_warning("resolver")?;
+                    }
                 }
             }
         }

@@ -151,6 +151,10 @@ impl Package {
     pub fn targets(&self) -> &[Target] {
         self.manifest().targets()
     }
+    /// Gets the library crate for this package, if it exists.
+    pub fn library(&self) -> Option<&Target> {
+        self.targets().iter().find(|t| t.is_lib())
+    }
     /// Gets the current package version.
     pub fn version(&self) -> &Version {
         self.package_id().version()
@@ -434,11 +438,11 @@ impl<'cfg> PackageSet<'cfg> {
         })
     }
 
-    pub fn package_ids<'a>(&'a self) -> impl Iterator<Item = PackageId> + 'a {
+    pub fn package_ids(&self) -> impl Iterator<Item = PackageId> + '_ {
         self.packages.keys().cloned()
     }
 
-    pub fn packages<'a>(&'a self) -> impl Iterator<Item = &'a Package> + 'a {
+    pub fn packages(&self) -> impl Iterator<Item = &Package> {
         self.packages.values().filter_map(|p| p.borrow())
     }
 

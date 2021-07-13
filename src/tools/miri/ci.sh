@@ -2,8 +2,6 @@
 set -euo pipefail
 
 # Determine configuration
-export RUST_TEST_NOCAPTURE=1
-export RUST_BACKTRACE=1
 export RUSTFLAGS="-D warnings"
 export CARGO_INCREMENTAL=0
 export CARGO_EXTRA_FLAGS="--all-features"
@@ -24,8 +22,9 @@ function run_tests {
 
   ./miri test --locked
   if [ -z "${MIRI_TEST_TARGET+exists}" ]; then
-    # Only for host architecture: tests with MIR optimizations
-    MIRIFLAGS="-Z mir-opt-level=3" ./miri test --locked
+    # Only for host architecture: tests with optimizations (`-O` is what cargo passes, but crank MIR
+    # optimizations up all the way).
+    MIRIFLAGS="-O -Zmir-opt-level=4" ./miri test --locked
   fi
 
   # On Windows, there is always "python", not "python3" or "python2".

@@ -1,16 +1,26 @@
 # MIR Debugging
 
-The `-Zdump-mir` flag can be used to dump a text representation of the MIR. The
-`-Zdump-mir-graphviz` flag can be used to dump a `.dot` file that represents
-MIR as a control-flow graph.
+The `-Z dump-mir` flag can be used to dump a text representation of the MIR.
+The following optional flags, used in combination with `-Z dump-mir`, enable
+additional output formats, including:
 
-`-Zdump-mir=F` is a handy compiler options that will let you view the MIR for
-each function at each stage of compilation. `-Zdump-mir` takes a **filter** `F`
+* `-Z dump-mir-graphviz` - dumps a `.dot` file that represents MIR as a
+control-flow graph
+* `-Z dump-mir-dataflow` - dumps a `.dot` file showing the [dataflow state] at
+  each point in the control-flow graph
+* `-Z dump-mir-spanview` - dumps an `.html` file that highlights the source
+spans associated with MIR elements (including mouse-over actions to reveal
+elements obscured by overlaps, and tooltips to view the MIR statements).
+This flag takes an optional value: `statement` (the default), `terminator`, or
+`block`, to generate span highlights with different levels of granulatity.
+
+`-Z dump-mir=F` is a handy compiler options that will let you view the MIR for
+each function at each stage of compilation. `-Z dump-mir` takes a **filter** `F`
 which allows you to control which functions and which passes you are
 interesting in. For example:
 
 ```bash
-> rustc -Zdump-mir=foo ...
+> rustc -Z dump-mir=foo ...
 ```
 
 This will dump the MIR for any function whose name contains `foo`; it
@@ -24,7 +34,7 @@ fn main() {
     println!("Hello, world!");
 }
 ^D
-> rustc -Zdump-mir=main foo.rs
+> rustc -Z dump-mir=main foo.rs
 > ls mir_dump/* | wc -l
      161
 ```
@@ -46,7 +56,7 @@ will select for things that reference *both* `main` and the pass
 `CleanEndRegions`:
 
 ```bash
-> rustc -Zdump-mir='main & CleanEndRegions' foo.rs
+> rustc -Z dump-mir='main & CleanEndRegions' foo.rs
 > ls mir_dump
 rustc.main.000-000.CleanEndRegions.after.mir	rustc.main.000-000.CleanEndRegions.before.mir
 ```
@@ -57,7 +67,7 @@ NoLandingPads` will select *either* `main` and `CleanEndRegions` *or*
 `main` and `NoLandingPads`:
 
 ```bash
-> rustc -Zdump-mir='main & CleanEndRegions | main & NoLandingPads' foo.rs
+> rustc -Z dump-mir='main & CleanEndRegions | main & NoLandingPads' foo.rs
 > ls mir_dump
 rustc.main-promoted[0].002-000.NoLandingPads.after.mir
 rustc.main-promoted[0].002-000.NoLandingPads.before.mir
@@ -79,3 +89,5 @@ rustc.main.002-006.NoLandingPads.before.mir
 that appeared within the `main` function.)
 
 TODO: anything else?
+
+[dataflow state]: ./dataflow.html#graphviz-diagrams

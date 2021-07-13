@@ -134,6 +134,7 @@ impl TargetInfo {
             kind,
             "RUSTFLAGS",
         )?;
+        let extra_fingerprint = kind.fingerprint_hash();
         let mut process = rustc.process();
         process
             .arg("-")
@@ -160,14 +161,17 @@ impl TargetInfo {
             process.arg("--crate-type").arg(crate_type.as_str());
         }
         let supports_split_debuginfo = rustc
-            .cached_output(process.clone().arg("-Csplit-debuginfo=packed"))
+            .cached_output(
+                process.clone().arg("-Csplit-debuginfo=packed"),
+                extra_fingerprint,
+            )
             .is_ok();
 
         process.arg("--print=sysroot");
         process.arg("--print=cfg");
 
         let (output, error) = rustc
-            .cached_output(&process)
+            .cached_output(&process, extra_fingerprint)
             .chain_err(|| "failed to run `rustc` to learn about target-specific information")?;
 
         let mut lines = output.lines();
@@ -696,10 +700,10 @@ impl RustcTargetData {
 
         Ok(RustcTargetData {
             rustc,
-            target_config,
-            target_info,
             host_config,
             host_info,
+            target_config,
+            target_info,
         })
     }
 

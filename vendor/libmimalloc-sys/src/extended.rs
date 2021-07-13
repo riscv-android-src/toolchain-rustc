@@ -104,6 +104,18 @@ extern "C" {
     /// This is a [`mi_zalloc`](crate::mi_zalloc) equivalent of [`mi_malloc_aligned_at`].
     pub fn mi_zalloc_aligned_at(size: usize, alignment: usize, offset: usize) -> *mut c_void;
 
+    /// Allocate `size` of bytes aligned by `alignment` and place the address of the
+    /// allocated memory to `ptr`.
+    ///
+    /// Returns zero on success, invalid argument for invalid alignment, or out-of-memory.
+    pub fn mi_posix_memalign(ptr: *mut *mut c_void, alignment: usize, size: usize) -> c_int;
+
+    /// Allocate `size` bytes aligned by `alignment` with alignment as the first
+    /// parameter.
+    ///
+    /// Return pointer to the allocated memory or null if out of memory.
+    pub fn mi_aligned_alloc(alignment: usize, size: usize) -> *mut c_void;
+
     /// Allocate `size * count` bytes aligned by `alignment` at a specified
     /// `offset`, zero-initialized.
     ///
@@ -365,8 +377,11 @@ pub const mi_option_large_os_pages: mi_option_t = 6;
 /// allocate just a little to take up space in the huge OS page area (which cannot be reset).
 pub const mi_option_reserve_huge_os_pages: mi_option_t = 7;
 
+/// TODO: update later
+pub const mi_option_reserve_os_memory: mi_option_t = 8;
+
 /// Option (experimental) specifying number of segments per thread to keep cached.
-pub const mi_option_segment_cache: mi_option_t = 8;
+pub const mi_option_segment_cache: mi_option_t = 9;
 
 /// Option (experimental) to reset page memory after mi_option_reset_delay milliseconds when it becomes free.
 ///
@@ -378,19 +393,19 @@ pub const mi_option_segment_cache: mi_option_t = 8;
 /// off completely.
 ///
 /// Default: 1 (true)
-pub const mi_option_page_reset: mi_option_t = 9;
+pub const mi_option_page_reset: mi_option_t = 10;
 
 /// Experimental
-pub const mi_option_abandoned_page_reset: mi_option_t = 10;
+pub const mi_option_abandoned_page_reset: mi_option_t = 11;
 
 /// Experimental
-pub const mi_option_segment_reset: mi_option_t = 11;
+pub const mi_option_segment_reset: mi_option_t = 12;
 
 /// Experimental
-pub const mi_option_eager_commit_delay: mi_option_t = 12;
+pub const mi_option_eager_commit_delay: mi_option_t = 13;
 
 /// Option (experimental) specifying delay in milli-seconds before resetting a page (100ms by default).
-pub const mi_option_reset_delay: mi_option_t = 13;
+pub const mi_option_reset_delay: mi_option_t = 14;
 
 /// Option (experimental) to pretend there are at most N NUMA nodes.
 ///
@@ -399,13 +414,16 @@ pub const mi_option_reset_delay: mi_option_t = 13;
 /// actual NUMA nodes is fine and will only cause threads to potentially allocate more
 /// memory across actual NUMA nodes (but this can happen in any case as NUMA local
 /// allocation is always a best effort but not guaranteed).
-pub const mi_option_use_numa_nodes: mi_option_t = 14;
+pub const mi_option_use_numa_nodes: mi_option_t = 15;
+
+/// TODO: update later
+pub const mi_option_limit_os_alloc: mi_option_t = 16;
 
 /// Option (experimental) specifying OS tag to assign to mimalloc'd memory.
-pub const mi_option_os_tag: mi_option_t = 15;
+pub const mi_option_os_tag: mi_option_t = 17;
 
 /// Experimental
-pub const mi_option_max_errors: mi_option_t = 16;
+pub const mi_option_max_errors: mi_option_t = 18;
 
 extern "C" {
     // Note: mi_option_{enable,disable} aren't exposed because they're redundant

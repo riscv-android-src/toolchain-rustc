@@ -109,8 +109,9 @@ bool SystemZRegisterInfo::getRegAllocationHints(
 
         auto tryAddHint = [&](const MachineOperand *MO) -> void {
           Register Reg = MO->getReg();
-          Register PhysReg =
-            Register::isPhysicalRegister(Reg) ? Reg : VRM->getPhys(Reg);
+          Register PhysReg = Register::isPhysicalRegister(Reg)
+                                 ? Reg
+                                 : Register(VRM->getPhys(Reg));
           if (PhysReg) {
             if (MO->getSubReg())
               PhysReg = getSubReg(PhysReg, MO->getSubReg());
@@ -265,8 +266,9 @@ SystemZRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator MI,
   // Decompose the frame index into a base and offset.
   int FrameIndex = MI->getOperand(FIOperandNum).getIndex();
   Register BasePtr;
-  int64_t Offset = (TFI->getFrameIndexReference(MF, FrameIndex, BasePtr) +
-                    MI->getOperand(FIOperandNum + 1).getImm());
+  int64_t Offset =
+      (TFI->getFrameIndexReference(MF, FrameIndex, BasePtr).getFixed() +
+       MI->getOperand(FIOperandNum + 1).getImm());
 
   // Special handling of dbg_value instructions.
   if (MI->isDebugValue()) {

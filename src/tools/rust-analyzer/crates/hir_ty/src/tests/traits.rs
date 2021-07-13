@@ -1,5 +1,4 @@
 use expect_test::expect;
-use test_utils::mark;
 
 use super::{check_infer, check_infer_with_mismatches, check_types};
 
@@ -319,7 +318,7 @@ fn infer_from_bound_2() {
 
 #[test]
 fn trait_default_method_self_bound_implements_trait() {
-    mark::check!(trait_self_implements_self);
+    cov_mark::check!(trait_self_implements_self);
     check_infer(
         r#"
         trait Trait {
@@ -1189,7 +1188,7 @@ fn impl_trait() {
 
 #[test]
 fn simple_return_pos_impl_trait() {
-    mark::check!(lower_rpit);
+    cov_mark::check!(lower_rpit);
     check_infer(
         r#"
         trait Trait<T> {
@@ -1409,10 +1408,10 @@ fn weird_bounds() {
         fn test(a: impl Trait + 'lifetime, b: impl 'lifetime, c: impl (Trait), d: impl ('lifetime), e: impl ?Sized, f: impl Trait + ?Sized) {}
         "#,
         expect![[r#"
-            23..24 'a': impl Trait + {error}
-            50..51 'b': impl {error}
+            23..24 'a': impl Trait
+            50..51 'b': impl
             69..70 'c': impl Trait
-            86..87 'd': impl {error}
+            86..87 'd': impl
             107..108 'e': impl {error}
             123..124 'f': impl Trait + {error}
             147..149 '{}': ()
@@ -3149,5 +3148,92 @@ fn test() {
   //^^^^^^^^^^^ u8
 }
     "#,
+    );
+}
+
+#[test]
+fn inner_use() {
+    check_types(
+        r#"
+mod m {
+    pub trait Tr {
+        fn method(&self) -> u8 { 0 }
+    }
+
+    impl Tr for () {}
+}
+
+fn f() {
+    use m::Tr;
+
+    ().method();
+  //^^^^^^^^^^^ u8
+}
+        "#,
+    );
+}
+
+#[test]
+fn trait_in_scope_with_inner_item() {
+    check_infer(
+        r#"
+mod m {
+    pub trait Tr {
+        fn method(&self) -> u8 { 0 }
+    }
+
+    impl Tr for () {}
+}
+
+use m::Tr;
+
+fn f() {
+    fn inner() {
+        ().method();
+      //^^^^^^^^^^^ u8
+    }
+}
+        "#,
+        expect![[r#"
+            46..50 'self': &Self
+            58..63 '{ 0 }': u8
+            60..61 '0': u8
+            115..185 '{     ...   } }': ()
+            132..183 '{     ...     }': ()
+            142..144 '()': ()
+            142..153 '().method()': u8
+        "#]],
+    );
+}
+
+#[test]
+fn inner_use_in_block() {
+    check_types(
+        r#"
+mod m {
+    pub trait Tr {
+        fn method(&self) -> u8 { 0 }
+    }
+
+    impl Tr for () {}
+}
+
+fn f() {
+    {
+        use m::Tr;
+
+        ().method();
+      //^^^^^^^^^^^ u8
+    }
+
+    {
+        ().method();
+      //^^^^^^^^^^^ {unknown}
+    }
+
+    ().method();
+  //^^^^^^^^^^^ {unknown}
+}
+        "#,
     );
 }

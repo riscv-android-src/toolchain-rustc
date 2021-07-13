@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "rowan"
-version = "0.12.4"
+version = "0.12.6"
 authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
 exclude = [".github/", "bors.toml", "rustfmt.toml"]
 description = "Library for generic lossless syntax trees"

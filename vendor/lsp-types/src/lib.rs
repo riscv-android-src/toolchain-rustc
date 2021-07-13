@@ -85,11 +85,6 @@ pub use rename::*;
 pub mod selection_range;
 pub use selection_range::*;
 
-#[cfg(feature = "proposed")]
-mod semantic_highlighting;
-#[cfg(feature = "proposed")]
-pub use semantic_highlighting::*;
-
 mod semantic_tokens;
 pub use semantic_tokens::*;
 
@@ -442,7 +437,7 @@ pub struct ChangeAnnotationWorkspaceEditClientCapabilities {
     /// for instance all edits labelled with "Changes in Strings" would
     /// be a tree node.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub groups_on_labels: Option<bool>,
+    pub groups_on_label: Option<bool>,
 }
 
 /// Options to create a file.
@@ -1359,11 +1354,6 @@ pub struct TextDocumentClientCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_editing_range: Option<LinkedEditingRangeClientCapabilities>,
 
-    /// The client's semantic highlighting capability.
-    #[cfg(feature = "proposed")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub semantic_highlighting_capabilities: Option<SemanticHighlightingClientCapability>,
-
     /// Capabilities specific to the various call hierarchy requests.
     ///
     /// @since 3.16.0
@@ -1401,6 +1391,13 @@ pub struct ClientCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub general: Option<GeneralClientCapabilities>,
 
+    /// Unofficial UT8-offsets extension.
+    ///
+    /// See https://clangd.llvm.org/extensions.html#utf-8-offsets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "proposed")]
+    pub offset_encoding: Option<Vec<String>>,
+
     /// Experimental client capabilities.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental: Option<Value>,
@@ -1418,6 +1415,30 @@ pub struct GeneralClientCapabilities {
     /// @since 3.16.0
     #[serde(skip_serializing_if = "Option::is_none")]
     pub markdown: Option<MarkdownClientCapabilities>,
+
+    /// @since 3.17.0
+    #[cfg(feature = "proposed")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_request_support: Option<StaleRequestSupportClientCapabilities>,
+}
+
+/// Client capability that signals how the client
+/// handles stale requests (e.g. a request
+/// for which the client will not process the response
+/// anymore since the information is outdated).
+///
+/// @since 3.17.0
+#[cfg(feature = "proposed")]
+#[derive(Debug, PartialEq, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaleRequestSupportClientCapabilities {
+    /// The client will actively cancel the request.
+    pub cancel: bool,
+
+    /// The list of requests for which the client
+    /// will retry the request if it receives a
+    /// response with error code `ContentModified``
+    pub retry_on_content_modified: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Deserialize, Serialize)]
@@ -1451,6 +1472,13 @@ pub struct InitializeResult {
     /// The capabilities the language server provides.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_info: Option<ServerInfo>,
+
+    /// Unofficial UT8-offsets extension.
+    ///
+    /// See https://clangd.llvm.org/extensions.html#utf-8-offsets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "proposed")]
+    pub offset_encoding: Option<String>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
@@ -1714,11 +1742,6 @@ pub struct ServerCapabilities {
     /// Workspace specific server capabilities
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceServerCapabilities>,
-
-    /// Semantic highlighting server capabilities.
-    #[cfg(feature = "proposed")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub semantic_highlighting: Option<SemanticHighlightingServerCapability>,
 
     /// Call hierarchy provider capabilities.
     #[serde(skip_serializing_if = "Option::is_none")]

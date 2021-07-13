@@ -179,8 +179,8 @@ impl MemoryExtra {
         this.memory
             .extra
             .extern_statics
-            .insert(Symbol::intern(name), ptr.alloc_id)
-            .unwrap_none();
+            .try_insert(Symbol::intern(name), ptr.alloc_id)
+            .unwrap();
     }
 
     /// Sets up the "extern statics" for this machine.
@@ -193,7 +193,7 @@ impl MemoryExtra {
                 // This should be all-zero, pointer-sized.
                 let layout = this.machine.layouts.usize;
                 let place = this.allocate(layout, MiriMemoryKind::ExternStatic.into());
-                this.write_scalar(Scalar::from_machine_usize(0, this), place.into())?;
+                this.write_scalar(Scalar::from_machine_usize(0, this), &place.into())?;
                 Self::add_extern_static(this, "__cxa_thread_atexit_impl", place.ptr);
                 // "environ"
                 Self::add_extern_static(this, "environ", this.machine.env_vars.environ.unwrap().ptr);
@@ -203,7 +203,7 @@ impl MemoryExtra {
                 // This is some obscure hack that is part of the Windows TLS story. It's a `u8`.
                 let layout = this.machine.layouts.u8;
                 let place = this.allocate(layout, MiriMemoryKind::ExternStatic.into());
-                this.write_scalar(Scalar::from_u8(0), place.into())?;
+                this.write_scalar(Scalar::from_u8(0), &place.into())?;
                 Self::add_extern_static(this, "_tls_used", place.ptr);
             }
             _ => {} // No "extern statics" supported on this target
@@ -359,7 +359,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         instance: ty::Instance<'tcx>,
         abi: Abi,
         args: &[OpTy<'tcx, Tag>],
-        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
         unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>> {
         ecx.find_mir_or_eval_fn(instance, abi, args, ret, unwind)
@@ -371,7 +371,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         fn_val: Dlsym,
         abi: Abi,
         args: &[OpTy<'tcx, Tag>],
-        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
         _unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         ecx.call_dlsym(fn_val, abi, args, ret)
@@ -382,7 +382,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         ecx: &mut rustc_mir::interpret::InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
-        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
         unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         ecx.call_intrinsic(instance, args, ret, unwind)
@@ -406,15 +406,15 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
     fn binary_ptr_op(
         ecx: &rustc_mir::interpret::InterpCx<'mir, 'tcx, Self>,
         bin_op: mir::BinOp,
-        left: ImmTy<'tcx, Tag>,
-        right: ImmTy<'tcx, Tag>,
+        left: &ImmTy<'tcx, Tag>,
+        right: &ImmTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, (Scalar<Tag>, bool, ty::Ty<'tcx>)> {
         ecx.binary_ptr_op(bin_op, left, right)
     }
 
     fn box_alloc(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        dest: PlaceTy<'tcx, Tag>,
+        dest: &PlaceTy<'tcx, Tag>,
     ) -> InterpResult<'tcx> {
         trace!("box_alloc for {:?}", dest.layout.ty);
         let layout = ecx.layout_of(dest.layout.ty.builtin_deref(false).unwrap().ty)?;
@@ -430,6 +430,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         let malloc = ty::Instance::mono(ecx.tcx.tcx, malloc);
         ecx.call_function(
             malloc,
+            Abi::Rust,
             &[size.into(), align.into()],
             Some(dest),
             // Don't do anything when we are done. The `statement()` function will increment
@@ -542,7 +543,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
     fn retag(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         kind: mir::RetagKind,
-        place: PlaceTy<'tcx, Tag>,
+        place: &PlaceTy<'tcx, Tag>,
     ) -> InterpResult<'tcx> {
         if ecx.memory.extra.stacked_borrows.is_some() {
             ecx.retag(kind, place)

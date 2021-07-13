@@ -1,35 +1,25 @@
-# HAIR and MIR construction
+# MIR construction
+
+<!-- toc -->
 
 The lowering of [HIR] to [MIR] occurs for the following (probably incomplete)
 list of items:
 
-* Function and Closure bodies
+* Function and closure bodies
 * Initializers of `static` and `const` items
 * Initializers of enum discriminants
-* Glue and Shims of any kind
+* Glue and shims of any kind
     * Tuple struct initializer functions
     * Drop code (the `Drop::drop` function is not called directly)
     * Drop implementations of types without an explicit `Drop` implementation
 
-The lowering is triggered by calling the [`mir_built`] query.
-There is an intermediate representation
-between [HIR] and [MIR] called the [HAIR] that is only used during the lowering.
-The [HAIR]'s most important feature is that the various adjustments (which happen
-without explicit syntax) like coercions, autoderef, autoref and overloaded method
-calls have become explicit casts, deref operations, reference expressions or
-concrete function calls.
-
-The [HAIR] has datatypes that mirror the [HIR] datatypes, but instead of e.g. `-x`
-being a `hair::ExprKind::Neg(hair::Expr)` it is a `hair::ExprKind::Neg(hir::Expr)`.
-This shallowness enables the `HAIR` to represent all datatypes that [HIR] has, but
-without having to create an in-memory copy of the entire [HIR].
-[MIR] lowering will first convert the topmost expression from
-[HIR] to [HAIR] (in [`rustc_mir_build::hair::cx::expr`]) and then process
-the [HAIR] expressions recursively.
+The lowering is triggered by calling the [`mir_built`] query. The MIR builder does
+not actually use the HIR but operates on the [THIR] instead, processing THIR
+expressions recursively.
 
 The lowering creates local variables for every argument as specified in the signature.
-Next it creates local variables for every binding specified (e.g. `(a, b): (i32, String)`)
-produces 3 bindings, one for the argument, and two for the bindings. Next it generates
+Next, it creates local variables for every binding specified (e.g. `(a, b): (i32, String)`)
+produces 3 bindings, one for the argument, and two for the bindings. Next, it generates
 field accesses that read the fields from the argument and writes the value to the binding
 variable.
 
@@ -152,7 +142,7 @@ case of `enum`s.
 
 [MIR]: ./index.html
 [HIR]: ../hir.html
-[HAIR]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir_build/hair/index.html
+[THIR]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir_build/thir/index.html
 
-[`rustc_mir_build::hair::cx::expr`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir_build/hair/cx/expr/index.html
+[`rustc_mir_build::thir::cx::expr`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir_build/thir/cx/expr/index.html
 [`mir_built`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir_build/build/fn.mir_built.html

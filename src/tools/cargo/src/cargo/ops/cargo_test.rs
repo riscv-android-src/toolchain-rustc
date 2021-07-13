@@ -2,10 +2,10 @@ use std::ffi::OsString;
 
 use crate::core::compiler::{Compilation, CompileKind, Doctest, UnitOutput};
 use crate::core::shell::Verbosity;
-use crate::core::Workspace;
+use crate::core::{TargetKind, Workspace};
 use crate::ops;
 use crate::util::errors::CargoResult;
-use crate::util::{CargoTestError, Config, ProcessError, Test};
+use crate::util::{add_path_args, CargoTestError, Config, ProcessError, Test};
 
 pub struct TestOptions {
     pub compile_opts: ops::CompileOptions,
@@ -30,7 +30,7 @@ pub fn run_tests(
         return Ok(Some(CargoTestError::new(test, errors)));
     }
 
-    let (doctest, docerrors) = run_doc_tests(ws.config(), options, test_args, &compilation)?;
+    let (doctest, docerrors) = run_doc_tests(ws, options, test_args, &compilation)?;
     let test = if docerrors.is_empty() { test } else { doctest };
     errors.extend(docerrors);
     if errors.is_empty() {
@@ -85,7 +85,24 @@ fn run_unit_tests(
     } in compilation.tests.iter()
     {
         let test = unit.target.name().to_string();
-        let exe_display = path.strip_prefix(cwd).unwrap_or(path).display();
+
+        let test_path = unit.target.src_path().path().unwrap();
+        let exe_display = if let TargetKind::Test = unit.target.kind() {
+            format!(
+                "{} ({})",
+                test_path
+                    .strip_prefix(unit.pkg.root())
+                    .unwrap_or(test_path)
+                    .display(),
+                path.strip_prefix(cwd).unwrap_or(path).display()
+            )
+        } else {
+            format!(
+                "unittests ({})",
+                path.strip_prefix(cwd).unwrap_or(path).display()
+            )
+        };
+
         let mut cmd = compilation.target_process(path, unit.kind, &unit.pkg, *script_meta)?;
         cmd.args(test_args);
         if unit.target.harness() && config.shell().verbosity() == Verbosity::Quiet {
@@ -136,13 +153,15 @@ fn run_unit_tests(
 }
 
 fn run_doc_tests(
-    config: &Config,
+    ws: &Workspace<'_>,
     options: &TestOptions,
     test_args: &[&str],
     compilation: &Compilation<'_>,
 ) -> CargoResult<(Test, Vec<ProcessError>)> {
+    let config = ws.config();
     let mut errors = Vec::new();
     let doctest_xcompile = config.cli_unstable().doctest_xcompile;
+    let doctest_in_workspace = config.cli_unstable().doctest_in_workspace;
 
     for doctest_info in &compilation.to_doc_test {
         let Doctest {
@@ -167,10 +186,18 @@ fn run_doc_tests(
 
         config.shell().status("Doc-tests", unit.target.name())?;
         let mut p = compilation.rustdoc_process(unit, *script_meta)?;
-        p.arg("--test")
-            .arg(unit.target.src_path().path().unwrap())
-            .arg("--crate-name")
-            .arg(&unit.target.crate_name());
+        p.arg("--crate-name").arg(&unit.target.crate_name());
+        p.arg("--test");
+
+        if doctest_in_workspace {
+            add_path_args(ws, unit, &mut p);
+            // FIXME(swatinem): remove the `unstable-options` once rustdoc stabilizes the `test-run-directory` option
+            p.arg("-Z").arg("unstable-options");
+            p.arg("--test-run-directory")
+                .arg(unit.pkg.root().to_path_buf());
+        } else {
+            p.arg(unit.target.src_path().path().unwrap());
+        }
 
         if doctest_xcompile {
             if let CompileKind::Target(target) = unit.kind {

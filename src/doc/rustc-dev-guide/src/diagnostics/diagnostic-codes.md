@@ -1,5 +1,5 @@
 # Diagnostic Codes
-We generally try assign each error message a unique code like `E0123`. These
+We generally try to assign each error message a unique code like `E0123`. These
 codes are defined in the compiler in the `diagnostics.rs` files found in each
 crate, which basically consist of macros. The codes come in two varieties: those
 that have an extended write-up, and those that do not. Whenever possible, if you
@@ -7,12 +7,13 @@ are making a new code, you should write an extended write-up.
 
 ### Allocating a fresh code
 
-If you want to create a new error, you first need to find the next available
-code. This is a bit tricky since the codes are defined in various crates. To do
-it, run this obscure command:
+Error codes are stored in `compiler/rustc_error_codes`.
+
+To create a new error, you first need to find the next available
+code. You can find it with `tidy`:
 
 ```
-./x.py test --stage 0 tidy
+./x.py test tidy
 ```
 
 This will invoke the tidy script, which generally checks that your code obeys
@@ -31,17 +32,16 @@ tidy check (x86_64-apple-darwin)
 Here we see the highest error code in use is `E0591`, so we _probably_ want
 `E0592`. To be sure, run `rg E0592` and check, you should see no references.
 
-Next, open `src/{crate}/diagnostics.rs` within the crate where you wish to issue
-the error (e.g., `src/librustc_typeck/diagnostics.rs`). Ideally, you will add
-the code (in its proper numerical order) into the `register_long_diagnostics!`
-macro, sort of like this:
+Ideally, you will write an extended description for your error,
+which will go in `rustc_error_codes/src/error_codes/E0592.md`.
+To register the error, open `rustc_error_codes/src/error_codes.rs` and add the
+code (in its proper numerical order) into` register_diagnostics!` macro, like
+this:
 
 ```rust
-register_long_diagnostics! {
+register_diagnostics! {
     ...
-    E0592: r##"
-Your extended error text goes here!
-"##,
+    E0592: include_str!("./error_codes/E0592.md"),
 }
 ```
 
@@ -73,3 +73,7 @@ struct_span_err!(...)
     .span_note(another_span, "some separate note, probably avoid these")
     .emit_()
 ```
+
+For an example of a PR adding an error code, see [#76143].
+
+[#76143]: https://github.com/rust-lang/rust/pull/76143

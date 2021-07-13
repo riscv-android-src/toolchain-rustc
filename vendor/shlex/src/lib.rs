@@ -96,17 +96,6 @@ impl<'a> Shlex<'a> {
         loop {
             if let Some(ch2) = self.next_char() {
                 match ch2 as char {
-                    '\\' => {
-                        if let Some(ch3) = self.next_char() {
-                            match ch3 as char {
-                                // for single quotes, only these can be escaped
-                                '\'' | '\\' => { result.push(ch3); },
-                                _ => { result.push('\\' as u8); result.push(ch3); }
-                            }
-                        } else {
-                            return Err(());
-                        }
-                    },
                     '\'' => { return Ok(()); },
                     _ => { result.push(ch2); },
                 }
@@ -181,6 +170,15 @@ pub fn quote(in_str: &str) -> Cow<str> {
     }
 }
 
+/// Convenience function that consumes an iterable of words and turns it into a single string,
+/// quoting words when necessary. Consecutive words will be separated by a single space.
+pub fn join<'a, I: IntoIterator<Item = &'a str>>(words: I) -> String {
+    words.into_iter()
+        .map(quote)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 static SPLIT_TEST_ITEMS: &'static [(&'static str, Option<&'static [&'static str]>)] = &[
     ("foo$baz", Some(&["foo$baz"])),
@@ -191,7 +189,7 @@ static SPLIT_TEST_ITEMS: &'static [(&'static str, Option<&'static [&'static str]
     ("foo\\\nbar", Some(&["foobar"])),
     ("\"foo\\\nbar\"", Some(&["foobar"])),
     ("'baz\\$b'", Some(&["baz\\$b"])),
-    ("'baz\\\''", Some(&["baz\'"])),
+    ("'baz\\\''", None),
     ("\\", None),
     ("\"\\", None),
     ("'\\", None),
@@ -201,6 +199,8 @@ static SPLIT_TEST_ITEMS: &'static [(&'static str, Option<&'static [&'static str]
     ("foo #bar", Some(&["foo"])),
     ("foo#bar", Some(&["foo#bar"])),
     ("foo\"#bar", None),
+    ("'\\n'", Some(&["\\n"])),
+    ("'\\\\n'", Some(&["\\\\n"])),
 ];
 
 #[test]
@@ -226,4 +226,12 @@ fn test_quote() {
     assert_eq!(quote("foo bar"), "\"foo bar\"");
     assert_eq!(quote("\""), "\"\\\"\"");
     assert_eq!(quote(""), "\"\"");
+}
+
+#[test]
+fn test_join() {
+    assert_eq!(join(vec![]), "");
+    assert_eq!(join(vec![""]), "\"\"");
+    assert_eq!(join(vec!["a", "b"]), "a b");
+    assert_eq!(join(vec!["foo bar", "baz"]), "\"foo bar\" baz");
 }

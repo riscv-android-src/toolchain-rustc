@@ -22,6 +22,7 @@ mod markup;
 mod prime_caches;
 mod display;
 
+mod annotations;
 mod call_hierarchy;
 mod diagnostics;
 mod expand_macro;
@@ -40,6 +41,7 @@ mod parent_module;
 mod references;
 mod fn_references;
 mod runnables;
+mod ssr;
 mod status;
 mod syntax_highlighting;
 mod syntax_tree;
@@ -50,6 +52,7 @@ mod doc_links;
 use std::sync::Arc;
 
 use cfg::CfgOptions;
+
 use ide_db::base_db::{
     salsa::{self, ParallelDatabase},
     CheckCanceled, Env, FileLoader, FileSet, SourceDatabase, VfsPath,
@@ -63,6 +66,7 @@ use syntax::SourceFile;
 use crate::display::ToNav;
 
 pub use crate::{
+    annotations::{Annotation, AnnotationConfig, AnnotationKind},
     call_hierarchy::CallItem,
     diagnostics::{Diagnostic, DiagnosticsConfig, Fix, Severity},
     display::navigation_target::NavigationTarget,
@@ -73,19 +77,19 @@ pub use crate::{
     inlay_hints::{InlayHint, InlayHintsConfig, InlayKind},
     markup::Markup,
     prime_caches::PrimeCachesProgress,
-    references::{rename::RenameError, Declaration, ReferenceSearchResult},
+    references::{rename::RenameError, ReferenceSearchResult},
     runnables::{Runnable, RunnableKind, TestId},
     syntax_highlighting::{
         tags::{Highlight, HlMod, HlMods, HlPunct, HlTag},
         HlRange,
     },
 };
-pub use assists::{Assist, AssistConfig, AssistId, AssistKind};
-pub use completion::{
-    CompletionConfig, CompletionItem, CompletionItemKind, CompletionScore, ImportEdit,
+pub use hir::{Documentation, Semantics};
+pub use ide_assists::{Assist, AssistConfig, AssistId, AssistKind};
+pub use ide_completion::{
+    CompletionConfig, CompletionItem, CompletionItemKind, CompletionRelevance, ImportEdit,
     InsertTextFormat,
 };
-pub use hir::{Documentation, Semantics};
 pub use ide_db::{
     base_db::{
         Canceled, Change, CrateGraph, CrateId, Edition, FileId, FilePosition, FileRange,
@@ -93,13 +97,13 @@ pub use ide_db::{
     },
     call_info::CallInfo,
     label::Label,
-    line_index::{LineCol, LineIndex},
-    search::{FileReference, ReferenceAccess, ReferenceKind, SearchScope},
+    line_index::{LineCol, LineColUtf16, LineIndex},
+    search::{ReferenceAccess, SearchScope},
     source_change::{FileSystemEdit, SourceChange},
     symbol_index::Query,
     RootDatabase,
 };
-pub use ssr::SsrError;
+pub use ide_ssr::SsrError;
 pub use syntax::{TextRange, TextSize};
 pub use text_edit::{Indel, TextEdit};
 
@@ -443,6 +447,15 @@ impl Analysis {
         self.with_db(|db| runnables::runnables(db, file_id))
     }
 
+    /// Returns the set of tests for the given file position.
+    pub fn related_tests(
+        &self,
+        position: FilePosition,
+        search_scope: Option<SearchScope>,
+    ) -> Cancelable<Vec<Runnable>> {
+        self.with_db(|db| runnables::related_tests(db, position, search_scope))
+    }
+
     /// Computes syntax highlighting for the given file
     pub fn highlight(&self, file_id: FileId) -> Cancelable<Vec<HlRange>> {
         self.with_db(|db| syntax_highlighting::highlight(db, file_id, None, false))
@@ -466,7 +479,7 @@ impl Analysis {
         config: &CompletionConfig,
         position: FilePosition,
     ) -> Cancelable<Option<Vec<CompletionItem>>> {
-        self.with_db(|db| completion::completions(db, config, position).map(Into::into))
+        self.with_db(|db| ide_completion::completions(db, config, position).map(Into::into))
     }
 
     /// Resolves additional completion data at the position given.
@@ -476,17 +489,15 @@ impl Analysis {
         position: FilePosition,
         full_import_path: &str,
         imported_name: String,
-        import_for_trait_assoc_item: bool,
     ) -> Cancelable<Vec<TextEdit>> {
         Ok(self
             .with_db(|db| {
-                completion::resolve_completion_edits(
+                ide_completion::resolve_completion_edits(
                     db,
                     config,
                     position,
                     full_import_path,
                     imported_name,
-                    import_for_trait_assoc_item,
                 )
             })?
             .unwrap_or_default())
@@ -502,7 +513,11 @@ impl Analysis {
         resolve: bool,
         frange: FileRange,
     ) -> Cancelable<Vec<Assist>> {
-        self.with_db(|db| Assist::get(db, config, resolve, frange))
+        self.with_db(|db| {
+            let mut acc = Assist::get(db, config, resolve, frange);
+            ssr::add_ssr_assist(db, &mut acc, resolve, frange);
+            acc
+        })
     }
 
     /// Computes the set of diagnostics for the given file.
@@ -547,12 +562,25 @@ impl Analysis {
         selections: Vec<FileRange>,
     ) -> Cancelable<Result<SourceChange, SsrError>> {
         self.with_db(|db| {
-            let rule: ssr::SsrRule = query.parse()?;
-            let mut match_finder = ssr::MatchFinder::in_context(db, resolve_context, selections);
+            let rule: ide_ssr::SsrRule = query.parse()?;
+            let mut match_finder =
+                ide_ssr::MatchFinder::in_context(db, resolve_context, selections);
             match_finder.add_rule(rule)?;
             let edits = if parse_only { Default::default() } else { match_finder.edits() };
             Ok(SourceChange::from(edits))
         })
+    }
+
+    pub fn annotations(
+        &self,
+        file_id: FileId,
+        config: AnnotationConfig,
+    ) -> Cancelable<Vec<Annotation>> {
+        self.with_db(|db| annotations::annotations(db, file_id, config))
+    }
+
+    pub fn resolve_annotation(&self, annotation: Annotation) -> Cancelable<Annotation> {
+        self.with_db(|db| annotations::resolve_annotation(db, annotation))
     }
 
     /// Performs an operation on that may be Canceled.

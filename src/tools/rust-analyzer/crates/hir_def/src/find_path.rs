@@ -1,8 +1,9 @@
 //! An algorithm to find a path to refer to a certain item.
 
+use std::iter;
+
 use hir_expand::name::{known, AsName, Name};
 use rustc_hash::FxHashSet;
-use test_utils::mark;
 
 use crate::nameres::DefMap;
 use crate::{
@@ -12,8 +13,6 @@ use crate::{
     visibility::Visibility,
     ModuleDefId, ModuleId,
 };
-
-// FIXME: handle local items
 
 /// Find a path that can be used to refer to a certain item. This can depend on
 /// *from where* you're referring to the item, hence the `from` parameter.
@@ -36,13 +35,13 @@ const MAX_PATH_LEN: usize = 15;
 
 impl ModPath {
     fn starts_with_std(&self) -> bool {
-        self.segments.first() == Some(&known::std)
+        self.segments().first() == Some(&known::std)
     }
 
     // When std library is present, paths starting with `std::`
     // should be preferred over paths starting with `core::` and `alloc::`
     fn can_start_with_std(&self) -> bool {
-        let first_segment = self.segments.first();
+        let first_segment = self.segments().first();
         first_segment == Some(&known::alloc) || first_segment == Some(&known::core)
     }
 }
@@ -97,7 +96,7 @@ fn find_path_inner(
     item: ItemInNs,
     from: ModuleId,
     max_len: usize,
-    prefixed: Option<PrefixKind>,
+    mut prefixed: Option<PrefixKind>,
 ) -> Option<ModPath> {
     if max_len == 0 {
         return None;
@@ -107,17 +106,18 @@ fn find_path_inner(
 
     // - if the item is already in scope, return the name under which it is
     let def_map = from.def_map(db);
-    let from_scope: &crate::item_scope::ItemScope = &def_map[from.local_id].scope;
-    let scope_name =
-        if let Some((name, _)) = from_scope.name_of(item) { Some(name.clone()) } else { None };
+    let scope_name = def_map.with_ancestor_maps(db, from.local_id, &mut |def_map, local_id| {
+        def_map[local_id].scope.name_of(item).map(|(name, _)| name.clone())
+    });
     if prefixed.is_none() && scope_name.is_some() {
         return scope_name
             .map(|scope_name| ModPath::from_segments(PathKind::Plain, vec![scope_name]));
     }
 
     // - if the item is the crate root, return `crate`
-    let root = def_map.module_id(def_map.root());
-    if item == ItemInNs::Types(ModuleDefId::ModuleId(root)) {
+    let root = def_map.crate_root(db);
+    if item == ItemInNs::Types(ModuleDefId::ModuleId(root)) && def_map.block_id().is_none() {
+        // FIXME: the `block_id()` check should be unnecessary, but affects the result
         return Some(ModPath::from_segments(PathKind::Crate, Vec::new()));
     }
 
@@ -157,7 +157,7 @@ fn find_path_inner(
     if let Some(ModuleDefId::EnumVariantId(variant)) = item.as_module_def_id() {
         if let Some(mut path) = find_path(db, ItemInNs::Types(variant.parent.into()), from) {
             let data = db.enum_data(variant.parent);
-            path.segments.push(data.variants[variant.local_id].name.clone());
+            path.push_segment(data.variants[variant.local_id].name.clone());
             return Some(path);
         }
         // If this doesn't work, it seems we have no way of referring to the
@@ -167,7 +167,7 @@ fn find_path_inner(
 
     // - otherwise, look for modules containing (reexporting) it and import it from one of those
 
-    let crate_root = def_map.module_id(def_map.root());
+    let crate_root = def_map.crate_root(db);
     let crate_attrs = db.attrs(crate_root.into());
     let prefer_no_std = crate_attrs.by_key("no_std").exists();
     let mut best_path = None;
@@ -186,7 +186,7 @@ fn find_path_inner(
                 best_path_len - 1,
                 prefixed,
             ) {
-                path.segments.push(name);
+                path.push_segment(name);
 
                 let new_path = if let Some(best_path) = best_path {
                     select_best_path(best_path, path, prefer_no_std)
@@ -214,8 +214,8 @@ fn find_path_inner(
                     best_path_len - 1,
                     prefixed,
                 )?;
-                mark::hit!(partially_imported);
-                path.segments.push(info.path.segments.last().unwrap().clone());
+                cov_mark::hit!(partially_imported);
+                path.push_segment(info.path.segments.last().unwrap().clone());
                 Some(path)
             })
         });
@@ -227,6 +227,15 @@ fn find_path_inner(
                 path
             };
             best_path = Some(new_path);
+        }
+    }
+
+    // If the item is declared inside a block expression, don't use a prefix, as we don't handle
+    // that correctly (FIXME).
+    if let Some(item_module) = item.as_module_def_id().and_then(|did| did.module(db)) {
+        if item_module.def_map(db).block_id().is_some() && prefixed.is_some() {
+            cov_mark::hit!(prefixed_in_block_expression);
+            prefixed = Some(PrefixKind::Plain);
         }
     }
 
@@ -242,18 +251,18 @@ fn find_path_inner(
 fn select_best_path(old_path: ModPath, new_path: ModPath, prefer_no_std: bool) -> ModPath {
     if old_path.starts_with_std() && new_path.can_start_with_std() {
         if prefer_no_std {
-            mark::hit!(prefer_no_std_paths);
+            cov_mark::hit!(prefer_no_std_paths);
             new_path
         } else {
-            mark::hit!(prefer_std_paths);
+            cov_mark::hit!(prefer_std_paths);
             old_path
         }
     } else if new_path.starts_with_std() && old_path.can_start_with_std() {
         if prefer_no_std {
-            mark::hit!(prefer_no_std_paths);
+            cov_mark::hit!(prefer_no_std_paths);
             old_path
         } else {
-            mark::hit!(prefer_std_paths);
+            cov_mark::hit!(prefer_std_paths);
             new_path
         }
     } else if new_path.len() < old_path.len() {
@@ -282,11 +291,11 @@ fn find_local_import_locations(
     let data = &def_map[from.local_id];
     let mut worklist =
         data.children.values().map(|child| def_map.module_id(*child)).collect::<Vec<_>>();
-    let mut parent = data.parent;
-    while let Some(p) = parent {
-        worklist.push(def_map.module_id(p));
-        parent = def_map[p].parent;
+    for ancestor in iter::successors(from.containing_module(db), |m| m.containing_module(db)) {
+        worklist.push(ancestor);
     }
+
+    let def_map = def_map.crate_root(db).def_map(db);
 
     let mut seen: FxHashSet<_> = FxHashSet::default();
 
@@ -298,7 +307,14 @@ fn find_local_import_locations(
 
         let ext_def_map;
         let data = if module.krate == from.krate {
-            &def_map[module.local_id]
+            if module.block.is_some() {
+                // Re-query the block's DefMap
+                ext_def_map = module.def_map(db);
+                &ext_def_map[module.local_id]
+            } else {
+                // Reuse the root DefMap
+                &def_map[module.local_id]
+            }
         } else {
             // The crate might reexport a module defined in another crate.
             ext_def_map = module.def_map(db);
@@ -347,7 +363,6 @@ mod tests {
     use base_db::fixture::WithFixture;
     use hir_expand::hygiene::Hygiene;
     use syntax::ast::AstNode;
-    use test_utils::mark;
 
     use crate::test_db::TestDB;
 
@@ -358,14 +373,14 @@ mod tests {
     /// module the cursor is in.
     fn check_found_path_(ra_fixture: &str, path: &str, prefix_kind: Option<PrefixKind>) {
         let (db, pos) = TestDB::with_position(ra_fixture);
-        let module = db.module_for_file(pos.file_id);
+        let module = db.module_at_position(pos);
         let parsed_path_file = syntax::SourceFile::parse(&format!("use {};", path));
         let ast_path =
             parsed_path_file.syntax_node().descendants().find_map(syntax::ast::Path::cast).unwrap();
         let mod_path = ModPath::from_src(ast_path, &Hygiene::new_unhygienic()).unwrap();
 
-        let crate_def_map = module.def_map(&db);
-        let resolved = crate_def_map
+        let def_map = module.def_map(&db);
+        let resolved = def_map
             .resolve_path(
                 &db,
                 module.local_id,
@@ -505,7 +520,7 @@ mod tests {
 
     #[test]
     fn partially_imported() {
-        mark::check!(partially_imported);
+        cov_mark::check!(partially_imported);
         // Tests that short paths are used even for external items, when parts of the path are
         // already in scope.
         let code = r#"
@@ -669,7 +684,7 @@ mod tests {
 
     #[test]
     fn prefer_std_paths_over_alloc() {
-        mark::check!(prefer_std_paths);
+        cov_mark::check!(prefer_std_paths);
         let code = r#"
         //- /main.rs crate:main deps:alloc,std
         $0
@@ -695,7 +710,7 @@ mod tests {
 
     #[test]
     fn prefer_core_paths_over_std() {
-        mark::check!(prefer_no_std_paths);
+        cov_mark::check!(prefer_no_std_paths);
         let code = r#"
         //- /main.rs crate:main deps:core,std
         #![no_std]
@@ -787,5 +802,80 @@ mod tests {
         "#;
         check_found_path(code, "u8", "u8", "u8", "u8");
         check_found_path(code, "u16", "u16", "u16", "u16");
+    }
+
+    #[test]
+    fn inner_items() {
+        check_found_path(
+            r#"
+            fn main() {
+                struct Inner {}
+                $0
+            }
+        "#,
+            "Inner",
+            "Inner",
+            "Inner",
+            "Inner",
+        );
+    }
+
+    #[test]
+    fn inner_items_from_outer_scope() {
+        check_found_path(
+            r#"
+            fn main() {
+                struct Struct {}
+                {
+                    $0
+                }
+            }
+        "#,
+            "Struct",
+            "Struct",
+            "Struct",
+            "Struct",
+        );
+    }
+
+    #[test]
+    fn inner_items_from_inner_module() {
+        cov_mark::check!(prefixed_in_block_expression);
+        check_found_path(
+            r#"
+            fn main() {
+                mod module {
+                    struct Struct {}
+                }
+                {
+                    $0
+                }
+            }
+        "#,
+            "module::Struct",
+            "module::Struct",
+            "module::Struct",
+            "module::Struct",
+        );
+    }
+
+    #[test]
+    fn outer_items_with_inner_items_present() {
+        check_found_path(
+            r#"
+            mod module {
+                pub struct CompleteMe;
+            }
+
+            fn main() {
+                fn inner() {}
+                $0
+            }
+            "#,
+            "module::CompleteMe",
+            "module::CompleteMe",
+            "crate::module::CompleteMe",
+            "self::module::CompleteMe",
+        )
     }
 }

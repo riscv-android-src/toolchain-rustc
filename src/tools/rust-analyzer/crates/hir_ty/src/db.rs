@@ -12,7 +12,7 @@ use la_arena::ArenaMap;
 use crate::{
     method_resolution::{InherentImpls, TraitImpls},
     traits::chalk,
-    Binders, CallableDefId, GenericPredicate, InferenceResult, OpaqueTyId, PolyFnSig,
+    Binders, CallableDefId, FnDefId, GenericPredicate, ImplTraitId, InferenceResult, PolyFnSig,
     ReturnTypeImplTraits, TraitRef, Ty, TyDefId, ValueTyDefId,
 };
 use hir_expand::name::Name;
@@ -65,6 +65,9 @@ pub trait HirDatabase: DefDatabase + Upcast<dyn DefDatabase> {
     #[salsa::invoke(crate::lower::generic_predicates_query)]
     fn generic_predicates(&self, def: GenericDefId) -> Arc<[Binders<GenericPredicate>]>;
 
+    #[salsa::invoke(crate::lower::trait_environment_query)]
+    fn trait_environment(&self, def: GenericDefId) -> Arc<crate::TraitEnvironment>;
+
     #[salsa::invoke(crate::lower::generic_defaults_query)]
     fn generic_defaults(&self, def: GenericDefId) -> Arc<[Binders<Ty>]>;
 
@@ -81,11 +84,11 @@ pub trait HirDatabase: DefDatabase + Upcast<dyn DefDatabase> {
     #[salsa::interned]
     fn intern_callable_def(&self, callable_def: CallableDefId) -> InternedCallableDefId;
     #[salsa::interned]
-    fn intern_type_param_id(&self, param_id: TypeParamId) -> GlobalTypeParamId;
+    fn intern_type_param_id(&self, param_id: TypeParamId) -> InternedTypeParamId;
     #[salsa::interned]
-    fn intern_impl_trait_id(&self, id: OpaqueTyId) -> InternedOpaqueTyId;
+    fn intern_impl_trait_id(&self, id: ImplTraitId) -> InternedOpaqueTyId;
     #[salsa::interned]
-    fn intern_closure(&self, id: (DefWithBodyId, ExprId)) -> ClosureId;
+    fn intern_closure(&self, id: (DefWithBodyId, ExprId)) -> InternedClosureId;
 
     #[salsa::invoke(chalk::associated_ty_data_query)]
     fn associated_ty_data(&self, id: chalk::AssocTypeId) -> Arc<chalk::AssociatedTyDatum>;
@@ -100,10 +103,10 @@ pub trait HirDatabase: DefDatabase + Upcast<dyn DefDatabase> {
     fn impl_datum(&self, krate: CrateId, impl_id: chalk::ImplId) -> Arc<chalk::ImplDatum>;
 
     #[salsa::invoke(crate::traits::chalk::fn_def_datum_query)]
-    fn fn_def_datum(&self, krate: CrateId, fn_def_id: chalk::FnDefId) -> Arc<chalk::FnDefDatum>;
+    fn fn_def_datum(&self, krate: CrateId, fn_def_id: FnDefId) -> Arc<chalk::FnDefDatum>;
 
     #[salsa::invoke(crate::traits::chalk::fn_def_variance_query)]
-    fn fn_def_variance(&self, krate: CrateId, fn_def_id: chalk::FnDefId) -> chalk::Variances;
+    fn fn_def_variance(&self, krate: CrateId, fn_def_id: FnDefId) -> chalk::Variances;
 
     #[salsa::invoke(crate::traits::chalk::adt_variance_query)]
     fn adt_variance(&self, krate: CrateId, adt_id: chalk::AdtId) -> chalk::Variances;
@@ -130,7 +133,7 @@ pub trait HirDatabase: DefDatabase + Upcast<dyn DefDatabase> {
     ) -> chalk_ir::ProgramClauses<chalk::Interner>;
 }
 
-fn infer_wait(db: &impl HirDatabase, def: DefWithBodyId) -> Arc<InferenceResult> {
+fn infer_wait(db: &dyn HirDatabase, def: DefWithBodyId) -> Arc<InferenceResult> {
     let _p = profile::span("infer:wait").detail(|| match def {
         DefWithBodyId::FunctionId(it) => db.function_data(it).name.to_string(),
         DefWithBodyId::StaticId(it) => {
@@ -149,16 +152,16 @@ fn hir_database_is_object_safe() {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GlobalTypeParamId(salsa::InternId);
-impl_intern_key!(GlobalTypeParamId);
+pub struct InternedTypeParamId(salsa::InternId);
+impl_intern_key!(InternedTypeParamId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InternedOpaqueTyId(salsa::InternId);
 impl_intern_key!(InternedOpaqueTyId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ClosureId(salsa::InternId);
-impl_intern_key!(ClosureId);
+pub struct InternedClosureId(salsa::InternId);
+impl_intern_key!(InternedClosureId);
 
 /// This exists just for Chalk, because Chalk just has a single `FnDefId` where
 /// we have different IDs for struct and enum variant constructors.

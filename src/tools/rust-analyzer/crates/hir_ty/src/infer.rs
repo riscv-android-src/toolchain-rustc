@@ -18,6 +18,7 @@ use std::mem;
 use std::ops::Index;
 use std::sync::Arc;
 
+use chalk_ir::Mutability;
 use hir_def::{
     body::Body,
     data::{ConstData, FunctionData, StaticData},
@@ -25,7 +26,7 @@ use hir_def::{
     lang_item::LangItemTarget,
     path::{path, Path},
     resolver::{HasResolver, Resolver, TypeNs},
-    type_ref::{Mutability, TypeRef},
+    type_ref::TypeRef,
     AdtId, AssocItemId, DefWithBodyId, EnumVariantId, FieldId, FunctionId, Lookup, TraitId,
     TypeAliasId, VariantId,
 };
@@ -36,24 +37,15 @@ use stdx::impl_from;
 use syntax::SmolStr;
 
 use super::{
-    primitive::{FloatTy, IntTy},
     traits::{Guidance, Obligation, ProjectionPredicate, Solution},
-    InEnvironment, ProjectionTy, Substs, TraitEnvironment, TraitRef, Ty, TypeCtor, TypeWalk,
+    InEnvironment, ProjectionTy, Substs, TraitEnvironment, TraitRef, Ty, TypeWalk,
 };
 use crate::{
     db::HirDatabase, infer::diagnostics::InferenceDiagnostic, lower::ImplTraitLoweringMode,
+    to_assoc_type_id, AliasTy, Interner, TyKind,
 };
 
 pub(crate) use unify::unify;
-
-macro_rules! ty_app {
-    ($ctor:pat, $param:pat) => {
-        crate::Ty::Apply(crate::ApplicationTy { ctor: $ctor, parameters: $param })
-    };
-    ($ctor:pat) => {
-        ty_app!($ctor, _)
-    };
-}
 
 mod unify;
 mod path;
@@ -97,7 +89,7 @@ impl BindingMode {
     fn convert(annotation: BindingAnnotation) -> BindingMode {
         match annotation {
             BindingAnnotation::Unannotated | BindingAnnotation::Mutable => BindingMode::Move,
-            BindingAnnotation::Ref => BindingMode::Ref(Mutability::Shared),
+            BindingAnnotation::Ref => BindingMode::Ref(Mutability::Not),
             BindingAnnotation::RefMut => BindingMode::Ref(Mutability::Mut),
         }
     }
@@ -178,7 +170,7 @@ impl Index<ExprId> for InferenceResult {
     type Output = Ty;
 
     fn index(&self, expr: ExprId) -> &Ty {
-        self.type_of_expr.get(expr).unwrap_or(&Ty::Unknown)
+        self.type_of_expr.get(expr).unwrap_or(&Ty(TyKind::Unknown))
     }
 }
 
@@ -186,7 +178,7 @@ impl Index<PatId> for InferenceResult {
     type Output = Ty;
 
     fn index(&self, pat: PatId) -> &Ty {
-        self.type_of_pat.get(pat).unwrap_or(&Ty::Unknown)
+        self.type_of_pat.get(pat).unwrap_or(&Ty(TyKind::Unknown))
     }
 }
 
@@ -235,8 +227,10 @@ impl<'a> InferenceContext<'a> {
             result: InferenceResult::default(),
             table: unify::InferenceTable::new(),
             obligations: Vec::default(),
-            return_ty: Ty::Unknown, // set in collect_fn_signature
-            trait_env: TraitEnvironment::lower(db, &resolver),
+            return_ty: TyKind::Unknown.intern(&Interner), // set in collect_fn_signature
+            trait_env: owner
+                .as_generic_def_id()
+                .map_or_else(Default::default, |d| db.trait_environment(d)),
             db,
             owner,
             body: db.body(owner),
@@ -246,15 +240,19 @@ impl<'a> InferenceContext<'a> {
         }
     }
 
+    fn err_ty(&self) -> Ty {
+        TyKind::Unknown.intern(&Interner)
+    }
+
     fn resolve_all(mut self) -> InferenceResult {
         // FIXME resolve obligations as well (use Guidance if necessary)
         let mut result = std::mem::take(&mut self.result);
         for ty in result.type_of_expr.values_mut() {
-            let resolved = self.table.resolve_ty_completely(mem::replace(ty, Ty::Unknown));
+            let resolved = self.table.resolve_ty_completely(ty.clone());
             *ty = resolved;
         }
         for ty in result.type_of_pat.values_mut() {
-            let resolved = self.table.resolve_ty_completely(mem::replace(ty, Ty::Unknown));
+            let resolved = self.table.resolve_ty_completely(ty.clone());
             *ty = resolved;
         }
         result
@@ -296,7 +294,7 @@ impl<'a> InferenceContext<'a> {
         // FIXME use right resolver for block
         let ctx = crate::lower::TyLoweringContext::new(self.db, &self.resolver)
             .with_impl_trait_mode(impl_trait_mode);
-        let ty = Ty::from_hir(&ctx, type_ref);
+        let ty = ctx.lower_ty(type_ref);
         let ty = self.insert_type_vars(ty);
         self.normalize_associated_types_in(ty)
     }
@@ -307,8 +305,8 @@ impl<'a> InferenceContext<'a> {
 
     /// Replaces Ty::Unknown by a new type var, so we can maybe still infer it.
     fn insert_type_vars_shallow(&mut self, ty: Ty) -> Ty {
-        match ty {
-            Ty::Unknown => self.table.new_type_var(),
+        match ty.interned(&Interner) {
+            TyKind::Unknown => self.table.new_type_var(),
             _ => ty,
         }
     }
@@ -386,13 +384,16 @@ impl<'a> InferenceContext<'a> {
                 let trait_ref = TraitRef { trait_, substs: substs.clone() };
                 let projection = ProjectionPredicate {
                     ty: ty.clone(),
-                    projection_ty: ProjectionTy { associated_ty: res_assoc_ty, parameters: substs },
+                    projection_ty: ProjectionTy {
+                        associated_ty_id: to_assoc_type_id(res_assoc_ty),
+                        substitution: substs,
+                    },
                 };
                 self.obligations.push(Obligation::Trait(trait_ref));
                 self.obligations.push(Obligation::Projection(projection));
                 self.resolve_ty_as_possible(ty)
             }
-            None => Ty::Unknown,
+            None => self.err_ty(),
         }
     }
 
@@ -404,8 +405,10 @@ impl<'a> InferenceContext<'a> {
     /// to do it as well.
     fn normalize_associated_types_in(&mut self, ty: Ty) -> Ty {
         let ty = self.resolve_ty_as_possible(ty);
-        ty.fold(&mut |ty| match ty {
-            Ty::Projection(proj_ty) => self.normalize_projection_ty(proj_ty),
+        ty.fold(&mut |ty| match ty.interned(&Interner) {
+            TyKind::Alias(AliasTy::Projection(proj_ty)) => {
+                self.normalize_projection_ty(proj_ty.clone())
+            }
             _ => ty,
         })
     }
@@ -421,7 +424,7 @@ impl<'a> InferenceContext<'a> {
     fn resolve_variant(&mut self, path: Option<&Path>) -> (Ty, Option<VariantId>) {
         let path = match path {
             Some(path) => path,
-            None => return (Ty::Unknown, None),
+            None => return (self.err_ty(), None),
         };
         let resolver = &self.resolver;
         let ctx = crate::lower::TyLoweringContext::new(self.db, &self.resolver);
@@ -430,30 +433,30 @@ impl<'a> InferenceContext<'a> {
         let (resolution, unresolved) =
             match resolver.resolve_path_in_type_ns(self.db.upcast(), path.mod_path()) {
                 Some(it) => it,
-                None => return (Ty::Unknown, None),
+                None => return (self.err_ty(), None),
             };
         return match resolution {
             TypeNs::AdtId(AdtId::StructId(strukt)) => {
-                let substs = Ty::substs_from_path(&ctx, path, strukt.into(), true);
+                let substs = ctx.substs_from_path(path, strukt.into(), true);
                 let ty = self.db.ty(strukt.into());
                 let ty = self.insert_type_vars(ty.subst(&substs));
                 forbid_unresolved_segments((ty, Some(strukt.into())), unresolved)
             }
             TypeNs::AdtId(AdtId::UnionId(u)) => {
-                let substs = Ty::substs_from_path(&ctx, path, u.into(), true);
+                let substs = ctx.substs_from_path(path, u.into(), true);
                 let ty = self.db.ty(u.into());
                 let ty = self.insert_type_vars(ty.subst(&substs));
                 forbid_unresolved_segments((ty, Some(u.into())), unresolved)
             }
             TypeNs::EnumVariantId(var) => {
-                let substs = Ty::substs_from_path(&ctx, path, var.into(), true);
+                let substs = ctx.substs_from_path(path, var.into(), true);
                 let ty = self.db.ty(var.parent.into());
                 let ty = self.insert_type_vars(ty.subst(&substs));
                 forbid_unresolved_segments((ty, Some(var.into())), unresolved)
             }
             TypeNs::SelfType(impl_id) => {
                 let generics = crate::utils::generics(self.db.upcast(), impl_id.into());
-                let substs = Substs::type_params_for_generics(&generics);
+                let substs = Substs::type_params_for_generics(self.db, &generics);
                 let ty = self.db.impl_self_ty(impl_id).subst(&substs);
                 match unresolved {
                     None => {
@@ -461,7 +464,7 @@ impl<'a> InferenceContext<'a> {
                         (ty, variant)
                     }
                     Some(1) => {
-                        let segment = path.mod_path().segments.last().unwrap();
+                        let segment = path.mod_path().segments().last().unwrap();
                         // this could be an enum variant or associated type
                         if let Some((AdtId::EnumId(enum_id), _)) = ty.as_adt() {
                             let enum_data = self.db.enum_data(enum_id);
@@ -471,11 +474,11 @@ impl<'a> InferenceContext<'a> {
                             }
                         }
                         // FIXME potentially resolve assoc type
-                        (Ty::Unknown, None)
+                        (self.err_ty(), None)
                     }
                     Some(_) => {
                         // FIXME diagnostic
-                        (Ty::Unknown, None)
+                        (self.err_ty(), None)
                     }
                 }
             }
@@ -489,15 +492,15 @@ impl<'a> InferenceContext<'a> {
             }
             TypeNs::AdtSelfType(_) => {
                 // FIXME this could happen in array size expressions, once we're checking them
-                (Ty::Unknown, None)
+                (self.err_ty(), None)
             }
             TypeNs::GenericParam(_) => {
                 // FIXME potentially resolve assoc type
-                (Ty::Unknown, None)
+                (self.err_ty(), None)
             }
             TypeNs::AdtId(AdtId::EnumId(_)) | TypeNs::BuiltinType(_) | TypeNs::TraitId(_) => {
                 // FIXME diagnostic
-                (Ty::Unknown, None)
+                (self.err_ty(), None)
             }
         };
 
@@ -509,7 +512,7 @@ impl<'a> InferenceContext<'a> {
                 result
             } else {
                 // FIXME diagnostic
-                (Ty::Unknown, None)
+                (TyKind::Unknown.intern(&Interner), None)
             }
         }
 
@@ -538,7 +541,7 @@ impl<'a> InferenceContext<'a> {
         let ctx = crate::lower::TyLoweringContext::new(self.db, &self.resolver)
             .with_impl_trait_mode(ImplTraitLoweringMode::Param);
         let param_tys =
-            data.params.iter().map(|type_ref| Ty::from_hir(&ctx, type_ref)).collect::<Vec<_>>();
+            data.params.iter().map(|type_ref| ctx.lower_ty(type_ref)).collect::<Vec<_>>();
         for (ty, pat) in param_tys.into_iter().zip(body.params.iter()) {
             let ty = self.insert_type_vars(ty);
             let ty = self.normalize_associated_types_in(ty);
@@ -664,30 +667,17 @@ impl<'a> InferenceContext<'a> {
 /// two are used for inference of literal values (e.g. `100` could be one of
 /// several integer types).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum InferTy {
-    TypeVar(unify::TypeVarId),
-    IntVar(unify::TypeVarId),
-    FloatVar(unify::TypeVarId),
-    MaybeNeverTypeVar(unify::TypeVarId),
+pub struct InferenceVar {
+    index: u32,
 }
 
-impl InferTy {
+impl InferenceVar {
     fn to_inner(self) -> unify::TypeVarId {
-        match self {
-            InferTy::TypeVar(ty)
-            | InferTy::IntVar(ty)
-            | InferTy::FloatVar(ty)
-            | InferTy::MaybeNeverTypeVar(ty) => ty,
-        }
+        unify::TypeVarId(self.index)
     }
 
-    fn fallback_value(self) -> Ty {
-        match self {
-            InferTy::TypeVar(..) => Ty::Unknown,
-            InferTy::IntVar(..) => Ty::simple(TypeCtor::Int(IntTy::i32())),
-            InferTy::FloatVar(..) => Ty::simple(TypeCtor::Float(FloatTy::f64())),
-            InferTy::MaybeNeverTypeVar(..) => Ty::simple(TypeCtor::Never),
-        }
+    fn from_inner(unify::TypeVarId(index): unify::TypeVarId) -> Self {
+        InferenceVar { index }
     }
 }
 
@@ -733,12 +723,12 @@ impl Expectation {
 
     /// This expresses no expectation on the type.
     fn none() -> Self {
-        Expectation { ty: Ty::Unknown, rvalue_hint: false }
+        Expectation { ty: TyKind::Unknown.intern(&Interner), rvalue_hint: false }
     }
 
     fn coercion_target(&self) -> &Ty {
         if self.rvalue_hint {
-            &Ty::Unknown
+            &Ty(TyKind::Unknown)
         } else {
             &self.ty
         }

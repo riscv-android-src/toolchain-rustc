@@ -1,16 +1,17 @@
+use either::Either;
 use hir::{
     Adt, AsAssocItem, AssocItemContainer, FieldSource, GenericParam, HasAttrs, HasSource,
     HirDisplay, Module, ModuleDef, ModuleSource, Semantics,
 };
-use ide_db::base_db::SourceDatabase;
 use ide_db::{
+    base_db::SourceDatabase,
     defs::{Definition, NameClass, NameRefClass},
+    helpers::FamousDefs,
     RootDatabase,
 };
 use itertools::Itertools;
 use stdx::format_to;
 use syntax::{ast, match_ast, AstNode, SyntaxKind::*, SyntaxToken, TokenAtOffset, T};
-use test_utils::mark;
 
 use crate::{
     display::{macro_label, ShortLabel, TryToNav},
@@ -94,7 +95,12 @@ pub(crate) fn hover(
     let node = token.parent();
     let definition = match_ast! {
         match node {
-            ast::Name(name) => NameClass::classify(&sema, &name).and_then(|d| d.defined(sema.db)),
+            // we don't use NameClass::referenced_or_defined here as we do not want to resolve
+            // field pattern shorthands to their definition
+            ast::Name(name) => NameClass::classify(&sema, &name).and_then(|class| match class {
+                NameClass::ConstReference(def) => Some(def),
+                def => def.defined(sema.db),
+            }),
             ast::NameRef(name_ref) => NameRefClass::classify(&sema, &name_ref).map(|d| d.referenced(sema.db)),
             ast::Lifetime(lifetime) => NameClass::classify_lifetime(&sema, &lifetime)
                 .map_or_else(|| NameRefClass::classify_lifetime(&sema, &lifetime).map(|d| d.referenced(sema.db)), |d| d.defined(sema.db)),
@@ -102,16 +108,14 @@ pub(crate) fn hover(
         }
     };
     if let Some(definition) = definition {
-        if let Some(markup) = hover_for_definition(db, definition) {
-            let markup = markup.as_str();
-            let markup = if !markdown {
-                remove_markdown(markup)
-            } else if links_in_hover {
-                rewrite_links(db, markup, &definition)
-            } else {
-                remove_links(markup)
-            };
-            res.markup = Markup::from(markup);
+        let famous_defs = match &definition {
+            Definition::ModuleDef(ModuleDef::BuiltinType(_)) => {
+                Some(FamousDefs(&sema, sema.scope(&node).krate()))
+            }
+            _ => None,
+        };
+        if let Some(markup) = hover_for_definition(db, definition, famous_defs.as_ref()) {
+            res.markup = process_markup(sema.db, definition, &markup, links_in_hover, markdown);
             if let Some(action) = show_implementations_action(db, definition) {
                 res.actions.push(action);
             }
@@ -132,6 +136,9 @@ pub(crate) fn hover(
     if token.kind() == syntax::SyntaxKind::COMMENT {
         // don't highlight the entire parent node on comment hover
         return None;
+    }
+    if let res @ Some(_) = hover_for_keyword(&sema, links_in_hover, markdown, &token) {
+        return res;
     }
 
     let node = token
@@ -186,8 +193,8 @@ fn runnable_action(
             ModuleDef::Function(func) => {
                 let src = func.source(sema.db)?;
                 if src.file_id != file_id.into() {
-                    mark::hit!(hover_macro_generated_struct_fn_doc_comment);
-                    mark::hit!(hover_macro_generated_struct_fn_doc_attr);
+                    cov_mark::hit!(hover_macro_generated_struct_fn_doc_comment);
+                    cov_mark::hit!(hover_macro_generated_struct_fn_doc_attr);
                     return None;
                 }
 
@@ -267,6 +274,24 @@ fn hover_markup(
     }
 }
 
+fn process_markup(
+    db: &RootDatabase,
+    def: Definition,
+    markup: &Markup,
+    links_in_hover: bool,
+    markdown: bool,
+) -> Markup {
+    let markup = markup.as_str();
+    let markup = if !markdown {
+        remove_markdown(markup)
+    } else if links_in_hover {
+        rewrite_links(db, markup, &def)
+    } else {
+        remove_links(markup)
+    };
+    Markup::from(markup)
+}
+
 fn definition_owner_name(db: &RootDatabase, def: &Definition) -> Option<String> {
     match def {
         Definition::Field(f) => Some(f.parent_def(db).name(db)),
@@ -299,7 +324,11 @@ fn definition_mod_path(db: &RootDatabase, def: &Definition) -> Option<String> {
     def.module(db).map(|module| render_path(db, module, definition_owner_name(db, def)))
 }
 
-fn hover_for_definition(db: &RootDatabase, def: Definition) -> Option<Markup> {
+fn hover_for_definition(
+    db: &RootDatabase,
+    def: Definition,
+    famous_defs: Option<&FamousDefs>,
+) -> Option<Markup> {
     let mod_path = definition_mod_path(db, &def);
     return match def {
         Definition::Macro(it) => {
@@ -334,9 +363,11 @@ fn hover_for_definition(db: &RootDatabase, def: Definition) -> Option<Markup> {
             ModuleDef::Static(it) => from_def_source(db, it, mod_path),
             ModuleDef::Trait(it) => from_def_source(db, it, mod_path),
             ModuleDef::TypeAlias(it) => from_def_source(db, it, mod_path),
-            ModuleDef::BuiltinType(it) => Some(Markup::fenced_block(&it)),
+            ModuleDef::BuiltinType(it) => famous_defs
+                .and_then(|fd| hover_for_builtin(fd, it))
+                .or_else(|| Some(Markup::fenced_block(&it.name()))),
         },
-        Definition::Local(it) => Some(Markup::fenced_block(&it.ty(db).display(db))),
+        Definition::Local(it) => hover_for_local(it, db),
         Definition::SelfType(impl_def) => {
             impl_def.target_ty(db).as_adt().and_then(|adt| match adt {
                 Adt::Struct(it) => from_def_source(db, it, mod_path),
@@ -375,11 +406,75 @@ fn hover_for_definition(db: &RootDatabase, def: Definition) -> Option<Markup> {
     }
 }
 
+fn hover_for_local(it: hir::Local, db: &RootDatabase) -> Option<Markup> {
+    let ty = it.ty(db);
+    let ty = ty.display(db);
+    let is_mut = if it.is_mut(db) { "mut " } else { "" };
+    let desc = match it.source(db).value {
+        Either::Left(ident) => {
+            let name = it.name(db).unwrap();
+            let let_kw = if ident
+                .syntax()
+                .parent()
+                .map_or(false, |p| p.kind() == LET_STMT || p.kind() == CONDITION)
+            {
+                "let "
+            } else {
+                ""
+            };
+            format!("{}{}{}: {}", let_kw, is_mut, name, ty)
+        }
+        Either::Right(_) => format!("{}self: {}", is_mut, ty),
+    };
+    hover_markup(None, Some(desc), None)
+}
+
+fn hover_for_keyword(
+    sema: &Semantics<RootDatabase>,
+    links_in_hover: bool,
+    markdown: bool,
+    token: &SyntaxToken,
+) -> Option<RangeInfo<HoverResult>> {
+    if !token.kind().is_keyword() {
+        return None;
+    }
+    let famous_defs = FamousDefs(&sema, sema.scope(&token.parent()).krate());
+    // std exposes {}_keyword modules with docstrings on the root to document keywords
+    let keyword_mod = format!("{}_keyword", token.text());
+    let doc_owner = find_std_module(&famous_defs, &keyword_mod)?;
+    let docs = doc_owner.attrs(sema.db).docs()?;
+    let markup = process_markup(
+        sema.db,
+        Definition::ModuleDef(doc_owner.into()),
+        &hover_markup(Some(docs.into()), Some(token.text().into()), None)?,
+        links_in_hover,
+        markdown,
+    );
+    Some(RangeInfo::new(token.text_range(), HoverResult { markup, actions: Default::default() }))
+}
+
+fn hover_for_builtin(famous_defs: &FamousDefs, builtin: hir::BuiltinType) -> Option<Markup> {
+    // std exposes prim_{} modules with docstrings on the root to document the builtins
+    let primitive_mod = format!("prim_{}", builtin.name());
+    let doc_owner = find_std_module(famous_defs, &primitive_mod)?;
+    let docs = doc_owner.attrs(famous_defs.0.db).docs()?;
+    hover_markup(Some(docs.into()), Some(builtin.name().to_string()), None)
+}
+
+fn find_std_module(famous_defs: &FamousDefs, name: &str) -> Option<hir::Module> {
+    let db = famous_defs.0.db;
+    let std_crate = famous_defs.std()?;
+    let std_root_module = std_crate.root_module(db);
+    std_root_module
+        .children(db)
+        .find(|module| module.name(db).map_or(false, |module| module.to_string() == name))
+}
+
 fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
     return tokens.max_by_key(priority);
     fn priority(n: &SyntaxToken) -> usize {
         match n.kind() {
-            IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] => 3,
+            IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] | T![super] | T![crate] => 3,
             T!['('] | T![')'] => 2,
             kind if kind.is_trivia() => 0,
             _ => 1,
@@ -503,7 +598,7 @@ fn main() {
                 *iter*
 
                 ```rust
-                Iter<Scan<OtherStruct<OtherStruct<i32>>, |&mut u32, &u32, &mut u32| -> Option<u32>, u32>>
+                let mut iter: Iter<Scan<OtherStruct<OtherStruct<i32>>, |&mut u32, &u32, &mut u32| -> Option<u32>, u32>>
                 ```
             "#]],
         );
@@ -727,7 +822,7 @@ fn main() {
                 ```
 
                 ```rust
-                const foo: u32 = 123
+                const foo: u32
                 ```
             "#]],
         );
@@ -760,7 +855,7 @@ fn main() {
                 *zz*
 
                 ```rust
-                Test<i32, u8>
+                let zz: Test<i32, u8>
                 ```
             "#]],
         );
@@ -799,7 +894,7 @@ fn main() { let b$0ar = Some(12); }
                 *bar*
 
                 ```rust
-                Option<i32>
+                let bar: Option<i32>
                 ```
             "#]],
         );
@@ -867,7 +962,7 @@ fn main() {
                 *foo*
 
                 ```rust
-                i32
+                foo: i32
                 ```
             "#]],
         )
@@ -881,7 +976,7 @@ fn main() {
                 *foo*
 
                 ```rust
-                i32
+                foo: i32
                 ```
             "#]],
         )
@@ -895,7 +990,7 @@ fn main() {
                 *foo*
 
                 ```rust
-                i32
+                foo: i32
                 ```
             "#]],
         )
@@ -909,7 +1004,7 @@ fn main() {
                 *foo*
 
                 ```rust
-                i32
+                foo: i32
                 ```
             "#]],
         )
@@ -929,7 +1024,7 @@ fn main() {
                 *_x*
 
                 ```rust
-                impl Deref<Target = u8> + DerefMut<Target = u8>
+                _x: impl Deref<Target = u8> + DerefMut<Target = u8>
                 ```
             "#]],
         )
@@ -951,7 +1046,7 @@ fn main() { let foo_$0test = Thing::new(); }
                 *foo_test*
 
                 ```rust
-                Thing
+                let foo_test: Thing
                 ```
             "#]],
         )
@@ -1010,7 +1105,7 @@ fn main() {
                 ```
 
                 ```rust
-                const C: u32 = 1
+                const C: u32
                 ```
             "#]],
         )
@@ -1111,7 +1206,7 @@ fn y() {
                 *x*
 
                 ```rust
-                i32
+                let x: i32
                 ```
             "#]],
         )
@@ -1188,7 +1283,7 @@ fn foo(bar:u32) { let a = id!(ba$0r); }
                 *bar*
 
                 ```rust
-                u32
+                bar: u32
                 ```
             "#]],
         );
@@ -1206,7 +1301,7 @@ fn foo(bar:u32) { let a = id!(ba$0r); }
                 *bar*
 
                 ```rust
-                u32
+                bar: u32
                 ```
             "#]],
         );
@@ -2029,7 +2124,7 @@ pub fn fo$0o() {}
 
     #[test]
     fn test_hover_macro_generated_struct_fn_doc_comment() {
-        mark::check!(hover_macro_generated_struct_fn_doc_comment);
+        cov_mark::check!(hover_macro_generated_struct_fn_doc_comment);
 
         check(
             r#"
@@ -2067,7 +2162,7 @@ fn foo() { let bar = Bar; bar.fo$0o(); }
 
     #[test]
     fn test_hover_macro_generated_struct_fn_doc_attr() {
-        mark::check!(hover_macro_generated_struct_fn_doc_attr);
+        cov_mark::check!(hover_macro_generated_struct_fn_doc_attr);
 
         check(
             r#"
@@ -3231,7 +3326,7 @@ fn main() {
                 *f*
 
                 ```rust
-                &i32
+                f: &i32
                 ```
             "#]],
         );
@@ -3250,7 +3345,7 @@ impl Foo {
                 *self*
 
                 ```rust
-                &Foo
+                self: &Foo
                 ```
             "#]],
         );
@@ -3270,7 +3365,7 @@ impl Foo {
                 *self*
 
                 ```rust
-                Arc<Foo>
+                self: Arc<Foo>
                 ```
             "#]],
         );
@@ -3412,7 +3507,7 @@ impl<T> Foo<T$0> {}
                 ```
                 "#]],
         );
-        // lifetimes aren't being substituted yet
+        // lifetimes bounds arent being tracked yet
         check(
             r#"
 struct Foo<T>(T);
@@ -3422,7 +3517,7 @@ impl<T: 'static> Foo<T$0> {}
                 *T*
 
                 ```rust
-                T: {error}
+                T
                 ```
                 "#]],
         );
@@ -3446,6 +3541,37 @@ impl<const LEN: usize> Foo<LEN$0> {}
     }
 
     #[test]
+    fn hover_const_pat() {
+        check(
+            r#"
+/// This is a doc
+const FOO: usize = 3;
+fn foo() {
+    match 5 {
+        FOO$0 => (),
+        _ => ()
+    }
+}
+"#,
+            expect![[r#"
+                *FOO*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                const FOO: usize
+                ```
+
+                ---
+
+                This is a doc
+            "#]],
+        );
+    }
+
+    #[test]
     fn hover_mod_def() {
         check(
             r#"
@@ -3457,6 +3583,77 @@ mod foo$0;
             expect![[r#"
                 *foo*
                 For the horde!
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_self_in_use() {
+        check(
+            r#"
+//! This should not appear
+mod foo {
+    /// But this should appear
+    pub mod bar {}
+}
+use foo::bar::{self$0};
+"#,
+            expect![[r#"
+                *self*
+
+                ```rust
+                test::foo
+                ```
+
+                ```rust
+                pub mod bar
+                ```
+
+                ---
+
+                But this should appear
+            "#]],
+        )
+    }
+
+    #[test]
+    fn hover_keyword() {
+        let ra_fixture = r#"//- /main.rs crate:main deps:std
+fn f() { retur$0n; }"#;
+        let fixture = format!("{}\n{}", ra_fixture, FamousDefs::FIXTURE);
+        check(
+            &fixture,
+            expect![[r#"
+                *return*
+
+                ```rust
+                return
+                ```
+
+                ---
+
+                Docs for return_keyword
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_builtin() {
+        let ra_fixture = r#"//- /main.rs crate:main deps:std
+cosnt _: &str$0 = ""; }"#;
+        let fixture = format!("{}\n{}", ra_fixture, FamousDefs::FIXTURE);
+        check(
+            &fixture,
+            expect![[r#"
+                *str*
+
+                ```rust
+                str
+                ```
+
+                ---
+
+                Docs for prim_str
             "#]],
         );
     }

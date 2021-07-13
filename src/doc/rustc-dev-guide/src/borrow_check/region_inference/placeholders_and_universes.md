@@ -1,5 +1,7 @@
 # Placeholders and universes
 
+<!-- toc -->
+
 From time to time we have to reason about regions that we can't
 concretely know. For example, consider this program:
 
@@ -19,7 +21,7 @@ fn main() {
 ```
 
 This program ought not to type-check: `foo` needs a static reference
-for its argument, and `bar` wants to be given a function that that
+for its argument, and `bar` wants to be given a function that
 accepts **any** reference (so it can call it with something on its
 stack, for example). But *how* do we reject it and *why*?
 
@@ -61,10 +63,9 @@ we swap the left and right here):
 ```
 
 According to the basic subtyping rules for a reference, this will be
-true if `'!1: 'static`. That is – if "some unknown region `!1`" lives
-outlives `'static`. Now, this *might* be true – after all, `'!1`
-could be `'static` – but we don't *know* that it's true. So this
-should yield up an error (eventually).
+true if `'!1: 'static`. That is – if "some unknown region `!1`" outlives `'static`.
+Now, this *might* be true – after all, `'!1` could be `'static` –
+but we don't *know* that it's true. So this should yield up an error (eventually).
 
 ## What is a universe?
 
@@ -74,7 +75,7 @@ index**. The idea of a "universe" is that it is a set of names that
 are in scope within some type or at some point. Universes are formed
 into a tree, where each child extends its parents with some new names.
 So the **root universe** conceptually contains global names, such as
-the the lifetime `'static` or the type `i32`. In the compiler, we also
+the lifetime `'static` or the type `i32`. In the compiler, we also
 put generic type parameters into this root universe (in this sense,
 there is not just one root universe, but one per item). So consider
 this function `bar`:

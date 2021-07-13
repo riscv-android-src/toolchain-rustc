@@ -61,7 +61,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let instance = this.resolve_path(path);
         let cid = GlobalId { instance, promoted: None };
         let const_val = this.eval_to_allocation(cid)?;
-        let const_val = this.read_scalar(const_val.into())?;
+        let const_val = this.read_scalar(&const_val.into())?;
         return Ok(const_val);
     }
 
@@ -106,7 +106,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     }
 
     /// Write a 0 of the appropriate size to `dest`.
-    fn write_null(&mut self, dest: PlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
+    fn write_null(&mut self, dest: &PlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
         self.eval_context_mut().write_scalar(Scalar::from_int(0, dest.layout.size), dest)
     }
 
@@ -161,11 +161,17 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn call_function(
         &mut self,
         f: ty::Instance<'tcx>,
+        caller_abi: Abi,
         args: &[Immediate<Tag>],
-        dest: Option<PlaceTy<'tcx, Tag>>,
+        dest: Option<&PlaceTy<'tcx, Tag>>,
         stack_pop: StackPopCleanup,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
+        let param_env = ty::ParamEnv::reveal_all(); // in Miri this is always the param_env we use... and this.param_env is private.
+        let callee_abi = f.ty(*this.tcx, param_env).fn_sig(*this.tcx).abi();
+        if callee_abi != caller_abi {
+            throw_ub_format!("calling a function with ABI {} using caller ABI {}", callee_abi.name(), caller_abi.name())
+        }
 
         // Push frame.
         let mir = &*this.load_mir(f.def, None)?;
@@ -175,11 +181,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let mut callee_args = this.frame().body.args_iter();
         for arg in args {
             let callee_arg = this.local_place(
-                callee_args.next().expect("callee has fewer arguments than expected"),
+                callee_args.next().ok_or_else(||
+                    err_ub_format!("callee has fewer arguments than expected")
+                )?
             )?;
-            this.write_immediate(*arg, callee_arg)?;
+            this.write_immediate(*arg, &callee_arg)?;
         }
-        callee_args.next().expect_none("callee has more arguments than expected");
+        if callee_args.next().is_some() {
+            throw_ub_format!("callee has more arguments than expected");
+        }
 
         Ok(())
     }
@@ -188,7 +198,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// will be true if this is frozen, false if this is in an `UnsafeCell`.
     fn visit_freeze_sensitive(
         &self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         size: Size,
         mut action: impl FnMut(Pointer<Tag>, Size, bool) -> InterpResult<'tcx>,
     ) -> InterpResult<'tcx> {
@@ -237,7 +247,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     trace!("unsafe_cell_action on {:?}", place.ptr);
                     // We need a size to go on.
                     let unsafe_cell_size = this
-                        .size_and_align_of_mplace(place)?
+                        .size_and_align_of_mplace(&place)?
                         .map(|(size, _)| size)
                         // for extern types, just cover what we can
                         .unwrap_or_else(|| place.layout.size);
@@ -261,7 +271,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         /// whether we are inside an `UnsafeCell` or not.
         struct UnsafeCellVisitor<'ecx, 'mir, 'tcx, F>
         where
-            F: FnMut(MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx>,
+            F: FnMut(&MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx>,
         {
             ecx: &'ecx MiriEvalContext<'mir, 'tcx>,
             unsafe_cell_action: F,
@@ -270,7 +280,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         impl<'ecx, 'mir, 'tcx: 'mir, F> ValueVisitor<'mir, 'tcx, Evaluator<'mir, 'tcx>>
             for UnsafeCellVisitor<'ecx, 'mir, 'tcx, F>
         where
-            F: FnMut(MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx>,
+            F: FnMut(&MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx>,
         {
             type V = MPlaceTy<'tcx, Tag>;
 
@@ -280,7 +290,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             // Hook to detect `UnsafeCell`.
-            fn visit_value(&mut self, v: MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
+            fn visit_value(&mut self, v: &MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
                 trace!("UnsafeCellVisitor: {:?} {:?}", *v, v.layout.ty);
                 let is_unsafe_cell = match v.layout.ty.kind() {
                     ty::Adt(adt, _) =>
@@ -323,7 +333,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // Make sure we visit aggregrates in increasing offset order.
             fn visit_aggregate(
                 &mut self,
-                place: MPlaceTy<'tcx, Tag>,
+                place: &MPlaceTy<'tcx, Tag>,
                 fields: impl Iterator<Item = InterpResult<'tcx, MPlaceTy<'tcx, Tag>>>,
             ) -> InterpResult<'tcx> {
                 match place.layout.fields {
@@ -346,7 +356,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 }
             }
 
-            fn visit_union(&mut self, _v: MPlaceTy<'tcx, Tag>, _fields: NonZeroUsize) -> InterpResult<'tcx> {
+            fn visit_union(&mut self, _v: &MPlaceTy<'tcx, Tag>, _fields: NonZeroUsize) -> InterpResult<'tcx> {
                 bug!("we should have already handled unions in `visit_value`")
             }
         }
@@ -356,7 +366,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     // different values into a struct.
     fn write_packed_immediates(
         &mut self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         imms: &[ImmTy<'tcx, Tag>],
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
@@ -366,7 +376,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         for &imm in imms {
             this.write_immediate_to_mplace(
                 *imm,
-                place.offset(offset, MemPlaceMeta::None, imm.layout, &*this.tcx)?,
+                &place.offset(offset, MemPlaceMeta::None, imm.layout, &*this.tcx)?,
             )?;
             offset += imm.layout.size;
         }
@@ -406,7 +416,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // Allocate new place, set initial value to 0.
             let errno_layout = this.machine.layouts.u32;
             let errno_place = this.allocate(errno_layout, MiriMemoryKind::Machine.into());
-            this.write_scalar(Scalar::from_u32(0), errno_place.into())?;
+            this.write_scalar(Scalar::from_u32(0), &errno_place.into())?;
             this.active_thread_mut().last_error = Some(errno_place);
             Ok(errno_place)
         }
@@ -416,14 +426,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn set_last_error(&mut self, scalar: Scalar<Tag>) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         let errno_place = this.last_error_place()?;
-        this.write_scalar(scalar, errno_place.into())
+        this.write_scalar(scalar, &errno_place.into())
     }
 
     /// Gets the last error variable.
     fn get_last_error(&mut self) -> InterpResult<'tcx, Scalar<Tag>> {
         let this = self.eval_context_mut();
         let errno_place = this.last_error_place()?;
-        this.read_scalar(errno_place.into())?.check_init()
+        this.read_scalar(&errno_place.into())?.check_init()
     }
 
     /// Sets the last OS error using a `std::io::Error`. This function tries to produce the most
@@ -486,7 +496,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     fn read_scalar_at_offset(
         &self,
-        op: OpTy<'tcx, Tag>,
+        op: &OpTy<'tcx, Tag>,
         offset: u64,
         layout: TyAndLayout<'tcx>,
     ) -> InterpResult<'tcx, ScalarMaybeUninit<Tag>> {
@@ -496,12 +506,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // Ensure that the following read at an offset is within bounds
         assert!(op_place.layout.size >= offset + layout.size);
         let value_place = op_place.offset(offset, MemPlaceMeta::None, layout, this)?;
-        this.read_scalar(value_place.into())
+        this.read_scalar(&value_place.into())
     }
 
     fn write_scalar_at_offset(
         &mut self,
-        op: OpTy<'tcx, Tag>,
+        op: &OpTy<'tcx, Tag>,
         offset: u64,
         value: impl Into<ScalarMaybeUninit<Tag>>,
         layout: TyAndLayout<'tcx>,
@@ -512,7 +522,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // Ensure that the following read at an offset is within bounds
         assert!(op_place.layout.size >= offset + layout.size);
         let value_place = op_place.offset(offset, MemPlaceMeta::None, layout, this)?;
-        this.write_scalar(value, value_place.into())
+        this.write_scalar(value, &value_place.into())
     }
 
     /// Parse a `timespec` struct and return it as a `std::time::Duration`. It returns `None`
@@ -520,15 +530,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// `EINVAL` in this case.
     fn read_timespec(
         &mut self,
-        timespec_ptr_op: OpTy<'tcx, Tag>,
+        timespec_ptr_op: &OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, Option<Duration>> {
         let this = self.eval_context_mut();
         let tp = this.deref_operand(timespec_ptr_op)?;
-        let seconds_place = this.mplace_field(tp, 0)?;
-        let seconds_scalar = this.read_scalar(seconds_place.into())?;
+        let seconds_place = this.mplace_field(&tp, 0)?;
+        let seconds_scalar = this.read_scalar(&seconds_place.into())?;
         let seconds = seconds_scalar.to_machine_isize(this)?;
-        let nanoseconds_place = this.mplace_field(tp, 1)?;
-        let nanoseconds_scalar = this.read_scalar(nanoseconds_place.into())?;
+        let nanoseconds_place = this.mplace_field(&tp, 1)?;
+        let nanoseconds_scalar = this.read_scalar(&nanoseconds_place.into())?;
         let nanoseconds = nanoseconds_scalar.to_machine_isize(this)?;
 
         Ok(try {
@@ -559,7 +569,7 @@ pub fn check_abi<'a>(abi: Abi, exp_abi: Abi) -> InterpResult<'a, ()> {
     if abi == exp_abi {
         Ok(())
     } else {
-        throw_ub_format!("calling a function with ABI {:?} using caller ABI {:?}", exp_abi, abi)
+        throw_ub_format!("calling a function with ABI {} using caller ABI {}", exp_abi.name(), abi.name())
     }
 }
 

@@ -20,7 +20,7 @@ use hir_def::{
 use hir_expand::{hygiene::Hygiene, name::AsName, HirFileId, InFile};
 use hir_ty::{
     diagnostics::{record_literal_missing_fields, record_pattern_missing_fields},
-    InferenceResult, Substs, Ty,
+    InferenceResult, Substs,
 };
 use syntax::{
     ast::{self, AstNode},
@@ -28,8 +28,8 @@ use syntax::{
 };
 
 use crate::{
-    db::HirDatabase, semantics::PathResolution, Adt, Const, Field, Function, Local, MacroDef,
-    ModuleDef, Static, Struct, Trait, Type, TypeAlias, TypeParam, Variant,
+    db::HirDatabase, semantics::PathResolution, Adt, BuiltinType, Const, Field, Function, Local,
+    MacroDef, ModuleDef, Static, Struct, Trait, Type, TypeAlias, TypeParam, Variant,
 };
 use base_db::CrateId;
 
@@ -222,8 +222,9 @@ impl SourceAnalyzer {
         db: &dyn HirDatabase,
         path: &ast::Path,
     ) -> Option<PathResolution> {
+        let parent = || path.syntax().parent();
         let mut prefer_value_ns = false;
-        if let Some(path_expr) = path.syntax().parent().and_then(ast::PathExpr::cast) {
+        if let Some(path_expr) = parent().and_then(ast::PathExpr::cast) {
             let expr_id = self.expr_id(db, &path_expr.into())?;
             let infer = self.infer.as_ref()?;
             if let Some(assoc) = infer.assoc_resolutions_for_expr(expr_id) {
@@ -237,7 +238,7 @@ impl SourceAnalyzer {
             prefer_value_ns = true;
         }
 
-        if let Some(path_pat) = path.syntax().parent().and_then(ast::PathPat::cast) {
+        if let Some(path_pat) = parent().and_then(ast::PathPat::cast) {
             let pat_id = self.pat_id(&path_pat.into())?;
             if let Some(assoc) = self.infer.as_ref()?.assoc_resolutions_for_pat(pat_id) {
                 return Some(PathResolution::AssocItem(assoc.into()));
@@ -249,7 +250,7 @@ impl SourceAnalyzer {
             }
         }
 
-        if let Some(rec_lit) = path.syntax().parent().and_then(ast::RecordExpr::cast) {
+        if let Some(rec_lit) = parent().and_then(ast::RecordExpr::cast) {
             let expr_id = self.expr_id(db, &rec_lit.into())?;
             if let Some(VariantId::EnumVariantId(variant)) =
                 self.infer.as_ref()?.variant_resolution_for_expr(expr_id)
@@ -258,8 +259,12 @@ impl SourceAnalyzer {
             }
         }
 
-        if let Some(rec_pat) = path.syntax().parent().and_then(ast::RecordPat::cast) {
-            let pat_id = self.pat_id(&rec_pat.into())?;
+        if let Some(pat) = parent()
+            .and_then(ast::RecordPat::cast)
+            .map(ast::Pat::from)
+            .or_else(|| parent().and_then(ast::TupleStructPat::cast).map(ast::Pat::from))
+        {
+            let pat_id = self.pat_id(&pat)?;
             if let Some(VariantId::EnumVariantId(variant)) =
                 self.infer.as_ref()?.variant_resolution_for_pat(pat_id)
             {
@@ -272,7 +277,7 @@ impl SourceAnalyzer {
 
         // Case where path is a qualifier of another path, e.g. foo::bar::Baz where we
         // trying to resolve foo::bar.
-        if let Some(outer_path) = path.syntax().parent().and_then(ast::Path::cast) {
+        if let Some(outer_path) = parent().and_then(ast::Path::cast) {
             if let Some(qualifier) = outer_path.qualifier() {
                 if path == &qualifier {
                     return resolve_hir_path_qualifier(db, &self.resolver, &hir_path);
@@ -293,14 +298,11 @@ impl SourceAnalyzer {
         let infer = self.infer.as_ref()?;
 
         let expr_id = self.expr_id(db, &literal.clone().into())?;
-        let substs = match &infer.type_of_expr[expr_id] {
-            Ty::Apply(a_ty) => &a_ty.parameters,
-            _ => return None,
-        };
+        let substs = infer.type_of_expr[expr_id].substs()?;
 
         let (variant, missing_fields, _exhaustive) =
             record_literal_missing_fields(db, infer, expr_id, &body[expr_id])?;
-        let res = self.missing_fields(db, krate, substs, variant, missing_fields);
+        let res = self.missing_fields(db, krate, &substs, variant, missing_fields);
         Some(res)
     }
 
@@ -314,14 +316,11 @@ impl SourceAnalyzer {
         let infer = self.infer.as_ref()?;
 
         let pat_id = self.pat_id(&pattern.clone().into())?;
-        let substs = match &infer.type_of_pat[pat_id] {
-            Ty::Apply(a_ty) => &a_ty.parameters,
-            _ => return None,
-        };
+        let substs = infer.type_of_pat[pat_id].substs()?;
 
         let (variant, missing_fields, _exhaustive) =
             record_pattern_missing_fields(db, infer, pat_id, &body[pat_id])?;
-        let res = self.missing_fields(db, krate, substs, variant, missing_fields);
+        let res = self.missing_fields(db, krate, &substs, variant, missing_fields);
         Some(res)
     }
 
@@ -474,7 +473,7 @@ fn resolve_hir_path_(
             }
             TypeNs::EnumVariantId(it) => PathResolution::Def(Variant::from(it).into()),
             TypeNs::TypeAliasId(it) => PathResolution::Def(TypeAlias::from(it).into()),
-            TypeNs::BuiltinType(it) => PathResolution::Def(it.into()),
+            TypeNs::BuiltinType(it) => PathResolution::Def(BuiltinType::from(it).into()),
             TypeNs::TraitId(it) => PathResolution::Def(Trait::from(it).into()),
         })
     };
@@ -550,7 +549,7 @@ fn resolve_hir_path_qualifier(
         TypeNs::AdtSelfType(it) | TypeNs::AdtId(it) => PathResolution::Def(Adt::from(it).into()),
         TypeNs::EnumVariantId(it) => PathResolution::Def(Variant::from(it).into()),
         TypeNs::TypeAliasId(it) => PathResolution::Def(TypeAlias::from(it).into()),
-        TypeNs::BuiltinType(it) => PathResolution::Def(it.into()),
+        TypeNs::BuiltinType(it) => PathResolution::Def(BuiltinType::from(it).into()),
         TypeNs::TraitId(it) => PathResolution::Def(Trait::from(it).into()),
     })
 }

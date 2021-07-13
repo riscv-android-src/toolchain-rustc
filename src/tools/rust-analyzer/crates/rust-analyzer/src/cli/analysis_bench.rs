@@ -16,7 +16,10 @@ use ide_db::{
 };
 use vfs::AbsPathBuf;
 
-use crate::cli::{load_cargo::load_cargo, print_memory_usage, Verbosity};
+use crate::cli::{
+    load_cargo::{load_workspace_at, LoadCargoConfig},
+    print_memory_usage, Verbosity,
+};
 
 pub struct BenchCmd {
     pub path: PathBuf,
@@ -32,6 +35,7 @@ pub enum BenchWhat {
     GotoDef(Position),
 }
 
+#[derive(Debug, Clone)]
 pub struct Position {
     pub path: AbsPathBuf,
     pub line: u32,
@@ -59,7 +63,14 @@ impl BenchCmd {
 
         let start = Instant::now();
         eprint!("loading: ");
-        let (mut host, vfs) = load_cargo(&self.path, self.load_output_dirs, self.with_proc_macro)?;
+
+        let cargo_config = Default::default();
+        let load_cargo_config = LoadCargoConfig {
+            load_out_dirs_from_check: self.load_output_dirs,
+            with_proc_macro: self.with_proc_macro,
+        };
+        let (mut host, vfs, _proc_macro) =
+            load_workspace_at(&self.path, &cargo_config, &load_cargo_config, &|_| {})?;
         eprintln!("{:?}\n", start.elapsed());
 
         let file_id = {
@@ -87,7 +98,7 @@ impl BenchCmd {
                 let offset = host
                     .analysis()
                     .file_line_index(file_id)?
-                    .offset(LineCol { line: pos.line - 1, col_utf16: pos.column });
+                    .offset(LineCol { line: pos.line - 1, col: pos.column });
                 let file_position = FilePosition { file_id, offset };
 
                 if is_completion {
@@ -97,7 +108,11 @@ impl BenchCmd {
                         add_call_parenthesis: true,
                         add_call_argument_snippets: true,
                         snippet_cap: SnippetCap::new(true),
-                        insert_use: InsertUseConfig { merge: None, prefix_kind: PrefixKind::Plain },
+                        insert_use: InsertUseConfig {
+                            merge: None,
+                            prefix_kind: PrefixKind::Plain,
+                            group: true,
+                        },
                     };
                     let res = do_work(&mut host, file_id, |analysis| {
                         analysis.completions(&options, file_position)

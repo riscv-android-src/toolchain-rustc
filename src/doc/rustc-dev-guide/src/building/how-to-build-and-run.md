@@ -6,15 +6,26 @@ be hacking on `rustc`, you'll want to tweak the configuration of the compiler.
 The default configuration is oriented towards running the compiler as a user,
 not a developer.
 
-## Create a config.toml
+For instructions on how to install Python and other prerequisites,
+see [the next page](./prerequisites.md).
+
+## Get the source code
+
+The very first step to work on `rustc` is to clone the repository:
+
+```bash
+git clone https://github.com/rust-lang/rust.git
+cd rust
+```
+
+## Create a `config.toml`
 
 To start, copy [`config.toml.example`] to `config.toml`:
 
 [`config.toml.example`]: https://github.com/rust-lang/rust/blob/master/config.toml.example
 
 ```bash
-> cd $RUST_CHECKOUT
-> cp config.toml.example config.toml
+cp config.toml.example config.toml
 ```
 
 Then you will want to open up the file and change the following
@@ -22,23 +33,22 @@ settings (and possibly others, such as `llvm.ccache`):
 
 ```toml
 [llvm]
-# Enables LLVM assertions, which will check that the LLVM bitcode generated
-# by the compiler is internally consistent. These are particularly helpful
-# if you edit `codegen`.
+# Indicates whether the LLVM assertions are enabled or not
 assertions = true
 
 [rust]
-# This will make your build more parallel; it costs a bit of runtime
-# performance perhaps (less inlining) but it's worth it.
-codegen-units = 0
+# Whether or not to leave debug! and trace! calls in the rust binary.
+# Overrides the `debug-assertions` option, if defined.
+#
+# Defaults to rust.debug-assertions value
+#
+# If you see a message from `tracing` saying
+# `max_level_info` is enabled and means logging won't be shown,
+# set this value to `true`.
+debug-logging = true
 
-# This enables full debuginfo and debug assertions. The line debuginfo is also
-# enabled by `debuginfo-level = 1`. Full debuginfo is also enabled by
-# `debuginfo-level = 2`. Debug assertions can also be enabled with
-# `debug-assertions = true`. Note that `debug = true` will make your build
-# slower, so you may want to try individually enabling debuginfo and assertions
-# or enable only line debuginfo which is basically free.
-debug = true
+# Whether to always use incremental compilation when building rustc
+incremental = true
 ```
 
 If you have already built `rustc`, then you may have to execute `rm -rf build` for subsequent
@@ -57,58 +67,27 @@ effectively deal with the repo for various common tasks.
 This chapter focuses on the basics to be productive, but
 if you want to learn more about `x.py`, read its README.md
 [here](https://github.com/rust-lang/rust/blob/master/src/bootstrap/README.md).
+To read more about the bootstrap process and why `x.py` is necessary,
+[read this chapter][bootstrap].
 
-## Bootstrapping
+### Running `x.py` slightly more conveniently
 
-One thing to keep in mind is that `rustc` is a _bootstrapping_
-compiler. That is, since `rustc` is written in Rust, we need to use an
-older version of the compiler to compile the newer version. In
-particular, the newer version of the compiler and some of the artifacts needed
-to build it, such as `libstd` and other tooling, may use some unstable features
-internally, requiring a specific version which understands these unstable
-features.
+There is a binary that wraps `x.py` called `x` in `src/tools/x`. All it does is
+run `x.py`, but it can be installed system-wide and run from any subdirectory
+of a checkout. It also looks up the appropriate version of `python` to use.
 
-The result is that compiling `rustc` is done in stages:
-
-- **Stage 0:** the stage0 compiler is usually (you can configure `x.py` to use
-  something else) the current _beta_ `rustc` compiler and its associated dynamic
-  libraries (which `x.py` will download for you). This stage0 compiler is then
-  used only to compile `rustbuild`, `std`, and `rustc`. When compiling
-  `rustc`, this stage0 compiler uses the freshly compiled `std`.
-  There are two concepts at play here: a compiler (with its set of dependencies)
-  and its 'target' or 'object' libraries (`std` and `rustc`).
-  Both are staged, but in a staggered manner.
-- **Stage 1:** the code in your clone (for new version) is then
-  compiled with the stage0 compiler to produce the stage1 compiler.
-  However, it was built with an older compiler (stage0), so to
-  optimize the stage1 compiler we go to next the stage.
-  - In theory, the stage1 compiler is functionally identical to the
-    stage2 compiler, but in practice there are subtle differences. In
-    particular, the stage1 compiler itself was built by stage0 and
-    hence not by the source in your working directory: this means that
-    the symbol names used in the compiler source may not match the
-    symbol names that would have been made by the stage1 compiler.
-    This can be important when using dynamic linking (e.g., with
-    derives. Sometimes this means that some tests don't work when run
-    with stage1.
-- **Stage 2:** we rebuild our stage1 compiler with itself to produce
-  the stage2 compiler (i.e. it builds itself) to have all the _latest
-  optimizations_. (By default, we copy the stage1 libraries for use by
-  the stage2 compiler, since they ought to be identical.)
-- _(Optional)_ **Stage 3**: to sanity check our new compiler, we
-  can build the libraries with the stage2 compiler. The result ought
-  to be identical to before, unless something has broken.
-
-To read more about the bootstrap process, [read this chapter][bootstrap].
+You can install it with `cargo install --path src/tools/x`.
 
 [bootstrap]: ./bootstrapping.md
 
 ## Building the Compiler
 
-To build a compiler, run `./x.py build`. This will do the whole bootstrapping
-process described above, producing a usable compiler toolchain from the source
-code you have checked out. This takes a long time, so it is not usually what
-you want to actually run (more on this later).
+To build a compiler, run `./x.py build`. This will build up to the stage1 compiler,
+including `rustdoc`, producing a usable compiler toolchain from the source
+code you have checked out.
+
+Note that building will require a relatively large amount of storage space.
+You may want to have upwards of 10 or 15 gigabytes available to build the compiler.
 
 There are many flags you can pass to the build command of `x.py` that can be
 beneficial to cutting down compile times or fitting other things you might
@@ -138,23 +117,21 @@ It is, in particular, very useful when you're doing some kind of
 "type-based refactoring", like renaming a method, or changing the
 signature of some function.
 
-<a name=command></a>
-
-Once you've created a config.toml, you are now ready to run
+Once you've created a `config.toml`, you are now ready to run
 `x.py`. There are a lot of options here, but let's start with what is
 probably the best "go to" command for building a local rust:
 
 ```bash
-./x.py build -i --stage 1 src/libstd
+./x.py build -i library/std
 ```
 
-This may *look* like it only builds `libstd`, but that is not the case.
+This may *look* like it only builds `std`, but that is not the case.
 What this command does is the following:
 
-- Build `libstd` using the stage0 compiler (using incremental)
-- Build `librustc` using the stage0 compiler (using incremental)
+- Build `std` using the stage0 compiler (using incremental)
+- Build `rustc` using the stage0 compiler (using incremental)
   - This produces the stage1 compiler
-- Build `libstd` using the stage1 compiler (cannot use incremental)
+- Build `std` using the stage1 compiler (cannot use incremental)
 
 This final product (stage1 compiler + libs built using that compiler)
 is what you need to build other rust programs (unless you use `#![no_std]` or
@@ -170,45 +147,39 @@ stage1 libraries.  This is because incremental only works when you run
 the *same compiler* twice in a row.  In this case, we are building a
 *new stage1 compiler* every time. Therefore, the old incremental
 results may not apply. **As a result, you will probably find that
-building the stage1 `libstd` is a bottleneck for you** -- but fear not,
+building the stage1 `std` is a bottleneck for you** -- but fear not,
 there is a (hacky) workaround.  See [the section on "recommended
 workflows"](./suggested.md) below.
 
 Note that this whole command just gives you a subset of the full `rustc`
-build. The **full** `rustc` build (what you get if you just say `./x.py
-build`) has quite a few more steps:
+build. The **full** `rustc` build (what you get if you say `./x.py build
+--stage 2 compiler/rustc`) has quite a few more steps:
 
-- Build `librustc` and `rustc` with the stage1 compiler.
+- Build `rustc` with the stage1 compiler.
   - The resulting compiler here is called the "stage2" compiler.
-- Build `libstd` with stage2 compiler.
+- Build `std` with stage2 compiler.
 - Build `librustdoc` and a bunch of other things with the stage2 compiler.
 
 <a name=toolchain></a>
 
 ## Build specific components
 
-Build only the libcore library
+- Build only the core library
 
 ```bash
-./x.py build src/libcore
+./x.py build --stage 0 library/core
 ```
 
-Build the libcore and libproc_macro library only
+- Build only the core and `proc_macro` libraries
 
 ```bash
-./x.py build src/libcore src/libproc_macro
-```
-
-Build only libcore up to Stage 1
-
-```bash
-./x.py build src/libcore --stage 1
+./x.py build --stage 0 library/core library/proc_macro
 ```
 
 Sometimes you might just want to test if the part you’re working on can
 compile. Using these commands you can test that it compiles before doing
 a bigger build to make sure it works with the compiler. As shown before
-you can also pass flags at the end such as --stage.
+you can also pass flags at the end such as `--stage`.
 
 ## Creating a rustup toolchain
 
@@ -237,13 +208,13 @@ your local environment:
 
 ```bash
 $ rustc +stage1 -vV
-rustc 1.25.0-dev
+rustc 1.48.0-dev
 binary: rustc
 commit-hash: unknown
 commit-date: unknown
 host: x86_64-unknown-linux-gnu
-release: 1.25.0-dev
-LLVM version: 4.0
+release: 1.48.0-dev
+LLVM version: 11.0
 ```
 ## Other `x.py` commands
 
@@ -251,18 +222,16 @@ Here are a few other useful `x.py` commands. We'll cover some of them in detail
 in other sections:
 
 - Building things:
-  - `./x.py clean` – clean up the build directory (`rm -rf build` works too,
-    but then you have to rebuild LLVM)
-  - `./x.py build --stage 1` – builds everything using the stage 1 compiler,
-    not just up to `libstd`
-  - `./x.py build` – builds the stage2 compiler
+  - `./x.py build` – builds everything using the stage 1 compiler,
+    not just up to `std`
+  - `./x.py build --stage 2` – builds the stage2 compiler
 - Running tests (see the [section on running tests](../tests/running.html) for
   more details):
-  - `./x.py test --stage 1 src/libstd` – runs the `#[test]` tests from `libstd`
-  - `./x.py test --stage 1 src/test/ui` – runs the `ui` test suite
-  - `./x.py test --stage 1 src/test/ui/const-generics` - runs all the tests in
+  - `./x.py test library/std` – runs the `#[test]` tests from `std`
+  - `./x.py test src/test/ui` – runs the `ui` test suite
+  - `./x.py test src/test/ui/const-generics` - runs all the tests in
   the `const-generics/` subdirectory of the `ui` test suite
-  - `./x.py test --stage 1 src/test/ui/const-generics/const-types.rs` - runs
+  - `./x.py test src/test/ui/const-generics/const-types.rs` - runs
   the single test `const-types.rs` from the `ui` test suite
 
 ### Cleaning out build directories
@@ -275,3 +244,6 @@ everything up then you only need to run one command!
 ```bash
 ./x.py clean
 ```
+
+`rm -rf build` works too, but then you have to rebuild LLVM, which can take
+a long time even on fast computers.

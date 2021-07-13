@@ -84,10 +84,10 @@ PhysicalRegisterInfo::PhysicalRegisterInfo(const TargetRegisterInfo &tri,
   for (uint32_t M = 1, NM = RegMasks.size(); M <= NM; ++M) {
     BitVector PU(TRI.getNumRegUnits());
     const uint32_t *MB = RegMasks.get(M);
-    for (unsigned i = 1, e = TRI.getNumRegs(); i != e; ++i) {
-      if (!(MB[i/32] & (1u << (i%32))))
+    for (unsigned I = 1, E = TRI.getNumRegs(); I != E; ++I) {
+      if (!(MB[I / 32] & (1u << (I % 32))))
         continue;
-      for (MCRegUnitIterator U(i, &TRI); U.isValid(); ++U)
+      for (MCRegUnitIterator U(MCRegister::from(I), &TRI); U.isValid(); ++U)
         PU.set(*U);
     }
     MaskInfos[M].Units = PU.flip();
@@ -373,4 +373,9 @@ RegisterAggr::rr_iterator::rr_iterator(const RegisterAggr &RG,
   }
   Pos = End ? Masks.end() : Masks.begin();
   Index = End ? Masks.size() : 0;
+}
+
+raw_ostream &rdf::operator<<(raw_ostream &OS, const RegisterAggr &A) {
+  A.print(OS);
+  return OS;
 }

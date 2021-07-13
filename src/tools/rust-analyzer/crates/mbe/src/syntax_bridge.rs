@@ -10,8 +10,8 @@ use syntax::{
 };
 use tt::buffer::{Cursor, TokenBuffer};
 
-use crate::subtree_source::SubtreeTokenSource;
 use crate::ExpandError;
+use crate::{subtree_source::SubtreeTokenSource, tt_iter::TtIter};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TokenTextRange {
@@ -112,6 +112,43 @@ pub fn parse_to_token_tree(text: &str) -> Option<(tt::Subtree, TokenMap)> {
     Some((subtree, conv.id_alloc.map))
 }
 
+/// Split token tree with seperate expr: $($e:expr)SEP*
+pub fn parse_exprs_with_sep(tt: &tt::Subtree, sep: char) -> Vec<tt::Subtree> {
+    if tt.token_trees.is_empty() {
+        return Vec::new();
+    }
+
+    let mut iter = TtIter::new(tt);
+    let mut res = Vec::new();
+
+    while iter.peek_n(0).is_some() {
+        let expanded = iter.expect_fragment(FragmentKind::Expr);
+        if expanded.err.is_some() {
+            break;
+        }
+
+        res.push(match expanded.value {
+            None => break,
+            Some(tt @ tt::TokenTree::Leaf(_)) => {
+                tt::Subtree { delimiter: None, token_trees: vec![tt.into()] }
+            }
+            Some(tt::TokenTree::Subtree(tt)) => tt,
+        });
+
+        let mut fork = iter.clone();
+        if fork.expect_char(sep).is_err() {
+            break;
+        }
+        iter = fork;
+    }
+
+    if iter.peek_n(0).is_some() {
+        res.push(tt::Subtree { delimiter: None, token_trees: iter.into_iter().cloned().collect() });
+    }
+
+    res
+}
+
 impl TokenMap {
     pub fn token_by_range(&self, relative_range: TextRange) -> Option<tt::TokenId> {
         let &(token_id, _) = self.entries.iter().find(|(_, range)| match range {
@@ -176,7 +213,7 @@ fn doc_comment_text(comment: &ast::Comment) -> SmolStr {
 
     // Quote the string
     // Note that `tt::Literal` expect an escaped string
-    let text = format!("{:?}", text.escape_default().to_string());
+    let text = format!("{:?}", text.escape_debug().to_string());
     text.into()
 }
 

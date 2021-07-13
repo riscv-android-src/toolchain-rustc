@@ -8,7 +8,7 @@ use semver::Version;
 
 use super::BuildContext;
 use crate::core::compiler::{CompileKind, Metadata, Unit};
-use crate::core::{Edition, Package};
+use crate::core::Package;
 use crate::util::{self, config, join_paths, process, CargoResult, Config, ProcessBuilder};
 
 /// Structure with enough information to run `rustdoc --test`.
@@ -187,9 +187,7 @@ impl<'cfg> Compilation<'cfg> {
         let rustdoc = process(&*self.config.rustdoc()?);
         let cmd = fill_rustc_tool_env(rustdoc, unit);
         let mut p = self.fill_env(cmd, &unit.pkg, script_meta, unit.kind, true)?;
-        if unit.target.edition() != Edition::Edition2015 {
-            p.arg(format!("--edition={}", unit.target.edition()));
-        }
+        unit.target.edition().cmd_edition_arg(&mut p);
 
         for crate_type in unit.target.rustc_crate_types() {
             p.arg("--crate-type").arg(crate_type.as_str());
@@ -339,6 +337,16 @@ impl<'cfg> Compilation<'cfg> {
             )
             .env("CARGO_PKG_AUTHORS", &pkg.authors().join(":"))
             .cwd(pkg.root());
+
+        if self.config.cli_unstable().configurable_env {
+            // Apply any environment variables from the config
+            for (key, value) in self.config.env_config()?.iter() {
+                if value.is_force() || cmd.get_env(key).is_none() {
+                    cmd.env(key, value.resolve(self.config));
+                }
+            }
+        }
+
         Ok(cmd)
     }
 }

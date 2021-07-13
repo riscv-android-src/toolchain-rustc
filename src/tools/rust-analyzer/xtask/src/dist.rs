@@ -11,13 +11,13 @@ use xshell::{cmd, cp, mkdir_p, pushd, read_file, rm_rf, write_file};
 
 use crate::{date_iso, project_root};
 
-pub struct DistCmd {
-    pub nightly: bool,
-    pub client_version: Option<String>,
+pub(crate) struct DistCmd {
+    pub(crate) nightly: bool,
+    pub(crate) client_version: Option<String>,
 }
 
 impl DistCmd {
-    pub fn run(self) -> Result<()> {
+    pub(crate) fn run(self) -> Result<()> {
         let dist = project_root().join("dist");
         rm_rf(&dist)?;
         mkdir_p(&dist)?;
@@ -59,7 +59,7 @@ fn dist_client(version: &str, release_tag: &str) -> Result<()> {
 
 fn dist_server() -> Result<()> {
     let target = get_target();
-    if target.contains("-linux-gnu") {
+    if target.contains("-linux-gnu") || target.contains("-linux-musl") {
         env::set_var("CC", "clang");
     }
 

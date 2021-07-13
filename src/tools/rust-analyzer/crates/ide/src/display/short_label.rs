@@ -61,17 +61,17 @@ impl ShortLabel for ast::BlockExpr {
 
 impl ShortLabel for ast::TypeAlias {
     fn short_label(&self) -> Option<String> {
-        short_label_from_node(self, "type ")
+        let mut buf = short_label_from_node(self, "type ")?;
+        if let Some(type_ref) = self.ty() {
+            format_to!(buf, " = {}", type_ref.syntax());
+        }
+        Some(buf)
     }
 }
 
 impl ShortLabel for ast::Const {
     fn short_label(&self) -> Option<String> {
-        let mut new_buf = short_label_from_ty(self, self.ty(), "const ")?;
-        if let Some(expr) = self.body() {
-            format_to!(new_buf, " = {}", expr.syntax());
-        }
-        Some(new_buf)
+        short_label_from_ty(self, self.ty(), "const ")
     }
 }
 

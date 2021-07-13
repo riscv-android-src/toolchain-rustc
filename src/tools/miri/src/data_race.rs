@@ -74,9 +74,9 @@ use rustc_middle::{mir, ty::layout::TyAndLayout};
 use rustc_target::abi::Size;
 
 use crate::{
-    ImmTy, Immediate, InterpResult, MPlaceTy, MemPlaceMeta, MiriEvalContext, MiriEvalContextExt,
-    OpTy, Pointer, RangeMap, Scalar, ScalarMaybeUninit, Tag, ThreadId, VClock, VTimestamp,
-    VectorIdx, MemoryKind, MiriMemoryKind
+    ImmTy, Immediate, InterpResult, MPlaceTy, MemPlaceMeta, MemoryKind, MiriEvalContext,
+    MiriEvalContextExt, MiriMemoryKind, OpTy, Pointer, RangeMap, Scalar, ScalarMaybeUninit, Tag,
+    ThreadId, VClock, VTimestamp, VectorIdx,
 };
 
 pub type AllocExtra = VClockAlloc;
@@ -263,7 +263,7 @@ impl MemoryCellClocks {
             atomic_ops: None,
         }
     }
-    
+
     /// Load the internal atomic memory cells if they exist.
     #[inline]
     fn atomic(&self) -> Option<&AtomicMemoryCellClocks> {
@@ -323,7 +323,7 @@ impl MemoryCellClocks {
     /// store relaxed semantics.
     fn store_relaxed(&mut self, clocks: &ThreadClockSet, index: VectorIdx) -> Result<(), DataRace> {
         self.atomic_write_detect(clocks, index)?;
-        
+
         // The handling of release sequences was changed in C++20 and so
         // the code here is different to the paper since now all relaxed
         // stores block release sequences. The exception for same-thread
@@ -446,7 +446,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
     /// Atomic variant of read_scalar_at_offset.
     fn read_scalar_at_offset_atomic(
         &self,
-        op: OpTy<'tcx, Tag>,
+        op: &OpTy<'tcx, Tag>,
         offset: u64,
         layout: TyAndLayout<'tcx>,
         atomic: AtomicReadOp,
@@ -458,13 +458,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
         // Ensure that the following read at an offset is within bounds.
         assert!(op_place.layout.size >= offset + layout.size);
         let value_place = op_place.offset(offset, MemPlaceMeta::None, layout, this)?;
-        this.read_scalar_atomic(value_place, atomic)
+        this.read_scalar_atomic(&value_place, atomic)
     }
 
     /// Atomic variant of write_scalar_at_offset.
     fn write_scalar_at_offset_atomic(
         &mut self,
-        op: OpTy<'tcx, Tag>,
+        op: &OpTy<'tcx, Tag>,
         offset: u64,
         value: impl Into<ScalarMaybeUninit<Tag>>,
         layout: TyAndLayout<'tcx>,
@@ -477,17 +477,17 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
         // Ensure that the following read at an offset is within bounds.
         assert!(op_place.layout.size >= offset + layout.size);
         let value_place = op_place.offset(offset, MemPlaceMeta::None, layout, this)?;
-        this.write_scalar_atomic(value.into(), value_place, atomic)
+        this.write_scalar_atomic(value.into(), &value_place, atomic)
     }
 
     /// Perform an atomic read operation at the memory location.
     fn read_scalar_atomic(
         &self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         atomic: AtomicReadOp,
     ) -> InterpResult<'tcx, ScalarMaybeUninit<Tag>> {
         let this = self.eval_context_ref();
-        let scalar = this.allow_data_races_ref(move |this| this.read_scalar(place.into()))?;
+        let scalar = this.allow_data_races_ref(move |this| this.read_scalar(&place.into()))?;
         self.validate_atomic_load(place, atomic)?;
         Ok(scalar)
     }
@@ -496,31 +496,31 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
     fn write_scalar_atomic(
         &mut self,
         val: ScalarMaybeUninit<Tag>,
-        dest: MPlaceTy<'tcx, Tag>,
+        dest: &MPlaceTy<'tcx, Tag>,
         atomic: AtomicWriteOp,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
-        this.allow_data_races_mut(move |this| this.write_scalar(val, dest.into()))?;
+        this.allow_data_races_mut(move |this| this.write_scalar(val, &(*dest).into()))?;
         self.validate_atomic_store(dest, atomic)
     }
 
     /// Perform a atomic operation on a memory location.
     fn atomic_op_immediate(
         &mut self,
-        place: MPlaceTy<'tcx, Tag>,
-        rhs: ImmTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
+        rhs: &ImmTy<'tcx, Tag>,
         op: mir::BinOp,
         neg: bool,
         atomic: AtomicRwOp,
     ) -> InterpResult<'tcx, ImmTy<'tcx, Tag>> {
         let this = self.eval_context_mut();
 
-        let old = this.allow_data_races_mut(|this| this.read_immediate(place.into()))?;
+        let old = this.allow_data_races_mut(|this| this.read_immediate(&place.into()))?;
 
         // Atomics wrap around on overflow.
-        let val = this.binary_op(op, old, rhs)?;
-        let val = if neg { this.unary_op(mir::UnOp::Not, val)? } else { val };
-        this.allow_data_races_mut(|this| this.write_immediate(*val, place.into()))?;
+        let val = this.binary_op(op, &old, rhs)?;
+        let val = if neg { this.unary_op(mir::UnOp::Not, &val)? } else { val };
+        this.allow_data_races_mut(|this| this.write_immediate(*val, &(*place).into()))?;
 
         this.validate_atomic_rmw(place, atomic)?;
         Ok(old)
@@ -530,15 +530,43 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
     /// scalar value, the old value is returned.
     fn atomic_exchange_scalar(
         &mut self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         new: ScalarMaybeUninit<Tag>,
         atomic: AtomicRwOp,
     ) -> InterpResult<'tcx, ScalarMaybeUninit<Tag>> {
         let this = self.eval_context_mut();
 
-        let old = this.allow_data_races_mut(|this| this.read_scalar(place.into()))?;
-        this.allow_data_races_mut(|this| this.write_scalar(new, place.into()))?;
+        let old = this.allow_data_races_mut(|this| this.read_scalar(&place.into()))?;
+        this.allow_data_races_mut(|this| this.write_scalar(new, &(*place).into()))?;
         this.validate_atomic_rmw(place, atomic)?;
+        Ok(old)
+    }
+
+    /// Perform an conditional atomic exchange with a memory place and a new
+    /// scalar value, the old value is returned.
+    fn atomic_min_max_scalar(
+        &mut self,
+        place: &MPlaceTy<'tcx, Tag>,
+        rhs: ImmTy<'tcx, Tag>,
+        min: bool,
+        atomic: AtomicRwOp,
+    ) -> InterpResult<'tcx, ImmTy<'tcx, Tag>> {
+        let this = self.eval_context_mut();
+
+        let old = this.allow_data_races_mut(|this| this.read_immediate(&place.into()))?;
+        let lt = this.overflowing_binary_op(mir::BinOp::Lt, &old, &rhs)?.0.to_bool()?;
+
+        let new_val = if min {
+            if lt { &old } else { &rhs }
+        } else {
+            if lt { &rhs } else { &old }
+        };
+
+        this.allow_data_races_mut(|this| this.write_immediate_to_mplace(**new_val, place))?;
+
+        this.validate_atomic_rmw(&place, atomic)?;
+
+        // Return the old value.
         Ok(old)
     }
 
@@ -550,8 +578,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
     /// identical.
     fn atomic_compare_exchange_scalar(
         &mut self,
-        place: MPlaceTy<'tcx, Tag>,
-        expect_old: ImmTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
+        expect_old: &ImmTy<'tcx, Tag>,
         new: ScalarMaybeUninit<Tag>,
         success: AtomicRwOp,
         fail: AtomicReadOp,
@@ -564,9 +592,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
         // to read with the failure ordering and if successful then try again with the success
         // read ordering and write in the success case.
         // Read as immediate for the sake of `binary_op()`
-        let old = this.allow_data_races_mut(|this| this.read_immediate(place.into()))?;
+        let old = this.allow_data_races_mut(|this| this.read_immediate(&(place.into())))?;
         // `binary_op` will bail if either of them is not a scalar.
-        let eq = this.overflowing_binary_op(mir::BinOp::Eq, old, expect_old)?.0;
+        let eq = this.overflowing_binary_op(mir::BinOp::Eq, &old, expect_old)?.0;
         // If the operation would succeed, but is "weak", fail some portion
         // of the time, based on `rate`.
         let rate = this.memory.extra.cmpxchg_weak_failure_rate;
@@ -581,7 +609,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
         // if successful, perform a full rw-atomic validation
         // otherwise treat this as an atomic load with the fail ordering.
         if cmpxchg_success {
-            this.allow_data_races_mut(|this| this.write_scalar(new, place.into()))?;
+            this.allow_data_races_mut(|this| this.write_scalar(new, &(*place).into()))?;
             this.validate_atomic_rmw(place, success)?;
         } else {
             this.validate_atomic_load(place, fail)?;
@@ -595,7 +623,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
     /// associated memory-place and on the current thread.
     fn validate_atomic_load(
         &self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         atomic: AtomicReadOp,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_ref();
@@ -617,7 +645,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
     /// associated memory-place and on the current thread.
     fn validate_atomic_store(
         &mut self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         atomic: AtomicWriteOp,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_ref();
@@ -639,7 +667,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
     /// at the associated memory place and on the current thread.
     fn validate_atomic_rmw(
         &mut self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         atomic: AtomicRwOp,
     ) -> InterpResult<'tcx> {
         use AtomicRwOp::*;
@@ -678,7 +706,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
                     // Either Release | AcqRel | SeqCst
                     clocks.apply_release_fence();
                 }
-                
+
                 // Increment timestamp in case of release semantics.
                 Ok(atomic != AtomicFenceOp::Acquire)
             })
@@ -687,15 +715,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
         }
     }
 
-    fn reset_vector_clocks(
-        &mut self,
-        ptr: Pointer<Tag>,
-        size: Size
-    ) -> InterpResult<'tcx> {
+    fn reset_vector_clocks(&mut self, ptr: Pointer<Tag>, size: Size) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         if let Some(data_race) = &mut this.memory.extra.data_race {
             if data_race.multi_threaded.get() {
-                let alloc_meta = this.memory.get_raw_mut(ptr.alloc_id)?.extra.data_race.as_mut().unwrap();
+                let alloc_meta =
+                    this.memory.get_raw_mut(ptr.alloc_id)?.extra.data_race.as_mut().unwrap();
                 alloc_meta.reset_clocks(ptr.offset, size);
             }
         }
@@ -715,28 +740,37 @@ pub struct VClockAlloc {
 
 impl VClockAlloc {
     /// Create a new data-race detector for newly allocated memory.
-    pub fn new_allocation(global: &MemoryExtra, len: Size, kind: MemoryKind<MiriMemoryKind>) -> VClockAlloc {
+    pub fn new_allocation(
+        global: &MemoryExtra,
+        len: Size,
+        kind: MemoryKind<MiriMemoryKind>,
+    ) -> VClockAlloc {
         let (alloc_timestamp, alloc_index) = match kind {
             // User allocated and stack memory should track allocation.
             MemoryKind::Machine(
-                MiriMemoryKind::Rust | MiriMemoryKind::C | MiriMemoryKind::WinHeap
-            ) | MemoryKind::Stack => {
+                MiriMemoryKind::Rust | MiriMemoryKind::C | MiriMemoryKind::WinHeap,
+            )
+            | MemoryKind::Stack => {
                 let (alloc_index, clocks) = global.current_thread_state();
                 let alloc_timestamp = clocks.clock[alloc_index];
                 (alloc_timestamp, alloc_index)
             }
             // Other global memory should trace races but be allocated at the 0 timestamp.
             MemoryKind::Machine(
-                MiriMemoryKind::Global | MiriMemoryKind::Machine | MiriMemoryKind::Env |
-                MiriMemoryKind::ExternStatic | MiriMemoryKind::Tls
-            ) | MemoryKind::CallerLocation | MemoryKind::Vtable => {
-                (0, VectorIdx::MAX_INDEX)
-            }
+                MiriMemoryKind::Global
+                | MiriMemoryKind::Machine
+                | MiriMemoryKind::Env
+                | MiriMemoryKind::ExternStatic
+                | MiriMemoryKind::Tls,
+            )
+            | MemoryKind::CallerLocation
+            | MemoryKind::Vtable => (0, VectorIdx::MAX_INDEX),
         };
         VClockAlloc {
             global: Rc::clone(global),
             alloc_ranges: RefCell::new(RangeMap::new(
-                len, MemoryCellClocks::new(alloc_timestamp, alloc_index)
+                len,
+                MemoryCellClocks::new(alloc_timestamp, alloc_index),
             )),
         }
     }
@@ -973,7 +1007,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
     /// atomic-stores/atomic-rmw?
     fn validate_atomic_op<A: Debug + Copy>(
         &self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         atomic: A,
         description: &str,
         mut op: impl FnMut(
@@ -1015,7 +1049,8 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: MiriEvalContextExt<'mir, 'tcx> {
                                 true,
                                 place_ptr,
                                 size,
-                            ).map(|_| true);
+                            )
+                            .map(|_| true);
                         }
                     }
 
@@ -1266,7 +1301,6 @@ impl GlobalState {
             .termination_vector_clock
             .as_ref()
             .expect("Joined with thread but thread has not terminated");
-
 
         // The join thread happens-before the current thread
         // so update the current vector clock.

@@ -6,7 +6,6 @@ use std::iter;
 use either::Either;
 use hir_expand::{hygiene::Hygiene, name::AsName};
 use syntax::ast::{self, NameOwner};
-use test_utils::mark;
 
 use crate::path::{ImportAlias, ModPath, PathKind};
 
@@ -54,7 +53,7 @@ pub(crate) fn lower_use_tree(
         // FIXME: report errors somewhere
         // We get here if we do
         } else if is_glob {
-            mark::hit!(glob_enum_group);
+            cov_mark::hit!(glob_enum_group);
             if let Some(prefix) = prefix {
                 cb(prefix, &tree, is_glob, None)
             }
@@ -75,9 +74,10 @@ fn convert_path(prefix: Option<ModPath>, path: ast::Path, hygiene: &Hygiene) -> 
             match hygiene.name_ref_to_name(name_ref) {
                 Either::Left(name) => {
                     // no type args in use
-                    let mut res = prefix.unwrap_or_else(|| ModPath {
-                        kind: segment.coloncolon_token().map_or(PathKind::Plain, |_| PathKind::Abs),
-                        segments: Vec::with_capacity(1),
+                    let mut res = prefix.unwrap_or_else(|| {
+                        ModPath::from_kind(
+                            segment.coloncolon_token().map_or(PathKind::Plain, |_| PathKind::Abs),
+                        )
                     });
                     res.segments.push(name);
                     res

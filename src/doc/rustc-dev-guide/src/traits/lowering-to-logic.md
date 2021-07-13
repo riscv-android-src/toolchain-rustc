@@ -1,5 +1,7 @@
 # Lowering to logic
 
+<!-- toc -->
+
 The key observation here is that the Rust trait system is basically a
 kind of logic, and it can be mapped onto standard logical inference
 rules. We can then look for solutions to those inference rules in a
@@ -168,10 +170,10 @@ the body". But it's nice to know the proper name, because there is a
 lot of work describing how to efficiently handle FOHH clauses; see for
 example Gopalan Nadathur's excellent
 ["A Proof Procedure for the Logic of Hereditary Harrop Formulas"][pphhf]
-in [the bibliography].
+in [the bibliography of Chalk Book][bibliography].
 
-[the bibliography]: ./bibliography.html
-[pphhf]: ./bibliography.html#pphhf
+[bibliography]: https://rust-lang.github.io/chalk/book/bibliography.html
+[pphhf]: https://rust-lang.github.io/chalk/book/bibliography.html#pphhf
 
 It turns out that supporting FOHH is not really all that hard. And
 once we are able to do that, we can easily describe the type-checking

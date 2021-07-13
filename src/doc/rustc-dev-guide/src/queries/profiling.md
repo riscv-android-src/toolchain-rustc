@@ -1,8 +1,11 @@
 # Profiling Queries
+
+<!-- toc -->
+
 In an effort to support _incremental compilation_, the latest design of the Rust
 compiler consists of a _query-based_ model.
 
-The details of this model are (currently) outside the scope of this document,
+The details of this model are outside the scope of this document,
 however, we explain [some background of this model](#background), in an effort
 to explain how we profile its performance. We intend this profiling effort to
 address [issue 42678](https://github.com/rust-lang/rust/issues/42678).
@@ -20,7 +23,7 @@ address [issue 42678](https://github.com/rust-lang/rust/issues/42678).
 Compile the compiler, up to at least stage 1:
 
 ```
-python x.py --stage 1
+./x.py build library/std
 ```
 
 ### 2. Run `rustc`, with flags
@@ -50,7 +53,7 @@ This command will generate the following files:
 
 - This additional flag will add all timed passes to the output files mentioned
   above, in step 2. As described below, these passes appear visually distinct
-  from the queries in the HTML output (they currently appear as green boxes, via
+  from the queries in the HTML output (they appear as green boxes, via
   CSS).
 
 ### 4. Inspect the output
@@ -74,7 +77,7 @@ _actual_ output is much longer.
 [View full HTML output][profile-example-html]. Note; it could take up
 to a second to properly render depending on your browser.
 
-Here is the corresponding text output](./example-0.counts.txt).
+Here is the corresponding [text output](./example-0.counts.txt).
 
 [profile-example-html]: ./example-0.html
 
@@ -86,8 +89,8 @@ The trace of the queries has a formal structure; see
 We style this formal structure as follows:
 
 - **Timed passes:** Green boxes, when present (via `-Z time-passes`), represent
-  _timed passes_ in the compiler. In future versions, these passes may be
-  replaced by queries, explained below.
+  _timed passes_ in the compiler. As of <!-- date: 2021-01 --> January 2021
+  these passes are not queries, but may be replaced by queries in future versions.
 - **Labels:** Some green and red boxes are labeled with text. Where they are
   present, the labels give the following information:
   - The [query's _provider_](#queries), sans its _key_ and its _result_, which
@@ -111,7 +114,7 @@ Heuristics-based CSS Classes:
 
 - `important` -- Trace nodes are `important` if they have an extent of 6 (or
   more), _or_ they have a duration fraction of one percent (or more). These
-  numbers are simple heuristics (currently hard-coded, but easy to modify).
+  numbers are simple heuristics (hard-coded, but easy to modify).
   Important nodes are styled with textual labels, and highlighted borders (light
   red, and bolded).
 
@@ -139,7 +142,7 @@ These rows are **sorted by total duration**, in descending order.
 
 The following example `profile_queries.counts.txt` file results from running on
 a hello world program (a single main function that uses `println` to print
-`"hellow world").
+`"hello world"`).
 
 As explained above, the columns consist of `provider/pass`, `count`, `duration`:
 
@@ -259,7 +262,7 @@ We give some background about the query model of the Rust compiler.
 In the query model, many queries have a key that consists of a Def ID. The Rust
 compiler uses Def IDs to distinguish definitions in the input Rust program.
 
-From the compiler source code (`src/librustc_middle/hir/def_id.rs`):
+From the compiler source code (`compiler/rustc_span/src/def_id.rs`):
 
 ```
 /// A DefId identifies a particular *definition*, by combining a crate
@@ -282,7 +285,7 @@ We explain each term in more detail:
   providers may nest; see [trace of queries](#trace-of-queries) for more
   information about this nesting structure.
    _Example providers:_
-  - `typeck_tables_of` -- Typecheck a Def ID; produce "tables" of type
+  - `typeck` -- Typecheck a Def ID; produce "tables" of type
     information.
   - `borrowck` -- Borrow-check a Def ID.
   - `optimized_mir` -- Generate an optimized MIR for a Def ID; produce MIR.

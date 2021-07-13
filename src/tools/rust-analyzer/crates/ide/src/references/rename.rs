@@ -4,7 +4,7 @@ use std::fmt::{self, Display};
 use either::Either;
 use hir::{HasSource, InFile, Module, ModuleDef, ModuleSource, Semantics};
 use ide_db::{
-    base_db::{AnchoredPathBuf, FileId, FileRange},
+    base_db::{AnchoredPathBuf, FileId},
     defs::{Definition, NameClass, NameRefClass},
     search::FileReference,
     RootDatabase,
@@ -14,17 +14,14 @@ use syntax::{
     ast::{self, NameOwner},
     lex_single_syntax_kind, AstNode, SyntaxKind, SyntaxNode, T,
 };
-use test_utils::mark;
+
 use text_edit::TextEdit;
 
-use crate::{
-    display::TryToNav, FilePosition, FileSystemEdit, RangeInfo, ReferenceKind, SourceChange,
-    TextRange,
-};
+use crate::{display::TryToNav, FilePosition, FileSystemEdit, RangeInfo, SourceChange, TextRange};
 
 type RenameResult<T> = Result<T, RenameError>;
 #[derive(Debug)]
-pub struct RenameError(pub(crate) String);
+pub struct RenameError(String);
 
 impl fmt::Display for RenameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -41,6 +38,8 @@ macro_rules! bail {
     ($($tokens:tt)*) => {return Err(format_err!($($tokens)*))}
 }
 
+/// Prepares a rename. The sole job of this function is to return the TextRange of the thing that is
+/// being targeted for a rename.
 pub(crate) fn prepare_rename(
     db: &RootDatabase,
     position: FilePosition,
@@ -48,17 +47,26 @@ pub(crate) fn prepare_rename(
     let sema = Semantics::new(db);
     let source_file = sema.parse(position.file_id);
     let syntax = source_file.syntax();
-    let range = match &find_name_like(&sema, &syntax, position)
-        .ok_or_else(|| format_err!("No references found at position"))?
-    {
-        NameLike::Name(it) => it.syntax(),
-        NameLike::NameRef(it) => it.syntax(),
-        NameLike::Lifetime(it) => it.syntax(),
-    }
-    .text_range();
-    Ok(RangeInfo::new(range, ()))
+    let name_like = sema
+        .find_node_at_offset_with_descend(&syntax, position.offset)
+        .ok_or_else(|| format_err!("No references found at position"))?;
+    let node = match &name_like {
+        ast::NameLike::Name(it) => it.syntax(),
+        ast::NameLike::NameRef(it) => it.syntax(),
+        ast::NameLike::Lifetime(it) => it.syntax(),
+    };
+    Ok(RangeInfo::new(sema.original_range(node).range, ()))
 }
 
+// Feature: Rename
+//
+// Renames the item below the cursor and all of its references
+//
+// |===
+// | Editor  | Shortcut
+//
+// | VS Code | kbd:[F2]
+// |===
 pub(crate) fn rename(
     db: &RootDatabase,
     position: FilePosition,
@@ -76,14 +84,16 @@ pub(crate) fn rename_with_semantics(
     let source_file = sema.parse(position.file_id);
     let syntax = source_file.syntax();
 
-    let def = find_definition(sema, syntax, position)
-        .ok_or_else(|| format_err!("No references found at position"))?;
+    let def = find_definition(sema, syntax, position)?;
     match def {
         Definition::ModuleDef(ModuleDef::Module(module)) => rename_mod(&sema, module, new_name),
+        Definition::SelfType(_) => bail!("Cannot rename `Self`"),
+        Definition::ModuleDef(ModuleDef::BuiltinType(_)) => bail!("Cannot rename builtin type"),
         def => rename_reference(sema, def, new_name),
     }
 }
 
+/// Called by the client when it is about to rename a file.
 pub(crate) fn will_rename_file(
     db: &RootDatabase,
     file_id: FileId,
@@ -114,7 +124,7 @@ fn check_identifier(new_name: &str) -> RenameResult<IdentifierKind> {
                 Ok(IdentifierKind::Lifetime)
             }
             (SyntaxKind::LIFETIME_IDENT, _) => {
-                bail!("Invalid name `{0}`: Cannot rename lifetime to {0}", new_name)
+                bail!("Invalid name `{}`: not a lifetime identifier", new_name)
             }
             (_, Some(syntax_error)) => bail!("Invalid name `{}`: {}", new_name, syntax_error),
             (_, None) => bail!("Invalid name `{}`: not an identifier", new_name),
@@ -123,120 +133,35 @@ fn check_identifier(new_name: &str) -> RenameResult<IdentifierKind> {
     }
 }
 
-enum NameLike {
-    Name(ast::Name),
-    NameRef(ast::NameRef),
-    Lifetime(ast::Lifetime),
-}
-
-fn find_name_like(
-    sema: &Semantics<RootDatabase>,
-    syntax: &SyntaxNode,
-    position: FilePosition,
-) -> Option<NameLike> {
-    let namelike = if let Some(name_ref) =
-        sema.find_node_at_offset_with_descend::<ast::NameRef>(syntax, position.offset)
-    {
-        NameLike::NameRef(name_ref)
-    } else if let Some(name) =
-        sema.find_node_at_offset_with_descend::<ast::Name>(syntax, position.offset)
-    {
-        NameLike::Name(name)
-    } else if let Some(lifetime) =
-        sema.find_node_at_offset_with_descend::<ast::Lifetime>(syntax, position.offset)
-    {
-        NameLike::Lifetime(lifetime)
-    } else {
-        return None;
-    };
-    Some(namelike)
-}
-
 fn find_definition(
     sema: &Semantics<RootDatabase>,
     syntax: &SyntaxNode,
     position: FilePosition,
-) -> Option<Definition> {
-    let def = match find_name_like(sema, syntax, position)? {
-        NameLike::Name(name) => NameClass::classify(sema, &name)?.referenced_or_defined(sema.db),
-        NameLike::NameRef(name_ref) => NameRefClass::classify(sema, &name_ref)?.referenced(sema.db),
-        NameLike::Lifetime(lifetime) => NameRefClass::classify_lifetime(sema, &lifetime)
+) -> RenameResult<Definition> {
+    match sema
+        .find_node_at_offset_with_descend(syntax, position.offset)
+        .ok_or_else(|| format_err!("No references found at position"))?
+    {
+        // renaming aliases would rename the item being aliased as the HIR doesn't track aliases yet
+        ast::NameLike::Name(name)
+            if name.syntax().parent().map_or(false, |it| ast::Rename::can_cast(it.kind())) =>
+        {
+            bail!("Renaming aliases is currently unsupported")
+        }
+        ast::NameLike::Name(name) => {
+            NameClass::classify(sema, &name).map(|class| class.referenced_or_defined(sema.db))
+        }
+        ast::NameLike::NameRef(name_ref) => {
+            NameRefClass::classify(sema, &name_ref).map(|class| class.referenced(sema.db))
+        }
+        ast::NameLike::Lifetime(lifetime) => NameRefClass::classify_lifetime(sema, &lifetime)
             .map(|class| NameRefClass::referenced(class, sema.db))
             .or_else(|| {
                 NameClass::classify_lifetime(sema, &lifetime)
                     .map(|it| it.referenced_or_defined(sema.db))
-            })?,
-    };
-    Some(def)
-}
-
-fn source_edit_from_references(
-    sema: &Semantics<RootDatabase>,
-    file_id: FileId,
-    references: &[FileReference],
-    new_name: &str,
-) -> (FileId, TextEdit) {
-    let mut edit = TextEdit::builder();
-    for reference in references {
-        let mut replacement_text = String::new();
-        let range = match reference.kind {
-            ReferenceKind::FieldShorthandForField => {
-                mark::hit!(test_rename_struct_field_for_shorthand);
-                replacement_text.push_str(new_name);
-                replacement_text.push_str(": ");
-                TextRange::new(reference.range.start(), reference.range.start())
-            }
-            ReferenceKind::FieldShorthandForLocal => {
-                mark::hit!(test_rename_local_for_field_shorthand);
-                replacement_text.push_str(": ");
-                replacement_text.push_str(new_name);
-                TextRange::new(reference.range.end(), reference.range.end())
-            }
-            ReferenceKind::RecordFieldExprOrPat => {
-                mark::hit!(test_rename_field_expr_pat);
-                replacement_text.push_str(new_name);
-                edit_text_range_for_record_field_expr_or_pat(
-                    sema,
-                    FileRange { file_id, range: reference.range },
-                    new_name,
-                )
-            }
-            _ => {
-                replacement_text.push_str(new_name);
-                reference.range
-            }
-        };
-        edit.replace(range, replacement_text);
+            }),
     }
-    (file_id, edit.finish())
-}
-
-fn edit_text_range_for_record_field_expr_or_pat(
-    sema: &Semantics<RootDatabase>,
-    file_range: FileRange,
-    new_name: &str,
-) -> TextRange {
-    let source_file = sema.parse(file_range.file_id);
-    let file_syntax = source_file.syntax();
-    let original_range = file_range.range;
-
-    syntax::algo::find_node_at_range::<ast::RecordExprField>(file_syntax, original_range)
-        .and_then(|field_expr| match field_expr.expr().and_then(|e| e.name_ref()) {
-            Some(name) if &name.to_string() == new_name => Some(field_expr.syntax().text_range()),
-            _ => None,
-        })
-        .or_else(|| {
-            syntax::algo::find_node_at_range::<ast::RecordPatField>(file_syntax, original_range)
-                .and_then(|field_pat| match field_pat.pat() {
-                    Some(ast::Pat::IdentPat(pat))
-                        if pat.name().map(|n| n.to_string()).as_deref() == Some(new_name) =>
-                    {
-                        Some(field_pat.syntax().text_range())
-                    }
-                    _ => None,
-                })
-        })
-        .unwrap_or(original_range)
+    .ok_or_else(|| format_err!("No references found at position"))
 }
 
 fn rename_mod(
@@ -272,15 +197,74 @@ fn rename_mod(
                 TextEdit::replace(name.syntax().text_range(), new_name.to_string()),
             ),
             _ => unreachable!(),
-        };
+        }
     }
     let def = Definition::ModuleDef(ModuleDef::Module(module));
     let usages = def.usages(sema).all();
     let ref_edits = usages.iter().map(|(&file_id, references)| {
-        source_edit_from_references(sema, file_id, references, new_name)
+        (file_id, source_edit_from_references(references, def, new_name))
     });
     source_change.extend(ref_edits);
 
+    Ok(source_change)
+}
+
+fn rename_reference(
+    sema: &Semantics<RootDatabase>,
+    def: Definition,
+    new_name: &str,
+) -> RenameResult<SourceChange> {
+    let ident_kind = check_identifier(new_name)?;
+
+    let def_is_lbl_or_lt = matches!(
+        def,
+        Definition::GenericParam(hir::GenericParam::LifetimeParam(_)) | Definition::Label(_)
+    );
+    match (ident_kind, def) {
+        (IdentifierKind::ToSelf, _)
+        | (IdentifierKind::Underscore, _)
+        | (IdentifierKind::Ident, _)
+            if def_is_lbl_or_lt =>
+        {
+            cov_mark::hit!(rename_not_a_lifetime_ident_ref);
+            bail!("Invalid name `{}`: not a lifetime identifier", new_name)
+        }
+        (IdentifierKind::Lifetime, _) if def_is_lbl_or_lt => cov_mark::hit!(rename_lifetime),
+        (IdentifierKind::Lifetime, _) => {
+            cov_mark::hit!(rename_not_an_ident_ref);
+            bail!("Invalid name `{}`: not an identifier", new_name)
+        }
+        (IdentifierKind::ToSelf, Definition::Local(local)) if local.is_self(sema.db) => {
+            // no-op
+            cov_mark::hit!(rename_self_to_self);
+            return Ok(SourceChange::default());
+        }
+        (ident_kind, Definition::Local(local)) if local.is_self(sema.db) => {
+            cov_mark::hit!(rename_self_to_param);
+            return rename_self_to_param(sema, local, new_name, ident_kind);
+        }
+        (IdentifierKind::ToSelf, Definition::Local(local)) => {
+            cov_mark::hit!(rename_to_self);
+            return rename_to_self(sema, local);
+        }
+        (IdentifierKind::ToSelf, _) => bail!("Invalid name `{}`: not an identifier", new_name),
+        (IdentifierKind::Ident, _) | (IdentifierKind::Underscore, _) => {
+            cov_mark::hit!(rename_ident)
+        }
+    }
+
+    let usages = def.usages(sema).all();
+    if !usages.is_empty() && ident_kind == IdentifierKind::Underscore {
+        cov_mark::hit!(rename_underscore_multiple);
+        bail!("Cannot rename reference to `_` as it is being referenced multiple times");
+    }
+    let mut source_change = SourceChange::default();
+    source_change.extend(usages.iter().map(|(&file_id, references)| {
+        (file_id, source_edit_from_references(&references, def, new_name))
+    }));
+
+    let (file_id, edit) = source_edit_from_def(sema, def, new_name)?;
+    source_change.insert_source_edit(file_id, edit);
     Ok(source_change)
 }
 
@@ -296,8 +280,10 @@ fn rename_to_self(sema: &Semantics<RootDatabase>, local: hir::Local) -> RenameRe
 
     // FIXME: reimplement this on the hir instead
     // as of the time of this writing params in hir don't keep their names
-    let fn_ast =
-        fn_def.source(sema.db).ok_or(format_err!("Cannot rename non-param local to self"))?.value;
+    let fn_ast = fn_def
+        .source(sema.db)
+        .ok_or_else(|| format_err!("Cannot rename non-param local to self"))?
+        .value;
 
     let first_param_range = fn_ast
         .param_list()
@@ -346,7 +332,7 @@ fn rename_to_self(sema: &Semantics<RootDatabase>, local: hir::Local) -> RenameRe
     let usages = def.usages(sema).all();
     let mut source_change = SourceChange::default();
     source_change.extend(usages.iter().map(|(&file_id, references)| {
-        source_edit_from_references(sema, file_id, references, "self")
+        (file_id, source_edit_from_references(references, def, "self"))
     }));
     source_change.insert_source_edit(
         file_id.original_file(sema.db),
@@ -354,29 +340,6 @@ fn rename_to_self(sema: &Semantics<RootDatabase>, local: hir::Local) -> RenameRe
     );
 
     Ok(source_change)
-}
-
-fn text_edit_from_self_param(self_param: &ast::SelfParam, new_name: &str) -> Option<TextEdit> {
-    fn target_type_name(impl_def: &ast::Impl) -> Option<String> {
-        if let Some(ast::Type::PathType(p)) = impl_def.self_ty() {
-            return Some(p.path()?.segment()?.name_ref()?.text().to_string());
-        }
-        None
-    }
-
-    let impl_def = self_param.syntax().ancestors().find_map(|it| ast::Impl::cast(it))?;
-    let type_name = target_type_name(&impl_def)?;
-
-    let mut replacement_text = String::from(new_name);
-    replacement_text.push_str(": ");
-    match (self_param.amp_token(), self_param.mut_token()) {
-        (None, None) => (),
-        (Some(_), None) => replacement_text.push('&'),
-        (_, Some(_)) => replacement_text.push_str("&mut "),
-    };
-    replacement_text.push_str(type_name.as_str());
-
-    Some(TextEdit::replace(self_param.syntax().text_range(), replacement_text))
 }
 
 fn rename_self_to_param(
@@ -403,66 +366,143 @@ fn rename_self_to_param(
     let mut source_change = SourceChange::default();
     source_change.insert_source_edit(file_id.original_file(sema.db), edit);
     source_change.extend(usages.iter().map(|(&file_id, references)| {
-        source_edit_from_references(sema, file_id, &references, new_name)
+        (file_id, source_edit_from_references(&references, def, new_name))
     }));
     Ok(source_change)
 }
 
-fn rename_reference(
-    sema: &Semantics<RootDatabase>,
+fn text_edit_from_self_param(self_param: &ast::SelfParam, new_name: &str) -> Option<TextEdit> {
+    fn target_type_name(impl_def: &ast::Impl) -> Option<String> {
+        if let Some(ast::Type::PathType(p)) = impl_def.self_ty() {
+            return Some(p.path()?.segment()?.name_ref()?.text().to_string());
+        }
+        None
+    }
+
+    let impl_def = self_param.syntax().ancestors().find_map(|it| ast::Impl::cast(it))?;
+    let type_name = target_type_name(&impl_def)?;
+
+    let mut replacement_text = String::from(new_name);
+    replacement_text.push_str(": ");
+    match (self_param.amp_token(), self_param.mut_token()) {
+        (Some(_), None) => replacement_text.push('&'),
+        (Some(_), Some(_)) => replacement_text.push_str("&mut "),
+        (_, _) => (),
+    };
+    replacement_text.push_str(type_name.as_str());
+
+    Some(TextEdit::replace(self_param.syntax().text_range(), replacement_text))
+}
+
+fn source_edit_from_references(
+    references: &[FileReference],
     def: Definition,
     new_name: &str,
-) -> RenameResult<SourceChange> {
-    let ident_kind = check_identifier(new_name)?;
-
-    let def_is_lbl_or_lt = matches!(def,
-        Definition::GenericParam(hir::GenericParam::LifetimeParam(_))
-        | Definition::Label(_)
-    );
-    match (ident_kind, def) {
-        (IdentifierKind::ToSelf, _)
-        | (IdentifierKind::Underscore, _)
-        | (IdentifierKind::Ident, _)
-            if def_is_lbl_or_lt =>
-        {
-            mark::hit!(rename_not_a_lifetime_ident_ref);
-            bail!("Invalid name `{}`: not a lifetime identifier", new_name)
+) -> TextEdit {
+    let mut edit = TextEdit::builder();
+    for reference in references {
+        let (range, replacement) = match &reference.name {
+            // if the ranges differ then the node is inside a macro call, we can't really attempt
+            // to make special rewrites like shorthand syntax and such, so just rename the node in
+            // the macro input
+            ast::NameLike::NameRef(name_ref)
+                if name_ref.syntax().text_range() == reference.range =>
+            {
+                source_edit_from_name_ref(name_ref, new_name, def)
+            }
+            ast::NameLike::Name(name) if name.syntax().text_range() == reference.range => {
+                source_edit_from_name(name, new_name)
+            }
+            _ => None,
         }
-        (IdentifierKind::Lifetime, _) if def_is_lbl_or_lt => mark::hit!(rename_lifetime),
-        (IdentifierKind::Lifetime, _) => {
-            mark::hit!(rename_not_an_ident_ref);
-            bail!("Invalid name `{}`: not an identifier", new_name)
-        }
-        (IdentifierKind::ToSelf, Definition::Local(local)) if local.is_self(sema.db) => {
-            // no-op
-            mark::hit!(rename_self_to_self);
-            return Ok(SourceChange::default());
-        }
-        (ident_kind, Definition::Local(local)) if local.is_self(sema.db) => {
-            mark::hit!(rename_self_to_param);
-            return rename_self_to_param(sema, local, new_name, ident_kind);
-        }
-        (IdentifierKind::ToSelf, Definition::Local(local)) => {
-            mark::hit!(rename_to_self);
-            return rename_to_self(sema, local);
-        }
-        (IdentifierKind::ToSelf, _) => bail!("Invalid name `{}`: not an identifier", new_name),
-        (IdentifierKind::Ident, _) | (IdentifierKind::Underscore, _) => mark::hit!(rename_ident),
+        .unwrap_or_else(|| (reference.range, new_name.to_string()));
+        edit.replace(range, replacement);
     }
+    edit.finish()
+}
 
-    let usages = def.usages(sema).all();
-    if !usages.is_empty() && ident_kind == IdentifierKind::Underscore {
-        mark::hit!(rename_underscore_multiple);
-        bail!("Cannot rename reference to `_` as it is being referenced multiple times");
+fn source_edit_from_name(name: &ast::Name, new_name: &str) -> Option<(TextRange, String)> {
+    if let Some(_) = ast::RecordPatField::for_field_name(name) {
+        if let Some(ident_pat) = name.syntax().parent().and_then(ast::IdentPat::cast) {
+            return Some((
+                TextRange::empty(ident_pat.syntax().text_range().start()),
+                [new_name, ": "].concat(),
+            ));
+        }
     }
-    let mut source_change = SourceChange::default();
-    source_change.extend(usages.iter().map(|(&file_id, references)| {
-        source_edit_from_references(sema, file_id, &references, new_name)
-    }));
+    None
+}
 
-    let (file_id, edit) = source_edit_from_def(sema, def, new_name)?;
-    source_change.insert_source_edit(file_id, edit);
-    Ok(source_change)
+fn source_edit_from_name_ref(
+    name_ref: &ast::NameRef,
+    new_name: &str,
+    def: Definition,
+) -> Option<(TextRange, String)> {
+    if let Some(record_field) = ast::RecordExprField::for_name_ref(name_ref) {
+        let rcf_name_ref = record_field.name_ref();
+        let rcf_expr = record_field.expr();
+        match (rcf_name_ref, rcf_expr.and_then(|it| it.name_ref())) {
+            // field: init-expr, check if we can use a field init shorthand
+            (Some(field_name), Some(init)) => {
+                if field_name == *name_ref {
+                    if init.text() == new_name {
+                        cov_mark::hit!(test_rename_field_put_init_shorthand);
+                        // same names, we can use a shorthand here instead.
+                        // we do not want to erase attributes hence this range start
+                        let s = field_name.syntax().text_range().start();
+                        let e = record_field.syntax().text_range().end();
+                        return Some((TextRange::new(s, e), new_name.to_owned()));
+                    }
+                } else if init == *name_ref {
+                    if field_name.text() == new_name {
+                        cov_mark::hit!(test_rename_local_put_init_shorthand);
+                        // same names, we can use a shorthand here instead.
+                        // we do not want to erase attributes hence this range start
+                        let s = field_name.syntax().text_range().start();
+                        let e = record_field.syntax().text_range().end();
+                        return Some((TextRange::new(s, e), new_name.to_owned()));
+                    }
+                }
+                None
+            }
+            // init shorthand
+            // FIXME: instead of splitting the shorthand, recursively trigger a rename of the
+            // other name https://github.com/rust-analyzer/rust-analyzer/issues/6547
+            (None, Some(_)) if matches!(def, Definition::Field(_)) => {
+                cov_mark::hit!(test_rename_field_in_field_shorthand);
+                let s = name_ref.syntax().text_range().start();
+                Some((TextRange::empty(s), format!("{}: ", new_name)))
+            }
+            (None, Some(_)) if matches!(def, Definition::Local(_)) => {
+                cov_mark::hit!(test_rename_local_in_field_shorthand);
+                let s = name_ref.syntax().text_range().end();
+                Some((TextRange::empty(s), format!(": {}", new_name)))
+            }
+            _ => None,
+        }
+    } else if let Some(record_field) = ast::RecordPatField::for_field_name_ref(name_ref) {
+        let rcf_name_ref = record_field.name_ref();
+        let rcf_pat = record_field.pat();
+        match (rcf_name_ref, rcf_pat) {
+            // field: rename
+            (Some(field_name), Some(ast::Pat::IdentPat(pat))) if field_name == *name_ref => {
+                // field name is being renamed
+                if pat.name().map_or(false, |it| it.text() == new_name) {
+                    cov_mark::hit!(test_rename_field_put_init_shorthand_pat);
+                    // same names, we can use a shorthand here instead/
+                    // we do not want to erase attributes hence this range start
+                    let s = field_name.syntax().text_range().start();
+                    let e = record_field.syntax().text_range().end();
+                    Some((TextRange::new(s, e), pat.to_string()))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
 }
 
 fn source_edit_from_def(
@@ -500,10 +540,12 @@ fn source_edit_from_def(
 mod tests {
     use expect_test::{expect, Expect};
     use stdx::trim_indent;
-    use test_utils::{assert_eq_text, mark};
+    use test_utils::assert_eq_text;
     use text_edit::TextEdit;
 
     use crate::{fixture, FileId};
+
+    use super::{RangeInfo, RenameError};
 
     fn check(new_name: &str, ra_fixture_before: &str, ra_fixture_after: &str) {
         let ra_fixture_after = &trim_indent(ra_fixture_after);
@@ -545,11 +587,48 @@ mod tests {
 
     fn check_expect(new_name: &str, ra_fixture: &str, expect: Expect) {
         let (analysis, position) = fixture::position(ra_fixture);
-        let source_change = analysis
-            .rename(position, new_name)
-            .unwrap()
-            .expect("Expect returned RangeInfo to be Some, but was None");
+        let source_change =
+            analysis.rename(position, new_name).unwrap().expect("Expect returned a RenameError");
         expect.assert_debug_eq(&source_change)
+    }
+
+    fn check_prepare(ra_fixture: &str, expect: Expect) {
+        let (analysis, position) = fixture::position(ra_fixture);
+        let result = analysis
+            .prepare_rename(position)
+            .unwrap_or_else(|err| panic!("PrepareRename was cancelled: {}", err));
+        match result {
+            Ok(RangeInfo { range, info: () }) => {
+                let source = analysis.file_text(position.file_id).unwrap();
+                expect.assert_eq(&format!("{:?}: {}", range, &source[range]))
+            }
+            Err(RenameError(err)) => expect.assert_eq(&err),
+        };
+    }
+
+    #[test]
+    fn test_prepare_rename_namelikes() {
+        check_prepare(r"fn name$0<'lifetime>() {}", expect![[r#"3..7: name"#]]);
+        check_prepare(r"fn name<'lifetime$0>() {}", expect![[r#"8..17: 'lifetime"#]]);
+        check_prepare(r"fn name<'lifetime>() { name$0(); }", expect![[r#"23..27: name"#]]);
+    }
+
+    #[test]
+    fn test_prepare_rename_in_macro() {
+        check_prepare(
+            r"macro_rules! foo {
+    ($ident:ident) => {
+        pub struct $ident;
+    }
+}
+foo!(Foo$0);",
+            expect![[r#"83..86: Foo"#]],
+        );
+    }
+
+    #[test]
+    fn test_prepare_rename_keyword() {
+        check_prepare(r"struct$0 Foo;", expect![[r#"No references found at position"#]]);
     }
 
     #[test]
@@ -591,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_rename_to_invalid_identifier_lifetime() {
-        mark::check!(rename_not_an_ident_ref);
+        cov_mark::check!(rename_not_an_ident_ref);
         check(
             "'foo",
             r#"fn main() { let i$0 = 1; }"#,
@@ -601,7 +680,7 @@ mod tests {
 
     #[test]
     fn test_rename_to_invalid_identifier_lifetime2() {
-        mark::check!(rename_not_a_lifetime_ident_ref);
+        cov_mark::check!(rename_not_a_lifetime_ident_ref);
         check(
             "foo",
             r#"fn main<'a>(_: &'a$0 ()) {}"#,
@@ -611,7 +690,7 @@ mod tests {
 
     #[test]
     fn test_rename_to_underscore_invalid() {
-        mark::check!(rename_underscore_multiple);
+        cov_mark::check!(rename_underscore_multiple);
         check(
             "_",
             r#"fn main(foo$0: ()) {foo;}"#,
@@ -630,7 +709,7 @@ mod tests {
 
     #[test]
     fn test_rename_for_local() {
-        mark::check!(rename_ident);
+        cov_mark::check!(rename_ident);
         check(
             "k",
             r#"
@@ -792,8 +871,8 @@ impl Foo {
     }
 
     #[test]
-    fn test_rename_struct_field_for_shorthand() {
-        mark::check!(test_rename_struct_field_for_shorthand);
+    fn test_rename_field_in_field_shorthand() {
+        cov_mark::check!(test_rename_field_in_field_shorthand);
         check(
             "j",
             r#"
@@ -818,8 +897,8 @@ impl Foo {
     }
 
     #[test]
-    fn test_rename_local_for_field_shorthand() {
-        mark::check!(test_rename_local_for_field_shorthand);
+    fn test_rename_local_in_field_shorthand() {
+        cov_mark::check!(test_rename_local_in_field_shorthand);
         check(
             "j",
             r#"
@@ -1225,7 +1304,7 @@ fn foo(f: foo::Foo) {
 
     #[test]
     fn test_parameter_to_self() {
-        mark::check!(rename_to_self);
+        cov_mark::check!(rename_to_self);
         check(
             "self",
             r#"
@@ -1365,7 +1444,7 @@ impl Foo {
 
     #[test]
     fn test_owned_self_to_parameter() {
-        mark::check!(rename_self_to_param);
+        cov_mark::check!(rename_self_to_param);
         check(
             "foo",
             r#"
@@ -1417,8 +1496,8 @@ impl Foo {
     }
 
     #[test]
-    fn test_initializer_use_field_init_shorthand() {
-        mark::check!(test_rename_field_expr_pat);
+    fn test_rename_field_put_init_shorthand() {
+        cov_mark::check!(test_rename_field_put_init_shorthand);
         check(
             "bar",
             r#"
@@ -1439,23 +1518,46 @@ fn foo(bar: i32) -> Foo {
     }
 
     #[test]
-    fn test_struct_field_destructure_into_shorthand() {
+    fn test_rename_local_put_init_shorthand() {
+        cov_mark::check!(test_rename_local_put_init_shorthand);
+        check(
+            "i",
+            r#"
+struct Foo { i: i32 }
+
+fn foo(bar$0: i32) -> Foo {
+    Foo { i: bar }
+}
+"#,
+            r#"
+struct Foo { i: i32 }
+
+fn foo(i: i32) -> Foo {
+    Foo { i }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn test_struct_field_pat_into_shorthand() {
+        cov_mark::check!(test_rename_field_put_init_shorthand_pat);
         check(
             "baz",
             r#"
 struct Foo { i$0: i32 }
 
 fn foo(foo: Foo) {
-    let Foo { i: baz } = foo;
-    let _ = baz;
+    let Foo { i: ref baz @ qux } = foo;
+    let _ = qux;
 }
 "#,
             r#"
 struct Foo { baz: i32 }
 
 fn foo(foo: Foo) {
-    let Foo { baz } = foo;
-    let _ = baz;
+    let Foo { ref baz @ qux } = foo;
+    let _ = qux;
 }
 "#,
         );
@@ -1529,8 +1631,29 @@ fn foo(Foo { i: bar }: foo) -> i32 {
     }
 
     #[test]
+    fn test_struct_field_complex_ident_pat() {
+        check(
+            "baz",
+            r#"
+struct Foo { i$0: i32 }
+
+fn foo(foo: Foo) {
+    let Foo { ref i } = foo;
+}
+"#,
+            r#"
+struct Foo { baz: i32 }
+
+fn foo(foo: Foo) {
+    let Foo { baz: ref i } = foo;
+}
+"#,
+        );
+    }
+
+    #[test]
     fn test_rename_lifetimes() {
-        mark::check!(rename_lifetime);
+        cov_mark::check!(rename_lifetime);
         check(
             "'yeeee",
             r#"
@@ -1618,7 +1741,7 @@ fn foo<'a>() -> &'a () {
 
     #[test]
     fn test_self_to_self() {
-        mark::check!(rename_self_to_self);
+        cov_mark::check!(rename_self_to_self);
         check(
             "self",
             r#"
@@ -1631,6 +1754,40 @@ impl Foo {
 struct Foo;
 impl Foo {
     fn foo(self) {}
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn test_rename_field_in_pat_in_macro_doesnt_shorthand() {
+        // ideally we would be able to make this emit a short hand, but I doubt this is easily possible
+        check(
+            "baz",
+            r#"
+macro_rules! foo {
+    ($pattern:pat) => {
+        let $pattern = loop {};
+    };
+}
+struct Foo {
+    bar$0: u32,
+}
+fn foo() {
+    foo!(Foo { bar: baz });
+}
+"#,
+            r#"
+macro_rules! foo {
+    ($pattern:pat) => {
+        let $pattern = loop {};
+    };
+}
+struct Foo {
+    baz: u32,
+}
+fn foo() {
+    foo!(Foo { baz: baz });
 }
 "#,
         )

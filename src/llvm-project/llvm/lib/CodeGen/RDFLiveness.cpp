@@ -230,13 +230,12 @@ NodeList Liveness::getAllReachingDefs(RegisterRef RefRR,
     TmpBB.push_back(Bucket.first);
     if (Bucket.second.size() > 2)
       GetOrder(*Bucket.first);
-    std::sort(Bucket.second.begin(), Bucket.second.end(), Precedes);
+    llvm::sort(Bucket.second, Precedes);
   }
 
   // Sort the blocks with respect to dominance.
-  std::sort(TmpBB.begin(), TmpBB.end(), [this](auto A, auto B) {
-    return MDT.dominates(A, B);
-  });
+  llvm::sort(TmpBB,
+             [this](auto A, auto B) { return MDT.properlyDominates(A, B); });
 
   std::vector<NodeId> TmpInst;
   for (auto I = TmpBB.rbegin(), E = TmpBB.rend(); I != E; ++I) {
@@ -287,7 +286,7 @@ NodeList Liveness::getAllReachingDefs(RegisterRef RefRR,
       if (FullChain || IsPhi || !RRs.hasCoverOf(QR))
         Ds.push_back(DA);
     }
-    RDefs.insert(RDefs.end(), Ds.begin(), Ds.end());
+    llvm::append_range(RDefs, Ds);
     for (NodeAddr<DefNode*> DA : Ds) {
       // When collecting a full chain of definitions, do not consider phi
       // defs to actually define a register.
@@ -301,7 +300,7 @@ NodeList Liveness::getAllReachingDefs(RegisterRef RefRR,
   auto DeadP = [](const NodeAddr<DefNode*> DA) -> bool {
     return DA.Addr->getFlags() & NodeAttrs::Dead;
   };
-  RDefs.resize(std::distance(RDefs.begin(), llvm::remove_if(RDefs, DeadP)));
+  llvm::erase_if(RDefs, DeadP);
 
   return RDefs;
 }
@@ -471,7 +470,7 @@ void Liveness::computePhiInfo() {
   NodeList Blocks = FA.Addr->members(DFG);
   for (NodeAddr<BlockNode*> BA : Blocks) {
     auto Ps = BA.Addr->members_if(DFG.IsCode<NodeAttrs::Phi>, DFG);
-    Phis.insert(Phis.end(), Ps.begin(), Ps.end());
+    llvm::append_range(Phis, Ps);
   }
 
   // phi use -> (map: reaching phi -> set of registers defined in between)

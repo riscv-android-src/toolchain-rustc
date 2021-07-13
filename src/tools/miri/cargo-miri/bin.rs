@@ -143,6 +143,18 @@ fn get_arg_flag_value(name: &str) -> Option<String> {
     ArgFlagValueIter::new(name).next()
 }
 
+fn forward_patched_extern_arg(args: &mut impl Iterator<Item = String>, cmd: &mut Command) {
+    cmd.arg("--extern"); // always forward flag, but adjust filename:
+    let path = args.next().expect("`--extern` should be followed by a filename");
+    if let Some(lib) = path.strip_suffix(".rlib") {
+        // If this is an rlib, make it an rmeta.
+        cmd.arg(format!("{}.rmeta", lib));
+    } else {
+        // Some other extern file (e.g. a `.so`). Forward unchanged.
+        cmd.arg(path);
+    }
+}
+
 /// Returns the path to the `miri` binary
 fn find_miri() -> PathBuf {
     if let Some(path) = env::var_os("MIRI") {
@@ -553,7 +565,7 @@ fn phase_cargo_miri(mut args: env::Args) {
     exec(cmd)
 }
 
-fn phase_cargo_rustc(args: env::Args) {
+fn phase_cargo_rustc(mut args: env::Args) {
     /// Determines if we are being invoked (as rustc) to build a crate for
     /// the "target" architecture, in contrast to the "host" architecture.
     /// Host crates are for build scripts and proc macros and still need to
@@ -596,19 +608,16 @@ fn phase_cargo_rustc(args: env::Args) {
     let target_crate = is_target_crate();
     let print = get_arg_flag_value("--print").is_some(); // whether this is cargo passing `--print` to get some infos
 
-    // rlib and cdylib are just skipped, we cannot interpret them and do not need them
-    // for the rest of the build either.
-    match get_arg_flag_value("--crate-type").as_deref() {
-        Some("rlib") | Some("cdylib") => {
-            if verbose {
-                eprint!("[cargo-miri rustc] (rlib/cdylib skipped)");
-            }
-            return;
-        }
-        _ => {},
-    }
-
     let store_json = |info: CrateRunInfo| {
+        // Create a stub .d file to stop Cargo from "rebuilding" the crate:
+        // https://github.com/rust-lang/miri/issues/1724#issuecomment-787115693
+        // As we store a JSON file instead of building the crate here, an empty file is fine.
+        let dep_info_name = out_filename("", ".d");
+        if verbose {
+            eprintln!("[cargo-miri rustc] writing stub dep-info to `{}`", dep_info_name.display());
+        }
+        File::create(dep_info_name).expect("failed to create fake .d file");
+
         let filename = out_filename("", "");
         if verbose {
             eprintln!("[cargo-miri rustc] writing run info to `{}`", filename.display());
@@ -646,7 +655,7 @@ fn phase_cargo_rustc(args: env::Args) {
     if !print && target_crate {
         // Forward arguments, but remove "link" from "--emit" to make this a check-only build.
         let emit_flag = "--emit";
-        for arg in args {
+        while let Some(arg) = args.next() {
             if arg.starts_with(emit_flag) {
                 // Patch this argument. First, extract its value.
                 let val = &arg[emit_flag.len()..];
@@ -662,6 +671,10 @@ fn phase_cargo_rustc(args: env::Args) {
                     }
                 }
                 cmd.arg(format!("{}={}", emit_flag, val.join(",")));
+            } else if arg == "--extern" {
+                // Patch `--extern` filenames, since Cargo sometimes passes stub `.rlib` files:
+                // https://github.com/rust-lang/miri/issues/1705
+                forward_patched_extern_arg(&mut args, &mut cmd);
             } else {
                 cmd.arg(arg);
             }
@@ -688,12 +701,17 @@ fn phase_cargo_rustc(args: env::Args) {
     exec(cmd);
 
     // Create a stub .rlib file if "link" was requested by cargo.
+    // This is necessary to prevent cargo from doing rebuilds all the time.
     if emit_link_hack {
         // Some platforms prepend "lib", some do not... let's just create both files.
-        let filename = out_filename("lib", ".rlib");
-        File::create(filename).expect("failed to create rlib file");
-        let filename = out_filename("", ".rlib");
-        File::create(filename).expect("failed to create rlib file");
+        File::create(out_filename("lib", ".rlib")).expect("failed to create fake .rlib file");
+        File::create(out_filename("", ".rlib")).expect("failed to create fake .rlib file");
+        // Just in case this is a cdylib or staticlib, also create those fake files.
+        File::create(out_filename("lib", ".so")).expect("failed to create fake .so file");
+        File::create(out_filename("lib", ".a")).expect("failed to create fake .a file");
+        File::create(out_filename("lib", ".dylib")).expect("failed to create fake .dylib file");
+        File::create(out_filename("", ".dll")).expect("failed to create fake .dll file");
+        File::create(out_filename("", ".lib")).expect("failed to create fake .lib file");
     }
 }
 
@@ -737,21 +755,11 @@ fn phase_cargo_runner(binary: &Path, binary_args: env::Args) {
     // but when we run here, cargo does not interpret the JSON any more. `--json`
     // then also nees to be dropped.
     let mut args = info.args.into_iter();
-    let extern_flag = "--extern";
     let error_format_flag = "--error-format";
     let json_flag = "--json";
     while let Some(arg) = args.next() {
-        if arg == extern_flag {
-            cmd.arg(extern_flag); // always forward flag, but adjust filename
-            // `--extern` is always passed as a separate argument by cargo.
-            let next_arg = args.next().expect("`--extern` should be followed by a filename");
-            if let Some(next_lib) = next_arg.strip_suffix(".rlib") {
-                // If this is an rlib, make it an rmeta.
-                cmd.arg(format!("{}.rmeta", next_lib));
-            } else {
-                // Some other extern file (e.g., a `.so`). Forward unchanged.
-                cmd.arg(next_arg);
-            }
+        if arg == "--extern" {
+            forward_patched_extern_arg(&mut args, &mut cmd);
         } else if arg.starts_with(error_format_flag) {
             let suffix = &arg[error_format_flag.len()..];
             assert!(suffix.starts_with('='));

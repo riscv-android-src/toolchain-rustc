@@ -45,10 +45,11 @@ Available unstable (nightly-only) flags:
     -Z terminal-width      -- Provide a terminal width to rustc for error truncation
     -Z namespaced-features -- Allow features with `dep:` prefix
     -Z weak-dep-features   -- Allow `dep_name?/feature` feature syntax
+    -Z patch-in-config     -- Allow `[patch]` sections in .cargo/config.toml files
 
 Run with 'cargo -Z [FLAG] [SUBCOMMAND]'"
         );
-        if !features::nightly_features_allowed() {
+        if !config.nightly_features_allowed {
             drop_println!(
                 config,
                 "\nUnstable flags are only available on the nightly channel \

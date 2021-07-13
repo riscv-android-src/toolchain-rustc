@@ -854,7 +854,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Memory<'mir, 'tcx, M> {
             Some(ptr) => ptr,
             None => {
                 // zero-sized access
-                src.next().expect_none("iterator said it was empty but returned an element");
+                assert!(src.next().is_none(), "iterator said it was empty but returned an element");
                 return Ok(());
             }
         };
@@ -880,7 +880,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Memory<'mir, 'tcx, M> {
             Some(ptr) => ptr,
             None => {
                 // zero-sized access
-                src.next().expect_none("iterator said it was empty but returned an element");
+                assert!(src.next().is_none(), "iterator said it was empty but returned an element");
                 return Ok(());
             }
         };
@@ -894,7 +894,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Memory<'mir, 'tcx, M> {
             let offset_ptr = ptr.offset(Size::from_bytes(idx) * 2, &tcx)?; // `Size` multiplication
             allocation.write_scalar(&tcx, offset_ptr, val.into(), Size::from_bytes(2))?;
         }
-        src.next().expect_none("iterator was longer than it said it would be");
+        assert!(src.next().is_none(), "iterator was longer than it said it would be");
         Ok(())
     }
 

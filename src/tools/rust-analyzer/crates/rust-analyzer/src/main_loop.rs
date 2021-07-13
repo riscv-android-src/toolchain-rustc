@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use always_assert::always;
 use crossbeam_channel::{select, Receiver};
 use ide::PrimeCachesProgress;
 use ide::{Canceled, FileId};
@@ -186,7 +187,7 @@ impl GlobalState {
             log::info!("task queue len: {}", task_queue_len);
         }
 
-        let prev_status = self.status;
+        let mut new_status = self.status;
         match event {
             Event::Lsp(msg) => match msg {
                 lsp_server::Message::Request(req) => self.on_request(loop_start, req)?,
@@ -298,22 +299,23 @@ impl GlobalState {
                                 }
                             }
                         }
-                        vfs::loader::Message::Progress { n_total, n_done } => {
+                        vfs::loader::Message::Progress { n_total, n_done, config_version } => {
+                            always!(config_version <= self.vfs_config_version);
                             if n_total == 0 {
-                                self.transition(Status::Invalid);
+                                new_status = Status::Invalid;
                             } else {
                                 let state = if n_done == 0 {
-                                    self.transition(Status::Loading);
+                                    new_status = Status::Loading;
                                     Progress::Begin
                                 } else if n_done < n_total {
                                     Progress::Report
                                 } else {
                                     assert_eq!(n_done, n_total);
-                                    let status = Status::Ready {
-                                        partial: self.config.load_out_dirs_from_check()
-                                            && self.workspace_build_data.is_none(),
+                                    new_status = Status::Ready {
+                                        partial: self.config.run_build_scripts()
+                                            && self.workspace_build_data.is_none()
+                                            || config_version < self.vfs_config_version,
                                     };
-                                    self.transition(status);
                                     Progress::End
                                 };
                                 self.report_progress(
@@ -398,7 +400,11 @@ impl GlobalState {
         }
 
         let state_changed = self.process_changes();
-        let is_ready = matches!(self.status, Status::Ready { .. } );
+        let prev_status = self.status;
+        if prev_status != new_status {
+            self.transition(new_status);
+        }
+        let is_ready = matches!(self.status, Status::Ready { .. });
         if prev_status == Status::Loading && is_ready {
             for flycheck in &self.flycheck {
                 flycheck.update();
@@ -494,6 +500,7 @@ impl GlobalState {
             .on::<lsp_ext::ExpandMacro>(handlers::handle_expand_macro)
             .on::<lsp_ext::ParentModule>(handlers::handle_parent_module)
             .on::<lsp_ext::Runnables>(handlers::handle_runnables)
+            .on::<lsp_ext::RelatedTests>(handlers::handle_related_tests)
             .on::<lsp_ext::InlayHints>(handlers::handle_inlay_hints)
             .on::<lsp_ext::CodeActionRequest>(handlers::handle_code_action)
             .on::<lsp_ext::CodeActionResolveRequest>(handlers::handle_code_action_resolve)

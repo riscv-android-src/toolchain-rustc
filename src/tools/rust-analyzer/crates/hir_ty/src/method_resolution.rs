@@ -6,29 +6,38 @@ use std::{iter, sync::Arc};
 
 use arrayvec::ArrayVec;
 use base_db::CrateId;
+use chalk_ir::Mutability;
 use hir_def::{
-    builtin_type::{IntBitness, Signedness},
-    lang_item::LangItemTarget,
-    type_ref::Mutability,
-    AssocContainerId, AssocItemId, FunctionId, HasModule, ImplId, Lookup, TraitId,
+    lang_item::LangItemTarget, AssocContainerId, AssocItemId, FunctionId, GenericDefId, HasModule,
+    ImplId, Lookup, ModuleId, TraitId,
 };
 use hir_expand::name::Name;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::Substs;
 use crate::{
     autoderef,
     db::HirDatabase,
-    primitive::{FloatBitness, FloatTy, IntTy},
+    from_foreign_def_id,
+    primitive::{self, FloatTy, IntTy, UintTy},
     utils::all_super_traits,
-    ApplicationTy, Canonical, DebruijnIndex, InEnvironment, TraitEnvironment, TraitRef, Ty, TyKind,
-    TypeCtor, TypeWalk,
+    AdtId, Canonical, DebruijnIndex, FnPointer, FnSig, ForeignDefId, InEnvironment, Interner,
+    Scalar, Substs, TraitEnvironment, TraitRef, Ty, TyKind, TypeWalk,
 };
 
 /// This is used as a key for indexing impls.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum TyFingerprint {
-    Apply(TypeCtor),
+    Str,
+    Slice,
+    Array,
+    Never,
+    RawPtr(Mutability),
+    Scalar(Scalar),
+    Adt(hir_def::AdtId),
+    Dyn(TraitId),
+    Tuple(usize),
+    ForeignType(ForeignDefId),
+    FnPtr(usize, FnSig),
 }
 
 impl TyFingerprint {
@@ -36,67 +45,44 @@ impl TyFingerprint {
     /// have impls: if we have some `struct S`, we can have an `impl S`, but not
     /// `impl &S`. Hence, this will return `None` for reference types and such.
     pub(crate) fn for_impl(ty: &Ty) -> Option<TyFingerprint> {
-        match ty {
-            Ty::Apply(a_ty) => Some(TyFingerprint::Apply(a_ty.ctor)),
-            _ => None,
-        }
+        let fp = match *ty.interned(&Interner) {
+            TyKind::Str => TyFingerprint::Str,
+            TyKind::Never => TyFingerprint::Never,
+            TyKind::Slice(..) => TyFingerprint::Slice,
+            TyKind::Array(..) => TyFingerprint::Array,
+            TyKind::Scalar(scalar) => TyFingerprint::Scalar(scalar),
+            TyKind::Adt(AdtId(adt), _) => TyFingerprint::Adt(adt),
+            TyKind::Tuple(cardinality, _) => TyFingerprint::Tuple(cardinality),
+            TyKind::Raw(mutability, ..) => TyFingerprint::RawPtr(mutability),
+            TyKind::ForeignType(alias_id, ..) => TyFingerprint::ForeignType(alias_id),
+            TyKind::Function(FnPointer { num_args, sig, .. }) => {
+                TyFingerprint::FnPtr(num_args, sig)
+            }
+            TyKind::Dyn(_) => ty.dyn_trait().map(|trait_| TyFingerprint::Dyn(trait_))?,
+            _ => return None,
+        };
+        Some(fp)
     }
 }
 
 pub(crate) const ALL_INT_FPS: [TyFingerprint; 12] = [
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Unsigned,
-        bitness: IntBitness::X8,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Unsigned,
-        bitness: IntBitness::X16,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Unsigned,
-        bitness: IntBitness::X32,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Unsigned,
-        bitness: IntBitness::X64,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Unsigned,
-        bitness: IntBitness::X128,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Unsigned,
-        bitness: IntBitness::Xsize,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Signed,
-        bitness: IntBitness::X8,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Signed,
-        bitness: IntBitness::X16,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Signed,
-        bitness: IntBitness::X32,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Signed,
-        bitness: IntBitness::X64,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Signed,
-        bitness: IntBitness::X128,
-    })),
-    TyFingerprint::Apply(TypeCtor::Int(IntTy {
-        signedness: Signedness::Signed,
-        bitness: IntBitness::Xsize,
-    })),
+    TyFingerprint::Scalar(Scalar::Int(IntTy::I8)),
+    TyFingerprint::Scalar(Scalar::Int(IntTy::I16)),
+    TyFingerprint::Scalar(Scalar::Int(IntTy::I32)),
+    TyFingerprint::Scalar(Scalar::Int(IntTy::I64)),
+    TyFingerprint::Scalar(Scalar::Int(IntTy::I128)),
+    TyFingerprint::Scalar(Scalar::Int(IntTy::Isize)),
+    TyFingerprint::Scalar(Scalar::Uint(UintTy::U8)),
+    TyFingerprint::Scalar(Scalar::Uint(UintTy::U16)),
+    TyFingerprint::Scalar(Scalar::Uint(UintTy::U32)),
+    TyFingerprint::Scalar(Scalar::Uint(UintTy::U64)),
+    TyFingerprint::Scalar(Scalar::Uint(UintTy::U128)),
+    TyFingerprint::Scalar(Scalar::Uint(UintTy::Usize)),
 ];
 
 pub(crate) const ALL_FLOAT_FPS: [TyFingerprint; 2] = [
-    TyFingerprint::Apply(TypeCtor::Float(FloatTy { bitness: FloatBitness::X32 })),
-    TyFingerprint::Apply(TypeCtor::Float(FloatTy { bitness: FloatBitness::X64 })),
+    TyFingerprint::Scalar(Scalar::Float(FloatTy::F32)),
+    TyFingerprint::Scalar(Scalar::Float(FloatTy::F64)),
 ];
 
 /// Trait impls defined or available in some crate.
@@ -245,33 +231,39 @@ impl Ty {
             }};
         }
 
-        let lang_item_targets = match self {
-            Ty::Apply(a_ty) => match a_ty.ctor {
-                TypeCtor::Adt(def_id) => {
-                    return Some(std::iter::once(def_id.module(db.upcast()).krate()).collect())
-                }
-                TypeCtor::ForeignType(type_alias_id) => {
-                    return Some(
-                        std::iter::once(
-                            type_alias_id.lookup(db.upcast()).module(db.upcast()).krate(),
-                        )
-                        .collect(),
-                    )
-                }
-                TypeCtor::Bool => lang_item_crate!("bool"),
-                TypeCtor::Char => lang_item_crate!("char"),
-                TypeCtor::Float(f) => match f.bitness {
-                    // There are two lang items: one in libcore (fXX) and one in libstd (fXX_runtime)
-                    FloatBitness::X32 => lang_item_crate!("f32", "f32_runtime"),
-                    FloatBitness::X64 => lang_item_crate!("f64", "f64_runtime"),
-                },
-                TypeCtor::Int(i) => lang_item_crate!(i.ty_to_string()),
-                TypeCtor::Str => lang_item_crate!("str_alloc", "str"),
-                TypeCtor::Slice => lang_item_crate!("slice_alloc", "slice"),
-                TypeCtor::RawPtr(Mutability::Shared) => lang_item_crate!("const_ptr"),
-                TypeCtor::RawPtr(Mutability::Mut) => lang_item_crate!("mut_ptr"),
-                _ => return None,
+        let mod_to_crate_ids = |module: ModuleId| Some(std::iter::once(module.krate()).collect());
+
+        let lang_item_targets = match self.interned(&Interner) {
+            TyKind::Adt(AdtId(def_id), _) => {
+                return mod_to_crate_ids(def_id.module(db.upcast()));
+            }
+            TyKind::ForeignType(id) => {
+                return mod_to_crate_ids(
+                    from_foreign_def_id(*id).lookup(db.upcast()).module(db.upcast()),
+                );
+            }
+            TyKind::Scalar(Scalar::Bool) => lang_item_crate!("bool"),
+            TyKind::Scalar(Scalar::Char) => lang_item_crate!("char"),
+            TyKind::Scalar(Scalar::Float(f)) => match f {
+                // There are two lang items: one in libcore (fXX) and one in libstd (fXX_runtime)
+                FloatTy::F32 => lang_item_crate!("f32", "f32_runtime"),
+                FloatTy::F64 => lang_item_crate!("f64", "f64_runtime"),
             },
+            &TyKind::Scalar(Scalar::Int(t)) => {
+                lang_item_crate!(primitive::int_ty_to_string(t))
+            }
+            &TyKind::Scalar(Scalar::Uint(t)) => {
+                lang_item_crate!(primitive::uint_ty_to_string(t))
+            }
+            TyKind::Str => lang_item_crate!("str_alloc", "str"),
+            TyKind::Slice(_) => lang_item_crate!("slice_alloc", "slice"),
+            TyKind::Raw(Mutability::Not, _) => lang_item_crate!("const_ptr"),
+            TyKind::Raw(Mutability::Mut, _) => lang_item_crate!("mut_ptr"),
+            TyKind::Dyn(_) => {
+                return self.dyn_trait().and_then(|trait_| {
+                    mod_to_crate_ids(GenericDefId::TraitId(trait_).module(db.upcast()))
+                });
+            }
             _ => return None,
         };
         let res = lang_item_targets
@@ -280,11 +272,12 @@ impl Ty {
                 LangItemTarget::ImplDefId(it) => Some(it),
                 _ => None,
             })
-            .map(|it| it.lookup(db.upcast()).container.module(db.upcast()).krate())
+            .map(|it| it.lookup(db.upcast()).container.krate())
             .collect();
         Some(res)
     }
 }
+
 /// Look up the method with the given name, returning the actual autoderefed
 /// receiver type (but without autoref applied yet).
 pub(crate) fn lookup_method(
@@ -442,7 +435,8 @@ fn iterate_method_candidates_with_autoref(
     }
     let refed = Canonical {
         kinds: deref_chain[0].kinds.clone(),
-        value: Ty::apply_one(TypeCtor::Ref(Mutability::Shared), deref_chain[0].value.clone()),
+        value: TyKind::Ref(Mutability::Not, Substs::single(deref_chain[0].value.clone()))
+            .intern(&Interner),
     };
     if iterate_method_candidates_by_receiver(
         &refed,
@@ -458,7 +452,8 @@ fn iterate_method_candidates_with_autoref(
     }
     let ref_muted = Canonical {
         kinds: deref_chain[0].kinds.clone(),
-        value: Ty::apply_one(TypeCtor::Ref(Mutability::Mut), deref_chain[0].value.clone()),
+        value: TyKind::Ref(Mutability::Mut, Substs::single(deref_chain[0].value.clone()))
+            .intern(&Interner),
     };
     if iterate_method_candidates_by_receiver(
         &ref_muted,
@@ -538,10 +533,9 @@ fn iterate_trait_method_candidates(
     // if ty is `dyn Trait`, the trait doesn't need to be in scope
     let inherent_trait =
         self_ty.value.dyn_trait().into_iter().flat_map(|t| all_super_traits(db.upcast(), t));
-    let env_traits = if let Ty::Placeholder(_) = self_ty.value {
+    let env_traits = if let TyKind::Placeholder(_) = self_ty.value.interned(&Interner) {
         // if we have `T: Trait` in the param env, the trait doesn't need to be in scope
-        env.trait_predicates_for_self_ty(&self_ty.value)
-            .map(|tr| tr.trait_)
+        env.traits_in_scope_from_clauses(&self_ty.value)
             .flat_map(|t| all_super_traits(db.upcast(), t))
             .collect()
     } else {
@@ -600,7 +594,7 @@ fn iterate_inherent_methods(
                 // already happens in `is_valid_candidate` above; if not, we
                 // check it here
                 if receiver_ty.is_none() && inherent_impl_substs(db, impl_def, self_ty).is_none() {
-                    test_utils::mark::hit!(impl_self_type_match_without_receiver);
+                    cov_mark::hit!(impl_self_type_match_without_receiver);
                     continue;
                 }
                 if callback(&self_ty.value, item) {
@@ -680,7 +674,7 @@ pub(crate) fn inherent_impl_substs(
         .build();
     let self_ty_with_vars = db.impl_self_ty(impl_id).subst(&vars);
     let mut kinds = self_ty.kinds.to_vec();
-    kinds.extend(iter::repeat(TyKind::General).take(vars.len()));
+    kinds.extend(iter::repeat(chalk_ir::TyVariableKind::General).take(vars.len()));
     let tys = Canonical { kinds: kinds.into(), value: (self_ty_with_vars, self_ty.value.clone()) };
     let substs = super::infer::unify(&tys);
     // We only want the substs for the vars we added, not the ones from self_ty.
@@ -692,13 +686,13 @@ pub(crate) fn inherent_impl_substs(
 }
 
 /// This replaces any 'free' Bound vars in `s` (i.e. those with indices past
-/// num_vars_to_keep) by `Ty::Unknown`.
+/// num_vars_to_keep) by `TyKind::Unknown`.
 fn fallback_bound_vars(s: Substs, num_vars_to_keep: usize) -> Substs {
     s.fold_binders(
         &mut |ty, binders| {
-            if let Ty::Bound(bound) = &ty {
+            if let TyKind::BoundVar(bound) = ty.interned(&Interner) {
                 if bound.index >= num_vars_to_keep && bound.debruijn >= binders {
-                    Ty::Unknown
+                    TyKind::Unknown.intern(&Interner)
                 } else {
                     ty
                 }
@@ -727,7 +721,7 @@ fn transform_receiver_ty(
                 .fill_with_unknown()
                 .build()
         }
-        AssocContainerId::ContainerId(_) => unreachable!(),
+        AssocContainerId::ModuleId(_) => unreachable!(),
     };
     let sig = db.callable_item_signature(function_id.into());
     Some(sig.value.params()[0].clone().subst_bound_vars(&substs))
@@ -772,7 +766,7 @@ fn generic_implements_goal(
         .push(self_ty.value)
         .fill_with_bound_vars(DebruijnIndex::INNERMOST, kinds.len())
         .build();
-    kinds.extend(iter::repeat(TyKind::General).take(substs.len() - 1));
+    kinds.extend(iter::repeat(chalk_ir::TyVariableKind::General).take(substs.len() - 1));
     let trait_ref = TraitRef { trait_, substs };
     let obligation = super::Obligation::Trait(trait_ref);
     Canonical { kinds: kinds.into(), value: InEnvironment::new(env, obligation) }
@@ -785,11 +779,11 @@ fn autoderef_method_receiver(
 ) -> Vec<Canonical<Ty>> {
     let mut deref_chain: Vec<_> = autoderef::autoderef(db, Some(krate), ty).collect();
     // As a last step, we can do array unsizing (that's the only unsizing that rustc does for method receivers!)
-    if let Some(Ty::Apply(ApplicationTy { ctor: TypeCtor::Array, parameters })) =
-        deref_chain.last().map(|ty| &ty.value)
+    if let Some(TyKind::Array(parameters)) =
+        deref_chain.last().map(|ty| ty.value.interned(&Interner))
     {
         let kinds = deref_chain.last().unwrap().kinds.clone();
-        let unsized_ty = Ty::apply(TypeCtor::Slice, parameters.clone());
+        let unsized_ty = TyKind::Slice(parameters.clone()).intern(&Interner);
         deref_chain.push(Canonical { value: unsized_ty, kinds })
     }
     deref_chain

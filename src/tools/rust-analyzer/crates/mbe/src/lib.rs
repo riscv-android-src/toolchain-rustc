@@ -12,13 +12,15 @@ mod subtree_source;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod benchmark;
+
 use std::fmt;
 
-use test_utils::mark;
 pub use tt::{Delimiter, DelimiterKind, Punct};
 
 use crate::{
-    parser::{parse_pattern, parse_template, Op},
+    parser::{parse_pattern, parse_template, MetaTemplate, Op},
     tt_iter::TtIter,
 };
 
@@ -62,8 +64,8 @@ impl fmt::Display for ExpandError {
 }
 
 pub use crate::syntax_bridge::{
-    ast_to_token_tree, parse_to_token_tree, syntax_node_to_token_tree, token_tree_to_syntax_node,
-    TokenMap,
+    ast_to_token_tree, parse_exprs_with_sep, parse_to_token_tree, syntax_node_to_token_tree,
+    token_tree_to_syntax_node, TokenMap,
 };
 
 /// This struct contains AST for a single `macro_rules` definition. What might
@@ -89,15 +91,6 @@ pub struct MacroDef {
 struct Rule {
     lhs: MetaTemplate,
     rhs: MetaTemplate,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct MetaTemplate(Vec<Op>);
-
-impl<'a> MetaTemplate {
-    fn iter(&self) -> impl Iterator<Item = &Op> {
-        self.0.iter()
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,7 +216,7 @@ impl MacroDef {
         let mut rules = Vec::new();
 
         if Some(tt::DelimiterKind::Brace) == tt.delimiter_kind() {
-            mark::hit!(parse_macro_def_rules);
+            cov_mark::hit!(parse_macro_def_rules);
             while src.len() > 0 {
                 let rule = Rule::parse(&mut src, true)?;
                 rules.push(rule);
@@ -235,7 +228,7 @@ impl MacroDef {
                 }
             }
         } else {
-            mark::hit!(parse_macro_def_simple);
+            cov_mark::hit!(parse_macro_def_simple);
             let rule = Rule::parse(&mut src, false)?;
             if src.len() != 0 {
                 return Err(ParseError::Expected("remain tokens in macro def".to_string()));

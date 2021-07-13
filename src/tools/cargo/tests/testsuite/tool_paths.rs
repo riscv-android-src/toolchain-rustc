@@ -354,6 +354,34 @@ fn custom_linker_env() {
 }
 
 #[cargo_test]
+fn target_in_environment_contains_lower_case() {
+    let p = project().file("src/main.rs", "fn main() {}").build();
+
+    let target = rustc_host();
+    let env_key = format!(
+        "CARGO_TARGET_{}_LINKER",
+        target.to_lowercase().replace('-', "_")
+    );
+
+    let mut execs = p.cargo("build -v --target");
+    execs.arg(target).env(&env_key, "nonexistent-linker");
+    if cfg!(windows) {
+        // Windows env keys are case insensitive, so no warning, but it will
+        // fail due to the missing linker.
+        execs
+            .with_stderr_does_not_contain("warning:[..]")
+            .with_status(101);
+    } else {
+        execs.with_stderr_contains(format!(
+            "warning: Environment variables are expected to use uppercase letters and underscores, \
+            the variable `{}` will be ignored and have no effect",
+            env_key
+        ));
+    }
+    execs.run();
+}
+
+#[cargo_test]
 fn cfg_ignored_fields() {
     // Test for some ignored fields in [target.'cfg()'] tables.
     let p = project()

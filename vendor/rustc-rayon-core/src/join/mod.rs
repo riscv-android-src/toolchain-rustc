@@ -1,12 +1,12 @@
-use job::StackJob;
-use latch::{LatchProbe, SpinLatch};
-use log::Event::*;
-use registry::{self, WorkerThread};
+use crate::job::StackJob;
+use crate::latch::{LatchProbe, SpinLatch};
+use crate::log::Event::*;
+use crate::registry::{self, WorkerThread};
+use crate::tlv;
+use crate::unwind;
 use std::any::Any;
-use tlv;
-use unwind;
 
-use FnContext;
+use crate::FnContext;
 
 #[cfg(test)]
 mod test;
@@ -169,7 +169,6 @@ where
                     tlv::set(tlv);
 
                     let result_b = job_b.run_inline(injected);
-
                     return (result_a, result_b);
                 } else {
                     log!(PoppedJob {

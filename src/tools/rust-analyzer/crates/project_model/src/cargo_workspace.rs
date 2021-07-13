@@ -1,5 +1,6 @@
 //! FIXME: write short doc here
 
+use std::path::PathBuf;
 use std::{convert::TryInto, ops, process::Command, sync::Arc};
 
 use anyhow::{Context, Result};
@@ -8,6 +9,8 @@ use cargo_metadata::{CargoOpt, MetadataCommand};
 use la_arena::{Arena, Idx};
 use paths::{AbsPath, AbsPathBuf};
 use rustc_hash::FxHashMap;
+use serde::Deserialize;
+use serde_json::from_value;
 
 use crate::build_data::BuildDataConfig;
 use crate::utf8_stdout;
@@ -44,6 +47,15 @@ impl ops::Index<Target> for CargoWorkspace {
     }
 }
 
+/// Describes how to set the rustc source directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RustcSource {
+    /// Explicit path for the rustc source directory.
+    Path(AbsPathBuf),
+    /// Try to automatically detect where the rustc source directory is.
+    Discover,
+}
+
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct CargoConfig {
     /// Do not activate the `default` feature.
@@ -64,7 +76,7 @@ pub struct CargoConfig {
     pub no_sysroot: bool,
 
     /// rustc private crate source
-    pub rustc_source: Option<AbsPathBuf>,
+    pub rustc_source: Option<RustcSource>,
 }
 
 pub type Package = Idx<PackageData>;
@@ -94,6 +106,13 @@ pub struct PackageData {
     pub active_features: Vec<String>,
     // String representation of package id
     pub id: String,
+    // The contents of [package.metadata.rust-analyzer]
+    pub metadata: RustAnalyzerPackageMetaData,
+}
+
+#[derive(Deserialize, Default, Debug, Clone, Eq, PartialEq)]
+pub struct RustAnalyzerPackageMetaData {
+    pub rustc_private: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -149,6 +168,13 @@ impl PackageData {
     pub fn root(&self) -> &AbsPath {
         self.manifest.parent().unwrap()
     }
+}
+
+#[derive(Deserialize, Default)]
+// Deserialise helper for the cargo metadata
+struct PackageMetadata {
+    #[serde(rename = "rust-analyzer")]
+    rust_analyzer: Option<RustAnalyzerPackageMetaData>,
 }
 
 impl CargoWorkspace {
@@ -234,23 +260,27 @@ impl CargoWorkspace {
 
         meta.packages.sort_by(|a, b| a.id.cmp(&b.id));
         for meta_pkg in &meta.packages {
-            let cargo_metadata::Package { id, edition, name, manifest_path, version, .. } =
-                meta_pkg;
+            let cargo_metadata::Package {
+                id, edition, name, manifest_path, version, metadata, ..
+            } = meta_pkg;
+            let meta = from_value::<PackageMetadata>(metadata.clone()).unwrap_or_default();
             let is_member = ws_members.contains(&id);
             let edition = edition
                 .parse::<Edition>()
                 .with_context(|| format!("Failed to parse edition {}", edition))?;
+
             let pkg = packages.alloc(PackageData {
                 id: id.repr.clone(),
                 name: name.clone(),
                 version: version.to_string(),
-                manifest: AbsPathBuf::assert(manifest_path.clone()),
+                manifest: AbsPathBuf::assert(PathBuf::from(&manifest_path)),
                 targets: Vec::new(),
                 is_member,
                 edition,
                 dependencies: Vec::new(),
                 features: meta_pkg.features.clone().into_iter().collect(),
                 active_features: Vec::new(),
+                metadata: meta.rust_analyzer.unwrap_or_default(),
             });
             let pkg_data = &mut packages[pkg];
             pkg_by_id.insert(id, pkg);
@@ -259,7 +289,7 @@ impl CargoWorkspace {
                 let tgt = targets.alloc(TargetData {
                     package: pkg,
                     name: meta_tgt.name.clone(),
-                    root: AbsPathBuf::assert(meta_tgt.src_path.clone()),
+                    root: AbsPathBuf::assert(PathBuf::from(&meta_tgt.src_path)),
                     kind: TargetKind::new(meta_tgt.kind.as_slice()),
                     is_proc_macro,
                 });
@@ -296,7 +326,8 @@ impl CargoWorkspace {
             packages[source].active_features.extend(node.features);
         }
 
-        let workspace_root = AbsPathBuf::assert(meta.workspace_root);
+        let workspace_root =
+            AbsPathBuf::assert(PathBuf::from(meta.workspace_root.into_os_string()));
         let build_data_config = BuildDataConfig::new(
             cargo_toml.to_path_buf(),
             config.clone(),

@@ -7,7 +7,7 @@ use std::{
 };
 
 use libloading::Library;
-use memmap::Mmap;
+use memmap2::Mmap;
 use object::Object;
 use proc_macro_api::ProcMacroKind;
 
@@ -60,7 +60,7 @@ fn find_registrar_symbol(file: &Path) -> io::Result<Option<String>> {
 /// It seems that on Windows that behaviour is default, so we do nothing in that case.
 #[cfg(windows)]
 fn load_library(file: &Path) -> Result<Library, libloading::Error> {
-    Library::new(file)
+    unsafe { Library::new(file) }
 }
 
 #[cfg(unix)]
@@ -71,7 +71,7 @@ fn load_library(file: &Path) -> Result<Library, libloading::Error> {
     const RTLD_NOW: c_int = 0x00002;
     const RTLD_DEEPBIND: c_int = 0x00008;
 
-    UnixLibrary::open(Some(file), RTLD_NOW | RTLD_DEEPBIND).map(|lib| lib.into())
+    unsafe { UnixLibrary::open(Some(file), RTLD_NOW | RTLD_DEEPBIND).map(|lib| lib.into()) }
 }
 
 struct ProcMacroLibraryLibloading {
@@ -138,7 +138,7 @@ impl Expander {
                         parsed_body,
                         false,
                     );
-                    return res.map(|it| it.subtree);
+                    return res.map(|it| it.into_subtree());
                 }
                 bridge::client::ProcMacro::Bang { name, client } if *name == macro_name => {
                     let res = client.run(
@@ -147,7 +147,7 @@ impl Expander {
                         parsed_body,
                         false,
                     );
-                    return res.map(|it| it.subtree);
+                    return res.map(|it| it.into_subtree());
                 }
                 bridge::client::ProcMacro::Attr { name, client } if *name == macro_name => {
                     let res = client.run(
@@ -157,7 +157,7 @@ impl Expander {
                         parsed_body,
                         false,
                     );
-                    return res.map(|it| it.subtree);
+                    return res.map(|it| it.into_subtree());
                 }
                 _ => continue,
             }

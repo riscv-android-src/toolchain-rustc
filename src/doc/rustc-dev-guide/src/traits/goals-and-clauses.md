@@ -1,5 +1,7 @@
 # Goals and clauses
 
+<!-- toc -->
+
 In logic programming terms, a **goal** is something that you must
 prove and a **clause** is something that you know is true. As
 described in the [lowering to logic](./lowering-to-logic.html)
@@ -38,11 +40,11 @@ paper
 gives the details.
 
 In terms of code, these types are defined in
-[`librustc_middle/traits/mod.rs`][traits_mod] in rustc, and in
+[`rustc_middle/src/traits/mod.rs`][traits_mod] in rustc, and in
 [`chalk-ir/src/lib.rs`][chalk_ir] in chalk.
 
-[pphhf]: ./bibliography.html#pphhf
-[traits_mod]: https://github.com/rust-lang/rust/blob/master/src/librustc_middle/traits/mod.rs
+[pphhf]: https://rust-lang.github.io/chalk/book/bibliography.html#pphhf
+[traits_mod]: https://github.com/rust-lang/rust/blob/master/compiler/rustc_middle/src/traits/mod.rs
 [chalk_ir]: https://github.com/rust-lang/chalk/blob/master/chalk-ir/src/lib.rs
 
 <a name="domain-goals"></a>
@@ -118,7 +120,7 @@ e.g. `ProjectionEq<T as Iterator>::Item = u8`
 
 The given associated type `Projection` is equal to `Type`; this can be proved
 with either normalization or using placeholder associated types. See
-[the section on associated types](./associated-types.html).
+[the section on associated types in Chalk Book][at].
 
 #### Normalize(Projection -> Type)
 e.g. `ProjectionEq<T as Iterator>::Item -> u8`
@@ -126,12 +128,12 @@ e.g. `ProjectionEq<T as Iterator>::Item -> u8`
 The given associated type `Projection` can be [normalized][n] to `Type`.
 
 As discussed in [the section on associated
-types](./associated-types.html), `Normalize` implies `ProjectionEq`,
+types in Chalk Book][at], `Normalize` implies `ProjectionEq`,
 but not vice versa. In general, proving `Normalize(<T as Trait>::Item -> U)`
 also requires proving `Implemented(T: Trait)`.
 
-[n]: ./associated-types.html#normalize
-[at]: ./associated-types.html
+[n]: https://rust-lang.github.io/chalk/book/clauses/type_equality.html#normalize
+[at]: https://rust-lang.github.io/chalk/book/clauses/type_equality.html
 
 #### FromEnv(TraitRef)
 e.g. `FromEnv(Self: Add<i32>)`
@@ -196,7 +198,7 @@ it is okay to assume `FromEnv(T: Clone)` in the `loud_clone` example is that we
 _also_ verify `WellFormed(T: Clone)` for each call site of `loud_clone`.
 Similarly, it is okay to assume `FromEnv(HashSet<K>)` in the `loud_insert`
 example because we will verify `WellFormed(HashSet<K>)` for each call site of
-`loud_insert`. 
+`loud_insert`.
 
 #### Outlives(Type: Region), Outlives(Region: Region)
 e.g. `Outlives(&'a str: 'b)`, `Outlives('a: 'static)`
@@ -260,7 +262,7 @@ In addition to auto traits, `WellFormed` predicates are co-inductive.
 These are used to achieve a similar "enumerate all the cases" pattern,
 as described in the section on [implied bounds].
 
-[implied bounds]: ./lowering-rules.html#implied-bounds
+[implied bounds]: https://rust-lang.github.io/chalk/book/clauses/implied_bounds.html#implied-bounds
 
 ## Incomplete chapter
 

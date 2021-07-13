@@ -9,8 +9,7 @@ use url::Url;
 
 use hir::{
     db::{DefDatabase, HirDatabase},
-    Adt, AsAssocItem, AsName, AssocItem, AssocItemContainer, Crate, Field, HasAttrs, ItemInNs,
-    ModuleDef,
+    Adt, AsAssocItem, AssocItem, AssocItemContainer, Crate, Field, HasAttrs, ItemInNs, ModuleDef,
 };
 use ide_db::{
     defs::{Definition, NameClass, NameRefClass},
@@ -233,7 +232,7 @@ fn rewrite_intra_doc_link(
         let items = t.items(db);
         if let Some(field_or_assoc_item) = items.iter().find_map(|assoc_item| {
             if let Some(name) = assoc_item.name(db) {
-                if link.to_string() == format!("{}::{}", canonical_path, name) {
+                if *link == format!("{}::{}", canonical_path, name) {
                     return Some(FieldOrAssocItem::AssocItem(*assoc_item));
                 }
             }
@@ -429,7 +428,7 @@ fn get_symbol_filename(db: &dyn HirDatabase, definition: &ModuleDef) -> Option<S
         ModuleDef::Module(_) => "index.html".to_string(),
         ModuleDef::Trait(t) => format!("trait.{}.html", t.name(db)),
         ModuleDef::TypeAlias(t) => format!("type.{}.html", t.name(db)),
-        ModuleDef::BuiltinType(t) => format!("primitive.{}.html", t.as_name()),
+        ModuleDef::BuiltinType(t) => format!("primitive.{}.html", t.name()),
         ModuleDef::Function(f) => format!("fn.{}.html", f.name(db)),
         ModuleDef::Variant(ev) => {
             format!("enum.{}.html#variant.{}", ev.parent_enum(db).name(db), ev.name(db))

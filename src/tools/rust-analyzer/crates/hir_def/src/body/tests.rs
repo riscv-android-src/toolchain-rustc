@@ -1,5 +1,7 @@
+mod block;
+
 use base_db::{fixture::WithFixture, SourceDatabase};
-use test_utils::mark;
+use expect_test::Expect;
 
 use crate::{test_db::TestDB, ModuleDefId};
 
@@ -31,9 +33,21 @@ fn check_diagnostics(ra_fixture: &str) {
     db.check_diagnostics();
 }
 
+fn block_def_map_at(ra_fixture: &str) -> String {
+    let (db, position) = crate::test_db::TestDB::with_position(ra_fixture);
+
+    let module = db.module_at_position(position);
+    module.def_map(&db).dump(&db)
+}
+
+fn check_at(ra_fixture: &str, expect: Expect) {
+    let actual = block_def_map_at(ra_fixture);
+    expect.assert_eq(&actual);
+}
+
 #[test]
 fn your_stack_belongs_to_me() {
-    mark::check!(your_stack_belongs_to_me);
+    cov_mark::check!(your_stack_belongs_to_me);
     lower(
         "
 macro_rules! n_nuple {

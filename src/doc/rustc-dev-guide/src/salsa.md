@@ -1,11 +1,18 @@
 # How Salsa works
 
+<!-- toc -->
+
 This chapter is based on the explanation given by Niko Matsakis in this
 [video](https://www.youtube.com/watch?v=_muY4HjSqVw) about
-[Salsa](https://github.com/salsa-rs/salsa).
+[Salsa](https://github.com/salsa-rs/salsa). To find out more you may
+want to watch [Salsa In More
+Depth](https://www.youtube.com/watch?v=i_IhACacPRY), also by Niko
+Matsakis.
 
-> Salsa is not used directly in rustc, but it is used extensively for
-> rust-analyzer and may be integrated into the compiler in the future.
+> As of <!-- date: 2021-01 --> January 2021, although Salsa is inspired by
+> (among other things) rustc's query system, it is not used directly in rustc.
+> It _is_ used in chalk and extensively in `rust-analyzer`, but there are no
+> medium or long-term concrete plans to integrate it into the compiler.
 
 ## What is Salsa?
 
@@ -29,7 +36,8 @@ see its type), completions, etc.
 
 ## How does it work?
 
-The first thing that Salsa has to do is identify the "base inputs" [^EN1].
+The first thing that Salsa has to do is identify the "base inputs" that
+are not something computed but given as input.
 
 Then Salsa has to also identify intermediate, "derived" values, which are
 something that the library produces, but, for each derived value there's a
@@ -103,8 +111,8 @@ potentially invalidated.
 ### Query Groups
 
 A query group is a set of queries which have been defined together as a unit.
-The database is formed by combining query groups.  Query groups are akin to
-"Salsa modules" [^EN2].
+The database is formed by combining query groups. Query groups are akin to
+"Salsa modules".
 
 A set of queries in a query group are just a set of methods in a trait.
 
@@ -208,7 +216,3 @@ fn main() {
     }
 }
 ```
-
-[^EN1]: "They are not something that you **inaubible** but something that you kinda get **inaudible** from the outside [3:23](https://youtu.be/_muY4HjSqVw?t=203).
-
-[^EN2]: What is a Salsa module?

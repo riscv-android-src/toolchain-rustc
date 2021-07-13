@@ -10,10 +10,10 @@
 
 use crate::proc_macro::bridge::{self, server};
 
-use std::collections::{Bound, HashMap};
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::iter::FromIterator;
-use std::str::FromStr;
+use std::ops::Bound;
 use std::{ascii, vec::IntoIter};
 
 type Group = tt::Subtree;
@@ -25,27 +25,35 @@ type Span = tt::TokenId;
 
 #[derive(Debug, Clone)]
 pub struct TokenStream {
-    pub subtree: tt::Subtree,
+    pub token_trees: Vec<TokenTree>,
 }
 
 impl TokenStream {
     pub fn new() -> Self {
-        TokenStream { subtree: Default::default() }
+        TokenStream { token_trees: Default::default() }
     }
 
     pub fn with_subtree(subtree: tt::Subtree) -> Self {
-        TokenStream { subtree }
+        if subtree.delimiter.is_some() {
+            TokenStream { token_trees: vec![TokenTree::Subtree(subtree)] }
+        } else {
+            TokenStream { token_trees: subtree.token_trees }
+        }
+    }
+
+    pub fn into_subtree(self) -> tt::Subtree {
+        tt::Subtree { delimiter: None, token_trees: self.token_trees }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.subtree.token_trees.is_empty()
+        self.token_trees.is_empty()
     }
 }
 
 /// Creates a token stream containing a single token tree.
 impl From<TokenTree> for TokenStream {
     fn from(tree: TokenTree) -> TokenStream {
-        TokenStream { subtree: tt::Subtree { delimiter: None, token_trees: vec![tree] } }
+        TokenStream { token_trees: vec![tree] }
     }
 }
 
@@ -78,10 +86,10 @@ impl Extend<TokenStream> for TokenStream {
             for tkn in item {
                 match tkn {
                     tt::TokenTree::Subtree(subtree) if subtree.delimiter.is_none() => {
-                        self.subtree.token_trees.extend(subtree.token_trees);
+                        self.token_trees.extend(subtree.token_trees);
                     }
                     _ => {
-                        self.subtree.token_trees.push(tkn);
+                        self.token_trees.push(tkn);
                     }
                 }
             }
@@ -164,7 +172,7 @@ pub mod token_stream {
         type IntoIter = super::IntoIter<TokenTree>;
 
         fn into_iter(self) -> Self::IntoIter {
-            self.subtree.token_trees.into_iter()
+            self.token_trees.into_iter()
         }
     }
 
@@ -184,28 +192,23 @@ pub mod token_stream {
             let (subtree, _token_map) =
                 mbe::parse_to_token_tree(src).ok_or("Failed to parse from mbe")?;
 
-            Ok(TokenStream { subtree })
+            let subtree = subtree_replace_token_ids_with_unspecified(subtree);
+            Ok(TokenStream::with_subtree(subtree))
         }
     }
 
     impl ToString for TokenStream {
         fn to_string(&self) -> String {
-            let tt = self.subtree.clone().into();
-            to_text(&tt)
-        }
-    }
+            return tokentrees_to_text(&self.token_trees[..]);
 
-    fn to_text(tkn: &tt::TokenTree) -> String {
-        match tkn {
-            tt::TokenTree::Leaf(tt::Leaf::Ident(ident)) => ident.text.clone().into(),
-            tt::TokenTree::Leaf(tt::Leaf::Literal(literal)) => literal.text.clone().into(),
-            tt::TokenTree::Leaf(tt::Leaf::Punct(punct)) => format!("{}", punct.char),
-            tt::TokenTree::Subtree(subtree) => {
-                let content = subtree
-                    .token_trees
-                    .iter()
+            fn tokentrees_to_text(tkns: &[tt::TokenTree]) -> String {
+                tkns.iter()
                     .fold((String::new(), true), |(last, last_to_joint), tkn| {
-                        let s = [last, to_text(tkn)].join(if last_to_joint { "" } else { " " });
+                        let s = [last, tokentree_to_text(tkn)].join(if last_to_joint {
+                            ""
+                        } else {
+                            " "
+                        });
                         let mut is_joint = false;
                         if let tt::TokenTree::Leaf(tt::Leaf::Punct(punct)) = tkn {
                             if punct.spacing == tt::Spacing::Joint {
@@ -214,15 +217,63 @@ pub mod token_stream {
                         }
                         (s, is_joint)
                     })
-                    .0;
+                    .0
+            }
 
-                let (open, close) = match subtree.delimiter.map(|it| it.kind) {
-                    None => ("", ""),
-                    Some(tt::DelimiterKind::Brace) => ("{", "}"),
-                    Some(tt::DelimiterKind::Parenthesis) => ("(", ")"),
-                    Some(tt::DelimiterKind::Bracket) => ("[", "]"),
-                };
-                format!("{}{}{}", open, content, close)
+            fn tokentree_to_text(tkn: &tt::TokenTree) -> String {
+                match tkn {
+                    tt::TokenTree::Leaf(tt::Leaf::Ident(ident)) => ident.text.clone().into(),
+                    tt::TokenTree::Leaf(tt::Leaf::Literal(literal)) => literal.text.clone().into(),
+                    tt::TokenTree::Leaf(tt::Leaf::Punct(punct)) => format!("{}", punct.char),
+                    tt::TokenTree::Subtree(subtree) => {
+                        let content = tokentrees_to_text(&subtree.token_trees);
+                        let (open, close) = match subtree.delimiter.map(|it| it.kind) {
+                            None => ("", ""),
+                            Some(tt::DelimiterKind::Brace) => ("{", "}"),
+                            Some(tt::DelimiterKind::Parenthesis) => ("(", ")"),
+                            Some(tt::DelimiterKind::Bracket) => ("[", "]"),
+                        };
+                        format!("{}{}{}", open, content, close)
+                    }
+                }
+            }
+        }
+    }
+
+    fn subtree_replace_token_ids_with_unspecified(subtree: tt::Subtree) -> tt::Subtree {
+        tt::Subtree {
+            delimiter: subtree
+                .delimiter
+                .map(|d| tt::Delimiter { id: tt::TokenId::unspecified(), ..d }),
+            token_trees: subtree
+                .token_trees
+                .into_iter()
+                .map(|t| token_tree_replace_token_ids_with_unspecified(t))
+                .collect(),
+        }
+    }
+
+    fn token_tree_replace_token_ids_with_unspecified(tt: tt::TokenTree) -> tt::TokenTree {
+        match tt {
+            tt::TokenTree::Leaf(leaf) => {
+                tt::TokenTree::Leaf(leaf_replace_token_ids_with_unspecified(leaf))
+            }
+            tt::TokenTree::Subtree(subtree) => {
+                tt::TokenTree::Subtree(subtree_replace_token_ids_with_unspecified(subtree))
+            }
+        }
+    }
+
+    fn leaf_replace_token_ids_with_unspecified(leaf: tt::Leaf) -> tt::Leaf {
+        match leaf {
+            tt::Leaf::Literal(lit) => {
+                tt::Leaf::Literal(tt::Literal { id: tt::TokenId::unspecified(), ..lit })
+            }
+            tt::Leaf::Punct(punct) => {
+                tt::Leaf::Punct(tt::Punct { id: tt::TokenId::unspecified(), ..punct })
+            }
+            tt::Leaf::Ident(ident) => {
+                tt::Leaf::Ident(tt::Ident { id: tt::TokenId::unspecified(), ..ident })
             }
         }
     }
@@ -286,6 +337,8 @@ impl server::TokenStream for Rustc {
         stream.is_empty()
     }
     fn from_str(&mut self, src: &str) -> Self::TokenStream {
+        use std::str::FromStr;
+
         Self::TokenStream::from_str(src).expect("cannot parse string")
     }
     fn to_string(&mut self, stream: &Self::TokenStream) -> String {
@@ -392,10 +445,7 @@ fn spacing_to_external(spacing: Spacing) -> bridge::Spacing {
 
 impl server::Group for Rustc {
     fn new(&mut self, delimiter: bridge::Delimiter, stream: Self::TokenStream) -> Self::Group {
-        Self::Group {
-            delimiter: delim_to_internal(delimiter),
-            token_trees: stream.subtree.token_trees,
-        }
+        Self::Group { delimiter: delim_to_internal(delimiter), token_trees: stream.token_trees }
     }
     fn delimiter(&mut self, group: &Self::Group) -> bridge::Delimiter {
         delim_to_external(group.delimiter)
@@ -403,9 +453,7 @@ impl server::Group for Rustc {
 
     // NOTE: Return value of do not include delimiter
     fn stream(&mut self, group: &Self::Group) -> Self::TokenStream {
-        TokenStream {
-            subtree: tt::Subtree { delimiter: None, token_trees: group.token_trees.clone() },
-        }
+        TokenStream { token_trees: group.token_trees.clone() }
     }
 
     fn span(&mut self, group: &Self::Group) -> Self::Span {
@@ -505,8 +553,7 @@ impl server::Literal for Rustc {
             }
         }
 
-        let text =
-            def_suffixed_integer! {kind, u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128};
+        let text = def_suffixed_integer! {kind, u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize};
 
         Literal { text: text.into(), id: tt::TokenId::unspecified() }
     }
@@ -715,28 +762,48 @@ mod tests {
     #[test]
     fn test_rustc_server_to_string() {
         let s = TokenStream {
-            subtree: tt::Subtree {
-                delimiter: None,
-                token_trees: vec![
-                    tt::TokenTree::Leaf(tt::Leaf::Ident(tt::Ident {
-                        text: "struct".into(),
+            token_trees: vec![
+                tt::TokenTree::Leaf(tt::Leaf::Ident(tt::Ident {
+                    text: "struct".into(),
+                    id: tt::TokenId::unspecified(),
+                })),
+                tt::TokenTree::Leaf(tt::Leaf::Ident(tt::Ident {
+                    text: "T".into(),
+                    id: tt::TokenId::unspecified(),
+                })),
+                tt::TokenTree::Subtree(tt::Subtree {
+                    delimiter: Some(tt::Delimiter {
                         id: tt::TokenId::unspecified(),
-                    })),
-                    tt::TokenTree::Leaf(tt::Leaf::Ident(tt::Ident {
-                        text: "T".into(),
-                        id: tt::TokenId::unspecified(),
-                    })),
-                    tt::TokenTree::Subtree(tt::Subtree {
-                        delimiter: Some(tt::Delimiter {
-                            id: tt::TokenId::unspecified(),
-                            kind: tt::DelimiterKind::Brace,
-                        }),
-                        token_trees: vec![],
+                        kind: tt::DelimiterKind::Brace,
                     }),
-                ],
-            },
+                    token_trees: vec![],
+                }),
+            ],
         };
 
         assert_eq!(s.to_string(), "struct T {}");
+    }
+
+    #[test]
+    fn test_rustc_server_from_str() {
+        use std::str::FromStr;
+        let subtree_paren_a = tt::TokenTree::Subtree(tt::Subtree {
+            delimiter: Some(tt::Delimiter {
+                id: tt::TokenId::unspecified(),
+                kind: tt::DelimiterKind::Parenthesis,
+            }),
+            token_trees: vec![tt::TokenTree::Leaf(tt::Leaf::Ident(tt::Ident {
+                text: "a".into(),
+                id: tt::TokenId::unspecified(),
+            }))],
+        });
+
+        let t1 = TokenStream::from_str("(a)").unwrap();
+        assert_eq!(t1.token_trees.len(), 1);
+        assert_eq!(t1.token_trees[0], subtree_paren_a);
+
+        let t2 = TokenStream::from_str("(a);").unwrap();
+        assert_eq!(t2.token_trees.len(), 2);
+        assert_eq!(t2.token_trees[0], subtree_paren_a);
     }
 }

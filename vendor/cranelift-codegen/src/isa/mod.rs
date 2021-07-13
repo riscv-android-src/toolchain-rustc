@@ -20,7 +20,6 @@
 //! appropriate for the requested ISA:
 //!
 //! ```
-//! # extern crate cranelift_codegen;
 //! # #[macro_use] extern crate target_lexicon;
 //! use cranelift_codegen::isa;
 //! use cranelift_codegen::settings::{self, Configurable};
@@ -30,12 +29,12 @@
 //! let shared_builder = settings::builder();
 //! let shared_flags = settings::Flags::new(shared_builder);
 //!
-//! match isa::lookup(triple!("riscv32")) {
+//! match isa::lookup(triple!("x86_64")) {
 //!     Err(_) => {
-//!         // The RISC-V target ISA is not available.
+//!         // The x86_64 target ISA is not available.
 //!     }
 //!     Ok(mut isa_builder) => {
-//!         isa_builder.set("supports_m", "on");
+//!         isa_builder.set("use_popcnt", "on");
 //!         let isa = isa_builder.finish(shared_flags);
 //!     }
 //! }
@@ -69,6 +68,7 @@ use alloc::boxed::Box;
 use core::any::Any;
 use core::fmt;
 use core::fmt::{Debug, Formatter};
+use core::hash::Hasher;
 use target_lexicon::{triple, Architecture, PointerWidth, Triple};
 use thiserror::Error;
 
@@ -265,6 +265,10 @@ pub trait TargetIsa: fmt::Display + Send + Sync {
     /// Get the ISA-independent flags that were used to make this trait object.
     fn flags(&self) -> &settings::Flags;
 
+    /// Hashes all flags, both ISA-independent and ISA-specific, into the
+    /// specified hasher.
+    fn hash_all_flags(&self, hasher: &mut dyn Hasher);
+
     /// Get the default calling convention of this target.
     fn default_call_conv(&self) -> CallConv {
         CallConv::triple_default(self.triple())
@@ -322,6 +326,12 @@ pub trait TargetIsa: fmt::Display + Send + Sync {
     #[cfg(feature = "unwind")]
     /// Map a Cranelift register to its corresponding DWARF register.
     fn map_dwarf_register(&self, _: RegUnit) -> Result<u16, RegisterMappingError> {
+        Err(RegisterMappingError::UnsupportedArchitecture)
+    }
+
+    #[cfg(feature = "unwind")]
+    /// Map a regalloc::Reg to its corresponding DWARF register.
+    fn map_regalloc_reg_to_dwarf(&self, _: ::regalloc::Reg) -> Result<u16, RegisterMappingError> {
         Err(RegisterMappingError::UnsupportedArchitecture)
     }
 

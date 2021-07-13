@@ -92,7 +92,6 @@
 //!    of that page. Update the rest of the documentation to add the new
 //!    feature.
 
-use std::cell::Cell;
 use std::env;
 use std::fmt;
 use std::str::FromStr;
@@ -101,7 +100,8 @@ use anyhow::{bail, Error};
 use serde::{Deserialize, Serialize};
 
 use crate::util::errors::CargoResult;
-use crate::util::indented_lines;
+use crate::util::{indented_lines, ProcessBuilder};
+use crate::Config;
 
 pub const SEE_CHANNELS: &str =
     "See https://doc.rust-lang.org/book/appendix-07-nightly-rust.html for more information \
@@ -118,13 +118,115 @@ pub enum Edition {
     Edition2021,
 }
 
+// Adding a new edition:
+// - Add the next edition to the enum.
+// - Update every match expression that now fails to compile.
+// - Update the `FromStr` impl.
+// - Update CLI_VALUES to include the new edition.
+// - Set LATEST_UNSTABLE to Some with the new edition.
+// - Add an unstable feature to the features! macro below for the new edition.
+// - Gate on that new feature in TomlManifest::to_real_manifest.
+// - Update the shell completion files.
+// - Update any failing tests (hopefully there are very few).
+//
+// Stabilization instructions:
+// - Set LATEST_UNSTABLE to None.
+// - Set LATEST_STABLE to the new version.
+// - Update `is_stable` to `true`.
+// - Set the editionNNNN feature to stable in the features macro below.
+// - Update the man page for the --edition flag.
 impl Edition {
+    /// The latest edition that is unstable.
+    ///
+    /// This is `None` if there is no next unstable edition.
+    pub const LATEST_UNSTABLE: Option<Edition> = Some(Edition::Edition2021);
+    /// The latest stable edition.
+    pub const LATEST_STABLE: Edition = Edition::Edition2018;
+    /// Possible values allowed for the `--edition` CLI flag.
+    ///
+    /// This requires a static value due to the way clap works, otherwise I
+    /// would have built this dynamically.
+    pub const CLI_VALUES: &'static [&'static str] = &["2015", "2018", "2021"];
+
+    /// Returns the first version that a particular edition was released on
+    /// stable.
     pub(crate) fn first_version(&self) -> Option<semver::Version> {
         use Edition::*;
         match self {
             Edition2015 => None,
             Edition2018 => Some(semver::Version::new(1, 31, 0)),
+            // FIXME: This will likely be 1.56, update when that seems more likely.
             Edition2021 => Some(semver::Version::new(1, 62, 0)),
+        }
+    }
+
+    /// Returns `true` if this edition is stable in this release.
+    pub fn is_stable(&self) -> bool {
+        use Edition::*;
+        match self {
+            Edition2015 => true,
+            Edition2018 => true,
+            Edition2021 => false,
+        }
+    }
+
+    /// Returns the previous edition from this edition.
+    ///
+    /// Returns `None` for 2015.
+    pub fn previous(&self) -> Option<Edition> {
+        use Edition::*;
+        match self {
+            Edition2015 => None,
+            Edition2018 => Some(Edition2015),
+            Edition2021 => Some(Edition2018),
+        }
+    }
+
+    /// Returns the next edition from this edition, returning the last edition
+    /// if this is already the last one.
+    pub fn saturating_next(&self) -> Edition {
+        use Edition::*;
+        match self {
+            Edition2015 => Edition2018,
+            Edition2018 => Edition2021,
+            Edition2021 => Edition2021,
+        }
+    }
+
+    /// Updates the given [`ProcessBuilder`] to include the appropriate flags
+    /// for setting the edition.
+    pub(crate) fn cmd_edition_arg(&self, cmd: &mut ProcessBuilder) {
+        if *self != Edition::Edition2015 {
+            cmd.arg(format!("--edition={}", self));
+        }
+        if !self.is_stable() {
+            cmd.arg("-Z").arg("unstable-options");
+        }
+    }
+
+    /// Whether or not this edition supports the `rust_*_compatibility` lint.
+    ///
+    /// Ideally this would not be necessary, but currently 2021 does not have
+    /// any lints, and thus `rustc` doesn't recognize it. Perhaps `rustc`
+    /// could create an empty group instead?
+    pub(crate) fn supports_compat_lint(&self) -> bool {
+        use Edition::*;
+        match self {
+            Edition2015 => false,
+            Edition2018 => true,
+            Edition2021 => false,
+        }
+    }
+
+    /// Whether or not this edition supports the `rust_*_idioms` lint.
+    ///
+    /// Ideally this would not be necessary...
+    pub(crate) fn supports_idiom_lint(&self) -> bool {
+        use Edition::*;
+        match self {
+            Edition2015 => false,
+            Edition2018 => true,
+            Edition2021 => false,
         }
     }
 }
@@ -174,6 +276,7 @@ macro_rules! features {
         pub struct Features {
             $($feature: bool,)*
             activated: Vec<String>,
+            nightly_features_allowed: bool,
         }
 
         impl Feature {
@@ -282,6 +385,9 @@ features! {
 
     // Specifying a minimal 'rust-version' attribute for crates
     (unstable, rust_version, "", "reference/unstable.html#rust-version"),
+
+    // Support for 2021 edition.
+    (unstable, edition2021, "", "reference/unstable.html#edition-2021"),
 }
 
 const PUBLISH_LOCKFILE_REMOVED: &str = "The publish-lockfile key in Cargo.toml \
@@ -301,8 +407,13 @@ pub struct Feature {
 }
 
 impl Features {
-    pub fn new(features: &[String], warnings: &mut Vec<String>) -> CargoResult<Features> {
+    pub fn new(
+        features: &[String],
+        config: &Config,
+        warnings: &mut Vec<String>,
+    ) -> CargoResult<Features> {
         let mut ret = Features::default();
+        ret.nightly_features_allowed = config.nightly_features_allowed;
         for feature in features {
             ret.add(feature, warnings)?;
             ret.activated.push(feature.to_string());
@@ -311,6 +422,7 @@ impl Features {
     }
 
     fn add(&mut self, feature_name: &str, warnings: &mut Vec<String>) -> CargoResult<()> {
+        let nightly_features_allowed = self.nightly_features_allowed;
         let (slot, feature) = match self.status(feature_name) {
             Some(p) => p,
             None => bail!("unknown cargo feature `{}`", feature_name),
@@ -348,7 +460,7 @@ impl Features {
                 );
                 warnings.push(warning);
             }
-            Status::Unstable if !nightly_features_allowed() => bail!(
+            Status::Unstable if !nightly_features_allowed => bail!(
                 "the cargo feature `{}` requires a nightly version of \
                  Cargo, but this is the `{}` channel\n\
                  {}\n{}",
@@ -383,7 +495,7 @@ impl Features {
             let feature = feature.name.replace("_", "-");
             let mut msg = format!("feature `{}` is required", feature);
 
-            if nightly_features_allowed() {
+            if self.nightly_features_allowed {
                 let s = format!(
                     "\n\nconsider adding `cargo-features = [\"{0}\"]` \
                      to the manifest",
@@ -433,6 +545,7 @@ pub struct CliUnstable {
     pub build_std_features: Option<Vec<String>>,
     pub timings: Option<Vec<String>>,
     pub doctest_xcompile: bool,
+    pub doctest_in_workspace: bool,
     pub panic_abort_tests: bool,
     pub jobserver_per_rustc: bool,
     pub features: Option<Vec<String>>,
@@ -443,7 +556,10 @@ pub struct CliUnstable {
     pub namespaced_features: bool,
     pub weak_dep_features: bool,
     pub extra_link_arg: bool,
+    pub patch_in_config: bool,
     pub credential_process: bool,
+    pub configurable_env: bool,
+    pub enable_future_incompat_feature: bool,
 }
 
 const STABILIZED_COMPILE_PROGRESS: &str = "The progress bar is now always \
@@ -495,8 +611,12 @@ where
 }
 
 impl CliUnstable {
-    pub fn parse(&mut self, flags: &[String]) -> CargoResult<Vec<String>> {
-        if !flags.is_empty() && !nightly_features_allowed() {
+    pub fn parse(
+        &mut self,
+        flags: &[String],
+        nightly_features_allowed: bool,
+    ) -> CargoResult<Vec<String>> {
+        if !flags.is_empty() && !nightly_features_allowed {
             bail!(
                 "the `-Z` flag is only accepted on the nightly channel of Cargo, \
                  but this is the `{}` channel\n\
@@ -596,8 +716,11 @@ impl CliUnstable {
             "build-std-features" => self.build_std_features = Some(parse_features(v)),
             "timings" => self.timings = Some(parse_timings(v)),
             "doctest-xcompile" => self.doctest_xcompile = parse_empty(k, v)?,
+            "doctest-in-workspace" => self.doctest_in_workspace = parse_empty(k, v)?,
             "panic-abort-tests" => self.panic_abort_tests = parse_empty(k, v)?,
             "jobserver-per-rustc" => self.jobserver_per_rustc = parse_empty(k, v)?,
+            "configurable-env" => self.configurable_env = parse_empty(k, v)?,
+            "patch-in-config" => self.patch_in_config = parse_empty(k, v)?,
             "features" => {
                 // For now this is still allowed (there are still some
                 // unstable options like "compare"). This should be removed at
@@ -634,6 +757,7 @@ impl CliUnstable {
             "config-profile" => stabilized_warn(k, "1.43", STABILIZED_CONFIG_PROFILE),
             "crate-versions" => stabilized_warn(k, "1.47", STABILIZED_CRATE_VERSIONS),
             "package-features" => stabilized_warn(k, "1.51", STABILIZED_PACKAGE_FEATURES),
+            "future-incompat-report" => self.enable_future_incompat_feature = parse_empty(k, v)?,
             _ => bail!("unknown `-Z` flag specified: {}", k),
         }
 
@@ -650,7 +774,9 @@ impl CliUnstable {
                  information about the `{}` flag.",
                 issue, flag
             );
-            if nightly_features_allowed() {
+            // NOTE: a `config` isn't available here, check the channel directly
+            let channel = channel();
+            if channel == "nightly" || channel == "dev" {
                 bail!(
                     "the `{}` flag is unstable, pass `-Z unstable-options` to enable it\n\
                      {}",
@@ -664,7 +790,7 @@ impl CliUnstable {
                      {}\n\
                      {}",
                     flag,
-                    channel(),
+                    channel,
                     SEE_CHANNELS,
                     see
                 );
@@ -688,47 +814,4 @@ pub fn channel() -> String {
         .cfg_info
         .map(|c| c.release_channel)
         .unwrap_or_else(|| String::from("dev"))
-}
-
-thread_local!(
-    static NIGHTLY_FEATURES_ALLOWED: Cell<bool> = Cell::new(false);
-    static ENABLE_NIGHTLY_FEATURES: Cell<bool> = Cell::new(false);
-);
-
-/// This is a little complicated.
-/// This should return false if:
-/// - this is an artifact of the rustc distribution process for "stable" or for "beta"
-/// - this is an `#[test]` that does not opt in with `enable_nightly_features`
-/// - this is a integration test that uses `ProcessBuilder`
-///      that does not opt in with `masquerade_as_nightly_cargo`
-/// This should return true if:
-/// - this is an artifact of the rustc distribution process for "nightly"
-/// - this is being used in the rustc distribution process internally
-/// - this is a cargo executable that was built from source
-/// - this is an `#[test]` that called `enable_nightly_features`
-/// - this is a integration test that uses `ProcessBuilder`
-///       that called `masquerade_as_nightly_cargo`
-pub fn nightly_features_allowed() -> bool {
-    if ENABLE_NIGHTLY_FEATURES.with(|c| c.get()) {
-        return true;
-    }
-    match &channel()[..] {
-        "nightly" | "dev" => NIGHTLY_FEATURES_ALLOWED.with(|c| c.get()),
-        _ => false,
-    }
-}
-
-/// Allows nightly features to be enabled for this thread, but only if the
-/// development channel is nightly or dev.
-///
-/// Used by cargo main to ensure that a cargo build from source has nightly features
-pub fn maybe_allow_nightly_features() {
-    NIGHTLY_FEATURES_ALLOWED.with(|c| c.set(true));
-}
-
-/// Forcibly enables nightly features for this thread.
-///
-/// Used by tests to allow the use of nightly features.
-pub fn enable_nightly_features() {
-    ENABLE_NIGHTLY_FEATURES.with(|c| c.set(true));
 }

@@ -28,7 +28,7 @@ declare_clippy_lint! {
     /// &vec.iter().filter(|x| **x == 0u8).count(); // use bytecount::count instead
     /// ```
     pub NAIVE_BYTECOUNT,
-    perf,
+    pedantic,
     "use of naive `<slice>.filter(|&x| x == y).count()` to count byte values"
 }
 
@@ -101,7 +101,7 @@ fn check_arg(name: Symbol, arg: Symbol, needle: &Expr<'_>) -> bool {
 
 fn get_path_name(expr: &Expr<'_>) -> Option<Symbol> {
     match expr.kind {
-        ExprKind::Box(ref e) | ExprKind::AddrOf(BorrowKind::Ref, _, ref e) | ExprKind::Unary(UnOp::UnDeref, ref e) => {
+        ExprKind::Box(ref e) | ExprKind::AddrOf(BorrowKind::Ref, _, ref e) | ExprKind::Unary(UnOp::Deref, ref e) => {
             get_path_name(e)
         },
         ExprKind::Block(ref b, _) => {

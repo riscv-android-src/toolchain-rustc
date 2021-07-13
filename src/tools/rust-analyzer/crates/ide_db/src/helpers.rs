@@ -2,10 +2,18 @@
 pub mod insert_use;
 pub mod import_assets;
 
-use hir::{Crate, Enum, Module, ScopeDef, Semantics, Trait};
+use hir::{Crate, Enum, ItemInNs, MacroDef, Module, ModuleDef, Name, ScopeDef, Semantics, Trait};
 use syntax::ast::{self, make};
 
 use crate::RootDatabase;
+
+pub fn item_name(db: &RootDatabase, item: ItemInNs) -> Option<Name> {
+    match item {
+        ItemInNs::Types(module_def_id) => ModuleDef::from(module_def_id).name(db),
+        ItemInNs::Values(module_def_id) => ModuleDef::from(module_def_id).name(db),
+        ItemInNs::Macros(macro_def_id) => MacroDef::from(macro_def_id).name(db),
+    }
+}
 
 /// Converts the mod path struct into its ast representation.
 pub fn mod_path_to_ast(path: &hir::ModPath) -> ast::Path {
@@ -24,7 +32,7 @@ pub fn mod_path_to_ast(path: &hir::ModPath) -> ast::Path {
     }
 
     segments.extend(
-        path.segments
+        path.segments()
             .iter()
             .map(|segment| make::path_segment(make::name_ref(&segment.to_string()))),
     );
@@ -41,8 +49,16 @@ pub struct FamousDefs<'a, 'b>(pub &'a Semantics<'b, RootDatabase>, pub Option<Cr
 impl FamousDefs<'_, '_> {
     pub const FIXTURE: &'static str = include_str!("helpers/famous_defs_fixture.rs");
 
+    pub fn std(&self) -> Option<Crate> {
+        self.find_crate("std")
+    }
+
     pub fn core(&self) -> Option<Crate> {
         self.find_crate("core")
+    }
+
+    pub fn core_cmp_Ord(&self) -> Option<Trait> {
+        self.find_trait("core:cmp:Ord")
     }
 
     pub fn core_convert_From(&self) -> Option<Trait> {

@@ -57,8 +57,10 @@ use std::{
 
 use base_db::{impl_intern_key, salsa, CrateId};
 use hir_expand::{
-    ast_id_map::FileAstId, eager::expand_eager_macro, hygiene::Hygiene, AstId, HirFileId, InFile,
-    MacroCallId, MacroCallKind, MacroDefId, MacroDefKind,
+    ast_id_map::FileAstId,
+    eager::{expand_eager_macro, ErrorEmitted},
+    hygiene::Hygiene,
+    AstId, HirFileId, InFile, MacroCallId, MacroCallKind, MacroDefId, MacroDefKind,
 };
 use la_arena::Idx;
 use nameres::DefMap;
@@ -81,13 +83,23 @@ pub struct ModuleId {
 impl ModuleId {
     pub fn def_map(&self, db: &dyn db::DefDatabase) -> Arc<DefMap> {
         match self.block {
-            Some(block) => db.block_def_map(block),
+            Some(block) => {
+                db.block_def_map(block).unwrap_or_else(|| {
+                    // NOTE: This should be unreachable - all `ModuleId`s come from their `DefMap`s,
+                    // so the `DefMap` here must exist.
+                    panic!("no `block_def_map` for `ModuleId` {:?}", self);
+                })
+            }
             None => db.crate_def_map(self.krate),
         }
     }
 
     pub fn krate(&self) -> CrateId {
         self.krate
+    }
+
+    pub fn containing_module(&self, db: &dyn db::DefDatabase) -> Option<ModuleId> {
+        self.def_map(db).containing_module(self.local_id)
     }
 }
 
@@ -96,7 +108,7 @@ pub type LocalModuleId = Idx<nameres::ModuleData>;
 
 #[derive(Debug)]
 pub struct ItemLoc<N: ItemTreeNode> {
-    pub container: ContainerId,
+    pub container: ModuleId,
     pub id: ItemTreeId<N>,
 }
 
@@ -239,6 +251,7 @@ pub struct BlockId(salsa::InternId);
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct BlockLoc {
     ast_id: AstId<ast::BlockExpr>,
+    /// The containing module.
     module: ModuleId,
 }
 impl_intern!(BlockId, BlockLoc, intern_block, lookup_intern_block);
@@ -266,18 +279,12 @@ pub struct ConstParamId {
 pub type LocalConstParamId = Idx<generics::ConstParamData>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContainerId {
-    ModuleId(ModuleId),
-    DefWithBodyId(DefWithBodyId),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssocContainerId {
-    ContainerId(ContainerId),
+    ModuleId(ModuleId),
     ImplId(ImplId),
     TraitId(TraitId),
 }
-impl_from!(ContainerId for AssocContainerId);
+impl_from!(ModuleId for AssocContainerId);
 
 /// A Data Type
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -333,6 +340,16 @@ pub enum DefWithBodyId {
 }
 
 impl_from!(FunctionId, ConstId, StaticId for DefWithBodyId);
+
+impl DefWithBodyId {
+    pub fn as_generic_def_id(self) -> Option<GenericDefId> {
+        match self {
+            DefWithBodyId::FunctionId(f) => Some(f.into()),
+            DefWithBodyId::StaticId(_) => None,
+            DefWithBodyId::ConstId(c) => Some(c.into()),
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum AssocItemId {
@@ -434,21 +451,12 @@ pub trait HasModule {
     fn module(&self, db: &dyn db::DefDatabase) -> ModuleId;
 }
 
-impl HasModule for ContainerId {
-    fn module(&self, db: &dyn db::DefDatabase) -> ModuleId {
-        match *self {
-            ContainerId::ModuleId(it) => it,
-            ContainerId::DefWithBodyId(it) => it.module(db),
-        }
-    }
-}
-
 impl HasModule for AssocContainerId {
     fn module(&self, db: &dyn db::DefDatabase) -> ModuleId {
         match *self {
-            AssocContainerId::ContainerId(it) => it.module(db),
-            AssocContainerId::ImplId(it) => it.lookup(db).container.module(db),
-            AssocContainerId::TraitId(it) => it.lookup(db).container.module(db),
+            AssocContainerId::ModuleId(it) => it,
+            AssocContainerId::ImplId(it) => it.lookup(db).container,
+            AssocContainerId::TraitId(it) => it.lookup(db).container,
         }
     }
 }
@@ -466,16 +474,15 @@ impl HasModule for AdtId {
             AdtId::UnionId(it) => it.lookup(db).container,
             AdtId::EnumId(it) => it.lookup(db).container,
         }
-        .module(db)
     }
 }
 
 impl HasModule for VariantId {
     fn module(&self, db: &dyn db::DefDatabase) -> ModuleId {
         match self {
-            VariantId::EnumVariantId(it) => it.parent.lookup(db).container.module(db),
-            VariantId::StructId(it) => it.lookup(db).container.module(db),
-            VariantId::UnionId(it) => it.lookup(db).container.module(db),
+            VariantId::EnumVariantId(it) => it.parent.lookup(db).container,
+            VariantId::StructId(it) => it.lookup(db).container,
+            VariantId::UnionId(it) => it.lookup(db).container,
         }
     }
 }
@@ -505,18 +512,37 @@ impl HasModule for GenericDefId {
         match self {
             GenericDefId::FunctionId(it) => it.lookup(db).module(db),
             GenericDefId::AdtId(it) => it.module(db),
-            GenericDefId::TraitId(it) => it.lookup(db).container.module(db),
+            GenericDefId::TraitId(it) => it.lookup(db).container,
             GenericDefId::TypeAliasId(it) => it.lookup(db).module(db),
-            GenericDefId::ImplId(it) => it.lookup(db).container.module(db),
-            GenericDefId::EnumVariantId(it) => it.parent.lookup(db).container.module(db),
+            GenericDefId::ImplId(it) => it.lookup(db).container,
+            GenericDefId::EnumVariantId(it) => it.parent.lookup(db).container,
             GenericDefId::ConstId(it) => it.lookup(db).module(db),
         }
     }
 }
 
 impl HasModule for StaticLoc {
-    fn module(&self, db: &dyn db::DefDatabase) -> ModuleId {
-        self.container.module(db)
+    fn module(&self, _db: &dyn db::DefDatabase) -> ModuleId {
+        self.container
+    }
+}
+
+impl ModuleDefId {
+    /// Returns the module containing `self` (or `self`, if `self` is itself a module).
+    ///
+    /// Returns `None` if `self` refers to a primitive type.
+    pub fn module(&self, db: &dyn db::DefDatabase) -> Option<ModuleId> {
+        Some(match self {
+            ModuleDefId::ModuleId(id) => *id,
+            ModuleDefId::FunctionId(id) => id.lookup(db).module(db),
+            ModuleDefId::AdtId(id) => id.module(db),
+            ModuleDefId::EnumVariantId(id) => id.parent.lookup(db).container,
+            ModuleDefId::ConstId(id) => id.lookup(db).container.module(db),
+            ModuleDefId::StaticId(id) => id.lookup(db).container,
+            ModuleDefId::TraitId(id) => id.lookup(db).container,
+            ModuleDefId::TypeAliasId(id) => id.lookup(db).module(db),
+            ModuleDefId::BuiltinType(_) => return None,
+        })
     }
 }
 
@@ -527,12 +553,12 @@ impl AttrDefId {
             AttrDefId::FieldId(it) => it.parent.module(db).krate,
             AttrDefId::AdtId(it) => it.module(db).krate,
             AttrDefId::FunctionId(it) => it.lookup(db).module(db).krate,
-            AttrDefId::EnumVariantId(it) => it.parent.lookup(db).container.module(db).krate,
+            AttrDefId::EnumVariantId(it) => it.parent.lookup(db).container.krate,
             AttrDefId::StaticId(it) => it.lookup(db).module(db).krate,
             AttrDefId::ConstId(it) => it.lookup(db).module(db).krate,
-            AttrDefId::TraitId(it) => it.lookup(db).container.module(db).krate,
+            AttrDefId::TraitId(it) => it.lookup(db).container.krate,
             AttrDefId::TypeAliasId(it) => it.lookup(db).module(db).krate,
-            AttrDefId::ImplId(it) => it.lookup(db).container.module(db).krate,
+            AttrDefId::ImplId(it) => it.lookup(db).container.krate,
             AttrDefId::GenericParamId(it) => {
                 match it {
                     GenericParamId::TypeParamId(it) => it.parent,
@@ -585,8 +611,15 @@ impl AsMacroCall for InFile<&ast::MacroCall> {
             error_sink(mbe::ExpandError::Other("malformed macro invocation".into()));
         }
 
-        AstIdWithPath::new(ast_id.file_id, ast_id.value, path?)
-            .as_call_id_with_errors(db, krate, resolver, error_sink)
+        macro_call_as_call_id(
+            &AstIdWithPath::new(ast_id.file_id, ast_id.value, path?),
+            db,
+            krate,
+            resolver,
+            error_sink,
+        )
+        .ok()?
+        .ok()
     }
 }
 
@@ -603,61 +636,50 @@ impl<T: ast::AstNode> AstIdWithPath<T> {
     }
 }
 
-impl AsMacroCall for AstIdWithPath<ast::MacroCall> {
-    fn as_call_id_with_errors(
-        &self,
-        db: &dyn db::DefDatabase,
-        krate: CrateId,
-        resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
-        error_sink: &mut dyn FnMut(mbe::ExpandError),
-    ) -> Option<MacroCallId> {
-        let def: MacroDefId = resolver(self.path.clone()).or_else(|| {
-            error_sink(mbe::ExpandError::Other(format!("could not resolve macro `{}`", self.path)));
-            None
-        })?;
+struct UnresolvedMacro;
 
-        if let MacroDefKind::BuiltInEager(_) = def.kind {
-            let macro_call = InFile::new(self.ast_id.file_id, self.ast_id.to_node(db.upcast()));
-            let hygiene = Hygiene::new(db.upcast(), self.ast_id.file_id);
+fn macro_call_as_call_id(
+    call: &AstIdWithPath<ast::MacroCall>,
+    db: &dyn db::DefDatabase,
+    krate: CrateId,
+    resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
+    error_sink: &mut dyn FnMut(mbe::ExpandError),
+) -> Result<Result<MacroCallId, ErrorEmitted>, UnresolvedMacro> {
+    let def: MacroDefId = resolver(call.path.clone()).ok_or(UnresolvedMacro)?;
 
-            Some(
-                expand_eager_macro(
-                    db.upcast(),
-                    krate,
-                    macro_call,
-                    def,
-                    &|path: ast::Path| resolver(path::ModPath::from_src(path, &hygiene)?),
-                    error_sink,
-                )
-                .ok()?
-                .into(),
-            )
-        } else {
-            Some(def.as_lazy_macro(db.upcast(), krate, MacroCallKind::FnLike(self.ast_id)).into())
-        }
-    }
+    let res = if let MacroDefKind::BuiltInEager(_) = def.kind {
+        let macro_call = InFile::new(call.ast_id.file_id, call.ast_id.to_node(db.upcast()));
+        let hygiene = Hygiene::new(db.upcast(), call.ast_id.file_id);
+
+        expand_eager_macro(
+            db.upcast(),
+            krate,
+            macro_call,
+            def,
+            &|path: ast::Path| resolver(path::ModPath::from_src(path, &hygiene)?),
+            error_sink,
+        )
+        .map(MacroCallId::from)
+    } else {
+        Ok(def.as_lazy_macro(db.upcast(), krate, MacroCallKind::FnLike(call.ast_id)).into())
+    };
+    Ok(res)
 }
 
-impl AsMacroCall for AstIdWithPath<ast::Item> {
-    fn as_call_id_with_errors(
-        &self,
-        db: &dyn db::DefDatabase,
-        krate: CrateId,
-        resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
-        error_sink: &mut dyn FnMut(mbe::ExpandError),
-    ) -> Option<MacroCallId> {
-        let def: MacroDefId = resolver(self.path.clone()).or_else(|| {
-            error_sink(mbe::ExpandError::Other(format!("could not resolve macro `{}`", self.path)));
-            None
-        })?;
-
-        Some(
-            def.as_lazy_macro(
-                db.upcast(),
-                krate,
-                MacroCallKind::Attr(self.ast_id, self.path.segments.last()?.to_string()),
-            )
-            .into(),
+fn item_attr_as_call_id(
+    item_attr: &AstIdWithPath<ast::Item>,
+    db: &dyn db::DefDatabase,
+    krate: CrateId,
+    resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
+) -> Result<MacroCallId, UnresolvedMacro> {
+    let def: MacroDefId = resolver(item_attr.path.clone()).ok_or(UnresolvedMacro)?;
+    let last_segment = item_attr.path.segments().last().ok_or(UnresolvedMacro)?;
+    let res = def
+        .as_lazy_macro(
+            db.upcast(),
+            krate,
+            MacroCallKind::Attr(item_attr.ast_id, last_segment.to_string()),
         )
-    }
+        .into();
+    Ok(res)
 }

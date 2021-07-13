@@ -18,7 +18,7 @@ compiletest_rs = "*"
 ```
 
 By default, `compiletest-rs` should be able to run on both stable, beta and
-nightly channels of rust. We use the [`tester`](tester) fork of Rust's builtin
+nightly channels of rust. We use the [`tester`][tester] fork of Rust's builtin
 `test` crate, so that we don't have require nightly. If you are running nightly
 and want to use Rust's `test` crate directly, you need to have the rustc development
 libraries install (which you can get by running `rustup component add rustc-dev
@@ -117,5 +117,5 @@ If you are unsure, open a pull request anyway and we would be glad to help!
 
 [upstream]: https://github.com/rust-lang/rust/tree/master/src/tools/compiletest
 [src]: https://github.com/rust-lang/rust/tree/master/src/tools/compiletest/src
-[tests]: https://rust-lang.github.io/rustc-guide/tests/adding.html#header-commands-configuring-rustc
+[tests]: https://rustc-dev-guide.rust-lang.org/tests/adding.html#header-commands-configuring-rustc
 [tester]: https://crates.io/crates/tester

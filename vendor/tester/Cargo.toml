@@ -13,21 +13,26 @@
 [package]
 edition = "2018"
 name = "tester"
-version = "0.7.0"
+version = "0.9.0"
 authors = ["The Rust Project Developers"]
 description = "A fork of Rust’s `test` crate that doesn’t require unstable language features."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/messense/rustc-test"
+[dependencies.cfg-if]
+version = "1.0.0"
+
 [dependencies.getopts]
 version = "0.2"
 
-[dependencies.libc]
-version = "0.2"
-default-features = false
+[dependencies.num_cpus]
+version = "1.13.0"
 
 [dependencies.term]
-version = "0.6"
+version = "0.7"
 
 [features]
 asm_black_box = []
 capture = []
+[target."cfg(unix)".dependencies.libc]
+version = "0.2"
+default-features = false

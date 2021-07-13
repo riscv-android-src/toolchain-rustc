@@ -1,4 +1,7 @@
-### The `#[test]` attribute
+# The `#[test]` attribute
+
+<!-- toc -->
+
 Today, rust programmers rely on a built in attribute called `#[test]`. All
 you have to do is mark a function as a test and include some asserts like so:
 
@@ -32,14 +35,14 @@ How does any sort of `main` function invoke these tests if they're not visible?
 What exactly is `rustc --test` doing?
 
 `#[test]` is implemented as a syntactic transformation inside the compiler's
-[`librustc_ast` crate][librustc_ast]. Essentially, it's a fancy macro, that
+[`rustc_ast` crate][rustc_ast]. Essentially, it's a fancy macro, that
 rewrites the crate in 3 steps:
 
-#### Step 1: Re-Exporting
+## Step 1: Re-Exporting
 
 As mentioned earlier, tests can exist inside private modules, so we need a
 way of exposing them to the main function, without breaking any existing
-code. To that end, `librustc_ast` will create local modules called
+code. To that end, `rustc_ast` will create local modules called
 `__test_reexports` that recursively reexport tests. This expansion translates
 the above example into:
 
@@ -77,9 +80,10 @@ hand-written one, it will not share a Symbol. This technique prevents name
 collision during code generation and is the foundation of Rust's macro
 hygiene.
 
-#### Step 2: Harness Generation
+## Step 2: Harness Generation
+
 Now that our tests are accessible from the root of our crate, we need to do
-something with them. `librustc_ast` generates a module like so:
+something with them. `rustc_ast` generates a module like so:
 
 ```rust,ignore
 #[main]
@@ -99,7 +103,8 @@ called [`test`][test] that is part of Rust core, that implements all of the
 runtime for testing. `test`'s interface is unstable, so the only stable way
 to interact with it is through the `#[test]` macro.
 
-#### Step 3: Test Object Generation
+## Step 3: Test Object Generation
+
 If you've written tests in Rust before, you may be familiar with some of the
 optional attributes available on test functions. For example, a test can be
 annotated with `#[should_panic]` if we expect the test to cause a panic. It
@@ -116,7 +121,7 @@ fn foo() {
 This means our tests are more than just simple functions, they have
 configuration information as well. `test` encodes this configuration data
 into a struct called [`TestDesc`][TestDesc]. For each test function in a
-crate, `librustc_ast` will parse its attributes and generate a `TestDesc`
+crate, `rustc_ast` will parse its attributes and generate a `TestDesc`
 instance. It then combines the `TestDesc` and test function into the
 predictably named `TestDescAndFn` struct, that `test_main_static` operates
 on. For a given test, the generated `TestDescAndFn` instance looks like so:
@@ -137,7 +142,8 @@ self::test::TestDescAndFn{
 Once we've constructed an array of these test objects, they're passed to the
 test runner via the harness generated in step 2.
 
-### Inspecting the generated code
+## Inspecting the generated code
+
 On nightly rust, there's an unstable flag called `unpretty` that you can use
 to print out the module source after macro expansion:
 
@@ -147,7 +153,7 @@ $ rustc my_mod.rs -Z unpretty=hir
 
 [test]: https://doc.rust-lang.org/test/index.html
 [TestDesc]: https://doc.rust-lang.org/test/struct.TestDesc.html
-[Symbol]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_ast/ast/struct.Ident.html
-[Ident]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_ast/ast/struct.Ident.html
+[Symbol]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_span/symbol/struct.Symbol.html
+[Ident]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_span/symbol/struct.Ident.html
 [eRFC]: https://github.com/rust-lang/rfcs/blob/master/text/2318-custom-test-frameworks.md
-[librustc_ast]: https://github.com/rust-lang/rust/tree/master/src/librustc_ast
+[rustc_ast]: https://github.com/rust-lang/rust/tree/master/compiler/rustc_ast

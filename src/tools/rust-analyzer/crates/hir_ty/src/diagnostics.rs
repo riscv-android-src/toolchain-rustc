@@ -345,6 +345,37 @@ impl fmt::Display for CaseType {
     }
 }
 
+#[derive(Debug)]
+pub enum IdentType {
+    Argument,
+    Constant,
+    Enum,
+    Field,
+    Function,
+    StaticVariable,
+    Structure,
+    Variable,
+    Variant,
+}
+
+impl fmt::Display for IdentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let repr = match self {
+            IdentType::Argument => "Argument",
+            IdentType::Constant => "Constant",
+            IdentType::Enum => "Enum",
+            IdentType::Field => "Field",
+            IdentType::Function => "Function",
+            IdentType::StaticVariable => "Static variable",
+            IdentType::Structure => "Structure",
+            IdentType::Variable => "Variable",
+            IdentType::Variant => "Variant",
+        };
+
+        write!(f, "{}", repr)
+    }
+}
+
 // Diagnostic: incorrect-ident-case
 //
 // This diagnostic is triggered if an item name doesn't follow https://doc.rust-lang.org/1.0.0/style/style/naming/README.html[Rust naming convention].
@@ -353,7 +384,7 @@ pub struct IncorrectCase {
     pub file: HirFileId,
     pub ident: AstPtr<ast::Name>,
     pub expected_case: CaseType,
-    pub ident_type: String,
+    pub ident_type: IdentType,
     pub ident_text: String,
     pub suggested_text: String,
 }
@@ -480,7 +511,7 @@ mod tests {
             // FIXME: macros...
             let file_id = src.file_id.original_file(&db);
             let range = src.value.to_node(&root).text_range();
-            let message = d.message().to_owned();
+            let message = d.message();
             actual.entry(file_id).or_default().push((range, message));
         });
 
@@ -648,6 +679,59 @@ fn baz(s: S) -> i32 {
 }
 ",
         )
+    }
+
+    #[test]
+    fn missing_record_pat_field_box() {
+        check_diagnostics(
+            r"
+struct S { s: Box<u32> }
+fn x(a: S) {
+    let S { box s } = a;
+}
+",
+        )
+    }
+
+    #[test]
+    fn missing_record_pat_field_ref() {
+        check_diagnostics(
+            r"
+struct S { s: u32 }
+fn x(a: S) {
+    let S { ref s } = a;
+}
+",
+        )
+    }
+
+    #[test]
+    fn import_extern_crate_clash_with_inner_item() {
+        // This is more of a resolver test, but doesn't really work with the hir_def testsuite.
+
+        check_diagnostics(
+            r#"
+//- /lib.rs crate:lib deps:jwt
+mod permissions;
+
+use permissions::jwt;
+
+fn f() {
+    fn inner() {}
+    jwt::Claims {}; // should resolve to the local one with 0 fields, and not get a diagnostic
+}
+
+//- /permissions.rs
+pub mod jwt  {
+    pub struct Claims {}
+}
+
+//- /jwt/lib.rs crate:jwt
+pub struct Claims {
+    field: u8,
+}
+        "#,
+        );
     }
 
     #[test]

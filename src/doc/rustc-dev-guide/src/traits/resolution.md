@@ -1,12 +1,14 @@
 # Trait resolution (old-style)
 
+<!-- toc -->
+
 This chapter describes the general process of _trait resolution_ and points out
 some non-obvious things.
 
 **Note:** This chapter (and its subchapters) describe how the trait
 solver **currently** works. However, we are in the process of
 designing a new trait solver. If you'd prefer to read about *that*,
-see [*this* traits chapter](./index.html).
+see [*this* subchapter](./chalk.html).
 
 ## Major concepts
 
@@ -116,11 +118,11 @@ candidate that is definitively applicable. In some cases, we may not
 know whether an impl/where-clause applies or not – this occurs when
 the obligation contains unbound inference variables.
 
-The subroutines that decide whether a particular impl/where-clause/etc
-applies to a particular obligation are collectively referred to as the
-process of _matching_. At the moment, this amounts to
-unifying the `Self` types, but in the future we may also recursively
-consider some of the nested obligations, in the case of an impl.
+The subroutines that decide whether a particular impl/where-clause/etc applies
+to a particular obligation are collectively referred to as the process of
+_matching_. As of <!-- date: 2021-01 --> January 2021, this amounts to unifying
+the `Self` types, but in the future we may also recursively consider some of the
+nested obligations, in the case of an impl.
 
 **TODO**: what does "unifying the `Self` types" mean? The `Self` of the
 obligation with that of an impl?
@@ -191,12 +193,16 @@ trait Get {
     fn get(&self) -> Self;
 }
 
-impl<T:Copy> Get for T {
-    fn get(&self) -> T { *self }
+impl<T: Copy> Get for T {
+    fn get(&self) -> T {
+        *self
+    }
 }
 
-impl<T:Get> Get for Box<T> {
-    fn get(&self) -> Box<T> { Box::new(get_it(&**self)) }
+impl<T: Get> Get for Box<T> {
+    fn get(&self) -> Box<T> {
+        Box::new(<T>::get(self))
+    }
 }
 ```
 

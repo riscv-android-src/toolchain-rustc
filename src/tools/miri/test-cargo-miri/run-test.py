@@ -15,8 +15,10 @@ def fail(msg):
     print("\nTEST FAIL: {}".format(msg))
     sys.exit(1)
 
-def cargo_miri(cmd):
-    args = ["cargo", "miri", cmd, "-q"]
+def cargo_miri(cmd, quiet = True):
+    args = ["cargo", "miri", cmd]
+    if quiet:
+        args += ["-q"]
     if 'MIRI_TEST_TARGET' in os.environ:
         args += ["--target", os.environ['MIRI_TEST_TARGET']]
     return args
@@ -48,6 +50,28 @@ def test(name, cmd, stdout_ref, stderr_ref, stdin=b'', env={}):
     print("--- END stderr ---")
     fail("exit code was {}".format(p.returncode))
 
+def test_no_rebuild(name, cmd, env={}):
+    print("Testing {}...".format(name))
+    p_env = os.environ.copy()
+    p_env.update(env)
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=p_env,
+    )
+    (stdout, stderr) = p.communicate()
+    stdout = stdout.decode("UTF-8")
+    stderr = stderr.decode("UTF-8")
+    if p.returncode != 0:
+        fail("rebuild failed");
+    # Also check for 'Running' as a sanity check.
+    if stderr.count(" Compiling ") > 0 or stderr.count(" Running ") == 0:
+        print("--- BEGIN stderr ---")
+        print(stderr, end="")
+        print("--- END stderr ---")
+        fail("Something was being rebuilt when it should not be (or we got no output)");
+
 def test_cargo_miri_run():
     test("`cargo miri run` (no isolation)",
         cargo_miri("run"),
@@ -57,6 +81,12 @@ def test_cargo_miri_run():
             'MIRIFLAGS': "-Zmiri-disable-isolation",
             'MIRITESTVAR': "wrongval", # make sure the build.rs value takes precedence
         },
+    )
+    # Special test: run it again *without* `-q` to make sure nothing is being rebuilt (Miri issue #1722)
+    test_no_rebuild("`cargo miri run` (no rebuild)",
+        cargo_miri("run", quiet=False) + ["--", ""],
+        env={'MIRITESTVAR': "wrongval"}, # changing the env var causes a rebuild (re-runs build.rs),
+                                         # so keep it set
     )
     test("`cargo miri run` (with arguments and target)",
         cargo_miri("run") + ["--bin", "cargo-miri-test", "--", "hello world", '"hello world"'],

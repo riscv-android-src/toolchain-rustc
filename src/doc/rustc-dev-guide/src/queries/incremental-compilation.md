@@ -1,5 +1,7 @@
 # Incremental compilation
 
+<!-- toc -->
+
 The incremental compilation scheme is, in essence, a surprisingly
 simple extension to the overall query system. We'll start by describing
 a slightly simplified variant of the real thing – the "basic algorithm" –
@@ -12,7 +14,7 @@ called the **red-green** algorithm[^salsa]. The high-level idea is
 that, after each run of the compiler, we will save the results of all
 the queries that we do, as well as the **query DAG**. The
 **query DAG** is a [DAG] that indexes which queries executed which
-other queries. So, for example, there would be an edge from a query Q1
+other queries. So, for example, there would be an [edge] from a query Q1
 to another query Q2 if computing Q1 required computing Q2 (note that
 because queries cannot depend on themselves, this results in a DAG and
 not a general graph).
@@ -81,7 +83,7 @@ Try-mark-green works as follows:
 ### The query DAG
 
 The query DAG code is stored in
-[`src/librustc_middle/dep_graph`][dep_graph]. Construction of the DAG is done
+[`compiler/rustc_middle/src/dep_graph`][dep_graph]. Construction of the DAG is done
 by instrumenting the query execution.
 
 One key point is that the query DAG also tracks ordering; that is, for
@@ -113,7 +115,7 @@ of order, however, it might visit `subquery2` before `subquery1`, and hence
 execute it.
 This can lead to ICEs and other problems in the compiler.
 
-[dep_graph]: https://github.com/rust-lang/rust/tree/master/src/librustc_middle/dep_graph
+[dep_graph]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/dep_graph/index.html
 
 ## Improvements to the basic algorithm
 
@@ -137,8 +139,13 @@ algorithm like so:
     it did not change.
 
 ## Resources
-The initial design document can be found at https://github.com/nikomatsakis/rustc-on-demand-incremental-design-doc/blob/master/0000-rustc-on-demand-and-incremental.md, which expands on the memoization details, provides more high-level overview and motivation for this system.
+The initial design document can be found [here][initial-design], which expands
+on the memoization details, provides more high-level overview and motivation
+for this system.
 
 # Footnotes
 
 [^salsa]: I have long wanted to rename it to the Salsa algorithm, but it never caught on. -@nikomatsakis
+
+[edge]: https://en.wikipedia.org/wiki/Glossary_of_graph_theory_terms#edge
+[initial-design]: https://github.com/nikomatsakis/rustc-on-demand-incremental-design-doc/blob/master/0000-rustc-on-demand-and-incremental.md

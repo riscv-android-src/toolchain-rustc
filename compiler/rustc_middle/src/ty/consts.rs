@@ -10,9 +10,11 @@ use rustc_macros::HashStable;
 
 mod int;
 mod kind;
+mod valtree;
 
 pub use int::*;
 pub use kind::*;
+pub use valtree::*;
 
 /// Typed constant value.
 #[derive(Copy, Clone, Debug, Hash, TyEncodable, TyDecodable, Eq, PartialEq, Ord, PartialOrd)]
@@ -23,7 +25,7 @@ pub struct Const<'tcx> {
     pub val: ConstKind<'tcx>,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
 static_assert_size!(Const<'_>, 48);
 
 impl<'tcx> Const<'tcx> {
@@ -55,7 +57,7 @@ impl<'tcx> Const<'tcx> {
 
         let lit_input = match expr.kind {
             hir::ExprKind::Lit(ref lit) => Some(LitToConstInput { lit: &lit.node, ty, neg: false }),
-            hir::ExprKind::Unary(hir::UnOp::UnNeg, ref expr) => match expr.kind {
+            hir::ExprKind::Unary(hir::UnOp::Neg, ref expr) => match expr.kind {
                 hir::ExprKind::Lit(ref lit) => {
                     Some(LitToConstInput { lit: &lit.node, ty, neg: true })
                 }

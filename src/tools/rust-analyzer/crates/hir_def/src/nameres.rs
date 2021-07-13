@@ -73,7 +73,15 @@ use crate::{
     AstId, BlockId, BlockLoc, LocalModuleId, ModuleDefId, ModuleId,
 };
 
-/// Contains all top-level defs from a macro-expanded crate
+/// Contains the results of (early) name resolution.
+///
+/// A `DefMap` stores the module tree and the definitions that are in scope in every module after
+/// item-level macros have been expanded.
+///
+/// Every crate has a primary `DefMap` whose root is the crate's main file (`main.rs`/`lib.rs`),
+/// computed by the `crate_def_map` query. Additionally, every block expression introduces the
+/// opportunity to write arbitrary item and module hierarchies, and thus gets its own `DefMap` that
+/// is computed by the `block_def_map` query.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DefMap {
     _c: Count<Self>,
@@ -91,11 +99,13 @@ pub struct DefMap {
     diagnostics: Vec<DefDiagnostic>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+/// For `DefMap`s computed for a block expression, this stores its location in the parent map.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 struct BlockInfo {
+    /// The `BlockId` this `DefMap` was created from.
     block: BlockId,
-    parent: Arc<DefMap>,
-    parent_module: LocalModuleId,
+    /// The containing module.
+    parent: ModuleId,
 }
 
 impl std::ops::Index<LocalModuleId> for DefMap {
@@ -197,21 +207,25 @@ impl DefMap {
         Arc::new(def_map)
     }
 
-    pub(crate) fn block_def_map_query(db: &dyn DefDatabase, block_id: BlockId) -> Arc<DefMap> {
+    pub(crate) fn block_def_map_query(
+        db: &dyn DefDatabase,
+        block_id: BlockId,
+    ) -> Option<Arc<DefMap>> {
         let block: BlockLoc = db.lookup_intern_block(block_id);
-        let parent = block.module.def_map(db);
 
-        // FIXME: It would be good to just return the parent map when the block has no items, but
-        // we rely on `def_map.block` in a few places, which is `Some` for the inner `DefMap`.
+        let item_tree = db.item_tree(block.ast_id.file_id);
+        if item_tree.inner_items_of_block(block.ast_id.value).is_empty() {
+            return None;
+        }
 
-        let block_info =
-            BlockInfo { block: block_id, parent, parent_module: block.module.local_id };
+        let block_info = BlockInfo { block: block_id, parent: block.module };
 
-        let mut def_map = DefMap::empty(block.module.krate, block_info.parent.edition);
+        let parent_map = block.module.def_map(db);
+        let mut def_map = DefMap::empty(block.module.krate, parent_map.edition);
         def_map.block = Some(block_info);
 
         let def_map = collector::collect_defs(db, def_map, Some(block.ast_id));
-        Arc::new(def_map)
+        Some(Arc::new(def_map))
     }
 
     fn empty(krate: CrateId, edition: Edition) -> DefMap {
@@ -258,6 +272,10 @@ impl DefMap {
         self.krate
     }
 
+    pub(crate) fn block_id(&self) -> Option<BlockId> {
+        self.block.as_ref().map(|block| block.block)
+    }
+
     pub(crate) fn prelude(&self) -> Option<ModuleId> {
         self.prelude
     }
@@ -269,6 +287,17 @@ impl DefMap {
     pub fn module_id(&self, local_id: LocalModuleId) -> ModuleId {
         let block = self.block.as_ref().map(|b| b.block);
         ModuleId { krate: self.krate, local_id, block }
+    }
+
+    pub(crate) fn crate_root(&self, db: &dyn DefDatabase) -> ModuleId {
+        self.with_ancestor_maps(db, self.root, &mut |def_map, _module| {
+            if def_map.block.is_none() {
+                Some(def_map.module_id(def_map.root))
+            } else {
+                None
+            }
+        })
+        .expect("DefMap chain without root")
     }
 
     pub(crate) fn resolve_path(
@@ -283,25 +312,60 @@ impl DefMap {
         (res.resolved_def, res.segment_index)
     }
 
-    /// Iterates over the containing `DefMap`s, if `self` is a `DefMap` corresponding to a block
-    /// expression.
-    fn ancestor_maps(
+    /// Ascends the `DefMap` hierarchy and calls `f` with every `DefMap` and containing module.
+    ///
+    /// If `f` returns `Some(val)`, iteration is stopped and `Some(val)` is returned. If `f` returns
+    /// `None`, iteration continues.
+    pub fn with_ancestor_maps<T>(
         &self,
+        db: &dyn DefDatabase,
         local_mod: LocalModuleId,
-    ) -> impl Iterator<Item = (&DefMap, LocalModuleId)> {
-        std::iter::successors(Some((self, local_mod)), |(map, _)| {
-            map.block.as_ref().map(|block| (&*block.parent, block.parent_module))
-        })
+        f: &mut dyn FnMut(&DefMap, LocalModuleId) -> Option<T>,
+    ) -> Option<T> {
+        if let Some(it) = f(self, local_mod) {
+            return Some(it);
+        }
+        let mut block = self.block;
+        while let Some(block_info) = block {
+            let parent = block_info.parent.def_map(db);
+            if let Some(it) = f(&parent, block_info.parent.local_id) {
+                return Some(it);
+            }
+            block = parent.block;
+        }
+
+        None
+    }
+
+    /// If this `DefMap` is for a block expression, returns the module containing the block (which
+    /// might again be a block, or a module inside a block).
+    pub fn parent(&self) -> Option<ModuleId> {
+        Some(self.block?.parent)
+    }
+
+    /// Returns the module containing `local_mod`, either the parent `mod`, or the module containing
+    /// the block, if `self` corresponds to a block expression.
+    pub fn containing_module(&self, local_mod: LocalModuleId) -> Option<ModuleId> {
+        match &self[local_mod].parent {
+            Some(parent) => Some(self.module_id(*parent)),
+            None => match &self.block {
+                Some(block) => Some(block.parent),
+                None => None,
+            },
+        }
     }
 
     // FIXME: this can use some more human-readable format (ideally, an IR
     // even), as this should be a great debugging aid.
-    pub fn dump(&self) -> String {
+    pub fn dump(&self, db: &dyn DefDatabase) -> String {
         let mut buf = String::new();
+        let mut arc;
         let mut current_map = self;
         while let Some(block) = &current_map.block {
             go(&mut buf, current_map, "block scope", current_map.root);
-            current_map = &*block.parent;
+            buf.push('\n');
+            arc = block.parent.def_map(db);
+            current_map = &*arc;
         }
         go(&mut buf, current_map, "crate", current_map.root);
         return buf;
@@ -309,27 +373,7 @@ impl DefMap {
         fn go(buf: &mut String, map: &DefMap, path: &str, module: LocalModuleId) {
             format_to!(buf, "{}\n", path);
 
-            let mut entries: Vec<_> = map.modules[module].scope.resolutions().collect();
-            entries.sort_by_key(|(name, _)| name.clone());
-
-            for (name, def) in entries {
-                format_to!(buf, "{}:", name.map_or("_".to_string(), |name| name.to_string()));
-
-                if def.types.is_some() {
-                    buf.push_str(" t");
-                }
-                if def.values.is_some() {
-                    buf.push_str(" v");
-                }
-                if def.macros.is_some() {
-                    buf.push_str(" m");
-                }
-                if def.is_none() {
-                    buf.push_str(" _");
-                }
-
-                buf.push('\n');
-            }
+            map.modules[module].scope.dump(buf);
 
             for (name, child) in map.modules[module].children.iter() {
                 let path = format!("{}::{}", path, name);
@@ -384,6 +428,8 @@ mod diagnostics {
         UnconfiguredCode { ast: AstId<ast::Item>, cfg: CfgExpr, opts: CfgOptions },
 
         UnresolvedProcMacro { ast: MacroCallKind },
+
+        UnresolvedMacroCall { ast: AstId<ast::MacroCall> },
 
         MacroError { ast: MacroCallKind, message: String },
     }
@@ -443,6 +489,13 @@ mod diagnostics {
             message: String,
         ) -> Self {
             Self { in_module: container, kind: DiagnosticKind::MacroError { ast, message } }
+        }
+
+        pub(super) fn unresolved_macro_call(
+            container: LocalModuleId,
+            ast: AstId<ast::MacroCall>,
+        ) -> Self {
+            Self { in_module: container, kind: DiagnosticKind::UnresolvedMacroCall { ast } }
         }
 
         pub(super) fn add_to(
@@ -555,6 +608,11 @@ mod diagnostics {
                         precise_location,
                         macro_name: name,
                     });
+                }
+
+                DiagnosticKind::UnresolvedMacroCall { ast } => {
+                    let node = ast.to_node(db.upcast());
+                    sink.push(UnresolvedMacroCall { file: ast.file_id, node: AstPtr::new(&node) });
                 }
 
                 DiagnosticKind::MacroError { ast, message } => {

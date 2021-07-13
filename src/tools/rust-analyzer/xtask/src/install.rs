@@ -5,84 +5,41 @@ use std::{env, path::PathBuf, str};
 use anyhow::{bail, format_err, Context, Result};
 use xshell::{cmd, pushd};
 
+use crate::flags;
+
 // Latest stable, feel free to send a PR if this lags behind.
-const REQUIRED_RUST_VERSION: u32 = 47;
+const REQUIRED_RUST_VERSION: u32 = 50;
 
-pub struct InstallCmd {
-    pub client: Option<ClientOpt>,
-    pub server: Option<ServerOpt>,
-}
-
-#[derive(Clone, Copy)]
-pub enum ClientOpt {
-    VsCode,
-    VsCodeExploration,
-    VsCodeInsiders,
-    VsCodium,
-    VsCodeOss,
-    Any,
-}
-
-impl ClientOpt {
-    pub const fn as_cmds(&self) -> &'static [&'static str] {
-        match self {
-            ClientOpt::VsCode => &["code"],
-            ClientOpt::VsCodeExploration => &["code-exploration"],
-            ClientOpt::VsCodeInsiders => &["code-insiders"],
-            ClientOpt::VsCodium => &["codium"],
-            ClientOpt::VsCodeOss => &["code-oss"],
-            ClientOpt::Any => &["code", "code-exploration", "code-insiders", "codium", "code-oss"],
-        }
-    }
-}
-
-impl Default for ClientOpt {
-    fn default() -> Self {
-        ClientOpt::Any
-    }
-}
-
-impl std::str::FromStr for ClientOpt {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        [
-            ClientOpt::VsCode,
-            ClientOpt::VsCodeExploration,
-            ClientOpt::VsCodeInsiders,
-            ClientOpt::VsCodium,
-            ClientOpt::VsCodeOss,
-        ]
-        .iter()
-        .copied()
-        .find(|c| [s] == c.as_cmds())
-        .ok_or_else(|| anyhow::format_err!("no such client"))
-    }
-}
-
-pub struct ServerOpt {
-    pub malloc: Malloc,
-}
-
-pub enum Malloc {
-    System,
-    Mimalloc,
-    Jemalloc,
-}
-
-impl InstallCmd {
-    pub fn run(self) -> Result<()> {
+impl flags::Install {
+    pub(crate) fn run(self) -> Result<()> {
         if cfg!(target_os = "macos") {
             fix_path_for_mac().context("Fix path for mac")?
         }
-        if let Some(server) = self.server {
+        if let Some(server) = self.server() {
             install_server(server).context("install server")?;
         }
-        if let Some(client) = self.client {
+        if let Some(client) = self.client() {
             install_client(client).context("install client")?;
         }
         Ok(())
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct ClientOpt {
+    pub(crate) code_bin: Option<String>,
+}
+
+const VS_CODES: &[&str] = &["code", "code-exploration", "code-insiders", "codium", "code-oss"];
+
+pub(crate) struct ServerOpt {
+    pub(crate) malloc: Malloc,
+}
+
+pub(crate) enum Malloc {
+    System,
+    Mimalloc,
+    Jemalloc,
 }
 
 fn fix_path_for_mac() -> Result<()> {
@@ -121,30 +78,49 @@ fn fix_path_for_mac() -> Result<()> {
 fn install_client(client_opt: ClientOpt) -> Result<()> {
     let _dir = pushd("./editors/code");
 
-    let find_code = |f: fn(&str) -> bool| -> Result<&'static str> {
-        client_opt.as_cmds().iter().copied().find(|bin| f(bin)).ok_or_else(|| {
-            format_err!("Can't execute `code --version`. Perhaps it is not in $PATH?")
-        })
-    };
-
-    let installed_extensions = if cfg!(unix) {
+    // Package extension.
+    if cfg!(unix) {
         cmd!("npm --version").run().context("`npm` is required to build the VS Code plugin")?;
-        cmd!("npm install").run()?;
+        cmd!("npm ci").run()?;
 
         cmd!("npm run package --scripts-prepend-node-path").run()?;
-
-        let code = find_code(|bin| cmd!("{bin} --version").read().is_ok())?;
-        cmd!("{code} --install-extension rust-analyzer.vsix --force").run()?;
-        cmd!("{code} --list-extensions").read()?
     } else {
         cmd!("cmd.exe /c npm --version")
             .run()
             .context("`npm` is required to build the VS Code plugin")?;
-        cmd!("cmd.exe /c npm install").run()?;
+        cmd!("cmd.exe /c npm ci").run()?;
 
         cmd!("cmd.exe /c npm run package").run()?;
+    };
 
-        let code = find_code(|bin| cmd!("cmd.exe /c {bin}.cmd --version").read().is_ok())?;
+    // Find the appropriate VS Code binary.
+    let lifetime_extender;
+    let candidates: &[&str] = match client_opt.code_bin.as_deref() {
+        Some(it) => {
+            lifetime_extender = [it];
+            &lifetime_extender[..]
+        }
+        None => VS_CODES,
+    };
+    let code = candidates
+        .iter()
+        .copied()
+        .find(|&bin| {
+            if cfg!(unix) {
+                cmd!("{bin} --version").read().is_ok()
+            } else {
+                cmd!("cmd.exe /c {bin}.cmd --version").read().is_ok()
+            }
+        })
+        .ok_or_else(|| {
+            format_err!("Can't execute `{} --version`. Perhaps it is not in $PATH?", candidates[0])
+        })?;
+
+    // Install & verify.
+    let installed_extensions = if cfg!(unix) {
+        cmd!("{code} --install-extension rust-analyzer.vsix --force").run()?;
+        cmd!("{code} --list-extensions").read()?
+    } else {
         cmd!("cmd.exe /c {code}.cmd --install-extension rust-analyzer.vsix --force").run()?;
         cmd!("cmd.exe /c {code}.cmd --list-extensions").read()?
     };

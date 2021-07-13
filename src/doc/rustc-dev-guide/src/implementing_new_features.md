@@ -20,12 +20,13 @@ process (e.g. a big refactoring of the code, or a
 amounts to a small feature) but is still too controversial or
 big to get by with a single r+, you can start a pFCP (or, if you
 don't have r+ rights, ask someone who has them to start one - and
-unless they have a concern themselves, they should).
+unless they have a concern themselves, they should). pFCP stands for
+"proposed final comment period".
 
 Again, the pFCP process is only needed if you need consensus - if you
 don't think anyone would have a problem with your change, it's ok to
 get by with only an r+. For example, it is OK to add or modify
-unstable command-line flags or attributes without an pFCP for
+unstable command-line flags or attributes without a pFCP for
 compiler development or standard library use, as long as you don't
 expect them to be in wide use in the nightly ecosystem.
 
@@ -33,10 +34,10 @@ You don't need to have the implementation fully ready for r+ to ask
 for a pFCP, but it is generally a good idea to have at least a proof
 of concept so that people can see what you are talking about.
 
-That starts a "proposed final comment period" (pFCP), which requires
-all members of the team to sign off the FCP. After they all do so,
-there's a 10 day long "final comment period" where everybody can comment,
-and if no new concerns are raised, the PR/issue gets FCP approval.
+When a pFCP is started, it requires all members of the team to sign off
+the FCP. After they all do so, there's a 10 day long "final comment
+period" where everybody can comment, and if no new concerns are raised,
+the PR/issue gets FCP approval.
 
 ## The logistics of writing features
 
@@ -125,26 +126,9 @@ a new unstable feature:
 2. Pick a name for the feature gate (for RFCs, use the name
    in the RFC).
 
-3. Add a feature gate declaration to `librustc_feature/active.rs`
-   in the active `declare_features` block:
-
-   ```rust,ignore
-   /// description of feature
-   (active, $feature_name, "$current_nightly_version", Some($tracking_issue_number), $edition)
-   ```
-
-   where `$edition` has the type `Option<Edition>`, and is typically
-   just `None`.
-
-   For example:
-
-   ```rust,ignore
-   /// Allows defining identifiers beyond ASCII.
-   (active, non_ascii_idents, "1.0.0", Some(55467), None),
-   ```
-
-   When added, the current version should be the one for the current nightly.
-   Once the feature is moved to `accepted.rs`, the version is changed to that nightly version.
+3. Add a feature gate declaration to `rustc_feature/src/active.rs`
+   in the active `declare_features` block. See [here][add-feature-gate] for
+   detailed instructions.
 
 4. Prevent usage of the new feature unless the feature gate is set.
    You can check it in most places in the compiler using the
@@ -154,7 +138,8 @@ a new unstable feature:
 
     If the feature gate is not set, you should either maintain
     the pre-feature behavior or raise an error, depending on
-    what makes sense.
+    what makes sense. Errors should generally use [`rustc_session::parse::feature_err`].
+    For an example of adding an error, see [#81015].
 
    For features introducing new syntax, pre-expansion gating should be used instead.
    To do so, extend the [`GatedSpans`] struct, add spans to it during parsing,
@@ -169,15 +154,18 @@ a new unstable feature:
 6. Add a section to the unstable book, in
    `src/doc/unstable-book/src/language-features/$feature_name.md`.
 
-7. Write a lots of tests for the new feature.
+7. Write a lot of tests for the new feature.
    PRs without tests will not be accepted!
 
 8. Get your PR reviewed and land it. You have now successfully
    implemented a feature in Rust!
 
 [`GatedSpans`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_session/parse/struct.GatedSpans.html
+[#81015]: https://github.com/rust-lang/rust/pull/81015
+[`rustc_session::parse::feature_err`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_session/parse/fn.feature_err.html
 [`rustc_ast_passes::feature_gate::check_crate`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_ast_passes/feature_gate/fn.check_crate.html
 [value the stability of Rust]: https://github.com/rust-lang/rfcs/blob/master/text/1122-language-semver.md
 [stability in code]: #stability-in-code
 [here]: ./stabilization_guide.md
 [tracking issue]: #tracking-issue
+[add-feature-gate]: ./feature-gates.md#adding-a-feature-gate

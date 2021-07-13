@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str;
@@ -15,8 +16,6 @@ use url::Url;
 
 use crate::core::dependency::DepKind;
 use crate::core::manifest::{ManifestMetadata, TargetSourcePath, Warnings};
-use crate::core::nightly_features_allowed;
-use crate::core::profiles::Strip;
 use crate::core::resolver::ResolveBehavior;
 use crate::core::{Dependency, Manifest, PackageId, Summary, Target};
 use crate::core::{Edition, EitherManifest, Feature, Features, VirtualManifest, Workspace};
@@ -24,7 +23,9 @@ use crate::core::{GitReference, PackageIdSpec, SourceId, WorkspaceConfig, Worksp
 use crate::sources::{CRATES_IO_INDEX, CRATES_IO_REGISTRY};
 use crate::util::errors::{CargoResult, CargoResultExt, ManifestError};
 use crate::util::interning::InternedString;
-use crate::util::{self, paths, validate_package_name, Config, IntoUrl};
+use crate::util::{
+    self, config::ConfigRelativePath, paths, validate_package_name, Config, IntoUrl,
+};
 
 mod targets;
 use self::targets::targets;
@@ -201,25 +202,25 @@ type TomlBenchTarget = TomlTarget;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
-pub enum TomlDependency {
+pub enum TomlDependency<P = String> {
     /// In the simple format, only a version is specified, eg.
     /// `package = "<version>"`
     Simple(String),
     /// The simple format is equivalent to a detailed dependency
     /// specifying only a version, eg.
     /// `package = { version = "<version>" }`
-    Detailed(DetailedTomlDependency),
+    Detailed(DetailedTomlDependency<P>),
 }
 
-impl<'de> de::Deserialize<'de> for TomlDependency {
+impl<'de, P: Deserialize<'de>> de::Deserialize<'de> for TomlDependency<P> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: de::Deserializer<'de>,
     {
-        struct TomlDependencyVisitor;
+        struct TomlDependencyVisitor<P>(PhantomData<P>);
 
-        impl<'de> de::Visitor<'de> for TomlDependencyVisitor {
-            type Value = TomlDependency;
+        impl<'de, P: Deserialize<'de>> de::Visitor<'de> for TomlDependencyVisitor<P> {
+            type Value = TomlDependency<P>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str(
@@ -244,13 +245,29 @@ impl<'de> de::Deserialize<'de> for TomlDependency {
             }
         }
 
-        deserializer.deserialize_any(TomlDependencyVisitor)
+        deserializer.deserialize_any(TomlDependencyVisitor(PhantomData))
     }
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub trait ResolveToPath {
+    fn resolve(&self, config: &Config) -> PathBuf;
+}
+
+impl ResolveToPath for String {
+    fn resolve(&self, _: &Config) -> PathBuf {
+        self.into()
+    }
+}
+
+impl ResolveToPath for ConfigRelativePath {
+    fn resolve(&self, c: &Config) -> PathBuf {
+        self.resolve_path(c)
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
-pub struct DetailedTomlDependency {
+pub struct DetailedTomlDependency<P = String> {
     version: Option<String>,
     registry: Option<String>,
     /// The URL of the `registry` field.
@@ -260,7 +277,9 @@ pub struct DetailedTomlDependency {
     /// registry names configured, so Cargo can't rely on just the name for
     /// crates published by other users.
     registry_index: Option<String>,
-    path: Option<String>,
+    // `path` is relative to the file it appears in. If that's a `Cargo.toml`, it'll be relative to
+    // that TOML file, and if it's a `.cargo/config` file, it'll be relative to that file.
+    path: Option<P>,
     git: Option<String>,
     branch: Option<String>,
     tag: Option<String>,
@@ -272,6 +291,28 @@ pub struct DetailedTomlDependency {
     default_features2: Option<bool>,
     package: Option<String>,
     public: Option<bool>,
+}
+
+// Explicit implementation so we avoid pulling in P: Default
+impl<P> Default for DetailedTomlDependency<P> {
+    fn default() -> Self {
+        Self {
+            version: Default::default(),
+            registry: Default::default(),
+            registry_index: Default::default(),
+            path: Default::default(),
+            git: Default::default(),
+            branch: Default::default(),
+            tag: Default::default(),
+            rev: Default::default(),
+            features: Default::default(),
+            optional: Default::default(),
+            default_features: Default::default(),
+            default_features2: Default::default(),
+            package: Default::default(),
+            public: Default::default(),
+        }
+    }
 }
 
 /// This type is used to deserialize `Cargo.toml` files.
@@ -442,7 +483,7 @@ pub struct TomlProfile {
     pub build_override: Option<Box<TomlProfile>>,
     pub dir_name: Option<InternedString>,
     pub inherits: Option<InternedString>,
-    pub strip: Option<Strip>,
+    pub strip: Option<StringOrBool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -686,8 +727,8 @@ impl TomlProfile {
             self.dir_name = Some(*v);
         }
 
-        if let Some(v) = profile.strip {
-            self.strip = Some(v);
+        if let Some(v) = &profile.strip {
+            self.strip = Some(v.clone());
         }
     }
 }
@@ -848,8 +889,11 @@ pub struct TomlProject {
     license: Option<String>,
     license_file: Option<String>,
     repository: Option<String>,
-    metadata: Option<toml::Value>,
     resolver: Option<String>,
+
+    // Note that this field must come last due to the way toml serialization
+    // works which requires tables to be emitted after all values.
+    metadata: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -858,8 +902,11 @@ pub struct TomlWorkspace {
     #[serde(rename = "default-members")]
     default_members: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
-    metadata: Option<toml::Value>,
     resolver: Option<String>,
+
+    // Note that this field must come last due to the way toml serialization
+    // works which requires tables to be emitted after all values.
+    metadata: Option<toml::Value>,
 }
 
 impl TomlProject {
@@ -1038,7 +1085,7 @@ impl TomlManifest {
         // Parse features first so they will be available when parsing other parts of the TOML.
         let empty = Vec::new();
         let cargo_features = me.cargo_features.as_ref().unwrap_or(&empty);
-        let features = Features::new(cargo_features, &mut warnings)?;
+        let features = Features::new(cargo_features, config, &mut warnings)?;
 
         let project = me.project.as_ref().or_else(|| me.package.as_ref());
         let project = project.ok_or_else(|| anyhow!("no `package` section found"))?;
@@ -1062,13 +1109,22 @@ impl TomlManifest {
         } else {
             Edition::Edition2015
         };
+        if edition == Edition::Edition2021 {
+            features.require(Feature::edition2021())?;
+        } else if !edition.is_stable() {
+            // Guard in case someone forgets to add .require()
+            return Err(util::errors::internal(format!(
+                "edition {} should be gated",
+                edition
+            )));
+        }
 
         let rust_version = if let Some(rust_version) = &project.rust_version {
             if features.require(Feature::rust_version()).is_err() {
                 let mut msg =
                     "`rust-version` is not supported on this version of Cargo and will be ignored"
                         .to_string();
-                if nightly_features_allowed() {
+                if config.nightly_features_allowed {
                     msg.push_str(
                         "\n\n\
                         consider adding `cargo-features = [\"rust-version\"]` to the manifest",
@@ -1424,7 +1480,7 @@ impl TomlManifest {
         let mut deps = Vec::new();
         let empty = Vec::new();
         let cargo_features = me.cargo_features.as_ref().unwrap_or(&empty);
-        let features = Features::new(cargo_features, &mut warnings)?;
+        let features = Features::new(cargo_features, config, &mut warnings)?;
 
         let (replace, patch) = {
             let mut cx = Context {
@@ -1620,7 +1676,37 @@ fn unique_build_targets(targets: &[Target], package_root: &Path) -> Result<(), S
     Ok(())
 }
 
-impl TomlDependency {
+impl<P: ResolveToPath> TomlDependency<P> {
+    pub(crate) fn to_dependency_split(
+        &self,
+        name: &str,
+        pkgid: Option<PackageId>,
+        source_id: SourceId,
+        nested_paths: &mut Vec<PathBuf>,
+        config: &Config,
+        warnings: &mut Vec<String>,
+        platform: Option<Platform>,
+        root: &Path,
+        features: &Features,
+        kind: Option<DepKind>,
+    ) -> CargoResult<Dependency> {
+        self.to_dependency(
+            name,
+            &mut Context {
+                pkgid,
+                deps: &mut Vec::new(),
+                source_id,
+                nested_paths,
+                config,
+                warnings,
+                platform,
+                root,
+                features,
+            },
+            kind,
+        )
+    }
+
     fn to_dependency(
         &self,
         name: &str,
@@ -1628,7 +1714,7 @@ impl TomlDependency {
         kind: Option<DepKind>,
     ) -> CargoResult<Dependency> {
         match *self {
-            TomlDependency::Simple(ref version) => DetailedTomlDependency {
+            TomlDependency::Simple(ref version) => DetailedTomlDependency::<P> {
                 version: Some(version.clone()),
                 ..Default::default()
             }
@@ -1645,7 +1731,7 @@ impl TomlDependency {
     }
 }
 
-impl DetailedTomlDependency {
+impl<P: ResolveToPath> DetailedTomlDependency<P> {
     fn to_dependency(
         &self,
         name_in_toml: &str,
@@ -1755,7 +1841,8 @@ impl DetailedTomlDependency {
                 SourceId::for_git(&loc, reference)?
             }
             (None, Some(path), _, _) => {
-                cx.nested_paths.push(PathBuf::from(path));
+                let path = path.resolve(cx.config);
+                cx.nested_paths.push(path.clone());
                 // If the source ID for the package we're parsing is a path
                 // source, then we normalize the path here to get rid of
                 // components like `..`.

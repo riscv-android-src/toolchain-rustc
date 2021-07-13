@@ -1,16 +1,15 @@
 # Queries: demand-driven compilation
 
-As described in [the high-level overview of the compiler][hl], the
-Rust compiler is currently transitioning from a traditional "pass-based"
-setup to a "demand-driven" system. **The Compiler Query System is the
-key to our new demand-driven organization.** The idea is pretty
-simple. You have various queries that compute things about the input
-– for example, there is a query called `type_of(def_id)` that, given
-the [def-id] of some item, will compute the type of that item and return
-it to you.
+As described in [the high-level overview of the compiler][hl], the Rust compiler
+is still (as of <!-- date: 2021-01 --> January 2021) transitioning from a
+traditional "pass-based" setup to a "demand-driven" system. **The Compiler Query
+System is the key to our new demand-driven organization.** The idea is pretty
+simple. You have various queries that compute things about the input – for
+example, there is a query called `type_of(def_id)` that, given the [def-id] of
+some item, will compute the type of that item and return it to you.
 
 [def-id]: appendix/glossary.md#def-id
-[hl]: high-level-overview.html
+[hl]: ./compiler-src.md
 
 Query execution is **memoized** – so the first time you invoke a
 query, it will go do the computation, but the next time, the result is
@@ -114,7 +113,7 @@ for external crates, though the plan is that we may eventually have
 one per crate.
 
 These `Providers` structs are ultimately created and populated by
-`librustc_driver`, but it does this by distributing the work
+`rustc_driver`, but it does this by distributing the work
 throughout the other `rustc_*` crates. This is done by invoking
 various [`provide`][provide_fn] functions. These functions tend to look
 something like this:
@@ -155,13 +154,11 @@ providers**. Almost all **extern providers** wind up going through the
 [`rustc_metadata` crate][rustc_metadata], which loads the information
 from the crate metadata. But in some cases there are crates that
 provide queries for *both* local and external crates, in which case
-they define both a [`provide`][ext_provide] and a
-[`provide_extern`][ext_provide_extern] function that `rustc_driver`
-can invoke.
+they define both a `provide` and a `provide_extern` function, through
+[`provide_both`][ext_provide_both], that `rustc_driver` can invoke.
 
-[rustc_metadata]: https://github.com/rust-lang/rust/tree/master/src/librustc_metadata
-[ext_provide]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_codegen_llvm/attributes/fn.provide.html
-[ext_provide_extern]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_codegen_llvm/attributes/fn.provide_extern.html
+[rustc_metadata]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_metadata/index.html
+[ext_provide_both]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_codegen_llvm/attributes/fn.provide_both.html
 
 ### Adding a new kind of query
 
@@ -173,7 +170,7 @@ Well, defining a query takes place in two steps:
 
 To specify the query name and arguments, you simply add an entry to
 the big macro invocation in
-[`src/librustc_middle/query/mod.rs`][query-mod], which looks something like:
+[`compiler/rustc_middle/src/query/mod.rs`][query-mod], which looks something like:
 
 [query-mod]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/query/index.html
 
@@ -224,9 +221,10 @@ Let's go over them one by one:
     of `Steal` for more details. New uses of `Steal` should **not** be
     added without alerting `@rust-lang/compiler`.
 - **Query modifiers:** various flags and options that customize how the
-  query is processed.
+  query is processed (mostly with respect to [incremental compilation][incrcomp]).
 
-[Key]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/query/keys/trait.Key.html
+[Key]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_query_impl/keys/trait.Key.html
+[incrcomp]: queries/incremental-compilation-in-detail.html#query-modifiers
 
 So, to add a query:
 
@@ -264,7 +262,7 @@ Implementing this trait is optional if the query key is `DefId`, but
 if you *don't* implement it, you get a pretty generic error ("processing `foo`...").
 You can put new impls into the `config` module. They look something like this:
 
-[QueryConfig]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/query/trait.QueryConfig.html
+[QueryConfig]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_query_system/query/config/trait.QueryConfig.html
 [QueryDescription]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_query_system/query/config/trait.QueryDescription.html
 
 ```rust,ignore

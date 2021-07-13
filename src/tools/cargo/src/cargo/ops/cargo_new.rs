@@ -1,4 +1,4 @@
-use crate::core::{Shell, Workspace};
+use crate::core::{Edition, Shell, Workspace};
 use crate::util::errors::{CargoResult, CargoResultExt};
 use crate::util::{existing_vcs_repo, FossilRepo, GitRepo, HgRepo, PijulRepo};
 use crate::util::{paths, restricted_names, Config};
@@ -743,7 +743,7 @@ edition = {}
             },
             match opts.edition {
                 Some(edition) => toml::Value::String(edition.to_string()),
-                None => toml::Value::String("2018".to_string()),
+                None => toml::Value::String(Edition::LATEST_STABLE.to_string()),
             },
             match opts.registry {
                 Some(registry) => format!(
@@ -831,10 +831,7 @@ fn discover_author(path: &Path) -> (Option<String>, Option<String>) {
         .or_else(|| git_config.and_then(|g| g.get_string("user.name").ok()))
         .or_else(|| get_environment_variable(&name_variables[3..]));
 
-    let name = match name {
-        Some(namestr) => Some(namestr.trim().to_string()),
-        None => None,
-    };
+    let name = name.map(|namestr| namestr.trim().to_string());
 
     let email_variables = [
         "CARGO_EMAIL",
@@ -872,7 +869,7 @@ fn find_tests_git_config(path: &Path) -> Option<GitConfig> {
     // Don't escape the test sandbox when looking for a git repository.
     // NOTE: libgit2 has support to define the path ceiling in
     // git_repository_discover, but the git2 bindings do not expose that.
-    for path in paths::ancestors(path) {
+    for path in paths::ancestors(path, None) {
         if let Ok(repo) = GitRepository::open(path) {
             return Some(repo.config().expect("test repo should have valid config"));
         }

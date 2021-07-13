@@ -2,7 +2,7 @@
 //! `$ident => foo`, interpolates variables in the template, to get `fn foo() {}`
 
 use syntax::SmolStr;
-use tt::Delimiter;
+use tt::{Delimiter, Subtree};
 
 use super::ExpandResult;
 use crate::{
@@ -17,7 +17,7 @@ impl Bindings {
     }
 
     fn get(&self, name: &str, nesting: &mut [NestingState]) -> Result<&Fragment, ExpandError> {
-        let mut b = self.inner.get(name).ok_or_else(|| {
+        let mut b: &Binding = self.inner.get(name).ok_or_else(|| {
             ExpandError::BindingError(format!("could not find binding `{}`", name))
         })?;
         for nesting_state in nesting.iter_mut() {
@@ -175,7 +175,10 @@ fn expand_repeat(
         counter += 1;
         if counter == limit {
             log::warn!("expand_tt in repeat pattern exceed limit => {:#?}\n{:#?}", template, ctx);
-            break;
+            return ExpandResult {
+                value: Fragment::Tokens(Subtree::default().into()),
+                err: Some(ExpandError::Other("Expand exceed limit".to_string())),
+            };
         }
 
         if e.is_some() {

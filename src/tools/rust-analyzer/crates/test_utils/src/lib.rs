@@ -6,18 +6,17 @@
 //! * Extracting markup (mainly, `$0` markers) out of fixture strings.
 //! * marks (see the eponymous module).
 
-#[macro_use]
-pub mod mark;
+pub mod bench_fixture;
 mod fixture;
 
 use std::{
     convert::{TryFrom, TryInto},
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
-use serde_json::Value;
-use stdx::lines_with_ends;
+use profile::StopWatch;
+use stdx::{is_ci, lines_with_ends};
 use text_size::{TextRange, TextSize};
 
 pub use dissimilar::diff as __diff;
@@ -279,101 +278,6 @@ fn main() {
     );
 }
 
-// Comparison functionality borrowed from cargo:
-
-/// Compare a line with an expected pattern.
-/// - Use `[..]` as a wildcard to match 0 or more characters on the same line
-///   (similar to `.*` in a regex).
-pub fn lines_match(expected: &str, actual: &str) -> bool {
-    // Let's not deal with / vs \ (windows...)
-    // First replace backslash-escaped backslashes with forward slashes
-    // which can occur in, for example, JSON output
-    let expected = expected.replace(r"\\", "/").replace(r"\", "/");
-    let mut actual: &str = &actual.replace(r"\\", "/").replace(r"\", "/");
-    for (i, part) in expected.split("[..]").enumerate() {
-        match actual.find(part) {
-            Some(j) => {
-                if i == 0 && j != 0 {
-                    return false;
-                }
-                actual = &actual[j + part.len()..];
-            }
-            None => return false,
-        }
-    }
-    actual.is_empty() || expected.ends_with("[..]")
-}
-
-#[test]
-fn lines_match_works() {
-    assert!(lines_match("a b", "a b"));
-    assert!(lines_match("a[..]b", "a b"));
-    assert!(lines_match("a[..]", "a b"));
-    assert!(lines_match("[..]", "a b"));
-    assert!(lines_match("[..]b", "a b"));
-
-    assert!(!lines_match("[..]b", "c"));
-    assert!(!lines_match("b", "c"));
-    assert!(!lines_match("b", "cb"));
-}
-
-/// Compares JSON object for approximate equality.
-/// You can use `[..]` wildcard in strings (useful for OS dependent things such
-/// as paths). You can use a `"{...}"` string literal as a wildcard for
-/// arbitrary nested JSON. Arrays are sorted before comparison.
-pub fn find_mismatch<'a>(expected: &'a Value, actual: &'a Value) -> Option<(&'a Value, &'a Value)> {
-    match (expected, actual) {
-        (Value::Number(l), Value::Number(r)) if l == r => None,
-        (Value::Bool(l), Value::Bool(r)) if l == r => None,
-        (Value::String(l), Value::String(r)) if lines_match(l, r) => None,
-        (Value::Array(l), Value::Array(r)) => {
-            if l.len() != r.len() {
-                return Some((expected, actual));
-            }
-
-            let mut l = l.iter().collect::<Vec<_>>();
-            let mut r = r.iter().collect::<Vec<_>>();
-
-            l.retain(|l| match r.iter().position(|r| find_mismatch(l, r).is_none()) {
-                Some(i) => {
-                    r.remove(i);
-                    false
-                }
-                None => true,
-            });
-
-            if !l.is_empty() {
-                assert!(!r.is_empty());
-                Some((&l[0], &r[0]))
-            } else {
-                assert_eq!(r.len(), 0);
-                None
-            }
-        }
-        (Value::Object(l), Value::Object(r)) => {
-            fn sorted_values(obj: &serde_json::Map<String, Value>) -> Vec<&Value> {
-                let mut entries = obj.iter().collect::<Vec<_>>();
-                entries.sort_by_key(|it| it.0);
-                entries.into_iter().map(|(_k, v)| v).collect::<Vec<_>>()
-            }
-
-            let same_keys = l.len() == r.len() && l.keys().all(|k| r.contains_key(k));
-            if !same_keys {
-                return Some((expected, actual));
-            }
-
-            let l = sorted_values(l);
-            let r = sorted_values(r);
-
-            l.into_iter().zip(r).filter_map(|(l, r)| find_mismatch(l, r)).next()
-        }
-        (Value::Null, Value::Null) => None,
-        // magic string literal "{...}" acts as wildcard for any sub-JSON
-        (Value::String(l), _) if l == "{...}" => None,
-        _ => Some((expected, actual)),
-    }
-}
-
 /// Returns `false` if slow tests should not run, otherwise returns `true` and
 /// also creates a file at `./target/.slow_tests_cookie` which serves as a flag
 /// that slow tests did run.
@@ -382,14 +286,14 @@ pub fn skip_slow_tests() -> bool {
     if should_skip {
         eprintln!("ignoring slow test")
     } else {
-        let path = project_dir().join("./target/.slow_tests_cookie");
+        let path = project_root().join("./target/.slow_tests_cookie");
         fs::write(&path, ".").unwrap();
     }
     should_skip
 }
 
 /// Returns the path to the root directory of `rust-analyzer` project.
-pub fn project_dir() -> PathBuf {
+pub fn project_root() -> PathBuf {
     let dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(dir).parent().unwrap().parent().unwrap().to_owned()
 }
@@ -405,4 +309,81 @@ pub fn format_diff(chunks: Vec<dissimilar::Chunk>) -> String {
         buf.push_str(&formatted);
     }
     buf
+}
+
+/// Utility for writing benchmark tests.
+///
+/// A benchmark test looks like this:
+///
+/// ```
+/// #[test]
+/// fn benchmark_foo() {
+///     if skip_slow_tests() { return; }
+///
+///     let data = bench_fixture::some_fixture();
+///     let analysis = some_setup();
+///
+///     let hash = {
+///         let _b = bench("foo");
+///         actual_work(analysis)
+///     };
+///     assert_eq!(hash, 92);
+/// }
+/// ```
+///
+/// * We skip benchmarks by default, to save time.
+///   Ideal benchmark time is 800 -- 1500 ms in debug.
+/// * We don't count preparation as part of the benchmark
+/// * The benchmark itself returns some kind of numeric hash.
+///   The hash is used as a sanity check that some code is actually run.
+///   Otherwise, it's too easy to win the benchmark by just doing nothing.
+pub fn bench(label: &'static str) -> impl Drop {
+    struct Bencher {
+        sw: StopWatch,
+        label: &'static str,
+    }
+
+    impl Drop for Bencher {
+        fn drop(&mut self) {
+            eprintln!("{}: {}", self.label, self.sw.elapsed())
+        }
+    }
+
+    Bencher { sw: StopWatch::start(), label }
+}
+
+/// Checks that the `file` has the specified `contents`. If that is not the
+/// case, updates the file and then fails the test.
+pub fn ensure_file_contents(file: &Path, contents: &str) {
+    if let Err(()) = try_ensure_file_contents(file, contents) {
+        panic!("Some files were not up-to-date");
+    }
+}
+
+/// Checks that the `file` has the specified `contents`. If that is not the
+/// case, updates the file and return an Error.
+pub fn try_ensure_file_contents(file: &Path, contents: &str) -> Result<(), ()> {
+    match std::fs::read_to_string(file) {
+        Ok(old_contents) if normalize_newlines(&old_contents) == normalize_newlines(contents) => {
+            return Ok(())
+        }
+        _ => (),
+    }
+    let display_path = file.strip_prefix(&project_root()).unwrap_or(file);
+    eprintln!(
+        "\n\x1b[31;1merror\x1b[0m: {} was not up-to-date, updating\n",
+        display_path.display()
+    );
+    if is_ci() {
+        eprintln!("    NOTE: run `cargo test` locally and commit the updated files\n");
+    }
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(file, contents).unwrap();
+    Err(())
+}
+
+fn normalize_newlines(s: &str) -> String {
+    s.replace("\r\n", "\n")
 }

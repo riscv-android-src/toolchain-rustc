@@ -154,6 +154,7 @@ pub mod known {
         macro_rules,
         derive,
         doc,
+        cfg,
         cfg_attr,
         // Components of known path (value or mod name)
         std,
@@ -189,6 +190,7 @@ pub mod known {
         // Components of known path (function name)
         filter_map,
         next,
+        iter_mut,
         // Builtin macros
         file,
         column,

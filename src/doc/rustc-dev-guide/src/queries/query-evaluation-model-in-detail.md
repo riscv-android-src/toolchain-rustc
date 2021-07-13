@@ -1,6 +1,6 @@
-
-
 # The Query Evaluation Model in Detail
+
+<!-- toc -->
 
 This chapter provides a deeper dive into the abstract model queries are built on.
 It does not go into implementation details but tries to explain
@@ -38,10 +38,10 @@ corresponding result. However, we have to apply some restrictions in order for
 this to be sound:
 
  - The key and result must be immutable values.
- - The provider function must be a pure function, that is, for the same key it
-   must always yield the same result.
+ - The provider function must be a pure function in the sense that for the same
+   key it must always yield the same result.
  - The only parameters a provider function takes are the key and a reference to
-   the "query context" (which provides access to rest of the "database").
+   the "query context" (which provides access to the rest of the "database").
 
 The database is built up lazily by invoking queries. The query providers will
 invoke other queries, for which the result is either already cached or computed
@@ -75,11 +75,12 @@ When the query context is created, it is still empty: No queries have been
 executed, no results are cached. But the context already provides access to
 "input" data, i.e. pieces of immutable data that were computed before the
 context was created and that queries can access to do their computations.
-Currently this input data consists mainly of the HIR map, upstream crate
-metadata, and the command-line
-options the compiler was invoked with. In the future, inputs will just consist
-of command-line options and a list of source files -- the HIR map will itself
-be provided by a query which processes these source files.
+
+As of <!-- date: 2021-01 --> January 2021, this input data consists mainly of
+the HIR map, upstream crate metadata, and the command-line options the compiler
+was invoked with; but in the future inputs will just consist of command-line
+options and a list of source files -- the HIR map will itself be provided by a
+query which processes these source files.
 
 Without inputs, queries would live in a void without anything to compute their
 result from (remember, query providers only have access to other queries and

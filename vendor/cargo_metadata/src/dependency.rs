@@ -1,8 +1,10 @@
 //! This module contains `Dependency` and the types/functions it uses for deserialization.
 
+use camino::Utf8PathBuf;
 use semver::VersionReq;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::path::PathBuf;
+#[cfg(feature = "builder")]
+use derive_builder::Builder;
 
 #[derive(Eq, PartialEq, Clone, Debug, Copy, Hash, Serialize, Deserialize)]
 /// Dependencies can come in three kinds
@@ -36,6 +38,9 @@ where
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+#[cfg_attr(feature = "builder", derive(Builder))]
+#[non_exhaustive]
+#[cfg_attr(feature = "builder", builder(pattern = "owned", setter(into)))]
 /// A dependency of the main crate
 pub struct Dependency {
     /// Name as given in the `Cargo.toml`
@@ -69,10 +74,7 @@ pub struct Dependency {
     /// The file system path for a local path dependency.
     ///
     /// Only produced on cargo 1.51+
-    pub path: Option<PathBuf>,
-    #[doc(hidden)]
-    #[serde(skip)]
-    __do_not_match_exhaustively: (),
+    pub path: Option<Utf8PathBuf>,
 }
 
 pub use cargo_platform::Platform;

@@ -15,6 +15,7 @@ use log::trace;
 
 use rustc_middle::{mir, ty};
 use rustc_target::spec::PanicStrategy;
+use rustc_target::spec::abi::Abi;
 
 use crate::*;
 use helpers::check_arg_count;
@@ -45,10 +46,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         trace!("miri_start_panic: {:?}", this.frame().instance);
         // Make sure we only start unwinding when this matches our panic strategy.
-        assert_eq!(this.tcx.sess.panic_strategy(), PanicStrategy::Unwind);
+        if this.tcx.sess.panic_strategy() != PanicStrategy::Unwind {
+            throw_ub_format!("unwinding despite panic=abort");
+        }
 
         // Get the raw pointer stored in arg[0] (the panic payload).
-        let &[payload] = check_arg_count(args)?;
+        let &[ref payload] = check_arg_count(args)?;
         let payload = this.read_scalar(payload)?.check_init()?;
         let thread = this.active_thread_mut();
         assert!(
@@ -66,7 +69,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn handle_try(
         &mut self,
         args: &[OpTy<'tcx, Tag>],
-        dest: PlaceTy<'tcx, Tag>,
+        dest: &PlaceTy<'tcx, Tag>,
         ret: mir::BasicBlock,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
@@ -83,7 +86,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // a pointer to `Box<dyn Any + Send + 'static>`.
 
         // Get all the arguments.
-        let &[try_fn, data, catch_fn] = check_arg_count(args)?;
+        let &[ref try_fn, ref data, ref catch_fn] = check_arg_count(args)?;
         let try_fn = this.read_scalar(try_fn)?.check_init()?;
         let data = this.read_scalar(data)?.check_init()?;
         let catch_fn = this.read_scalar(catch_fn)?.check_init()?;
@@ -94,8 +97,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
         this.call_function(
             f_instance,
+            Abi::Rust,
             &[data.into()],
-            Some(ret_place),
+            Some(&ret_place),
             // Directly return to caller.
             StackPopCleanup::Goto { ret: Some(ret), unwind: None },
         )?;
@@ -107,7 +111,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // This lets `handle_stack_pop` (below) know that we should stop unwinding
         // when we pop this frame.
         if this.tcx.sess.panic_strategy() == PanicStrategy::Unwind {
-            this.frame_mut().extra.catch_unwind = Some(CatchUnwindData { catch_fn, data, dest, ret });
+            this.frame_mut().extra.catch_unwind = Some(CatchUnwindData { catch_fn, data, dest: *dest, ret });
         }
 
         return Ok(());
@@ -133,7 +137,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             trace!("unwinding: found catch_panic frame during unwinding: {:?}", this.frame().instance);
 
             // We set the return value of `try` to 1, since there was a panic.
-            this.write_scalar(Scalar::from_i32(1), catch_unwind.dest)?;
+            this.write_scalar(Scalar::from_i32(1), &catch_unwind.dest)?;
 
             // The Thread's `panic_payload` holds what was passed to `miri_start_panic`.
             // This is exactly the second argument we need to pass to `catch_fn`.
@@ -145,8 +149,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
             this.call_function(
                 f_instance,
+                Abi::Rust,
                 &[catch_unwind.data.into(), payload.into()],
-                Some(ret_place),
+                Some(&ret_place),
                 // Directly return to caller of `try`.
                 StackPopCleanup::Goto { ret: Some(catch_unwind.ret), unwind: None },
             )?;
@@ -174,6 +179,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let panic = ty::Instance::mono(this.tcx.tcx, panic);
         this.call_function(
             panic,
+            Abi::Rust,
             &[msg.to_ref()],
             None,
             StackPopCleanup::Goto { ret: None, unwind },
@@ -193,15 +199,16 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // Forward to `panic_bounds_check` lang item.
 
                 // First arg: index.
-                let index = this.read_scalar(this.eval_operand(index, None)?)?;
+                let index = this.read_scalar(&this.eval_operand(index, None)?)?;
                 // Second arg: len.
-                let len = this.read_scalar(this.eval_operand(len, None)?)?;
+                let len = this.read_scalar(&this.eval_operand(len, None)?)?;
 
                 // Call the lang item.
                 let panic_bounds_check = this.tcx.lang_items().panic_bounds_check_fn().unwrap();
                 let panic_bounds_check = ty::Instance::mono(this.tcx.tcx, panic_bounds_check);
                 this.call_function(
                     panic_bounds_check,
+                    Abi::Rust,
                     &[index.into(), len.into()],
                     None,
                     StackPopCleanup::Goto { ret: None, unwind },

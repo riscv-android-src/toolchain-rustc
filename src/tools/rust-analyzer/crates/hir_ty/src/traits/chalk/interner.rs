@@ -12,7 +12,6 @@ pub struct Interner;
 
 pub(crate) type AssocTypeId = chalk_ir::AssocTypeId<Interner>;
 pub(crate) type AssociatedTyDatum = chalk_solve::rust_ir::AssociatedTyDatum<Interner>;
-pub(crate) type ForeignDefId = chalk_ir::ForeignDefId<Interner>;
 pub(crate) type TraitId = chalk_ir::TraitId<Interner>;
 pub(crate) type TraitDatum = chalk_solve::rust_ir::TraitDatum<Interner>;
 pub(crate) type AdtId = chalk_ir::AdtId<Interner>;
@@ -21,7 +20,6 @@ pub(crate) type ImplId = chalk_ir::ImplId<Interner>;
 pub(crate) type ImplDatum = chalk_solve::rust_ir::ImplDatum<Interner>;
 pub(crate) type AssociatedTyValueId = chalk_solve::rust_ir::AssociatedTyValueId<Interner>;
 pub(crate) type AssociatedTyValue = chalk_solve::rust_ir::AssociatedTyValue<Interner>;
-pub(crate) type FnDefId = chalk_ir::FnDefId<Interner>;
 pub(crate) type FnDefDatum = chalk_solve::rust_ir::FnDefDatum<Interner>;
 pub(crate) type OpaqueTyId = chalk_ir::OpaqueTyId<Interner>;
 pub(crate) type OpaqueTyDatum = chalk_solve::rust_ir::OpaqueTyDatum<Interner>;
@@ -193,8 +191,9 @@ impl chalk_ir::interner::Interner for Interner {
         tls::with_current_program(|prog| Some(prog?.debug_quantified_where_clauses(clauses, fmt)))
     }
 
-    fn intern_ty(&self, ty: chalk_ir::TyData<Self>) -> Arc<chalk_ir::TyData<Self>> {
-        Arc::new(ty)
+    fn intern_ty(&self, kind: chalk_ir::TyKind<Self>) -> Arc<chalk_ir::TyData<Self>> {
+        let flags = kind.compute_flags(self);
+        Arc::new(chalk_ir::TyData { kind, flags })
     }
 
     fn ty_data<'a>(&self, ty: &'a Arc<chalk_ir::TyData<Self>>) -> &'a chalk_ir::TyData<Self> {

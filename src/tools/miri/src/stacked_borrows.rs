@@ -201,7 +201,7 @@ impl GlobalState {
         self.base_ptr_ids.get(&id).copied().unwrap_or_else(|| {
             let tag = Tag::Tagged(self.new_ptr());
             trace!("New allocation {:?} has base tag {:?}", id, tag);
-            self.base_ptr_ids.insert(id, tag).unwrap_none();
+            self.base_ptr_ids.try_insert(id, tag).unwrap();
             tag
         })
     }
@@ -521,7 +521,7 @@ impl<'mir, 'tcx: 'mir> EvalContextPrivExt<'mir, 'tcx> for crate::MiriEvalContext
 trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn reborrow(
         &mut self,
-        place: MPlaceTy<'tcx, Tag>,
+        place: &MPlaceTy<'tcx, Tag>,
         size: Size,
         kind: RefKind,
         new_tag: Tag,
@@ -577,7 +577,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// `mutbl` can be `None` to make this a raw pointer.
     fn retag_reference(
         &mut self,
-        val: ImmTy<'tcx, Tag>,
+        val: &ImmTy<'tcx, Tag>,
         kind: RefKind,
         protect: bool,
     ) -> InterpResult<'tcx, ImmTy<'tcx, Tag>> {
@@ -585,17 +585,25 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // We want a place for where the ptr *points to*, so we get one.
         let place = this.ref_to_mplace(val)?;
         let size = this
-            .size_and_align_of_mplace(place)?
-            .map(|(size, _)| size)
-            .unwrap_or_else(|| place.layout.size);
+            .size_and_align_of_mplace(&place)?
+            .map(|(size, _)| size);
+        // FIXME: If we cannot determine the size (because the unsized tail is an `extern type`),
+        // bail out -- we cannot reasonably figure out which memory range to reborrow.
+        // See https://github.com/rust-lang/unsafe-code-guidelines/issues/276.
+        let size = match size {
+            Some(size) => size,
+            None => return Ok(*val),
+        };
         // `reborrow` relies on getting a `Pointer` and everything being in-bounds,
         // so let's ensure that. However, we do not care about alignment.
         // We can see dangling ptrs in here e.g. after a Box's `Unique` was
         // updated using "self.0 = ..." (can happen in Box::from_raw) so we cannot ICE; see miri#1050.
         let place = this.mplace_access_checked(place, Some(Align::from_bytes(1).unwrap()))?;
-        // Nothing to do for ZSTs.
-        if size == Size::ZERO {
-            return Ok(val);
+        // Nothing to do for ZSTs. We use `is_bits` here because we *do* need to retag even ZSTs
+        // when there actually is a tag (to avoid inheriting a tag that would let us access more
+        // than 0 bytes).
+        if size == Size::ZERO && place.ptr.is_bits() {
+            return Ok(*val);
         }
 
         // Compute new borrow.
@@ -610,7 +618,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         };
 
         // Reborrow.
-        this.reborrow(place, size, kind, new_tag, protect)?;
+        this.reborrow(&place, size, kind, new_tag, protect)?;
         let new_place = place.replace_tag(new_tag);
 
         // Return new pointer.
@@ -620,7 +628,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
 impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
-    fn retag(&mut self, kind: RetagKind, place: PlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
+    fn retag(&mut self, kind: RetagKind, place: &PlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         // Determine mutability and whether to add a protector.
         // Cannot use `builtin_deref` because that reports *immutable* for `Box`,
@@ -649,8 +657,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // but might also cost us optimization and analyses. We will have to experiment more with this.
         if let Some((mutbl, protector)) = qualify(place.layout.ty, kind) {
             // Fast path.
-            let val = this.read_immediate(this.place_to_op(place)?)?;
-            let val = this.retag_reference(val, mutbl, protector)?;
+            let val = this.read_immediate(&this.place_to_op(place)?)?;
+            let val = this.retag_reference(&val, mutbl, protector)?;
             this.write_immediate(*val, place)?;
         }
 
@@ -675,16 +683,16 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             return Ok(());
         }
         // We need this to be in-memory to use tagged pointers.
-        let return_place = this.force_allocation(return_place)?;
+        let return_place = this.force_allocation(&return_place)?;
 
         // We have to turn the place into a pointer to use the existing code.
         // (The pointer type does not matter, so we use a raw pointer.)
         let ptr_layout = this.layout_of(this.tcx.mk_mut_ptr(return_place.layout.ty))?;
         let val = ImmTy::from_immediate(return_place.to_ref(), ptr_layout);
         // Reborrow it.
-        let val = this.retag_reference(val, RefKind::Unique { two_phase: false }, /*protector*/ true)?;
+        let val = this.retag_reference(&val, RefKind::Unique { two_phase: false }, /*protector*/ true)?;
         // And use reborrowed pointer for return place.
-        let return_place = this.ref_to_mplace(val)?;
+        let return_place = this.ref_to_mplace(&val)?;
         this.frame_mut().return_place = Some(return_place.into());
 
         Ok(())

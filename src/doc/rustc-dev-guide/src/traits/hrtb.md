@@ -42,7 +42,7 @@ subtyping, we recommend you read the paper). There are a few parts:
 
 [hrsubtype]: ./hrtb.md
 [placeholder]: ../appendix/glossary.html#placeholder
-[paper by SPJ]: http://research.microsoft.com/en-us/um/people/simonpj/papers/higher-rank/
+[paper by SPJ]: https://www.microsoft.com/en-us/research/publication/practical-type-inference-for-arbitrary-rank-types
 
 So let's work through our example.
 
@@ -107,7 +107,7 @@ impl<X,F> Foo<X> for F
 }
 ```
 
-Now let's say we have a obligation `Baz: for<'a> Foo<&'a isize>` and we match
+Now let's say we have an obligation `Baz: for<'a> Foo<&'a isize>` and we match
 this impl. What obligation is generated as a result? We want to get
 `Baz: for<'a> Bar<&'a isize>`, but how does that happen?
 

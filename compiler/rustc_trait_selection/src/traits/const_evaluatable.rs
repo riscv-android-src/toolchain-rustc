@@ -72,17 +72,16 @@ pub fn is_const_evaluatable<'cx, 'tcx>(
                 // We were unable to unify the abstract constant with
                 // a constant found in the caller bounds, there are
                 // now three possible cases here.
-                //
-                // - The substs are concrete enough that we can simply
-                //   try and evaluate the given constant.
-                // - The abstract const still references an inference
-                //   variable, in this case we return `TooGeneric`.
-                // - The abstract const references a generic parameter,
-                //   this means that we emit an error here.
                 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
                 enum FailureKind {
+                    /// The abstract const still references an inference
+                    /// variable, in this case we return `TooGeneric`.
                     MentionsInfer,
+                    /// The abstract const references a generic parameter,
+                    /// this means that we emit an error here.
                     MentionsParam,
+                    /// The substs are concrete enough that we can simply
+                    /// try and evaluate the given constant.
                     Concrete,
                 }
                 let mut failure_kind = FailureKind::Concrete;
@@ -117,7 +116,7 @@ pub fn is_const_evaluatable<'cx, 'tcx>(
                         {
                             err.span_help(
                                 tcx.def_span(def.did),
-                                &format!("try adding a `where` bound using this expression: where [u8; {}]: Sized", snippet),
+                                &format!("try adding a `where` bound using this expression: `where [u8; {}]: Sized`", snippet),
                             );
                         } else {
                             err.span_help(
@@ -378,7 +377,10 @@ impl<'a, 'tcx> AbstractConstBuilder<'a, 'tcx> {
                 let local = self.place_to_local(span, p)?;
                 Ok(self.locals[local])
             }
-            mir::Operand::Constant(ct) => Ok(self.add_node(Node::Leaf(ct.literal), span)),
+            mir::Operand::Constant(ct) => match ct.literal {
+                mir::ConstantKind::Ty(ct) => Ok(self.add_node(Node::Leaf(ct), span)),
+                mir::ConstantKind::Val(..) => self.error(Some(span), "unsupported constant")?,
+            },
         }
     }
 
@@ -412,7 +414,7 @@ impl<'a, 'tcx> AbstractConstBuilder<'a, 'tcx> {
                         self.locals[local] = self.operand_to_node(span, operand)?;
                         Ok(())
                     }
-                    Rvalue::BinaryOp(op, ref lhs, ref rhs) if Self::check_binop(op) => {
+                    Rvalue::BinaryOp(op, box (ref lhs, ref rhs)) if Self::check_binop(op) => {
                         let lhs = self.operand_to_node(span, lhs)?;
                         let rhs = self.operand_to_node(span, rhs)?;
                         self.locals[local] = self.add_node(Node::Binop(op, lhs, rhs), span);
@@ -422,7 +424,9 @@ impl<'a, 'tcx> AbstractConstBuilder<'a, 'tcx> {
                             Ok(())
                         }
                     }
-                    Rvalue::CheckedBinaryOp(op, ref lhs, ref rhs) if Self::check_binop(op) => {
+                    Rvalue::CheckedBinaryOp(op, box (ref lhs, ref rhs))
+                        if Self::check_binop(op) =>
+                    {
                         let lhs = self.operand_to_node(span, lhs)?;
                         let rhs = self.operand_to_node(span, rhs)?;
                         self.locals[local] = self.add_node(Node::Binop(op, lhs, rhs), span);

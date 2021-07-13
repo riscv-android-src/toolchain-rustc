@@ -1,5 +1,4 @@
 use base_db::fixture::WithFixture;
-use test_utils::mark;
 
 use crate::test_db::TestDB;
 
@@ -63,7 +62,7 @@ fn unresolved_extern_crate() {
 
 #[test]
 fn extern_crate_self_as() {
-    mark::check!(extern_crate_self_as);
+    cov_mark::check!(extern_crate_self_as);
     check_diagnostics(
         r"
         //- /lib.rs
@@ -140,7 +139,7 @@ fn inactive_item() {
 /// Tests that `cfg` attributes behind `cfg_attr` is handled properly.
 #[test]
 fn inactive_via_cfg_attr() {
-    mark::check!(cfg_attr_active);
+    cov_mark::check!(cfg_attr_active);
     check_diagnostics(
         r#"
         //- /lib.rs
@@ -150,6 +149,9 @@ fn inactive_via_cfg_attr() {
           #[cfg_attr(not(never), cfg(not(no)))] fn f() {}
 
           #[cfg_attr(never, cfg(no))] fn g() {}
+
+          #[cfg_attr(not(never), inline, cfg(no))] fn h() {}
+        //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ code is inactive due to #[cfg] directives: no is disabled
         "#,
     );
 }
