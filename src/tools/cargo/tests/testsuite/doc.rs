@@ -1,9 +1,10 @@
 //! Tests for the `cargo doc` command.
 
+use cargo::core::compiler::RustDocFingerprint;
 use cargo_test_support::paths::CargoPathExt;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_lib_manifest, basic_manifest, git, project};
-use cargo_test_support::{is_nightly, rustc_host};
+use cargo_test_support::{is_nightly, rustc_host, symlink_supported};
 use std::fs;
 use std::str;
 
@@ -862,8 +863,42 @@ fn features() {
             r#"#[cfg(feature = "bar")] pub fn bar() {}"#,
         )
         .build();
-    p.cargo("doc --features foo").run();
+    p.cargo("doc --features foo")
+        .with_stderr(
+            "\
+[COMPILING] bar v0.0.1 [..]
+[DOCUMENTING] bar v0.0.1 [..]
+[DOCUMENTING] foo v0.0.1 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
     assert!(p.root().join("target/doc").is_dir());
+    assert!(p.root().join("target/doc/foo/fn.foo.html").is_file());
+    assert!(p.root().join("target/doc/bar/fn.bar.html").is_file());
+    // Check that turning the feature off will remove the files.
+    p.cargo("doc")
+        .with_stderr(
+            "\
+[COMPILING] bar v0.0.1 [..]
+[DOCUMENTING] bar v0.0.1 [..]
+[DOCUMENTING] foo v0.0.1 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
+    assert!(!p.root().join("target/doc/foo/fn.foo.html").is_file());
+    assert!(!p.root().join("target/doc/bar/fn.bar.html").is_file());
+    // And switching back will rebuild and bring them back.
+    p.cargo("doc --features foo")
+        .with_stderr(
+            "\
+[DOCUMENTING] bar v0.0.1 [..]
+[DOCUMENTING] foo v0.0.1 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
     assert!(p.root().join("target/doc/foo/fn.foo.html").is_file());
     assert!(p.root().join("target/doc/bar/fn.bar.html").is_file());
 }
@@ -1714,4 +1749,235 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 ",
         )
         .run();
+}
+
+#[cargo_test]
+fn doc_fingerprint_is_versioning_consistent() {
+    // Random rustc verbose version
+    let old_rustc_verbose_version = format!(
+        "\
+rustc 1.41.1 (f3e1a954d 2020-02-24)
+binary: rustc
+commit-hash: f3e1a954d2ead4e2fc197c7da7d71e6c61bad196
+commit-date: 2020-02-24
+host: {}
+release: 1.41.1
+LLVM version: 9.0
+",
+        rustc_host()
+    );
+
+    // Create the dummy project.
+    let dummy_project = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "1.2.4"
+            authors = []
+        "#,
+        )
+        .file("src/lib.rs", "//! These are the docs!")
+        .build();
+
+    dummy_project.cargo("doc").run();
+
+    let fingerprint: RustDocFingerprint =
+        serde_json::from_str(&dummy_project.read_file("target/.rustdoc_fingerprint.json"))
+            .expect("JSON Serde fail");
+
+    // Check that the fingerprint contains the actual rustc version
+    // which has been used to compile the docs.
+    let output = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("Failed to get actual rustc verbose version");
+    assert_eq!(
+        fingerprint.rustc_vv,
+        (String::from_utf8_lossy(&output.stdout).as_ref())
+    );
+
+    // As the test shows above. Now we have generated the `doc/` folder and inside
+    // the rustdoc fingerprint file is located with the correct rustc version.
+    // So we will remove it and create a new fingerprint with an old rustc version
+    // inside it. We will also place a bogus file inside of the `doc/` folder to ensure
+    // it gets removed as we expect on the next doc compilation.
+    dummy_project.change_file(
+        "target/.rustdoc_fingerprint.json",
+        &old_rustc_verbose_version,
+    );
+
+    fs::write(
+        dummy_project.build_dir().join("doc/bogus_file"),
+        String::from("This is a bogus file and should be removed!"),
+    )
+    .expect("Error writing test bogus file");
+
+    // Now if we trigger another compilation, since the fingerprint contains an old version
+    // of rustc, cargo should remove the entire `/doc` folder (including the fingerprint)
+    // and generating another one with the actual version.
+    // It should also remove the bogus file we created above.
+    dummy_project.cargo("doc").run();
+
+    assert!(!dummy_project.build_dir().join("doc/bogus_file").exists());
+
+    let fingerprint: RustDocFingerprint =
+        serde_json::from_str(&dummy_project.read_file("target/.rustdoc_fingerprint.json"))
+            .expect("JSON Serde fail");
+
+    // Check that the fingerprint contains the actual rustc version
+    // which has been used to compile the docs.
+    assert_eq!(
+        fingerprint.rustc_vv,
+        (String::from_utf8_lossy(&output.stdout).as_ref())
+    );
+}
+
+#[cargo_test]
+fn doc_fingerprint_respects_target_paths() {
+    // Random rustc verbose version
+    let old_rustc_verbose_version = format!(
+        "\
+rustc 1.41.1 (f3e1a954d 2020-02-24)
+binary: rustc
+commit-hash: f3e1a954d2ead4e2fc197c7da7d71e6c61bad196
+commit-date: 2020-02-24
+host: {}
+release: 1.41.1
+LLVM version: 9.0
+",
+        rustc_host()
+    );
+
+    // Create the dummy project.
+    let dummy_project = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "1.2.4"
+            authors = []
+        "#,
+        )
+        .file("src/lib.rs", "//! These are the docs!")
+        .build();
+
+    dummy_project.cargo("doc --target").arg(rustc_host()).run();
+
+    let fingerprint: RustDocFingerprint =
+        serde_json::from_str(&dummy_project.read_file("target/.rustdoc_fingerprint.json"))
+            .expect("JSON Serde fail");
+
+    // Check that the fingerprint contains the actual rustc version
+    // which has been used to compile the docs.
+    let output = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("Failed to get actual rustc verbose version");
+    assert_eq!(
+        fingerprint.rustc_vv,
+        (String::from_utf8_lossy(&output.stdout).as_ref())
+    );
+
+    // As the test shows above. Now we have generated the `doc/` folder and inside
+    // the rustdoc fingerprint file is located with the correct rustc version.
+    // So we will remove it and create a new fingerprint with an old rustc version
+    // inside it. We will also place a bogus file inside of the `doc/` folder to ensure
+    // it gets removed as we expect on the next doc compilation.
+    dummy_project.change_file(
+        "target/.rustdoc_fingerprint.json",
+        &old_rustc_verbose_version,
+    );
+
+    fs::write(
+        dummy_project
+            .build_dir()
+            .join(rustc_host())
+            .join("doc/bogus_file"),
+        String::from("This is a bogus file and should be removed!"),
+    )
+    .expect("Error writing test bogus file");
+
+    // Now if we trigger another compilation, since the fingerprint contains an old version
+    // of rustc, cargo should remove the entire `/doc` folder (including the fingerprint)
+    // and generating another one with the actual version.
+    // It should also remove the bogus file we created above.
+    dummy_project.cargo("doc --target").arg(rustc_host()).run();
+
+    assert!(!dummy_project
+        .build_dir()
+        .join(rustc_host())
+        .join("doc/bogus_file")
+        .exists());
+
+    let fingerprint: RustDocFingerprint =
+        serde_json::from_str(&dummy_project.read_file("target/.rustdoc_fingerprint.json"))
+            .expect("JSON Serde fail");
+
+    // Check that the fingerprint contains the actual rustc version
+    // which has been used to compile the docs.
+    assert_eq!(
+        fingerprint.rustc_vv,
+        (String::from_utf8_lossy(&output.stdout).as_ref())
+    );
+}
+
+#[cargo_test]
+fn doc_fingerprint_unusual_behavior() {
+    // Checks for some unusual circumstances with clearing the doc directory.
+    if !symlink_supported() {
+        return;
+    }
+    let p = project().file("src/lib.rs", "").build();
+    p.build_dir().mkdir_p();
+    let real_doc = p.root().join("doc");
+    real_doc.mkdir_p();
+    let build_doc = p.build_dir().join("doc");
+    p.symlink(&real_doc, &build_doc);
+    fs::write(real_doc.join("somefile"), "test").unwrap();
+    fs::write(real_doc.join(".hidden"), "test").unwrap();
+    p.cargo("doc").run();
+    // Make sure for the first run, it does not delete any files and does not
+    // break the symlink.
+    assert!(build_doc.join("somefile").exists());
+    assert!(real_doc.join("somefile").exists());
+    assert!(real_doc.join(".hidden").exists());
+    assert!(real_doc.join("foo/index.html").exists());
+    // Pretend that the last build was generated by an older version.
+    p.change_file(
+        "target/.rustdoc_fingerprint.json",
+        "{\"rustc_vv\": \"I am old\"}",
+    );
+    // Change file to trigger a new build.
+    p.change_file("src/lib.rs", "// changed");
+    p.cargo("doc")
+        .with_stderr(
+            "[DOCUMENTING] foo [..]\n\
+             [FINISHED] [..]",
+        )
+        .run();
+    // This will delete somefile, but not .hidden.
+    assert!(!real_doc.join("somefile").exists());
+    assert!(real_doc.join(".hidden").exists());
+    assert!(real_doc.join("foo/index.html").exists());
+    // And also check the -Z flag behavior.
+    p.change_file(
+        "target/.rustdoc_fingerprint.json",
+        "{\"rustc_vv\": \"I am old\"}",
+    );
+    // Change file to trigger a new build.
+    p.change_file("src/lib.rs", "// changed2");
+    fs::write(real_doc.join("somefile"), "test").unwrap();
+    p.cargo("doc -Z skip-rustdoc-fingerprint")
+        .masquerade_as_nightly_cargo()
+        .with_stderr(
+            "[DOCUMENTING] foo [..]\n\
+             [FINISHED] [..]",
+        )
+        .run();
+    // Should not have deleted anything.
+    assert!(build_doc.join("somefile").exists());
+    assert!(real_doc.join("somefile").exists());
 }

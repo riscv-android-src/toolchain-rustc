@@ -23,7 +23,7 @@ pub struct Hygiene {
 
 impl Hygiene {
     pub fn new(db: &dyn AstDatabase, file_id: HirFileId) -> Hygiene {
-        Hygiene { frames: Some(HygieneFrames::new(db, file_id.clone())) }
+        Hygiene { frames: Some(HygieneFrames::new(db, file_id)) }
     }
 
     pub fn new_unhygienic() -> Hygiene {
@@ -129,10 +129,7 @@ impl HygieneInfo {
             mbe::Origin::Call => (&self.macro_arg.1, self.arg_start),
             mbe::Origin::Def => (
                 &self.macro_def.1,
-                self.def_start
-                    .as_ref()
-                    .expect("`Origin::Def` used with non-`macro_rules!` macro")
-                    .clone(),
+                *self.def_start.as_ref().expect("`Origin::Def` used with non-`macro_rules!` macro"),
             ),
         };
 
@@ -148,10 +145,10 @@ fn make_hygiene_info(
 ) -> Option<HygieneInfo> {
     let arg_tt = loc.kind.arg(db)?;
 
-    let def_offset = loc.def.ast_id.and_then(|id| {
+    let def_offset = loc.def.ast_id().left().and_then(|id| {
         let def_tt = match id.to_node(db) {
             ast::Macro::MacroRules(mac) => mac.token_tree()?.syntax().text_range().start(),
-            ast::Macro::MacroDef(_) => return None,
+            ast::Macro::MacroDef(mac) => mac.body()?.syntax().text_range().start(),
         };
         Some(InFile::new(id.file_id, def_tt))
     });
@@ -179,13 +176,13 @@ impl HygieneFrame {
                     let loc = db.lookup_intern_macro(id);
                     let info = make_hygiene_info(db, macro_file, &loc);
                     match loc.def.kind {
-                        MacroDefKind::Declarative => {
+                        MacroDefKind::Declarative(_) => {
                             (info, Some(loc.def.krate), loc.def.local_inner)
                         }
-                        MacroDefKind::BuiltIn(_) => (info, Some(loc.def.krate), false),
-                        MacroDefKind::BuiltInDerive(_) => (info, None, false),
-                        MacroDefKind::BuiltInEager(_) => (info, None, false),
-                        MacroDefKind::ProcMacro(_) => (info, None, false),
+                        MacroDefKind::BuiltIn(..) => (info, Some(loc.def.krate), false),
+                        MacroDefKind::BuiltInDerive(..) => (info, None, false),
+                        MacroDefKind::BuiltInEager(..) => (info, None, false),
+                        MacroDefKind::ProcMacro(..) => (info, None, false),
                     }
                 }
             },

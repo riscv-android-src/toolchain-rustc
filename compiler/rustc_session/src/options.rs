@@ -5,7 +5,7 @@ use crate::lint;
 use crate::search_paths::SearchPath;
 use crate::utils::NativeLibKind;
 
-use rustc_target::spec::{CodeModel, LinkerFlavor, MergeFunctions, PanicStrategy};
+use rustc_target::spec::{CodeModel, LinkerFlavor, MergeFunctions, PanicStrategy, SanitizerSet};
 use rustc_target::spec::{RelocModel, RelroLevel, SplitDebuginfo, TargetTriple, TlsModel};
 
 use rustc_feature::UnstableFeatures;
@@ -20,73 +20,112 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::str;
 
-macro_rules! hash_option {
-    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, [UNTRACKED]) => {{}};
-    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, [TRACKED]) => {{
+macro_rules! insert {
+    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr) => {
         if $sub_hashes
             .insert(stringify!($opt_name), $opt_expr as &dyn dep_tracking::DepTrackingHash)
             .is_some()
         {
             panic!("duplicate key in CLI DepTrackingHash: {}", stringify!($opt_name))
         }
+    };
+}
+
+macro_rules! hash_opt {
+    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, $_for_crate_hash: ident, [UNTRACKED]) => {{}};
+    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, $_for_crate_hash: ident, [TRACKED]) => {{ insert!($opt_name, $opt_expr, $sub_hashes) }};
+    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, $for_crate_hash: ident, [TRACKED_NO_CRATE_HASH]) => {{
+        if !$for_crate_hash {
+            insert!($opt_name, $opt_expr, $sub_hashes)
+        }
     }};
+    ($opt_name:ident, $opt_expr:expr, $sub_hashes:expr, $_for_crate_hash: ident, [SUBSTRUCT]) => {{}};
+}
+
+macro_rules! hash_substruct {
+    ($opt_name:ident, $opt_expr:expr, $error_format:expr, $for_crate_hash:expr, $hasher:expr, [UNTRACKED]) => {{}};
+    ($opt_name:ident, $opt_expr:expr, $error_format:expr, $for_crate_hash:expr, $hasher:expr, [TRACKED]) => {{}};
+    ($opt_name:ident, $opt_expr:expr, $error_format:expr, $for_crate_hash:expr, $hasher:expr, [TRACKED_NO_CRATE_HASH]) => {{}};
+    ($opt_name:ident, $opt_expr:expr, $error_format:expr, $for_crate_hash:expr, $hasher:expr, [SUBSTRUCT]) => {
+        use crate::config::dep_tracking::DepTrackingHash;
+        $opt_expr.dep_tracking_hash($for_crate_hash, $error_format).hash($hasher, $error_format);
+    };
 }
 
 macro_rules! top_level_options {
-    (pub struct Options { $(
-        $opt:ident : $t:ty [$dep_tracking_marker:ident $($warn_val:expr, $warn_text:expr)*],
+    ( $( #[$top_level_attr:meta] )* pub struct Options { $(
+        $( #[$attr:meta] )*
+        $opt:ident : $t:ty [$dep_tracking_marker:ident],
     )* } ) => (
         #[derive(Clone)]
+        $( #[$top_level_attr] )*
         pub struct Options {
-            $(pub $opt: $t),*
+            $(
+                $( #[$attr] )*
+                pub $opt: $t
+            ),*
         }
 
         impl Options {
-            pub fn dep_tracking_hash(&self) -> u64 {
+            pub fn dep_tracking_hash(&self, for_crate_hash: bool) -> u64 {
                 let mut sub_hashes = BTreeMap::new();
                 $({
-                    hash_option!($opt,
-                                 &self.$opt,
-                                 &mut sub_hashes,
-                                 [$dep_tracking_marker $($warn_val,
-                                                         $warn_text,
-                                                         self.error_format)*]);
+                    hash_opt!($opt,
+                                &self.$opt,
+                                &mut sub_hashes,
+                                for_crate_hash,
+                                [$dep_tracking_marker]);
                 })*
                 let mut hasher = DefaultHasher::new();
                 dep_tracking::stable_hash(sub_hashes,
                                           &mut hasher,
                                           self.error_format);
+                $({
+                    hash_substruct!($opt,
+                        &self.$opt,
+                        self.error_format,
+                        for_crate_hash,
+                        &mut hasher,
+                        [$dep_tracking_marker]);
+                })*
                 hasher.finish()
             }
         }
     );
 }
 
-// The top-level command-line options struct.
-//
-// For each option, one has to specify how it behaves with regard to the
-// dependency tracking system of incremental compilation. This is done via the
-// square-bracketed directive after the field type. The options are:
-//
-// [TRACKED]
-// A change in the given field will cause the compiler to completely clear the
-// incremental compilation cache before proceeding.
-//
-// [UNTRACKED]
-// Incremental compilation is not influenced by this option.
-//
-// If you add a new option to this struct or one of the sub-structs like
-// `CodegenOptions`, think about how it influences incremental compilation. If in
-// doubt, specify [TRACKED], which is always "correct" but might lead to
-// unnecessary re-compilation.
 top_level_options!(
+    /// The top-level command-line options struct.
+    ///
+    /// For each option, one has to specify how it behaves with regard to the
+    /// dependency tracking system of incremental compilation. This is done via the
+    /// square-bracketed directive after the field type. The options are:
+    ///
+    /// - `[TRACKED]`
+    /// A change in the given field will cause the compiler to completely clear the
+    /// incremental compilation cache before proceeding.
+    ///
+    /// - `[TRACKED_NO_CRATE_HASH]`
+    /// Same as `[TRACKED]`, but will not affect the crate hash. This is useful for options that only
+    /// affect the incremental cache.
+    ///
+    /// - `[UNTRACKED]`
+    /// Incremental compilation is not influenced by this option.
+    ///
+    /// - `[SUBSTRUCT]`
+    /// Second-level sub-structs containing more options.
+    ///
+    /// If you add a new option to this struct or one of the sub-structs like
+    /// `CodegenOptions`, think about how it influences incremental compilation. If in
+    /// doubt, specify `[TRACKED]`, which is always "correct" but might lead to
+    /// unnecessary re-compilation.
     pub struct Options {
-        // The crate config requested for the session, which may be combined
-        // with additional crate configurations during the compile process.
+        /// The crate config requested for the session, which may be combined
+        /// with additional crate configurations during the compile process.
         crate_types: Vec<CrateType> [TRACKED],
         optimize: OptLevel [TRACKED],
-        // Include the `debug_assertions` flag in dependency tracking, since it
-        // can influence whether overflow checks are done or not.
+        /// Include the `debug_assertions` flag in dependency tracking, since it
+        /// can influence whether overflow checks are done or not.
         debug_assertions: bool [TRACKED],
         debuginfo: DebugInfo [TRACKED],
         lint_opts: Vec<(String, lint::Level)> [TRACKED],
@@ -102,50 +141,61 @@ top_level_options!(
         test: bool [TRACKED],
         error_format: ErrorOutputType [UNTRACKED],
 
-        // If `Some`, enable incremental compilation, using the given
-        // directory to store intermediate results.
+        /// If `Some`, enable incremental compilation, using the given
+        /// directory to store intermediate results.
         incremental: Option<PathBuf> [UNTRACKED],
 
-        debugging_opts: DebuggingOptions [TRACKED],
+        debugging_opts: DebuggingOptions [SUBSTRUCT],
         prints: Vec<PrintRequest> [UNTRACKED],
-        // Determines which borrow checker(s) to run. This is the parsed, sanitized
-        // version of `debugging_opts.borrowck`, which is just a plain string.
+        /// Determines which borrow checker(s) to run. This is the parsed, sanitized
+        /// version of `debugging_opts.borrowck`, which is just a plain string.
         borrowck_mode: BorrowckMode [UNTRACKED],
-        cg: CodegenOptions [TRACKED],
+        cg: CodegenOptions [SUBSTRUCT],
         externs: Externs [UNTRACKED],
         extern_dep_specs: ExternDepSpecs [UNTRACKED],
         crate_name: Option<String> [TRACKED],
-        // An optional name to use as the crate for std during std injection,
-        // written `extern crate name as std`. Defaults to `std`. Used by
-        // out-of-tree drivers.
+        /// An optional name to use as the crate for std during std injection,
+        /// written `extern crate name as std`. Defaults to `std`. Used by
+        /// out-of-tree drivers.
         alt_std_name: Option<String> [TRACKED],
-        // Indicates how the compiler should treat unstable features.
+        /// Indicates how the compiler should treat unstable features.
         unstable_features: UnstableFeatures [TRACKED],
 
-        // Indicates whether this run of the compiler is actually rustdoc. This
-        // is currently just a hack and will be removed eventually, so please
-        // try to not rely on this too much.
+        /// Indicates whether this run of the compiler is actually rustdoc. This
+        /// is currently just a hack and will be removed eventually, so please
+        /// try to not rely on this too much.
         actually_rustdoc: bool [TRACKED],
 
-        // Control path trimming.
+        /// Control path trimming.
         trimmed_def_paths: TrimmedDefPaths [TRACKED],
 
-        // Specifications of codegen units / ThinLTO which are forced as a
-        // result of parsing command line options. These are not necessarily
-        // what rustc was invoked with, but massaged a bit to agree with
-        // commands like `--emit llvm-ir` which they're often incompatible with
-        // if we otherwise use the defaults of rustc.
+        /// Specifications of codegen units / ThinLTO which are forced as a
+        /// result of parsing command line options. These are not necessarily
+        /// what rustc was invoked with, but massaged a bit to agree with
+        /// commands like `--emit llvm-ir` which they're often incompatible with
+        /// if we otherwise use the defaults of rustc.
         cli_forced_codegen_units: Option<usize> [UNTRACKED],
         cli_forced_thinlto_off: bool [UNTRACKED],
 
-        // Remap source path prefixes in all output (messages, object files, debug, etc.).
-        remap_path_prefix: Vec<(PathBuf, PathBuf)> [UNTRACKED],
+        /// Remap source path prefixes in all output (messages, object files, debug, etc.).
+        remap_path_prefix: Vec<(PathBuf, PathBuf)> [TRACKED_NO_CRATE_HASH],
+        /// Base directory containing the `src/` for the Rust standard library, and
+        /// potentially `rustc` as well, if we can can find it. Right now it's always
+        /// `$sysroot/lib/rustlib/src/rust` (i.e. the `rustup` `rust-src` component).
+        ///
+        /// This directory is what the virtual `/rustc/$hash` is translated back to,
+        /// if Rust was built with path remapping to `/rustc/$hash` enabled
+        /// (the `rust.remap-debuginfo` option in `config.toml`).
+        real_rust_source_base_dir: Option<PathBuf> [TRACKED_NO_CRATE_HASH],
 
         edition: Edition [TRACKED],
 
-        // `true` if we're emitting JSON blobs about each artifact produced
-        // by the compiler.
+        /// `true` if we're emitting JSON blobs about each artifact produced
+        /// by the compiler.
         json_artifact_notifications: bool [TRACKED],
+
+        /// `true` if we're emitting a JSON blob containing the unused externs
+        json_unused_externs: bool [UNTRACKED],
 
         pretty: Option<PpMode> [UNTRACKED],
     }
@@ -163,10 +213,10 @@ macro_rules! options {
     ($struct_name:ident, $setter_name:ident, $defaultfn:ident,
      $buildfn:ident, $prefix:expr, $outputname:expr,
      $stat:ident, $mod_desc:ident, $mod_set:ident,
-     $($opt:ident : $t:ty = (
+     $($( #[$attr:meta] )* $opt:ident : $t:ty = (
         $init:expr,
         $parse:ident,
-        [$dep_tracking_marker:ident $(($dep_warn_val:expr, $dep_warn_text:expr))*],
+        [$dep_tracking_marker:ident],
         $desc:expr)
      ),* ,) =>
 (
@@ -174,7 +224,7 @@ macro_rules! options {
     pub struct $struct_name { $(pub $opt: $t),* }
 
     pub fn $defaultfn() -> $struct_name {
-        $struct_name { $($opt: $init),* }
+        $struct_name { $( $( #[$attr] )* $opt: $init),* }
     }
 
     pub fn $buildfn(matches: &getopts::Matches, error_format: ErrorOutputType) -> $struct_name
@@ -216,18 +266,21 @@ macro_rules! options {
         return op;
     }
 
-    impl dep_tracking::DepTrackingHash for $struct_name {
-        fn hash(&self, hasher: &mut DefaultHasher, error_format: ErrorOutputType) {
+    impl $struct_name {
+        fn dep_tracking_hash(&self, _for_crate_hash: bool, error_format: ErrorOutputType) -> u64 {
             let mut sub_hashes = BTreeMap::new();
             $({
-                hash_option!($opt,
-                             &self.$opt,
-                             &mut sub_hashes,
-                             [$dep_tracking_marker $($dep_warn_val,
-                                                     $dep_warn_text,
-                                                     error_format)*]);
+                hash_opt!($opt,
+                            &self.$opt,
+                            &mut sub_hashes,
+                            _for_crate_hash,
+                            [$dep_tracking_marker]);
             })*
-            dep_tracking::stable_hash(sub_hashes, hasher, error_format);
+            let mut hasher = DefaultHasher::new();
+            dep_tracking::stable_hash(sub_hashes,
+                                        &mut hasher,
+                                        error_format);
+            hasher.finish()
         }
     }
 
@@ -248,9 +301,9 @@ macro_rules! options {
         pub const parse_list: &str = "a space-separated list of strings";
         pub const parse_opt_list: &str = parse_list;
         pub const parse_opt_comma_list: &str = "a comma-separated list of strings";
-        pub const parse_uint: &str = "a number";
-        pub const parse_opt_uint: &str = parse_uint;
-        pub const parse_threads: &str = parse_uint;
+        pub const parse_number: &str = "a number";
+        pub const parse_opt_number: &str = parse_number;
+        pub const parse_threads: &str = parse_number;
         pub const parse_passes: &str = "a space-separated list of passes, or `all`";
         pub const parse_panic_strategy: &str = "either `unwind` or `abort`";
         pub const parse_relro_level: &str = "one of: `full`, `partial`, or `off`";
@@ -262,6 +315,7 @@ macro_rules! options {
         pub const parse_linker_flavor: &str = ::rustc_target::spec::LinkerFlavor::one_of();
         pub const parse_optimization_fuel: &str = "crate=integer";
         pub const parse_mir_spanview: &str = "`statement` (default), `terminator`, or `block`";
+        pub const parse_instrument_coverage: &str = "`all` (default), `except-unused-generics`, `except-unused-functions`, or `off`";
         pub const parse_unpretty: &str = "`string` or `string=string`";
         pub const parse_treat_err_as_bug: &str = "either no value or a number bigger than 0";
         pub const parse_lto: &str =
@@ -413,16 +467,16 @@ macro_rules! options {
             }
         }
 
-        /// Use this for any uint option that has a static default.
-        fn parse_uint(slot: &mut usize, v: Option<&str>) -> bool {
+        /// Use this for any numeric option that has a static default.
+        fn parse_number<T: Copy + FromStr>(slot: &mut T, v: Option<&str>) -> bool {
             match v.and_then(|s| s.parse().ok()) {
                 Some(i) => { *slot = i; true },
                 None => false
             }
         }
 
-        /// Use this for any uint option that lacks a static default.
-        fn parse_opt_uint(slot: &mut Option<usize>, v: Option<&str>) -> bool {
+        /// Use this for any numeric option that lacks a static default.
+        fn parse_opt_number<T: Copy + FromStr>(slot: &mut Option<T>, v: Option<&str>) -> bool {
             match v {
                 Some(s) => { *slot = s.parse().ok(); slot.is_some() }
                 None => false
@@ -592,6 +646,41 @@ macro_rules! options {
             true
         }
 
+        fn parse_instrument_coverage(slot: &mut Option<InstrumentCoverage>, v: Option<&str>) -> bool {
+            if v.is_some() {
+                let mut bool_arg = None;
+                if parse_opt_bool(&mut bool_arg, v) {
+                    *slot = if bool_arg.unwrap() {
+                        Some(InstrumentCoverage::All)
+                    } else {
+                        None
+                    };
+                    return true
+                }
+            }
+
+            let v = match v {
+                None => {
+                    *slot = Some(InstrumentCoverage::All);
+                    return true;
+                }
+                Some(v) => v,
+            };
+
+            *slot = Some(match v {
+                "all" => InstrumentCoverage::All,
+                "except-unused-generics" | "except_unused_generics" => {
+                    InstrumentCoverage::ExceptUnusedGenerics
+                }
+                "except-unused-functions" | "except_unused_functions" => {
+                    InstrumentCoverage::ExceptUnusedFunctions
+                }
+                "off" | "no" | "n" | "false" | "0" => InstrumentCoverage::Off,
+                _ => return false,
+            });
+            true
+        }
+
         fn parse_treat_err_as_bug(slot: &mut Option<NonZeroUsize>, v: Option<&str>) -> bool {
             match v {
                 Some(s) => { *slot = s.parse().ok(); slot.is_some() }
@@ -748,13 +837,13 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "this option is deprecated and does nothing"),
     code_model: Option<CodeModel> = (None, parse_code_model, [TRACKED],
         "choose the code model to use (`rustc --print code-models` for details)"),
-    codegen_units: Option<usize> = (None, parse_opt_uint, [UNTRACKED],
+    codegen_units: Option<usize> = (None, parse_opt_number, [UNTRACKED],
         "divide crate into N units to optimize in parallel"),
     control_flow_guard: CFGuard = (CFGuard::Disabled, parse_cfguard, [TRACKED],
         "use Windows Control Flow Guard (default: no)"),
     debug_assertions: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "explicitly enable the `cfg(debug_assertions)` directive"),
-    debuginfo: usize = (0, parse_uint, [TRACKED],
+    debuginfo: usize = (0, parse_number, [TRACKED],
         "debug info emission level (0 = no debug info, 1 = line tables only, \
         2 = full debug info with variable and type information; default: 0)"),
     default_linker_libraries: bool = (false, parse_bool, [UNTRACKED],
@@ -769,13 +858,13 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "force use of unwind tables"),
     incremental: Option<String> = (None, parse_opt_string, [UNTRACKED],
         "enable incremental compilation"),
-    inline_threshold: Option<usize> = (None, parse_opt_uint, [TRACKED],
+    inline_threshold: Option<u32> = (None, parse_opt_number, [TRACKED],
         "set the threshold for inlining a function"),
     link_arg: (/* redirected to link_args */) = ((), parse_string_push, [UNTRACKED],
         "a single extra argument to append to the linker invocation (can be used several times)"),
     link_args: Vec<String> = (Vec::new(), parse_list, [UNTRACKED],
         "extra arguments to append to the linker invocation (space separated)"),
-    link_dead_code: Option<bool> = (None, parse_opt_bool, [UNTRACKED],
+    link_dead_code: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "keep dead code at link time (useful for code coverage) (default: no)"),
     link_self_contained: Option<bool> = (None, parse_opt_bool, [UNTRACKED],
         "control whether to link Rust provided C objects/libraries or rely
@@ -870,8 +959,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         (default: no)"),
     borrowck: String = ("migrate".to_string(), parse_string, [UNTRACKED],
         "select which borrowck is used (`mir` or `migrate`) (default: `migrate`)"),
-    borrowck_stats: bool = (false, parse_bool, [UNTRACKED],
-        "gather borrowck statistics (default: no)"),
     cgu_partitioning_strategy: Option<String> = (None, parse_opt_string, [TRACKED],
         "the codegen unit partitioning strategy to use"),
     chalk: bool = (false, parse_bool, [TRACKED],
@@ -959,20 +1046,22 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "verify incr. comp. hashes of green query instances (default: no)"),
     inline_mir: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "enable MIR inlining (default: no)"),
-    inline_mir_threshold: Option<usize> = (None, parse_opt_uint, [TRACKED],
+    inline_mir_threshold: Option<usize> = (None, parse_opt_number, [TRACKED],
         "a default MIR inlining threshold (default: 50)"),
-    inline_mir_hint_threshold: Option<usize> = (None, parse_opt_uint, [TRACKED],
+    inline_mir_hint_threshold: Option<usize> = (None, parse_opt_number, [TRACKED],
         "inlining threshold for functions with inline hint (default: 100)"),
     inline_in_all_cgus: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "control whether `#[inline]` functions are in all CGUs"),
     input_stats: bool = (false, parse_bool, [UNTRACKED],
         "gather statistics about the input (default: no)"),
-    instrument_coverage: bool = (false, parse_bool, [TRACKED],
+    instrument_coverage: Option<InstrumentCoverage> = (None, parse_instrument_coverage, [TRACKED],
         "instrument the generated code to support LLVM source-based code coverage \
         reports (note, the compiler build config must include `profiler = true`, \
         and is mutually exclusive with `-C profile-generate`/`-C profile-use`); \
         implies `-Z symbol-mangling-version=v0`; disables/overrides some Rust \
-        optimizations (default: no)"),
+        optimizations. Optional values are: `=all` (default coverage), \
+        `=except-unused-generics`, `=except-unused-functions`, or `=off` \
+        (default: instrument-coverage=off)"),
     instrument_mcount: bool = (false, parse_bool, [TRACKED],
         "insert function instrument code for mcount-based tracing (default: no)"),
     keep_hygiene_data: bool = (false, parse_bool, [UNTRACKED],
@@ -995,10 +1084,10 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     mir_emit_retag: bool = (false, parse_bool, [TRACKED],
         "emit Retagging MIR statements, interpreted e.g., by miri; implies -Zmir-opt-level=0 \
         (default: no)"),
-    mir_opt_level: Option<usize> = (None, parse_opt_uint, [TRACKED],
+    mir_opt_level: Option<usize> = (None, parse_opt_number, [TRACKED],
         "MIR optimization level (0-4; default: 1 in non optimized builds and 2 in optimized builds)"),
-    mutable_noalias: bool = (false, parse_bool, [TRACKED],
-        "emit noalias metadata for mutable references (default: no)"),
+    mutable_noalias: Option<bool> = (None, parse_opt_bool, [TRACKED],
+        "emit noalias metadata for mutable references (default: yes for LLVM >= 12, otherwise no)"),
     new_llvm_pass_manager: bool = (false, parse_bool, [TRACKED],
         "use new LLVM pass manager (default: no)"),
     nll_facts: bool = (false, parse_bool, [UNTRACKED],
@@ -1089,7 +1178,7 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     self_profile: SwitchWithOptPath = (SwitchWithOptPath::Disabled,
         parse_switch_with_opt_path, [UNTRACKED],
         "run the self profiler and output the raw event data"),
-    // keep this in sync with the event filter names in librustc_data_structures/profiling.rs
+    /// keep this in sync with the event filter names in librustc_data_structures/profiling.rs
     self_profile_events: Option<Vec<String>> = (None, parse_opt_comma_list, [UNTRACKED],
         "specify the events recorded by the self profiler;
         for example: `-Z self-profile-events=default,query-keys`
@@ -1101,7 +1190,7 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "show spans for compiler debugging (expr|pat|ty)"),
     span_debug: bool = (false, parse_bool, [UNTRACKED],
         "forward proc_macro::Span's `Debug` impl to `Span`"),
-    // o/w tests have closure@path
+    /// o/w tests have closure@path
     span_free_formats: bool = (false, parse_bool, [UNTRACKED],
         "exclude spans when debug-printing compiler state (default: no)"),
     src_hash_algorithm: Option<SourceFileHashAlgorithm> = (None, parse_src_file_hash, [TRACKED],
@@ -1116,16 +1205,16 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "which mangling version to use for symbol names ('legacy' (default) or 'v0')"),
     teach: bool = (false, parse_bool, [TRACKED],
         "show extended diagnostic help (default: no)"),
-    terminal_width: Option<usize> = (None, parse_opt_uint, [UNTRACKED],
+    terminal_width: Option<usize> = (None, parse_opt_number, [UNTRACKED],
         "set the current terminal width"),
     tune_cpu: Option<String> = (None, parse_opt_string, [TRACKED],
         "select processor to schedule for (`rustc --print target-cpus` for details)"),
     thinlto: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "enable ThinLTO when possible"),
-    // We default to 1 here since we want to behave like
-    // a sequential compiler for now. This'll likely be adjusted
-    // in the future. Note that -Zthreads=0 is the way to get
-    // the num_cpus behavior.
+    /// We default to 1 here since we want to behave like
+    /// a sequential compiler for now. This'll likely be adjusted
+    /// in the future. Note that -Zthreads=0 is the way to get
+    /// the num_cpus behavior.
     threads: usize = (1, parse_threads, [UNTRACKED],
         "use a thread pool with N threads"),
     time: bool = (false, parse_bool, [UNTRACKED],
@@ -1181,7 +1270,7 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     // - compiler/rustc_interface/src/tests.rs
 }
 
-#[derive(Clone, Hash)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub enum WasiExecModel {
     Command,
     Reactor,

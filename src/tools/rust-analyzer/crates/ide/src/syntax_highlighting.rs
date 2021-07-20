@@ -5,14 +5,14 @@ mod injector;
 
 mod highlight;
 mod format;
-mod macro_rules;
+mod macro_;
 mod inject;
 
 mod html;
 #[cfg(test)]
 mod tests;
 
-use hir::{Name, Semantics};
+use hir::{InFile, Name, Semantics};
 use ide_db::{RootDatabase, SymbolKind};
 use rustc_hash::FxHashMap;
 use syntax::{
@@ -24,8 +24,8 @@ use syntax::{
 
 use crate::{
     syntax_highlighting::{
-        format::highlight_format_string, highlights::Highlights,
-        macro_rules::MacroRulesHighlighter, tags::Highlight,
+        format::highlight_format_string, highlights::Highlights, macro_::MacroHighlighter,
+        tags::Highlight,
     },
     FileId, HlMod, HlTag,
 };
@@ -48,6 +48,9 @@ pub struct HlRange {
 //
 // The general rule is that a reference to an entity gets colored the same way as the entity itself.
 // We also give special modifier for `mut` and `&mut` local variables.
+//
+// image::https://user-images.githubusercontent.com/48062697/113164457-06cfb980-9239-11eb-819b-0f93e646acf8.png[]
+// image::https://user-images.githubusercontent.com/48062697/113187625-f7f50100-9250-11eb-825e-91c58f236071.png[]
 pub(crate) fn highlight(
     db: &RootDatabase,
     file_id: FileId,
@@ -64,7 +67,7 @@ pub(crate) fn highlight(
             Some(range) => {
                 let node = match source_file.syntax().covering_element(range) {
                     NodeOrToken::Node(it) => it,
-                    NodeOrToken::Token(it) => it.parent(),
+                    NodeOrToken::Token(it) => it.parent().unwrap(),
                 };
                 (node, range)
             }
@@ -73,27 +76,33 @@ pub(crate) fn highlight(
     };
 
     let mut hl = highlights::Highlights::new(root.text_range());
-    traverse(&mut hl, &sema, &root, range_to_highlight, syntactic_name_ref_highlighting);
+    traverse(
+        &mut hl,
+        &sema,
+        InFile::new(file_id.into(), &root),
+        range_to_highlight,
+        syntactic_name_ref_highlighting,
+    );
     hl.to_vec()
 }
 
 fn traverse(
     hl: &mut Highlights,
     sema: &Semantics<RootDatabase>,
-    root: &SyntaxNode,
+    root: InFile<&SyntaxNode>,
     range_to_highlight: TextRange,
     syntactic_name_ref_highlighting: bool,
 ) {
     let mut bindings_shadow_count: FxHashMap<Name, u32> = FxHashMap::default();
 
     let mut current_macro_call: Option<ast::MacroCall> = None;
-    let mut current_macro_rules: Option<ast::MacroRules> = None;
-    let mut macro_rules_highlighter = MacroRulesHighlighter::default();
+    let mut current_macro: Option<ast::Macro> = None;
+    let mut macro_highlighter = MacroHighlighter::default();
     let mut inside_attribute = false;
 
     // Walk all nodes, keeping track of whether we are inside a macro or not.
     // If in macro, expand it first and highlight the expanded code.
-    for event in root.preorder_with_tokens() {
+    for event in root.value.preorder_with_tokens() {
         let event_range = match &event {
             WalkEvent::Enter(it) | WalkEvent::Leave(it) => it.text_range(),
         };
@@ -123,16 +132,16 @@ fn traverse(
             _ => (),
         }
 
-        match event.clone().map(|it| it.into_node().and_then(ast::MacroRules::cast)) {
+        match event.clone().map(|it| it.into_node().and_then(ast::Macro::cast)) {
             WalkEvent::Enter(Some(mac)) => {
-                macro_rules_highlighter.init();
-                current_macro_rules = Some(mac);
+                macro_highlighter.init();
+                current_macro = Some(mac);
                 continue;
             }
             WalkEvent::Leave(Some(mac)) => {
-                assert_eq!(current_macro_rules, Some(mac));
-                current_macro_rules = None;
-                macro_rules_highlighter = MacroRulesHighlighter::default();
+                assert_eq!(current_macro, Some(mac));
+                current_macro = None;
+                macro_highlighter = MacroHighlighter::default();
             }
             _ => (),
         }
@@ -150,7 +159,7 @@ fn traverse(
             WalkEvent::Enter(it) => it,
             WalkEvent::Leave(it) => {
                 if let Some(node) = it.as_node() {
-                    inject::doc_comment(hl, node);
+                    inject::doc_comment(hl, sema, root.with_value(node));
                 }
                 continue;
             }
@@ -158,25 +167,28 @@ fn traverse(
 
         let range = element.text_range();
 
-        if current_macro_rules.is_some() {
+        if current_macro.is_some() {
             if let Some(tok) = element.as_token() {
-                macro_rules_highlighter.advance(tok);
+                macro_highlighter.advance(tok);
             }
         }
 
         let element_to_highlight = if current_macro_call.is_some() && element.kind() != COMMENT {
             // Inside a macro -- expand it first
             let token = match element.clone().into_token() {
-                Some(it) if it.parent().kind() == TOKEN_TREE => it,
+                Some(it) if it.parent().map_or(false, |it| it.kind() == TOKEN_TREE) => it,
                 _ => continue,
             };
             let token = sema.descend_into_macros(token.clone());
-            let parent = token.parent();
-
-            // We only care Name and Name_ref
-            match (token.kind(), parent.kind()) {
-                (IDENT, NAME) | (IDENT, NAME_REF) => parent.into(),
-                _ => token.into(),
+            match token.parent() {
+                Some(parent) => {
+                    // We only care Name and Name_ref
+                    match (token.kind(), parent.kind()) {
+                        (IDENT, NAME) | (IDENT, NAME_REF) => parent.into(),
+                        _ => token.into(),
+                    }
+                }
+                None => token.into(),
             }
         } else {
             element.clone()
@@ -191,7 +203,7 @@ fn traverse(
             }
         }
 
-        if let Some(_) = macro_rules_highlighter.highlight(element_to_highlight.clone()) {
+        if let Some(_) = macro_highlighter.highlight(element_to_highlight.clone()) {
             continue;
         }
 

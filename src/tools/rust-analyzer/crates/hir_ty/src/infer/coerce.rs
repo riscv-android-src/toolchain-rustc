@@ -4,10 +4,10 @@
 //!
 //! See: https://doc.rust-lang.org/nomicon/coercions.html
 
-use chalk_ir::{Mutability, TyVariableKind};
+use chalk_ir::{cast::Cast, Mutability, TyVariableKind};
 use hir_def::lang_item::LangItemTarget;
 
-use crate::{autoderef, traits::Solution, Interner, Obligation, Substs, TraitRef, Ty, TyKind};
+use crate::{autoderef, Canonical, Interner, Solution, Ty, TyBuilder, TyExt, TyKind};
 
 use super::{InEnvironment, InferenceContext};
 
@@ -34,7 +34,7 @@ impl<'a> InferenceContext<'a> {
             ty1.clone()
         } else {
             if let (TyKind::FnDef(..), TyKind::FnDef(..)) =
-                (ty1.interned(&Interner), ty2.interned(&Interner))
+                (ty1.kind(&Interner), ty2.kind(&Interner))
             {
                 cov_mark::hit!(coerce_fn_reification);
                 // Special case: two function types. Try to coerce both to
@@ -42,8 +42,8 @@ impl<'a> InferenceContext<'a> {
                 // https://github.com/rust-lang/rust/blob/7b805396bf46dce972692a6846ce2ad8481c5f85/src/librustc_typeck/check/coercion.rs#L877-L916
                 let sig1 = ty1.callable_sig(self.db).expect("FnDef without callable sig");
                 let sig2 = ty2.callable_sig(self.db).expect("FnDef without callable sig");
-                let ptr_ty1 = Ty::fn_ptr(sig1);
-                let ptr_ty2 = Ty::fn_ptr(sig2);
+                let ptr_ty1 = TyBuilder::fn_ptr(sig1);
+                let ptr_ty2 = TyBuilder::fn_ptr(sig2);
                 self.coerce_merge_branch(&ptr_ty1, &ptr_ty2)
             } else {
                 cov_mark::hit!(coerce_merge_fail_fallback);
@@ -53,7 +53,7 @@ impl<'a> InferenceContext<'a> {
     }
 
     fn coerce_inner(&mut self, mut from_ty: Ty, to_ty: &Ty) -> bool {
-        match (from_ty.interned(&Interner), to_ty.interned(&Interner)) {
+        match (from_ty.kind(&Interner), to_ty.kind(&Interner)) {
             // Never type will make type variable to fallback to Never Type instead of Unknown.
             (TyKind::Never, TyKind::InferenceVar(tv, TyVariableKind::General)) => {
                 self.table.type_variable_table.set_diverging(*tv, true);
@@ -71,17 +71,19 @@ impl<'a> InferenceContext<'a> {
         }
 
         // Pointer weakening and function to pointer
-        match (&mut from_ty.0, to_ty.interned(&Interner)) {
+        match (from_ty.kind(&Interner), to_ty.kind(&Interner)) {
             // `*mut T` -> `*const T`
+            (TyKind::Raw(_, inner), TyKind::Raw(m2 @ Mutability::Not, ..)) => {
+                from_ty = TyKind::Raw(*m2, inner.clone()).intern(&Interner);
+            }
             // `&mut T` -> `&T`
-            (TyKind::Raw(m1, ..), TyKind::Raw(m2 @ Mutability::Not, ..))
-            | (TyKind::Ref(m1, ..), TyKind::Ref(m2 @ Mutability::Not, ..)) => {
-                *m1 = *m2;
+            (TyKind::Ref(_, lt, inner), TyKind::Ref(m2 @ Mutability::Not, ..)) => {
+                from_ty = TyKind::Ref(*m2, lt.clone(), inner.clone()).intern(&Interner);
             }
             // `&T` -> `*const T`
             // `&mut T` -> `*mut T`/`*const T`
             (TyKind::Ref(.., substs), &TyKind::Raw(m2 @ Mutability::Not, ..))
-            | (TyKind::Ref(Mutability::Mut, substs), &TyKind::Raw(m2, ..)) => {
+            | (TyKind::Ref(Mutability::Mut, _, substs), &TyKind::Raw(m2, ..)) => {
                 from_ty = TyKind::Raw(m2, substs.clone()).intern(&Interner);
             }
 
@@ -93,12 +95,12 @@ impl<'a> InferenceContext<'a> {
             (TyKind::FnDef(..), TyKind::Function { .. }) => match from_ty.callable_sig(self.db) {
                 None => return false,
                 Some(sig) => {
-                    from_ty = Ty::fn_ptr(sig);
+                    from_ty = TyBuilder::fn_ptr(sig);
                 }
             },
 
             (TyKind::Closure(.., substs), TyKind::Function { .. }) => {
-                from_ty = substs[0].clone();
+                from_ty = substs.at(&Interner, 0).assert_ty_ref(&Interner).clone();
             }
 
             _ => {}
@@ -109,10 +111,10 @@ impl<'a> InferenceContext<'a> {
         }
 
         // Auto Deref if cannot coerce
-        match (from_ty.interned(&Interner), to_ty.interned(&Interner)) {
+        match (from_ty.kind(&Interner), to_ty.kind(&Interner)) {
             // FIXME: DerefMut
-            (TyKind::Ref(_, st1), TyKind::Ref(_, st2)) => {
-                self.unify_autoderef_behind_ref(&st1[0], &st2[0])
+            (TyKind::Ref(.., st1), TyKind::Ref(.., st2)) => {
+                self.unify_autoderef_behind_ref(st1, st2)
             }
 
             // Otherwise, normal unify
@@ -130,18 +132,16 @@ impl<'a> InferenceContext<'a> {
             _ => return None,
         };
 
-        let generic_params = crate::utils::generics(self.db.upcast(), coerce_unsized_trait.into());
-        if generic_params.len() != 2 {
-            // The CoerceUnsized trait should have two generic params: Self and T.
-            return None;
-        }
+        let trait_ref = {
+            let b = TyBuilder::trait_ref(self.db, coerce_unsized_trait);
+            if b.remaining() != 2 {
+                // The CoerceUnsized trait should have two generic params: Self and T.
+                return None;
+            }
+            b.push(from_ty.clone()).push(to_ty.clone()).build()
+        };
 
-        let substs = Substs::build_for_generics(&generic_params)
-            .push(from_ty.clone())
-            .push(to_ty.clone())
-            .build();
-        let trait_ref = TraitRef { trait_: coerce_unsized_trait, substs };
-        let goal = InEnvironment::new(self.trait_env.clone(), Obligation::Trait(trait_ref));
+        let goal = InEnvironment::new(&self.trait_env.env, trait_ref.cast(&Interner));
 
         let canonicalizer = self.canonicalizer();
         let canonicalized = canonicalizer.canonicalize_obligation(goal);
@@ -150,7 +150,14 @@ impl<'a> InferenceContext<'a> {
 
         match solution {
             Solution::Unique(v) => {
-                canonicalized.apply_solution(self, v.0);
+                canonicalized.apply_solution(
+                    self,
+                    Canonical {
+                        binders: v.binders,
+                        // FIXME handle constraints
+                        value: v.value.subst,
+                    },
+                );
             }
             _ => return None,
         };
@@ -169,8 +176,8 @@ impl<'a> InferenceContext<'a> {
             self.db,
             self.resolver.krate(),
             InEnvironment {
-                value: canonicalized.value.clone(),
-                environment: self.trait_env.clone(),
+                goal: canonicalized.value.clone(),
+                environment: self.trait_env.env.clone(),
             },
         ) {
             let derefed_ty = canonicalized.decanonicalize_ty(derefed_ty.value);
@@ -178,11 +185,7 @@ impl<'a> InferenceContext<'a> {
             // Stop when constructor matches.
             if from_ty.equals_ctor(&to_ty) {
                 // It will not recurse to `coerce`.
-                return match (from_ty.substs(), to_ty.substs()) {
-                    (Some(st1), Some(st2)) => self.table.unify_substs(st1, st2, 0),
-                    (None, None) => true,
-                    _ => false,
-                };
+                return self.table.unify(&from_ty, &to_ty);
             } else if self.table.unify_inner_trivial(&derefed_ty, &to_ty, 0) {
                 return true;
             }

@@ -4,8 +4,9 @@ use either::Either;
 use hir::{HasAttrs, HirDisplay, Semantics, Type};
 use stdx::format_to;
 use syntax::{
-    ast::{self, ArgListOwner},
-    match_ast, AstNode, SyntaxNode, SyntaxToken, TextRange, TextSize,
+    algo,
+    ast::{self, ArgListOwner, NameOwner},
+    match_ast, AstNode, Direction, SyntaxNode, SyntaxToken, TextRange, TextSize,
 };
 
 use crate::RootDatabase;
@@ -43,7 +44,12 @@ pub fn call_info(db: &RootDatabase, position: FilePosition) -> Option<CallInfo> 
     let sema = Semantics::new(db);
     let file = sema.parse(position.file_id);
     let file = file.syntax();
-    let token = file.token_at_offset(position.offset).next()?;
+    let token = file
+        .token_at_offset(position.offset)
+        .left_biased()
+        // if the cursor is sandwiched between two space tokens and the call is unclosed
+        // this prevents us from leaving the CallExpression
+        .and_then(|tok| algo::skip_trivia_token(tok, Direction::Prev))?;
     let token = sema.descend_into_macros(token);
 
     let (callable, active_parameter) = call_info_impl(&sema, token)?;
@@ -53,15 +59,15 @@ pub fn call_info(db: &RootDatabase, position: FilePosition) -> Option<CallInfo> 
 
     match callable.kind() {
         hir::CallableKind::Function(func) => {
-            res.doc = func.docs(db).map(|it| it.as_str().to_string());
+            res.doc = func.docs(db).map(|it| it.into());
             format_to!(res.signature, "fn {}", func.name(db));
         }
         hir::CallableKind::TupleStruct(strukt) => {
-            res.doc = strukt.docs(db).map(|it| it.as_str().to_string());
+            res.doc = strukt.docs(db).map(|it| it.into());
             format_to!(res.signature, "struct {}", strukt.name(db));
         }
         hir::CallableKind::TupleEnumVariant(variant) => {
-            res.doc = variant.docs(db).map(|it| it.as_str().to_string());
+            res.doc = variant.docs(db).map(|it| it.into());
             format_to!(
                 res.signature,
                 "enum {}::{}",
@@ -109,7 +115,7 @@ fn call_info_impl(
     token: SyntaxToken,
 ) -> Option<(hir::Callable, Option<usize>)> {
     // Find the calling expression and it's NameRef
-    let calling_node = FnCallNode::with_node(&token.parent())?;
+    let calling_node = FnCallNode::with_node(&token.parent()?)?;
 
     let callable = match &calling_node {
         FnCallNode::CallExpr(call) => sema.type_of_expr(&call.expr()?)?.as_callable(sema.db)?,
@@ -142,7 +148,7 @@ fn call_info_impl(
 #[derive(Debug)]
 pub struct ActiveParameter {
     pub ty: Type,
-    pub name: String,
+    pub pat: Either<ast::SelfParam, ast::Pat>,
 }
 
 impl ActiveParameter {
@@ -165,8 +171,14 @@ impl ActiveParameter {
             return None;
         }
         let (pat, ty) = params.swap_remove(idx);
-        let name = pat?.to_string();
-        Some(ActiveParameter { ty, name })
+        pat.map(|pat| ActiveParameter { ty, pat })
+    }
+
+    pub fn ident(&self) -> Option<ast::Name> {
+        self.pat.as_ref().right().and_then(|param| match param {
+            ast::Pat::IdentPat(ident) => ident.name(),
+            _ => None,
+        })
     }
 }
 

@@ -35,6 +35,8 @@ use crate::{
 };
 
 mod allow {
+    pub(super) const BAD_STYLE: &str = "bad_style";
+    pub(super) const NONSTANDARD_STYLE: &str = "nonstandard_style";
     pub(super) const NON_SNAKE_CASE: &str = "non_snake_case";
     pub(super) const NON_UPPER_CASE_GLOBAL: &str = "non_upper_case_globals";
     pub(super) const NON_CAMEL_CASE_TYPES: &str = "non_camel_case_types";
@@ -83,15 +85,44 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
     }
 
     /// Checks whether not following the convention is allowed for this item.
-    ///
-    /// Currently this method doesn't check parent attributes.
-    fn allowed(&self, id: AttrDefId, allow_name: &str) -> bool {
-        self.db.attrs(id).by_key("allow").tt_values().any(|tt| tt.to_string().contains(allow_name))
+    fn allowed(&self, id: AttrDefId, allow_name: &str, recursing: bool) -> bool {
+        let is_allowed = |def_id| {
+            let attrs = self.db.attrs(def_id);
+            // don't bug the user about directly no_mangle annotated stuff, they can't do anything about it
+            (!recursing && attrs.by_key("no_mangle").exists())
+                || attrs.by_key("allow").tt_values().any(|tt| {
+                    let allows = tt.to_string();
+                    allows.contains(allow_name)
+                        || allows.contains(allow::BAD_STYLE)
+                        || allows.contains(allow::NONSTANDARD_STYLE)
+                })
+        };
+
+        is_allowed(id)
+            // go upwards one step or give up
+            || match id {
+                AttrDefId::ModuleId(m) => m.containing_module(self.db.upcast()).map(|v| v.into()),
+                AttrDefId::FunctionId(f) => Some(f.lookup(self.db.upcast()).container.into()),
+                AttrDefId::StaticId(sid) => Some(sid.lookup(self.db.upcast()).container.into()),
+                AttrDefId::ConstId(cid) => Some(cid.lookup(self.db.upcast()).container.into()),
+                AttrDefId::TraitId(tid) => Some(tid.lookup(self.db.upcast()).container.into()),
+                AttrDefId::ImplId(iid) => Some(iid.lookup(self.db.upcast()).container.into()),
+                // These warnings should not explore macro definitions at all
+                AttrDefId::MacroDefId(_) => None,
+                // Will never occur under an enum/struct/union/type alias
+                AttrDefId::AdtId(_) => None,
+                AttrDefId::FieldId(_) => None,
+                AttrDefId::EnumVariantId(_) => None,
+                AttrDefId::TypeAliasId(_) => None,
+                AttrDefId::GenericParamId(_) => None,
+            }
+            .map(|mid| self.allowed(mid, allow_name, true))
+            .unwrap_or(false)
     }
 
     fn validate_func(&mut self, func: FunctionId) {
         let data = self.db.function_data(func);
-        if data.is_extern {
+        if data.is_in_extern_block() {
             cov_mark::hit!(extern_func_incorrect_case_ignored);
             return;
         }
@@ -99,10 +130,9 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
         let body = self.db.body(func.into());
 
         // Recursively validate inner scope items, such as static variables and constants.
-        let db = self.db;
-        for block_def_map in body.block_scopes.iter().filter_map(|block| db.block_def_map(*block)) {
+        for (_, block_def_map) in body.blocks(self.db.upcast()) {
             for (_, module) in block_def_map.modules() {
-                for (def_id, _) in module.scope.values() {
+                for def_id in module.scope.declarations() {
                     let mut validator = DeclValidator::new(self.db, self.krate, self.sink);
                     validator.validate_item(def_id);
                 }
@@ -110,7 +140,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
         }
 
         // Check whether non-snake case identifiers are allowed for this function.
-        if self.allowed(func.into(), allow::NON_SNAKE_CASE) {
+        if self.allowed(func.into(), allow::NON_SNAKE_CASE, false) {
             return;
         }
 
@@ -203,7 +233,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
             let diagnostic = IncorrectCase {
                 file: fn_src.file_id,
                 ident_type: IdentType::Function,
-                ident: AstPtr::new(&ast_ptr).into(),
+                ident: AstPtr::new(&ast_ptr),
                 expected_case: replacement.expected_case,
                 ident_text: replacement.current_name.to_string(),
                 suggested_text: replacement.suggested_text,
@@ -261,7 +291,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
             let diagnostic = IncorrectCase {
                 file: fn_src.file_id,
                 ident_type: IdentType::Argument,
-                ident: AstPtr::new(&ast_ptr).into(),
+                ident: AstPtr::new(&ast_ptr),
                 expected_case: param_to_rename.expected_case,
                 ident_text: param_to_rename.current_name.to_string(),
                 suggested_text: param_to_rename.suggested_text,
@@ -313,7 +343,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
                         let diagnostic = IncorrectCase {
                             file: source_ptr.file_id,
                             ident_type: IdentType::Variable,
-                            ident: AstPtr::new(&name_ast).into(),
+                            ident: AstPtr::new(&name_ast),
                             expected_case: replacement.expected_case,
                             ident_text: replacement.current_name.to_string(),
                             suggested_text: replacement.suggested_text,
@@ -329,8 +359,9 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
     fn validate_struct(&mut self, struct_id: StructId) {
         let data = self.db.struct_data(struct_id);
 
-        let non_camel_case_allowed = self.allowed(struct_id.into(), allow::NON_CAMEL_CASE_TYPES);
-        let non_snake_case_allowed = self.allowed(struct_id.into(), allow::NON_SNAKE_CASE);
+        let non_camel_case_allowed =
+            self.allowed(struct_id.into(), allow::NON_CAMEL_CASE_TYPES, false);
+        let non_snake_case_allowed = self.allowed(struct_id.into(), allow::NON_SNAKE_CASE, false);
 
         // Check the structure name.
         let struct_name = data.name.to_string();
@@ -403,7 +434,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
             let diagnostic = IncorrectCase {
                 file: struct_src.file_id,
                 ident_type: IdentType::Structure,
-                ident: AstPtr::new(&ast_ptr).into(),
+                ident: AstPtr::new(&ast_ptr),
                 expected_case: replacement.expected_case,
                 ident_text: replacement.current_name.to_string(),
                 suggested_text: replacement.suggested_text,
@@ -448,7 +479,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
             let diagnostic = IncorrectCase {
                 file: struct_src.file_id,
                 ident_type: IdentType::Field,
-                ident: AstPtr::new(&ast_ptr).into(),
+                ident: AstPtr::new(&ast_ptr),
                 expected_case: field_to_rename.expected_case,
                 ident_text: field_to_rename.current_name.to_string(),
                 suggested_text: field_to_rename.suggested_text,
@@ -462,7 +493,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
         let data = self.db.enum_data(enum_id);
 
         // Check whether non-camel case names are allowed for this enum.
-        if self.allowed(enum_id.into(), allow::NON_CAMEL_CASE_TYPES) {
+        if self.allowed(enum_id.into(), allow::NON_CAMEL_CASE_TYPES, false) {
             return;
         }
 
@@ -527,7 +558,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
             let diagnostic = IncorrectCase {
                 file: enum_src.file_id,
                 ident_type: IdentType::Enum,
-                ident: AstPtr::new(&ast_ptr).into(),
+                ident: AstPtr::new(&ast_ptr),
                 expected_case: replacement.expected_case,
                 ident_text: replacement.current_name.to_string(),
                 suggested_text: replacement.suggested_text,
@@ -572,7 +603,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
             let diagnostic = IncorrectCase {
                 file: enum_src.file_id,
                 ident_type: IdentType::Variant,
-                ident: AstPtr::new(&ast_ptr).into(),
+                ident: AstPtr::new(&ast_ptr),
                 expected_case: variant_to_rename.expected_case,
                 ident_text: variant_to_rename.current_name.to_string(),
                 suggested_text: variant_to_rename.suggested_text,
@@ -585,7 +616,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
     fn validate_const(&mut self, const_id: ConstId) {
         let data = self.db.const_data(const_id);
 
-        if self.allowed(const_id.into(), allow::NON_UPPER_CASE_GLOBAL) {
+        if self.allowed(const_id.into(), allow::NON_UPPER_CASE_GLOBAL, false) {
             return;
         }
 
@@ -617,7 +648,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
         let diagnostic = IncorrectCase {
             file: const_src.file_id,
             ident_type: IdentType::Constant,
-            ident: AstPtr::new(&ast_ptr).into(),
+            ident: AstPtr::new(&ast_ptr),
             expected_case: replacement.expected_case,
             ident_text: replacement.current_name.to_string(),
             suggested_text: replacement.suggested_text,
@@ -633,7 +664,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
             return;
         }
 
-        if self.allowed(static_id.into(), allow::NON_UPPER_CASE_GLOBAL) {
+        if self.allowed(static_id.into(), allow::NON_UPPER_CASE_GLOBAL, false) {
             return;
         }
 
@@ -665,7 +696,7 @@ impl<'a, 'b> DeclValidator<'a, 'b> {
         let diagnostic = IncorrectCase {
             file: static_src.file_id,
             ident_type: IdentType::StaticVariable,
-            ident: AstPtr::new(&ast_ptr).into(),
+            ident: AstPtr::new(&ast_ptr),
             expected_case: replacement.expected_case,
             ident_text: replacement.current_name.to_string(),
             suggested_text: replacement.suggested_text,
@@ -868,23 +899,116 @@ fn main() {
     fn allow_attributes() {
         check_diagnostics(
             r#"
-            #[allow(non_snake_case)]
-    fn NonSnakeCaseName(SOME_VAR: u8) -> u8{
-        let OtherVar = SOME_VAR + 1;
-        OtherVar
+#[allow(non_snake_case)]
+fn NonSnakeCaseName(SOME_VAR: u8) -> u8{
+    // cov_flags generated output from elsewhere in this file
+    extern "C" {
+        #[no_mangle]
+        static lower_case: u8;
     }
 
-    #[allow(non_snake_case, non_camel_case_types)]
-    pub struct some_type {
-        SOME_FIELD: u8,
-        SomeField: u16,
+    let OtherVar = SOME_VAR + 1;
+    OtherVar
+}
+
+#[allow(nonstandard_style)]
+mod CheckNonstandardStyle {
+    fn HiImABadFnName() {}
+}
+
+#[allow(bad_style)]
+mod CheckBadStyle {
+    fn HiImABadFnName() {}
+}
+
+mod F {
+    #![allow(non_snake_case)]
+    fn CheckItWorksWithModAttr(BAD_NAME_HI: u8) {}
+}
+
+#[allow(non_snake_case, non_camel_case_types)]
+pub struct some_type {
+    SOME_FIELD: u8,
+    SomeField: u16,
+}
+
+#[allow(non_upper_case_globals)]
+pub const some_const: u8 = 10;
+
+#[allow(non_upper_case_globals)]
+pub static SomeStatic: u8 = 10;
+    "#,
+        );
     }
 
-    #[allow(non_upper_case_globals)]
-    pub const some_const: u8 = 10;
+    #[test]
+    fn allow_attributes_crate_attr() {
+        check_diagnostics(
+            r#"
+#![allow(non_snake_case)]
 
-    #[allow(non_upper_case_globals)]
-    pub static SomeStatic: u8 = 10;
+mod F {
+    fn CheckItWorksWithCrateAttr(BAD_NAME_HI: u8) {}
+}
+    "#,
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn bug_trait_inside_fn() {
+        // FIXME:
+        // This is broken, and in fact, should not even be looked at by this
+        // lint in the first place. There's weird stuff going on in the
+        // collection phase.
+        // It's currently being brought in by:
+        // * validate_func on `a` recursing into modules
+        // * then it finds the trait and then the function while iterating
+        //   through modules
+        // * then validate_func is called on Dirty
+        // * ... which then proceeds to look at some unknown module taking no
+        //   attrs from either the impl or the fn a, and then finally to the root
+        //   module
+        //
+        // It should find the attribute on the trait, but it *doesn't even see
+        // the trait* as far as I can tell.
+
+        check_diagnostics(
+            r#"
+trait T { fn a(); }
+struct U {}
+impl T for U {
+    fn a() {
+        // this comes out of bitflags, mostly
+        #[allow(non_snake_case)]
+        trait __BitFlags {
+            const HiImAlsoBad: u8 = 2;
+            #[inline]
+            fn Dirty(&self) -> bool {
+                false
+            }
+        }
+
+    }
+}
+    "#,
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn bug_traits_arent_checked() {
+        // FIXME: Traits and functions in traits aren't currently checked by
+        // r-a, even though rustc will complain about them.
+        check_diagnostics(
+            r#"
+trait BAD_TRAIT {
+    // ^^^^^^^^^ Trait `BAD_TRAIT` should have CamelCase name, e.g. `BadTrait`
+    fn BAD_FUNCTION();
+    // ^^^^^^^^^^^^ Function `BAD_FUNCTION` should have snake_case name, e.g. `bad_function`
+    fn BadFunction();
+    // ^^^^^^^^^^^^ Function `BadFunction` should have snake_case name, e.g. `bad_function`
+}
     "#,
         );
     }
@@ -901,5 +1025,18 @@ extern {
 }
             "#,
         );
+    }
+
+    #[test]
+    fn infinite_loop_inner_items() {
+        check_diagnostics(
+            r#"
+fn qualify() {
+    mod foo {
+        use super::*;
+    }
+}
+            "#,
+        )
     }
 }

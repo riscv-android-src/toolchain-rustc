@@ -1,8 +1,8 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::iter::TakeWhile;
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::ops::Not;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,6 +46,24 @@ struct CrateRunEnv {
     env: Vec<(OsString, OsString)>,
     /// The current working directory.
     current_dir: OsString,
+    /// The contents passed via standard input.
+    stdin: Vec<u8>,
+}
+
+impl CrateRunEnv {
+    /// Gather all the information we need.
+    fn collect(args: env::Args, capture_stdin: bool) -> Self {
+        let args = args.collect();
+        let env = env::vars_os().collect();
+        let current_dir = env::current_dir().unwrap().into_os_string();
+
+        let mut stdin = Vec::new();
+        if capture_stdin {
+            std::io::stdin().lock().read_to_end(&mut stdin).expect("cannot read stdin");
+        }
+
+        CrateRunEnv { args, env, current_dir, stdin }
+    }
 }
 
 /// The information Miri needs to run a crate. Stored as JSON when the crate is "compiled".
@@ -58,14 +76,6 @@ enum CrateRunInfo {
 }
 
 impl CrateRunInfo {
-    /// Gather all the information we need.
-    fn collect(args: env::Args) -> Self {
-        let args = args.collect();
-        let env = env::vars_os().collect();
-        let current_dir = env::current_dir().unwrap().into_os_string();
-        Self::RunWith(CrateRunEnv { args, env, current_dir })
-    }
-
     fn store(&self, filename: &Path) {
         let file = File::create(filename)
             .unwrap_or_else(|_| show_error(format!("cannot create `{}`", filename.display())));
@@ -83,8 +93,8 @@ fn show_version() {
     println!(
         "miri {} ({} {})",
         env!("CARGO_PKG_VERSION"),
-        env!("VERGEN_SHA_SHORT"),
-        env!("VERGEN_COMMIT_DATE")
+        env!("VERGEN_GIT_SHA_SHORT"),
+        env!("VERGEN_GIT_COMMIT_DATE")
     );
 }
 
@@ -155,6 +165,13 @@ fn forward_patched_extern_arg(args: &mut impl Iterator<Item = String>, cmd: &mut
     }
 }
 
+fn forward_miri_sysroot(cmd: &mut Command) {
+    let sysroot =
+        env::var_os("MIRI_SYSROOT").expect("the wrapper should have set MIRI_SYSROOT");
+    cmd.arg("--sysroot");
+    cmd.arg(sysroot);
+}
+
 /// Returns the path to the `miri` binary
 fn find_miri() -> PathBuf {
     if let Some(path) = env::var_os("MIRI") {
@@ -185,6 +202,22 @@ fn xargo_check() -> Command {
 /// Otherwise, continue.
 fn exec(mut cmd: Command) {
     let exit_status = cmd.status().expect("failed to run command");
+    if exit_status.success().not() {
+        std::process::exit(exit_status.code().unwrap_or(-1))
+    }
+}
+
+/// Execute the command and pipe `input` into its stdin.
+/// If it fails, fail this process with the same exit code.
+/// Otherwise, continue.
+fn exec_with_pipe(mut cmd: Command, input: &[u8]) {
+    cmd.stdin(std::process::Stdio::piped());
+    let mut child = cmd.spawn().expect("failed to spawn process");
+    {
+        let stdin = child.stdin.as_mut().expect("failed to open stdin");
+        stdin.write_all(input).expect("failed to write out test source");
+    }
+    let exit_status = child.wait().expect("failed to run command");
     if exit_status.success().not() {
         std::process::exit(exit_status.code().unwrap_or(-1))
     }
@@ -380,14 +413,14 @@ path = "lib.rs"
     // for target crates.
     // We set ourselves (`cargo-miri`) instead of Miri directly to be able to patch the flags
     // for `libpanic_abort` (usually this is done by bootstrap but we have to do it ourselves).
-    // The `MIRI_BE_RUSTC` will mean we dispatch to `phase_setup_rustc`.
+    // The `MIRI_CALLED_FROM_XARGO` will mean we dispatch to `phase_setup_rustc`.
     let cargo_miri_path = std::env::current_exe().expect("current executable path invalid");
     if env::var_os("RUSTC_STAGE").is_some() {
         command.env("RUSTC_REAL", &cargo_miri_path);
     } else {
         command.env("RUSTC", &cargo_miri_path);
     }
-    command.env("MIRI_BE_RUSTC", "1");
+    command.env("MIRI_CALLED_FROM_XARGO", "1");
     // Make sure there are no other wrappers or flags getting in our way
     // (Cc https://github.com/rust-lang/miri/issues/1421).
     // This is consistent with normal `cargo build` that does not apply `RUSTFLAGS`
@@ -415,21 +448,6 @@ path = "lib.rs"
     } else if subcommand == MiriCommand::Setup {
         println!("A libstd for Miri is now available in `{}`.", sysroot.display());
     }
-}
-
-fn phase_setup_rustc(args: env::Args) {
-    // Mostly we just forward everything.
-    // `MIRI_BE_RUST` is already set.
-    let mut cmd = miri();
-    cmd.args(args);
-
-    // Patch the panic runtime for `libpanic_abort` (mirroring what bootstrap usually does).
-    if get_arg_flag_value("--crate-name").as_deref() == Some("panic_abort") {
-        cmd.arg("-C").arg("panic=abort");
-    }
-
-    // Run it!
-    exec(cmd);
 }
 
 fn phase_cargo_miri(mut args: env::Args) {
@@ -488,46 +506,8 @@ fn phase_cargo_miri(mut args: env::Args) {
         &host
     };
 
-    // Forward all further arguments. We do some processing here because we want to
-    // detect people still using the old way of passing flags to Miri
-    // (`cargo miri -- -Zmiri-foo`).
-    while let Some(arg) = args.next() {
-        cmd.arg(&arg);
-        if arg == "--" {
-            // Check if the next argument starts with `-Zmiri`. If yes, we assume
-            // this is an old-style invocation.
-            if let Some(next_arg) = args.next() {
-                if next_arg.starts_with("-Zmiri") || next_arg == "--" {
-                    eprintln!(
-                        "WARNING: it seems like you are setting Miri's flags in `cargo miri` the old way,\n\
-                        i.e., by passing them after the first `--`. This style is deprecated; please set\n\
-                        the MIRIFLAGS environment variable instead. `cargo miri run/test` now interprets\n\
-                        arguments the exact same way as `cargo run/test`."
-                    );
-                    // Old-style invocation. Turn these into MIRIFLAGS, if there are any.
-                    if next_arg != "--" {
-                        let mut miriflags = env::var("MIRIFLAGS").unwrap_or_default();
-                        miriflags.push(' ');
-                        miriflags.push_str(&next_arg);
-                        while let Some(further_arg) = args.next() {
-                            if further_arg == "--" {
-                                // End of the Miri flags!
-                                break;
-                            }
-                            miriflags.push(' ');
-                            miriflags.push_str(&further_arg);
-                        }
-                        env::set_var("MIRIFLAGS", miriflags);
-                    }
-                    // Pass the remaining flags to cargo.
-                    cmd.args(args);
-                    break;
-                }
-                // Not a Miri argument after all, make sure we pass it to cargo.
-                cmd.arg(next_arg);
-            }
-        }
-    }
+    // Forward all further arguments to cargo.
+    cmd.args(args);
 
     // Set `RUSTC_WRAPPER` to ourselves.  Cargo will prepend that binary to its usual invocation,
     // i.e., the first argument is `rustc` -- which is what we use in `main` to distinguish
@@ -548,7 +528,7 @@ fn phase_cargo_miri(mut args: env::Args) {
     // us in order to skip them.
     cmd.env(&host_runner_env_name, &cargo_miri_path);
 
-    // Set rustdoc to us as well, so we can make it do nothing (see issue #584).
+    // Set rustdoc to us as well, so we can run doctests.
     cmd.env("RUSTDOC", &cargo_miri_path);
 
     // Run cargo.
@@ -565,7 +545,17 @@ fn phase_cargo_miri(mut args: env::Args) {
     exec(cmd)
 }
 
-fn phase_cargo_rustc(mut args: env::Args) {
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum RustcPhase {
+    /// `rustc` called via `xargo` for sysroot build.
+    Setup,
+    /// `rustc` called by `cargo` for regular build.
+    Build,
+    /// `rustc` called by `rustdoc` for doctest.
+    Rustdoc,
+}
+
+fn phase_rustc(mut args: env::Args, phase: RustcPhase) {
     /// Determines if we are being invoked (as rustc) to build a crate for
     /// the "target" architecture, in contrast to the "host" architecture.
     /// Host crates are for build scripts and proc macros and still need to
@@ -591,22 +581,27 @@ fn phase_cargo_rustc(mut args: env::Args) {
     }
 
     fn out_filename(prefix: &str, suffix: &str) -> PathBuf {
-        let mut path = PathBuf::from(get_arg_flag_value("--out-dir").unwrap());
-        path.push(format!(
-            "{}{}{}{}",
-            prefix,
-            get_arg_flag_value("--crate-name").unwrap(),
-            // This is technically a `-C` flag but the prefix seems unique enough...
-            // (and cargo passes this before the filename so it should be unique)
-            get_arg_flag_value("extra-filename").unwrap_or(String::new()),
-            suffix,
-        ));
-        path
+        if let Some(out_dir) = get_arg_flag_value("--out-dir") {
+            let mut path = PathBuf::from(out_dir);
+            path.push(format!(
+                "{}{}{}{}",
+                prefix,
+                get_arg_flag_value("--crate-name").unwrap(),
+                // This is technically a `-C` flag but the prefix seems unique enough...
+                // (and cargo passes this before the filename so it should be unique)
+                get_arg_flag_value("extra-filename").unwrap_or(String::new()),
+                suffix,
+            ));
+            path
+        } else {
+            let out_file = get_arg_flag_value("-o").unwrap();
+            PathBuf::from(out_file)
+        }
     }
 
     let verbose = std::env::var_os("MIRI_VERBOSE").is_some();
     let target_crate = is_target_crate();
-    let print = get_arg_flag_value("--print").is_some(); // whether this is cargo passing `--print` to get some infos
+    let print = get_arg_flag_value("--print").is_some() || has_arg_flag("-vV"); // whether this is cargo/xargo invoking rustc to get some infos
 
     let store_json = |info: CrateRunInfo| {
         // Create a stub .d file to stop Cargo from "rebuilding" the crate:
@@ -631,12 +626,44 @@ fn phase_cargo_rustc(mut args: env::Args) {
     let runnable_crate = !print && is_runnable_crate();
 
     if runnable_crate && target_crate {
+        assert!(phase != RustcPhase::Setup, "there should be no interpretation during sysroot build");
+        let inside_rustdoc = phase == RustcPhase::Rustdoc;
         // This is the binary or test crate that we want to interpret under Miri.
         // But we cannot run it here, as cargo invoked us as a compiler -- our stdin and stdout are not
         // like we want them.
         // Instead of compiling, we write JSON into the output file with all the relevant command-line flags
         // and environment variables; this is used when cargo calls us again in the CARGO_TARGET_RUNNER phase.
-        store_json(CrateRunInfo::collect(args));
+        let env = CrateRunEnv::collect(args, inside_rustdoc);
+
+        // Rustdoc expects us to exit with an error code if the test is marked as `compile_fail`,
+        // just creating the JSON file is not enough: we need to detect syntax errors,
+        // so we need to run Miri with `MIRI_BE_RUSTC` for a check-only build.
+        if inside_rustdoc {
+            let mut cmd = miri();
+
+            // Ensure --emit argument for a check-only build is present.
+            // We cannot use the usual helpers since we need to check specifically in `env.args`.
+            if let Some(i) = env.args.iter().position(|arg| arg.starts_with("--emit=")) {
+                // For `no_run` tests, rustdoc passes a `--emit` flag; make sure it has the right shape.
+                assert_eq!(env.args[i], "--emit=metadata");
+            } else {
+                // For all other kinds of tests, we can just add our flag.
+                cmd.arg("--emit=metadata");
+            }
+
+            cmd.args(&env.args);
+            cmd.env("MIRI_BE_RUSTC", "target");
+
+            if verbose {
+                eprintln!("[cargo-miri rustc] captured input:\n{}", std::str::from_utf8(&env.stdin).unwrap());
+                eprintln!("[cargo-miri rustc] {:?}", cmd);
+            }
+
+            exec_with_pipe(cmd, &env.stdin);
+        }
+
+        store_json(CrateRunInfo::RunWith(env));
+
         return;
     }
 
@@ -680,11 +707,15 @@ fn phase_cargo_rustc(mut args: env::Args) {
             }
         }
 
-        // Use our custom sysroot.
-        let sysroot =
-            env::var_os("MIRI_SYSROOT").expect("the wrapper should have set MIRI_SYSROOT");
-        cmd.arg("--sysroot");
-        cmd.arg(sysroot);
+        // Use our custom sysroot (but not if that is what we are currently building).
+        if phase != RustcPhase::Setup {
+            forward_miri_sysroot(&mut cmd);
+        }
+
+        // During setup, patch the panic runtime for `libpanic_abort` (mirroring what bootstrap usually does).
+        if phase == RustcPhase::Setup && get_arg_flag_value("--crate-name").as_deref() == Some("panic_abort") {
+            cmd.arg("-C").arg("panic=abort");
+        }
     } else {
         // For host crates or when we are printing, just forward everything.
         cmd.args(args);
@@ -692,7 +723,9 @@ fn phase_cargo_rustc(mut args: env::Args) {
 
     // We want to compile, not interpret. We still use Miri to make sure the compiler version etc
     // are the exact same as what is used for interpretation.
-    cmd.env("MIRI_BE_RUSTC", "1");
+    // MIRI_DEFAULT_ARGS should not be used to build host crates, hence setting "target" or "host"
+    // as the value here to help Miri differentiate them.
+    cmd.env("MIRI_BE_RUSTC", if target_crate { "target" } else { "host" });
 
     // Run it.
     if verbose {
@@ -715,7 +748,15 @@ fn phase_cargo_rustc(mut args: env::Args) {
     }
 }
 
-fn phase_cargo_runner(binary: &Path, binary_args: env::Args) {
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum RunnerPhase {
+    /// `cargo` is running a binary
+    Cargo,
+    /// `rustdoc` is running a binary
+    Rustdoc,
+}
+
+fn phase_runner(binary: &Path, binary_args: env::Args, phase: RunnerPhase) {
     let verbose = std::env::var_os("MIRI_VERBOSE").is_some();
 
     let file = File::open(&binary)
@@ -772,11 +813,10 @@ fn phase_cargo_runner(binary: &Path, binary_args: env::Args) {
             cmd.arg(arg);
         }
     }
-    // Set sysroot.
-    let sysroot =
-        env::var_os("MIRI_SYSROOT").expect("the wrapper should have set MIRI_SYSROOT");
-    cmd.arg("--sysroot");
-    cmd.arg(sysroot);
+    // Set sysroot (if we are inside rustdoc, we already did that in `phase_cargo_rustdoc`).
+    if phase != RunnerPhase::Rustdoc {
+        forward_miri_sysroot(&mut cmd);
+    }
     // Respect `MIRIFLAGS`.
     if let Ok(a) = env::var("MIRIFLAGS") {
         // This code is taken from `RUSTFLAGS` handling in cargo.
@@ -801,6 +841,80 @@ fn phase_cargo_runner(binary: &Path, binary_args: env::Args) {
     if verbose {
         eprintln!("[cargo-miri runner] {:?}", cmd);
     }
+
+    match phase {
+        RunnerPhase::Rustdoc => {
+            exec_with_pipe(cmd, &info.stdin)
+        }
+        RunnerPhase::Cargo => {
+            exec(cmd)
+        }
+    }
+}
+
+fn phase_rustdoc(fst_arg: &str, mut args: env::Args) {
+    let verbose = std::env::var_os("MIRI_VERBOSE").is_some();
+
+    // phase_cargo_miri sets the RUSTDOC env var to ourselves, so we can't use that here;
+    // just default to a straight-forward invocation for now:
+    let mut cmd = Command::new("rustdoc");
+
+    // Because of the way the main function is structured, we have to take the first argument spearately
+    // from the rest; to simplify the following argument patching loop, we'll just skip that one.
+    // This is fine for now, because cargo will never pass --extern arguments in the first position,
+    // but we should defensively assert that this will work.
+    let extern_flag = "--extern";
+    assert!(fst_arg != extern_flag);
+    cmd.arg(fst_arg);
+
+    let runtool_flag = "--runtool";
+    // `crossmode` records if *any* argument matches `runtool_flag`; here we check the first one.
+    let mut crossmode = fst_arg == runtool_flag;
+    while let Some(arg) = args.next() {
+        if arg == extern_flag {
+            // Patch --extern arguments to use *.rmeta files, since phase_cargo_rustc only creates stub *.rlib files.
+            forward_patched_extern_arg(&mut args, &mut cmd);
+        } else if arg == runtool_flag {
+            // An existing --runtool flag indicates cargo is running in cross-target mode, which we don't support.
+            // Note that this is only passed when cargo is run with the unstable -Zdoctest-xcompile flag;
+            // otherwise, we won't be called as rustdoc at all.
+            crossmode = true;
+            break;
+        } else {
+            cmd.arg(arg);
+        }
+    }
+
+    if crossmode {
+        show_error(format!("cross-interpreting doc-tests is not currently supported by Miri."));
+    }
+
+    // For each doc-test, rustdoc starts two child processes: first the test is compiled,
+    // then the produced executable is invoked. We want to reroute both of these to cargo-miri,
+    // such that the first time we'll enter phase_cargo_rustc, and phase_cargo_runner second.
+    //
+    // rustdoc invokes the test-builder by forwarding most of its own arguments, which makes
+    // it difficult to determine when phase_cargo_rustc should run instead of phase_cargo_rustdoc.
+    // Furthermore, the test code is passed via stdin, rather than a temporary file, so we need
+    // to let phase_cargo_rustc know to expect that. We'll use this environment variable as a flag:
+    cmd.env("MIRI_CALLED_FROM_RUSTDOC", "1");
+
+    // The `--test-builder` and `--runtool` arguments are unstable rustdoc features,
+    // which are disabled by default. We first need to enable them explicitly:
+    cmd.arg("-Z").arg("unstable-options");
+
+    // rustdoc needs to know the right sysroot.
+    forward_miri_sysroot(&mut cmd);
+
+    // Make rustdoc call us back.
+    let cargo_miri_path = std::env::current_exe().expect("current executable path invalid");
+    cmd.arg("--test-builder").arg(&cargo_miri_path); // invoked by forwarding most arguments
+    cmd.arg("--runtool").arg(&cargo_miri_path); // invoked with just a single path argument
+
+    if verbose {
+        eprintln!("[cargo-miri rustdoc] {:?}", cmd);
+    }
+
     exec(cmd)
 }
 
@@ -812,8 +926,30 @@ fn main() {
     args.next().unwrap();
 
     // Dispatch running as part of sysroot compilation.
-    if env::var_os("MIRI_BE_RUSTC").is_some() {
-        phase_setup_rustc(args);
+    if env::var_os("MIRI_CALLED_FROM_XARGO").is_some() {
+        phase_rustc(args, RustcPhase::Setup);
+        return;
+    }
+
+    // The way rustdoc invokes rustc is indistuingishable from the way cargo invokes rustdoc by the
+    // arguments alone. `phase_cargo_rustdoc` sets this environment variable to let us disambiguate.
+    if env::var_os("MIRI_CALLED_FROM_RUSTDOC").is_some() {
+        // ...however, we then also see this variable when rustdoc invokes us as the testrunner!
+        // The runner is invoked as `$runtool ($runtool-arg)* output_file`;
+        // since we don't specify any runtool-args, and rustdoc supplies multiple arguments to
+        // the test-builder unconditionally, we can just check the number of remaining arguments:
+        if args.len() == 1 {
+            let arg = args.next().unwrap();
+            let binary = Path::new(&arg);
+            if binary.exists() {
+                phase_runner(binary, args, RunnerPhase::Rustdoc);
+            } else {
+                show_error(format!("`cargo-miri` called with non-existing path argument `{}` in rustdoc mode; please invoke this binary through `cargo miri`", arg));
+            }
+        } else {
+            phase_rustc(args, RustcPhase::Rustdoc);
+        }
+
         return;
     }
 
@@ -827,18 +963,17 @@ fn main() {
     // On top of that, we are also called as RUSTDOC, but that is just a stub currently.
     match args.next().as_deref() {
         Some("miri") => phase_cargo_miri(args),
-        Some("rustc") => phase_cargo_rustc(args),
+        Some("rustc") => phase_rustc(args, RustcPhase::Build),
         Some(arg) => {
-            // We have to distinguish the "runner" and "rustfmt" cases.
+            // We have to distinguish the "runner" and "rustdoc" cases.
             // As runner, the first argument is the binary (a file that should exist, with an absolute path);
-            // as rustfmt, the first argument is a flag (`--something`).
+            // as rustdoc, the first argument is a flag (`--something`).
             let binary = Path::new(arg);
             if binary.exists() {
                 assert!(!arg.starts_with("--")); // not a flag
-                phase_cargo_runner(binary, args);
+                phase_runner(binary, args, RunnerPhase::Cargo);
             } else if arg.starts_with("--") {
-                // We are rustdoc.
-                eprintln!("Running doctests is not currently supported by Miri.")
+                phase_rustdoc(arg, args);
             } else {
                 show_error(format!("`cargo-miri` called with unexpected first argument `{}`; please only invoke this binary through `cargo miri`", arg));
             }

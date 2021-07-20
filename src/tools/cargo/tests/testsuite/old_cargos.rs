@@ -10,11 +10,11 @@
 //! cargo test --test testsuite -- old_cargos --nocapture --ignored
 //! ```
 
-use cargo::util::{ProcessBuilder, ProcessError};
 use cargo::CargoResult;
 use cargo_test_support::paths::CargoPathExt;
 use cargo_test_support::registry::{self, Dependency, Package};
 use cargo_test_support::{cargo_exe, execs, paths, process, project, rustc_host};
+use cargo_util::{ProcessBuilder, ProcessError};
 use semver::Version;
 use std::fs;
 
@@ -68,7 +68,7 @@ fn collect_all_toolchains() -> Vec<(Version, String)> {
         format!("nightly-{}", host),
     ];
 
-    let output = cargo::util::process("rustup")
+    let output = ProcessBuilder::new("rustup")
         .args(&["toolchain", "list"])
         .exec_with_output()
         .expect("rustup should be installed");
@@ -583,6 +583,63 @@ fn index_cache_rebuild() {
             "\
 foo v0.1.0 [..]
 └── bar v1.0.0
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+#[ignore]
+fn avoids_split_debuginfo_collision() {
+    // Checks for a bug where .o files were being incorrectly shared between
+    // different toolchains using incremental and split-debuginfo on macOS.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [profile.dev]
+                split-debuginfo = "unpacked"
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    execs()
+        .with_process_builder(tc_process("cargo", "stable"))
+        .arg("build")
+        .env("CARGO_INCREMENTAL", "1")
+        .cwd(p.root())
+        .with_stderr(
+            "\
+[COMPILING] foo v0.1.0 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
+
+    p.cargo("build")
+        .env("CARGO_INCREMENTAL", "1")
+        .with_stderr(
+            "\
+[COMPILING] foo v0.1.0 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
+
+    execs()
+        .with_process_builder(tc_process("cargo", "stable"))
+        .arg("build")
+        .env("CARGO_INCREMENTAL", "1")
+        .cwd(p.root())
+        .with_stderr(
+            "\
+[COMPILING] foo v0.1.0 [..]
+[FINISHED] [..]
 ",
         )
         .run();

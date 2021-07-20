@@ -1,5 +1,5 @@
 use crate::back::write::create_informational_target_machine;
-use crate::llvm;
+use crate::{llvm, llvm_util};
 use libc::c_int;
 use rustc_codegen_ssa::target_features::supported_target_features;
 use rustc_data_structures::fx::FxHashSet;
@@ -10,6 +10,7 @@ use rustc_span::symbol::Symbol;
 use rustc_target::spec::{MergeFunctions, PanicStrategy};
 use std::ffi::{CStr, CString};
 
+use std::ptr;
 use std::slice;
 use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -83,6 +84,17 @@ unsafe fn configure_llvm(sess: &Session) {
         if !sess.opts.debugging_opts.no_generate_arange_section {
             add("-generate-arange-section", false);
         }
+
+        // FIXME(nagisa): disable the machine outliner by default in LLVM versions 11, where it was
+        // introduced and up.
+        //
+        // This should remain in place until https://reviews.llvm.org/D103167 is fixed. If LLVM
+        // has been upgraded since, consider adjusting the version check below to contain an upper
+        // bound.
+        if llvm_util::get_version() >= (11, 0, 0) {
+            add("-enable-machine-outliner=never", false);
+        }
+
         match sess.opts.debugging_opts.merge_functions.unwrap_or(sess.target.merge_functions) {
             MergeFunctions::Disabled | MergeFunctions::Trampolines => {}
             MergeFunctions::Aliases => {
@@ -97,6 +109,9 @@ unsafe fn configure_llvm(sess: &Session) {
         // HACK(eddyb) LLVM inserts `llvm.assume` calls to preserve align attributes
         // during inlining. Unfortunately these may block other optimizations.
         add("-preserve-alignment-assumptions-during-inlining=false", false);
+
+        // Use non-zero `import-instr-limit` multiplier for cold callsites.
+        add("-import-cold-multiplier=0.1", false);
 
         for arg in sess_args {
             add(&(*arg), true);
@@ -189,15 +204,77 @@ pub fn print_passes() {
     }
 }
 
+fn llvm_target_features(tm: &llvm::TargetMachine) -> Vec<(&str, &str)> {
+    let len = unsafe { llvm::LLVMRustGetTargetFeaturesCount(tm) };
+    let mut ret = Vec::with_capacity(len);
+    for i in 0..len {
+        unsafe {
+            let mut feature = ptr::null();
+            let mut desc = ptr::null();
+            llvm::LLVMRustGetTargetFeature(tm, i, &mut feature, &mut desc);
+            if feature.is_null() || desc.is_null() {
+                bug!("LLVM returned a `null` target feature string");
+            }
+            let feature = CStr::from_ptr(feature).to_str().unwrap_or_else(|e| {
+                bug!("LLVM returned a non-utf8 feature string: {}", e);
+            });
+            let desc = CStr::from_ptr(desc).to_str().unwrap_or_else(|e| {
+                bug!("LLVM returned a non-utf8 feature string: {}", e);
+            });
+            ret.push((feature, desc));
+        }
+    }
+    ret
+}
+
+fn print_target_features(sess: &Session, tm: &llvm::TargetMachine) {
+    let mut target_features = llvm_target_features(tm);
+    let mut rustc_target_features = supported_target_features(sess)
+        .iter()
+        .filter_map(|(feature, _gate)| {
+            let llvm_feature = to_llvm_feature(sess, *feature);
+            // LLVM asserts that these are sorted. LLVM and Rust both use byte comparison for these strings.
+            target_features.binary_search_by_key(&llvm_feature, |(f, _d)| *f).ok().map(|index| {
+                let (_f, desc) = target_features.remove(index);
+                (*feature, desc)
+            })
+        })
+        .collect::<Vec<_>>();
+    rustc_target_features.extend_from_slice(&[(
+        "crt-static",
+        "Enables C Run-time Libraries to be statically linked",
+    )]);
+    let max_feature_len = target_features
+        .iter()
+        .chain(rustc_target_features.iter())
+        .map(|(feature, _desc)| feature.len())
+        .max()
+        .unwrap_or(0);
+
+    println!("Features supported by rustc for this target:");
+    for (feature, desc) in &rustc_target_features {
+        println!("    {1:0$} - {2}.", max_feature_len, feature, desc);
+    }
+    println!("\nCode-generation features supported by LLVM for this target:");
+    for (feature, desc) in &target_features {
+        println!("    {1:0$} - {2}.", max_feature_len, feature, desc);
+    }
+    if target_features.len() == 0 {
+        println!("    Target features listing is not supported by this LLVM version.");
+    }
+    println!("\nUse +feature to enable a feature, or -feature to disable it.");
+    println!("For example, rustc -C target-cpu=mycpu -C target-feature=+feature1,-feature2\n");
+    println!("Code-generation features cannot be used in cfg or #[target_feature],");
+    println!("and may be renamed or removed in a future version of LLVM or rustc.\n");
+}
+
 pub(crate) fn print(req: PrintRequest, sess: &Session) {
     require_inited();
     let tm = create_informational_target_machine(sess);
-    unsafe {
-        match req {
-            PrintRequest::TargetCPUs => llvm::LLVMRustPrintTargetCPUs(tm),
-            PrintRequest::TargetFeatures => llvm::LLVMRustPrintTargetFeatures(tm),
-            _ => bug!("rustc_codegen_llvm can't handle print request: {:?}", req),
-        }
+    match req {
+        PrintRequest::TargetCPUs => unsafe { llvm::LLVMRustPrintTargetCPUs(tm) },
+        PrintRequest::TargetFeatures => print_target_features(sess, tm),
+        _ => bug!("rustc_codegen_llvm can't handle print request: {:?}", req),
     }
 }
 

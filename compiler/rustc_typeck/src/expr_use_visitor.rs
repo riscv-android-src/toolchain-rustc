@@ -18,6 +18,7 @@ use rustc_middle::hir::place::ProjectionKind;
 use rustc_middle::mir::FakeReadCause;
 use rustc_middle::ty::{self, adjustment, TyCtxt};
 use rustc_target::abi::VariantIdx;
+use std::iter;
 
 use crate::mem_categorization as mc;
 
@@ -279,9 +280,14 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
                 if needs_to_be_read {
                     self.borrow_expr(&discr, ty::ImmBorrow);
                 } else {
+                    let closure_def_id = match discr_place.place.base {
+                        PlaceBase::Upvar(upvar_id) => Some(upvar_id.closure_expr_id.to_def_id()),
+                        _ => None,
+                    };
+
                     self.delegate.fake_read(
                         discr_place.place.clone(),
-                        FakeReadCause::ForMatchedPlace,
+                        FakeReadCause::ForMatchedPlace(closure_def_id),
                         discr_place.hir_id,
                     );
 
@@ -312,7 +318,6 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
                 for (op, _op_sp) in asm.operands {
                     match op {
                         hir::InlineAsmOperand::In { expr, .. }
-                        | hir::InlineAsmOperand::Const { expr, .. }
                         | hir::InlineAsmOperand::Sym { expr, .. } => self.consume_expr(expr),
                         hir::InlineAsmOperand::Out { expr, .. } => {
                             if let Some(expr) = expr {
@@ -328,12 +333,13 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
                                 self.mutate_expr(out_expr);
                             }
                         }
+                        hir::InlineAsmOperand::Const { .. } => {}
                     }
                 }
             }
 
             hir::ExprKind::LlvmInlineAsm(ref ia) => {
-                for (o, output) in ia.inner.outputs.iter().zip(ia.outputs_exprs) {
+                for (o, output) in iter::zip(&ia.inner.outputs, ia.outputs_exprs) {
                     if o.is_indirect {
                         self.consume_expr(output);
                     } else {
@@ -577,9 +583,14 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
     }
 
     fn walk_arm(&mut self, discr_place: &PlaceWithHirId<'tcx>, arm: &hir::Arm<'_>) {
+        let closure_def_id = match discr_place.place.base {
+            PlaceBase::Upvar(upvar_id) => Some(upvar_id.closure_expr_id.to_def_id()),
+            _ => None,
+        };
+
         self.delegate.fake_read(
             discr_place.place.clone(),
-            FakeReadCause::ForMatchedPlace,
+            FakeReadCause::ForMatchedPlace(closure_def_id),
             discr_place.hir_id,
         );
         self.walk_pat(discr_place, &arm.pat);
@@ -594,9 +605,14 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
     /// Walks a pat that occurs in isolation (i.e., top-level of fn argument or
     /// let binding, and *not* a match arm or nested pat.)
     fn walk_irrefutable_pat(&mut self, discr_place: &PlaceWithHirId<'tcx>, pat: &hir::Pat<'_>) {
+        let closure_def_id = match discr_place.place.base {
+            PlaceBase::Upvar(upvar_id) => Some(upvar_id.closure_expr_id.to_def_id()),
+            _ => None,
+        };
+
         self.delegate.fake_read(
             discr_place.place.clone(),
-            FakeReadCause::ForLet,
+            FakeReadCause::ForLet(closure_def_id),
             discr_place.hir_id,
         );
         self.walk_pat(discr_place, pat);
@@ -655,7 +671,7 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
     /// In the following example the closures `c` only captures `p.x`` even though `incr`
     /// is a capture of the nested closure
     ///
-    /// ```rust,ignore(cannot-test-this-because-pseduo-code)
+    /// ```rust,ignore(cannot-test-this-because-pseudo-code)
     /// let p = ..;
     /// let c = || {
     ///    let incr = 10;
@@ -699,7 +715,7 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
                             // The only places we want to fake read before creating the parent closure are the ones that
                             // are not local to it/ defined by it.
                             //
-                            // ```rust,ignore(cannot-test-this-because-pseduo-code)
+                            // ```rust,ignore(cannot-test-this-because-pseudo-code)
                             // let v1 = (0, 1);
                             // let c = || { // fake reads: v1
                             //    let v2 = (0, 1);

@@ -48,14 +48,22 @@ impl Name {
 
     /// Resolve a name from the text of token.
     fn resolve(raw_text: &str) -> Name {
-        let raw_start = "r#";
-        if raw_text.starts_with(raw_start) {
-            Name::new_text(SmolStr::new(&raw_text[raw_start.len()..]))
+        if let Some(text) = raw_text.strip_prefix("r#") {
+            Name::new_text(SmolStr::new(text))
         } else {
             Name::new_text(raw_text.into())
         }
     }
 
+    /// A fake name for things missing in the source code.
+    ///
+    /// For example, `impl Foo for {}` should be treated as a trait impl for a
+    /// type with a missing name. Similarly, `struct S { : u32 }` should have a
+    /// single field with a missing name.
+    ///
+    /// Ideally, we want a `gensym` semantics for missing names -- each missing
+    /// name is equal only to itself. It's not clear how to implement this in
+    /// salsa though, so we punt on that bit for a moment.
     pub fn missing() -> Name {
         Name::new_text("[missing name]".into())
     }
@@ -76,14 +84,14 @@ impl AsName for ast::NameRef {
     fn as_name(&self) -> Name {
         match self.as_tuple_field() {
             Some(idx) => Name::new_tuple_field(idx),
-            None => Name::resolve(self.text()),
+            None => Name::resolve(&self.text()),
         }
     }
 }
 
 impl AsName for ast::Name {
     fn as_name(&self) -> Name {
-        Name::resolve(self.text())
+        Name::resolve(&self.text())
     }
 }
 
@@ -191,6 +199,8 @@ pub mod known {
         filter_map,
         next,
         iter_mut,
+        len,
+        is_empty,
         // Builtin macros
         file,
         column,
@@ -198,6 +208,8 @@ pub mod known {
         line,
         module_path,
         assert,
+        core_panic,
+        std_panic,
         stringify,
         concat,
         include,
@@ -209,6 +221,7 @@ pub mod known {
         option_env,
         llvm_asm,
         asm,
+        global_asm,
         // Builtin derives
         Copy,
         Clone,

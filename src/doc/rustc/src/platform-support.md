@@ -7,7 +7,8 @@
 </style>
 
 Support for different platforms are organized into three tiers, each with a
-different set of guarantees.
+different set of guarantees. For more information on the policies for targets
+at each tier, see the [Target Tier Policy](target-tier-policy.md).
 
 Platforms are identified by their "target triple" which is the string to
 inform the compiler what kind of output should be produced. The columns in the
@@ -179,7 +180,7 @@ target | std | host | notes
 `i386-apple-ios` | ✓ |  | 32-bit x86 iOS
 `i686-apple-darwin` | ✓ | ✓ | 32-bit macOS (10.7+, Lion+)
 `i686-pc-windows-msvc` | ✓ |  | 32-bit Windows XP support
-`i686-unknown-uefi` | ? |  | 32-bit UEFI
+`i686-unknown-uefi` | * |  | 32-bit UEFI
 `i686-unknown-haiku` | ✓ | ✓ | 32-bit Haiku
 `i686-unknown-netbsd` | ✓ | ✓ | NetBSD/i386 with SSE2
 `i686-unknown-openbsd` | ✓ | ✓ | 32-bit OpenBSD
@@ -216,6 +217,7 @@ target | std | host | notes
 `thumbv7a-uwp-windows-msvc` | ✓ |  |
 `thumbv7neon-unknown-linux-musleabihf` | ? |  | Thumb2-mode ARMv7a Linux with NEON, MUSL
 `thumbv4t-none-eabi` | * |  | ARMv4T T32
+`wasm64-unknown-unknown` | * |  | WebAssembly
 `x86_64-apple-ios-macabi` | ✓ |  | Apple Catalyst on x86_64
 `x86_64-apple-tvos` | * | | x86 64-bit tvOS
 `x86_64-unknown-none-linuxkernel` | * |  | Linux kernel modules
@@ -227,7 +229,7 @@ target | std | host | notes
 `x86_64-unknown-none-hermitkernel` | ? |  | HermitCore kernel
 `x86_64-unknown-l4re-uclibc` | ? |  |
 `x86_64-unknown-openbsd` | ✓ | ✓ | 64-bit OpenBSD
-`x86_64-unknown-uefi` | ? |  |
+`x86_64-unknown-uefi` | * |  | 64-bit UEFI
 `x86_64-uwp-windows-gnu` | ✓ |  |
 `x86_64-uwp-windows-msvc` | ✓ |  |
 `x86_64-wrs-vxworks` | ? |  |

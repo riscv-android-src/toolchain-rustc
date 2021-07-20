@@ -1,17 +1,17 @@
 //! Conversion of rust-analyzer specific types to lsp_types equivalents.
 use std::{
+    iter::once,
     path::{self, Path},
     sync::atomic::{AtomicU32, Ordering},
 };
 
 use ide::{
-    Annotation, AnnotationKind, Assist, AssistKind, CallInfo, CompletionItem, CompletionItemKind,
-    CompletionRelevance, Documentation, FileId, FileRange, FileSystemEdit, Fold, FoldKind,
-    Highlight, HlMod, HlPunct, HlRange, HlTag, Indel, InlayHint, InlayKind, InsertTextFormat,
-    Markup, NavigationTarget, ReferenceAccess, RenameError, Runnable, Severity, SourceChange,
-    TextEdit, TextRange, TextSize,
+    Annotation, AnnotationKind, Assist, AssistKind, CallInfo, Cancelable, CompletionItem,
+    CompletionItemKind, CompletionRelevance, Documentation, FileId, FileRange, FileSystemEdit,
+    Fold, FoldKind, Highlight, HlMod, HlOperator, HlPunct, HlRange, HlTag, Indel, InlayHint,
+    InlayKind, InsertTextFormat, Markup, NavigationTarget, ReferenceAccess, RenameError, Runnable,
+    Severity, SourceChange, StructureNodeKind, SymbolKind, TextEdit, TextRange, TextSize,
 };
-use ide_db::SymbolKind;
 use itertools::Itertools;
 use serde_json::to_value;
 
@@ -60,6 +60,13 @@ pub(crate) fn symbol_kind(symbol_kind: SymbolKind) -> lsp_types::SymbolKind {
         | SymbolKind::ValueParam
         | SymbolKind::Label => lsp_types::SymbolKind::Variable,
         SymbolKind::Union => lsp_types::SymbolKind::Struct,
+    }
+}
+
+pub(crate) fn structure_node_kind(kind: StructureNodeKind) -> lsp_types::SymbolKind {
+    match kind {
+        StructureNodeKind::SymbolKind(symbol) => symbol_kind(symbol),
+        StructureNodeKind::Region => lsp_types::SymbolKind::Namespace,
     }
 }
 
@@ -139,6 +146,23 @@ pub(crate) fn text_edit(line_index: &LineIndex, indel: Indel) -> lsp_types::Text
     lsp_types::TextEdit { range, new_text }
 }
 
+pub(crate) fn completion_text_edit(
+    line_index: &LineIndex,
+    insert_replace_support: Option<lsp_types::Position>,
+    indel: Indel,
+) -> lsp_types::CompletionTextEdit {
+    let text_edit = text_edit(line_index, indel);
+    match insert_replace_support {
+        Some(cursor_pos) => lsp_types::InsertReplaceEdit {
+            new_text: text_edit.new_text,
+            insert: lsp_types::Range { start: text_edit.range.start, end: cursor_pos },
+            replace: text_edit.range,
+        }
+        .into(),
+        None => text_edit.into(),
+    }
+}
+
 pub(crate) fn snippet_text_edit(
     line_index: &LineIndex,
     is_snippet: bool,
@@ -151,6 +175,7 @@ pub(crate) fn snippet_text_edit(
         range: text_edit.range,
         new_text: text_edit.new_text,
         insert_text_format,
+        annotation_id: None,
     }
 }
 
@@ -173,6 +198,7 @@ pub(crate) fn snippet_text_edit_vec(
 }
 
 pub(crate) fn completion_item(
+    insert_replace_support: Option<lsp_types::Position>,
     line_index: &LineIndex,
     item: CompletionItem,
 ) -> Vec<lsp_types::CompletionItem> {
@@ -184,7 +210,7 @@ pub(crate) fn completion_item(
     for indel in item.text_edit().iter() {
         if indel.delete.contains_range(source_range) {
             text_edit = Some(if indel.delete == source_range {
-                self::text_edit(line_index, indel.clone())
+                self::completion_text_edit(line_index, insert_replace_support, indel.clone())
             } else {
                 assert!(source_range.end() == indel.delete.end());
                 let range1 = TextRange::new(indel.delete.start(), source_range.start());
@@ -192,7 +218,7 @@ pub(crate) fn completion_item(
                 let indel1 = Indel::replace(range1, String::new());
                 let indel2 = Indel::replace(range2, indel.insert.clone());
                 additional_text_edits.push(self::text_edit(line_index, indel1));
-                self::text_edit(line_index, indel2)
+                self::completion_text_edit(line_index, insert_replace_support, indel2)
             })
         } else {
             assert!(source_range.intersect(indel.delete).is_none());
@@ -207,7 +233,7 @@ pub(crate) fn completion_item(
         detail: item.detail().map(|it| it.to_string()),
         filter_text: Some(item.lookup().to_string()),
         kind: item.kind().map(completion_item_kind),
-        text_edit: Some(text_edit.into()),
+        text_edit: Some(text_edit),
         additional_text_edits: Some(additional_text_edits),
         documentation: item.documentation().map(documentation),
         deprecated: Some(item.deprecated()),
@@ -281,7 +307,7 @@ pub(crate) fn signature_help(
             let params = call_info
                 .parameter_ranges()
                 .iter()
-                .map(|it| [u32::from(it.start()).into(), u32::from(it.end()).into()])
+                .map(|it| [u32::from(it.start()), u32::from(it.end())])
                 .map(|label_offsets| lsp_types::ParameterInformation {
                     label: lsp_types::ParameterLabel::LabelOffsets(label_offsets),
                     documentation: None,
@@ -429,19 +455,25 @@ fn semantic_token_type_and_modifiers(
             SymbolKind::Trait => lsp_types::SemanticTokenType::INTERFACE,
             SymbolKind::Macro => lsp_types::SemanticTokenType::MACRO,
         },
-        HlTag::BuiltinType => semantic_tokens::BUILTIN_TYPE,
-        HlTag::None => semantic_tokens::GENERIC,
-        HlTag::ByteLiteral | HlTag::NumericLiteral => lsp_types::SemanticTokenType::NUMBER,
+        HlTag::Attribute => semantic_tokens::ATTRIBUTE,
         HlTag::BoolLiteral => semantic_tokens::BOOLEAN,
-        HlTag::StringLiteral => lsp_types::SemanticTokenType::STRING,
+        HlTag::BuiltinType => semantic_tokens::BUILTIN_TYPE,
+        HlTag::ByteLiteral | HlTag::NumericLiteral => lsp_types::SemanticTokenType::NUMBER,
         HlTag::CharLiteral => semantic_tokens::CHAR_LITERAL,
         HlTag::Comment => lsp_types::SemanticTokenType::COMMENT,
-        HlTag::Attribute => semantic_tokens::ATTRIBUTE,
-        HlTag::Keyword => lsp_types::SemanticTokenType::KEYWORD,
-        HlTag::UnresolvedReference => semantic_tokens::UNRESOLVED_REFERENCE,
-        HlTag::FormatSpecifier => semantic_tokens::FORMAT_SPECIFIER,
-        HlTag::Operator => lsp_types::SemanticTokenType::OPERATOR,
         HlTag::EscapeSequence => semantic_tokens::ESCAPE_SEQUENCE,
+        HlTag::FormatSpecifier => semantic_tokens::FORMAT_SPECIFIER,
+        HlTag::Keyword => lsp_types::SemanticTokenType::KEYWORD,
+        HlTag::None => semantic_tokens::GENERIC,
+        HlTag::Operator(op) => match op {
+            HlOperator::Bitwise => semantic_tokens::BITWISE,
+            HlOperator::Arithmetic => semantic_tokens::ARITHMETIC,
+            HlOperator::Logical => semantic_tokens::LOGICAL,
+            HlOperator::Comparison => semantic_tokens::COMPARISON,
+            HlOperator::Other => semantic_tokens::OPERATOR,
+        },
+        HlTag::StringLiteral => lsp_types::SemanticTokenType::STRING,
+        HlTag::UnresolvedReference => semantic_tokens::UNRESOLVED_REFERENCE,
         HlTag::Punctuation(punct) => match punct {
             HlPunct::Bracket => semantic_tokens::BRACKET,
             HlPunct::Brace => semantic_tokens::BRACE,
@@ -467,6 +499,8 @@ fn semantic_token_type_and_modifiers(
             HlMod::Unsafe => semantic_tokens::UNSAFE,
             HlMod::Callable => semantic_tokens::CALLABLE,
             HlMod::Static => lsp_types::SemanticTokenModifier::STATIC,
+            HlMod::IntraDocLink => semantic_tokens::INTRA_DOC_LINK,
+            HlMod::Trait => semantic_tokens::TRAIT_MODIFIER,
             HlMod::Associated => continue,
         };
         mods |= modifier;
@@ -485,7 +519,12 @@ pub(crate) fn folding_range(
         FoldKind::Comment => Some(lsp_types::FoldingRangeKind::Comment),
         FoldKind::Imports => Some(lsp_types::FoldingRangeKind::Imports),
         FoldKind::Region => Some(lsp_types::FoldingRangeKind::Region),
-        FoldKind::Mods | FoldKind::Block | FoldKind::ArgList => None,
+        FoldKind::Mods
+        | FoldKind::Block
+        | FoldKind::ArgList
+        | FoldKind::Consts
+        | FoldKind::Statics
+        | FoldKind::Array => None,
     };
 
     let range = range(line_index, fold.range);
@@ -651,6 +690,10 @@ pub(crate) fn goto_definition_response(
     }
 }
 
+fn outside_workspace_annotation_id() -> String {
+    String::from("OutsideWorkspace")
+}
+
 pub(crate) fn snippet_text_document_edit(
     snap: &GlobalStateSnapshot,
     is_snippet: bool,
@@ -659,14 +702,21 @@ pub(crate) fn snippet_text_document_edit(
 ) -> Result<lsp_ext::SnippetTextDocumentEdit> {
     let text_document = optional_versioned_text_document_identifier(snap, file_id);
     let line_index = snap.file_line_index(file_id)?;
-    let edits = edit.into_iter().map(|it| snippet_text_edit(&line_index, is_snippet, it)).collect();
+    let mut edits: Vec<_> =
+        edit.into_iter().map(|it| snippet_text_edit(&line_index, is_snippet, it)).collect();
+
+    if snap.analysis.is_library_file(file_id)? && snap.config.change_annotation_support() {
+        for edit in &mut edits {
+            edit.annotation_id = Some(outside_workspace_annotation_id())
+        }
+    }
     Ok(lsp_ext::SnippetTextDocumentEdit { text_document, edits })
 }
 
 pub(crate) fn snippet_text_document_ops(
     snap: &GlobalStateSnapshot,
     file_system_edit: FileSystemEdit,
-) -> Vec<lsp_ext::SnippetDocumentChangeOperation> {
+) -> Cancelable<Vec<lsp_ext::SnippetDocumentChangeOperation>> {
     let mut ops = Vec::new();
     match file_system_edit {
         FileSystemEdit::CreateFile { dst, initial_contents } => {
@@ -684,6 +734,7 @@ pub(crate) fn snippet_text_document_ops(
                     range: lsp_types::Range::default(),
                     new_text: initial_contents,
                     insert_text_format: Some(lsp_types::InsertTextFormat::PlainText),
+                    annotation_id: None,
                 };
                 let edit_file =
                     lsp_ext::SnippetTextDocumentEdit { text_document, edits: vec![text_edit] };
@@ -693,16 +744,19 @@ pub(crate) fn snippet_text_document_ops(
         FileSystemEdit::MoveFile { src, dst } => {
             let old_uri = snap.file_id_to_url(src);
             let new_uri = snap.anchored_path(&dst);
-            let rename_file = lsp_types::ResourceOp::Rename(lsp_types::RenameFile {
-                old_uri,
-                new_uri,
-                options: None,
-                annotation_id: None,
-            });
-            ops.push(lsp_ext::SnippetDocumentChangeOperation::Op(rename_file))
+            let mut rename_file =
+                lsp_types::RenameFile { old_uri, new_uri, options: None, annotation_id: None };
+            if snap.analysis.is_library_file(src) == Ok(true)
+                && snap.config.change_annotation_support()
+            {
+                rename_file.annotation_id = Some(outside_workspace_annotation_id())
+            }
+            ops.push(lsp_ext::SnippetDocumentChangeOperation::Op(lsp_types::ResourceOp::Rename(
+                rename_file,
+            )))
         }
     }
-    ops
+    Ok(ops)
 }
 
 pub(crate) fn snippet_workspace_edit(
@@ -710,16 +764,35 @@ pub(crate) fn snippet_workspace_edit(
     source_change: SourceChange,
 ) -> Result<lsp_ext::SnippetWorkspaceEdit> {
     let mut document_changes: Vec<lsp_ext::SnippetDocumentChangeOperation> = Vec::new();
+
     for op in source_change.file_system_edits {
-        let ops = snippet_text_document_ops(snap, op);
+        let ops = snippet_text_document_ops(snap, op)?;
         document_changes.extend_from_slice(&ops);
     }
     for (file_id, edit) in source_change.source_file_edits {
         let edit = snippet_text_document_edit(&snap, source_change.is_snippet, file_id, edit)?;
         document_changes.push(lsp_ext::SnippetDocumentChangeOperation::Edit(edit));
     }
-    let workspace_edit =
-        lsp_ext::SnippetWorkspaceEdit { changes: None, document_changes: Some(document_changes) };
+    let mut workspace_edit = lsp_ext::SnippetWorkspaceEdit {
+        changes: None,
+        document_changes: Some(document_changes),
+        change_annotations: None,
+    };
+    if snap.config.change_annotation_support() {
+        workspace_edit.change_annotations = Some(
+            once((
+                outside_workspace_annotation_id(),
+                lsp_types::ChangeAnnotation {
+                    label: String::from("Edit outside of the workspace"),
+                    needs_confirmation: Some(true),
+                    description: Some(String::from(
+                        "This edit lies outside of the workspace and may affect dependencies",
+                    )),
+                },
+            ))
+            .collect(),
+        )
+    }
     Ok(workspace_edit)
 }
 
@@ -747,16 +820,7 @@ impl From<lsp_ext::SnippetWorkspaceEdit> for lsp_types::WorkspaceEdit {
                                 lsp_types::DocumentChangeOperation::Edit(
                                     lsp_types::TextDocumentEdit {
                                         text_document: edit.text_document,
-                                        edits: edit
-                                            .edits
-                                            .into_iter()
-                                            .map(|edit| {
-                                                lsp_types::OneOf::Left(lsp_types::TextEdit {
-                                                    range: edit.range,
-                                                    new_text: edit.new_text,
-                                                })
-                                            })
-                                            .collect(),
+                                        edits: edit.edits.into_iter().map(From::from).collect(),
                                     },
                                 )
                             }
@@ -764,7 +828,23 @@ impl From<lsp_ext::SnippetWorkspaceEdit> for lsp_types::WorkspaceEdit {
                         .collect(),
                 )
             }),
-            change_annotations: None,
+            change_annotations: snippet_workspace_edit.change_annotations,
+        }
+    }
+}
+
+impl From<lsp_ext::SnippetTextEdit>
+    for lsp_types::OneOf<lsp_types::TextEdit, lsp_types::AnnotatedTextEdit>
+{
+    fn from(
+        lsp_ext::SnippetTextEdit { annotation_id, insert_text_format:_, new_text, range }: lsp_ext::SnippetTextEdit,
+    ) -> Self {
+        match annotation_id {
+            Some(annotation_id) => lsp_types::OneOf::Right(lsp_types::AnnotatedTextEdit {
+                text_edit: lsp_types::TextEdit { range, new_text },
+                annotation_id,
+            }),
+            None => lsp_types::OneOf::Left(lsp_types::TextEdit { range, new_text }),
         }
     }
 }
@@ -800,39 +880,30 @@ pub(crate) fn code_action_kind(kind: AssistKind) -> lsp_types::CodeActionKind {
     }
 }
 
-pub(crate) fn unresolved_code_action(
+pub(crate) fn code_action(
     snap: &GlobalStateSnapshot,
-    code_action_params: lsp_types::CodeActionParams,
     assist: Assist,
-    index: usize,
+    resolve_data: Option<(usize, lsp_types::CodeActionParams)>,
 ) -> Result<lsp_ext::CodeAction> {
-    assert!(assist.source_change.is_none());
-    let res = lsp_ext::CodeAction {
+    let mut res = lsp_ext::CodeAction {
         title: assist.label.to_string(),
         group: assist.group.filter(|_| snap.config.code_action_group()).map(|gr| gr.0),
         kind: Some(code_action_kind(assist.id.1)),
         edit: None,
         is_preferred: None,
-        data: Some(lsp_ext::CodeActionData {
-            id: format!("{}:{}", assist.id.0, index.to_string()),
-            code_action_params,
-        }),
-    };
-    Ok(res)
-}
-
-pub(crate) fn resolved_code_action(
-    snap: &GlobalStateSnapshot,
-    assist: Assist,
-) -> Result<lsp_ext::CodeAction> {
-    let change = assist.source_change.unwrap();
-    let res = lsp_ext::CodeAction {
-        edit: Some(snippet_workspace_edit(snap, change)?),
-        title: assist.label.to_string(),
-        group: assist.group.filter(|_| snap.config.code_action_group()).map(|gr| gr.0),
-        kind: Some(code_action_kind(assist.id.1)),
-        is_preferred: None,
         data: None,
+    };
+    match (assist.source_change, resolve_data) {
+        (Some(it), _) => res.edit = Some(snippet_workspace_edit(snap, it)?),
+        (None, Some((index, code_action_params))) => {
+            res.data = Some(lsp_ext::CodeActionData {
+                id: format!("{}:{}", assist.id.0, index.to_string()),
+                code_action_params,
+            });
+        }
+        (None, None) => {
+            stdx::never!("assist should always be resolved if client can't do lazy resolving")
+        }
     };
     Ok(res)
 }
@@ -1066,9 +1137,11 @@ pub(crate) fn rename_error(err: RenameError) -> crate::LspError {
 mod tests {
     use std::sync::Arc;
 
-    use hir::PrefixKind;
     use ide::Analysis;
-    use ide_db::helpers::{insert_use::InsertUseConfig, SnippetCap};
+    use ide_db::helpers::{
+        insert_use::{InsertUseConfig, PrefixKind},
+        SnippetCap,
+    };
 
     use super::*;
 
@@ -1109,7 +1182,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter(|c| c.label().ends_with("arg"))
-            .map(|c| completion_item(&line_index, c))
+            .map(|c| completion_item(None, &line_index, c))
             .flat_map(|comps| comps.into_iter().map(|c| (c.label, c.sort_text)))
             .collect();
         expect_test::expect![[r#"
@@ -1117,7 +1190,7 @@ mod tests {
                 (
                     "&arg",
                     Some(
-                        "fffffffa",
+                        "fffffff9",
                     ),
                 ),
                 (

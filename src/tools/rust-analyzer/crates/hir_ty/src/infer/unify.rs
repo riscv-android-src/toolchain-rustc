@@ -2,13 +2,17 @@
 
 use std::borrow::Cow;
 
-use chalk_ir::{FloatTy, IntTy, TyVariableKind};
+use chalk_ir::{
+    cast::Cast, fold::Fold, interner::HasInterner, FloatTy, IntTy, TyVariableKind, UniverseIndex,
+    VariableKind,
+};
 use ena::unify::{InPlaceUnificationTable, NoError, UnifyKey, UnifyValue};
 
-use super::{InferenceContext, Obligation};
+use super::{DomainGoal, InferenceContext};
 use crate::{
-    BoundVar, Canonical, DebruijnIndex, GenericPredicate, InEnvironment, InferenceVar, Interner,
-    Scalar, Substs, Ty, TyKind, TypeWalk,
+    fold_tys, static_lifetime, AliasEq, AliasTy, BoundVar, Canonical, CanonicalVarKinds,
+    DebruijnIndex, FnPointer, FnSubst, InEnvironment, InferenceVar, Interner, Scalar, Substitution,
+    Ty, TyExt, TyKind, WhereClause,
 };
 
 impl<'a> InferenceContext<'a> {
@@ -33,7 +37,10 @@ where
 }
 
 #[derive(Debug)]
-pub(super) struct Canonicalized<T> {
+pub(super) struct Canonicalized<T>
+where
+    T: HasInterner<Interner = Interner>,
+{
     pub(super) value: Canonical<T>,
     free_vars: Vec<(InferenceVar, TyVariableKind)>,
 }
@@ -47,11 +54,16 @@ impl<'a, 'b> Canonicalizer<'a, 'b> {
         })
     }
 
-    fn do_canonicalize<T: TypeWalk>(&mut self, t: T, binders: DebruijnIndex) -> T {
-        t.fold_binders(
-            &mut |ty, binders| match ty.interned(&Interner) {
+    fn do_canonicalize<T: Fold<Interner, Result = T> + HasInterner<Interner = Interner>>(
+        &mut self,
+        t: T,
+        binders: DebruijnIndex,
+    ) -> T {
+        fold_tys(
+            t,
+            |ty, binders| match ty.kind(&Interner) {
                 &TyKind::InferenceVar(var, kind) => {
-                    let inner = var.to_inner();
+                    let inner = from_inference_var(var);
                     if self.var_stack.contains(&inner) {
                         // recursive type
                         return self.ctx.table.type_variable_table.fallback_value(var, kind);
@@ -65,7 +77,7 @@ impl<'a, 'b> Canonicalizer<'a, 'b> {
                         result
                     } else {
                         let root = self.ctx.table.var_unification_table.find(inner);
-                        let position = self.add(InferenceVar::from_inner(root), kind);
+                        let position = self.add(to_inference_var(root), kind);
                         TyKind::BoundVar(BoundVar::new(binders, position)).intern(&Interner)
                     }
                 }
@@ -75,9 +87,21 @@ impl<'a, 'b> Canonicalizer<'a, 'b> {
         )
     }
 
-    fn into_canonicalized<T>(self, result: T) -> Canonicalized<T> {
-        let kinds = self.free_vars.iter().map(|&(_, k)| k).collect();
-        Canonicalized { value: Canonical { value: result, kinds }, free_vars: self.free_vars }
+    fn into_canonicalized<T: HasInterner<Interner = Interner>>(
+        self,
+        result: T,
+    ) -> Canonicalized<T> {
+        let kinds = self
+            .free_vars
+            .iter()
+            .map(|&(_, k)| chalk_ir::WithKind::new(VariableKind::Ty(k), UniverseIndex::ROOT));
+        Canonicalized {
+            value: Canonical {
+                value: result,
+                binders: CanonicalVarKinds::from_iter(&Interner, kinds),
+            },
+            free_vars: self.free_vars,
+        }
     }
 
     pub(crate) fn canonicalize_ty(mut self, ty: Ty) -> Canonicalized<Ty> {
@@ -87,84 +111,84 @@ impl<'a, 'b> Canonicalizer<'a, 'b> {
 
     pub(crate) fn canonicalize_obligation(
         mut self,
-        obligation: InEnvironment<Obligation>,
-    ) -> Canonicalized<InEnvironment<Obligation>> {
-        let result = match obligation.value {
-            Obligation::Trait(tr) => {
-                Obligation::Trait(self.do_canonicalize(tr, DebruijnIndex::INNERMOST))
+        obligation: InEnvironment<DomainGoal>,
+    ) -> Canonicalized<InEnvironment<DomainGoal>> {
+        let result = match obligation.goal {
+            DomainGoal::Holds(wc) => {
+                DomainGoal::Holds(self.do_canonicalize(wc, DebruijnIndex::INNERMOST))
             }
-            Obligation::Projection(pr) => {
-                Obligation::Projection(self.do_canonicalize(pr, DebruijnIndex::INNERMOST))
-            }
+            _ => unimplemented!(),
         };
-        self.into_canonicalized(InEnvironment {
-            value: result,
-            environment: obligation.environment,
-        })
+        self.into_canonicalized(InEnvironment { goal: result, environment: obligation.environment })
     }
 }
 
-impl<T> Canonicalized<T> {
-    pub(super) fn decanonicalize_ty(&self, mut ty: Ty) -> Ty {
-        ty.walk_mut_binders(
-            &mut |ty, binders| {
-                if let &mut TyKind::BoundVar(bound) = &mut ty.0 {
-                    if bound.debruijn >= binders {
-                        let (v, k) = self.free_vars[bound.index];
-                        *ty = TyKind::InferenceVar(v, k).intern(&Interner);
-                    }
-                }
-            },
-            DebruijnIndex::INNERMOST,
-        );
-        ty
+impl<T: HasInterner<Interner = Interner>> Canonicalized<T> {
+    pub(super) fn decanonicalize_ty(&self, ty: Ty) -> Ty {
+        crate::fold_free_vars(ty, |bound, _binders| {
+            let (v, k) = self.free_vars[bound.index];
+            TyKind::InferenceVar(v, k).intern(&Interner)
+        })
     }
 
     pub(super) fn apply_solution(
         &self,
         ctx: &mut InferenceContext<'_>,
-        solution: Canonical<Substs>,
+        solution: Canonical<Substitution>,
     ) {
         // the solution may contain new variables, which we need to convert to new inference vars
-        let new_vars = Substs(
-            solution
-                .kinds
-                .iter()
-                .map(|k| match k {
-                    TyVariableKind::General => ctx.table.new_type_var(),
-                    TyVariableKind::Integer => ctx.table.new_integer_var(),
-                    TyVariableKind::Float => ctx.table.new_float_var(),
-                })
-                .collect(),
+        let new_vars = Substitution::from_iter(
+            &Interner,
+            solution.binders.iter(&Interner).map(|k| match k.kind {
+                VariableKind::Ty(TyVariableKind::General) => {
+                    ctx.table.new_type_var().cast(&Interner)
+                }
+                VariableKind::Ty(TyVariableKind::Integer) => {
+                    ctx.table.new_integer_var().cast(&Interner)
+                }
+                VariableKind::Ty(TyVariableKind::Float) => {
+                    ctx.table.new_float_var().cast(&Interner)
+                }
+                // Chalk can sometimes return new lifetime variables. We just use the static lifetime everywhere
+                VariableKind::Lifetime => static_lifetime().cast(&Interner),
+                _ => panic!("const variable in solution"),
+            }),
         );
-        for (i, ty) in solution.value.into_iter().enumerate() {
+        for (i, ty) in solution.value.iter(&Interner).enumerate() {
             let (v, k) = self.free_vars[i];
             // eagerly replace projections in the type; we may be getting types
             // e.g. from where clauses where this hasn't happened yet
-            let ty = ctx.normalize_associated_types_in(ty.clone().subst_bound_vars(&new_vars));
+            let ty = ctx.normalize_associated_types_in(
+                new_vars.apply(ty.assert_ty_ref(&Interner).clone(), &Interner),
+            );
             ctx.table.unify(&TyKind::InferenceVar(v, k).intern(&Interner), &ty);
         }
     }
 }
 
-pub(crate) fn unify(tys: &Canonical<(Ty, Ty)>) -> Option<Substs> {
+pub fn could_unify(t1: &Ty, t2: &Ty) -> bool {
+    InferenceTable::new().unify(t1, t2)
+}
+
+pub(crate) fn unify(tys: &Canonical<(Ty, Ty)>) -> Option<Substitution> {
     let mut table = InferenceTable::new();
-    let vars = Substs(
-        tys.kinds
-            .iter()
+    let vars = Substitution::from_iter(
+        &Interner,
+        tys.binders
+            .iter(&Interner)
             // we always use type vars here because we want everything to
             // fallback to Unknown in the end (kind of hacky, as below)
-            .map(|_| table.new_type_var())
-            .collect(),
+            .map(|_| table.new_type_var()),
     );
-    let ty1_with_vars = tys.value.0.clone().subst_bound_vars(&vars);
-    let ty2_with_vars = tys.value.1.clone().subst_bound_vars(&vars);
+    let ty1_with_vars = vars.apply(tys.value.0.clone(), &Interner);
+    let ty2_with_vars = vars.apply(tys.value.1.clone(), &Interner);
     if !table.unify(&ty1_with_vars, &ty2_with_vars) {
         return None;
     }
     // default any type vars that weren't unified back to their original bound vars
     // (kind of hacky)
-    for (i, var) in vars.iter().enumerate() {
+    for (i, var) in vars.iter(&Interner).enumerate() {
+        let var = var.assert_ty_ref(&Interner);
         if &*table.resolve_ty_shallow(var) == var {
             table.unify(
                 var,
@@ -172,11 +196,11 @@ pub(crate) fn unify(tys: &Canonical<(Ty, Ty)>) -> Option<Substs> {
             );
         }
     }
-    Some(
-        Substs::builder(tys.kinds.len())
-            .fill(vars.iter().map(|v| table.resolve_ty_completely(v.clone())))
-            .build(),
-    )
+    Some(Substitution::from_iter(
+        &Interner,
+        vars.iter(&Interner)
+            .map(|v| table.resolve_ty_completely(v.assert_ty_ref(&Interner).clone())),
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -190,17 +214,17 @@ impl TypeVariableTable {
     }
 
     pub(super) fn set_diverging(&mut self, iv: InferenceVar, diverging: bool) {
-        self.inner[iv.to_inner().0 as usize].diverging = diverging;
+        self.inner[from_inference_var(iv).0 as usize].diverging = diverging;
     }
 
     fn is_diverging(&mut self, iv: InferenceVar) -> bool {
-        self.inner[iv.to_inner().0 as usize].diverging
+        self.inner[from_inference_var(iv).0 as usize].diverging
     }
 
     fn fallback_value(&self, iv: InferenceVar, kind: TyVariableKind) -> Ty {
         match kind {
-            _ if self.inner[iv.to_inner().0 as usize].diverging => TyKind::Never,
-            TyVariableKind::General => TyKind::Unknown,
+            _ if self.inner[from_inference_var(iv).0 as usize].diverging => TyKind::Never,
+            TyVariableKind::General => TyKind::Error,
             TyVariableKind::Integer => TyKind::Scalar(Scalar::Int(IntTy::I32)),
             TyVariableKind::Float => TyKind::Scalar(Scalar::Float(FloatTy::F64)),
         }
@@ -217,6 +241,7 @@ pub(crate) struct TypeVariableData {
 pub(crate) struct InferenceTable {
     pub(super) var_unification_table: InPlaceUnificationTable<TypeVarId>,
     pub(super) type_variable_table: TypeVariableTable,
+    pub(super) revision: u32,
 }
 
 impl InferenceTable {
@@ -224,6 +249,7 @@ impl InferenceTable {
         InferenceTable {
             var_unification_table: InPlaceUnificationTable::new(),
             type_variable_table: TypeVariableTable { inner: Vec::new() },
+            revision: 0,
         }
     }
 
@@ -231,7 +257,7 @@ impl InferenceTable {
         self.type_variable_table.push(TypeVariableData { diverging });
         let key = self.var_unification_table.new_key(TypeVarValue::Unknown);
         assert_eq!(key.0 as usize, self.type_variable_table.inner.len() - 1);
-        TyKind::InferenceVar(InferenceVar::from_inner(key), kind).intern(&Interner)
+        TyKind::InferenceVar(to_inference_var(key), kind).intern(&Interner)
     }
 
     pub(crate) fn new_type_var(&mut self) -> Ty {
@@ -264,11 +290,13 @@ impl InferenceTable {
 
     pub(crate) fn unify_substs(
         &mut self,
-        substs1: &Substs,
-        substs2: &Substs,
+        substs1: &Substitution,
+        substs2: &Substitution,
         depth: usize,
     ) -> bool {
-        substs1.0.iter().zip(substs2.0.iter()).all(|(t1, t2)| self.unify_inner(t1, t2, depth))
+        substs1.iter(&Interner).zip(substs2.iter(&Interner)).all(|(t1, t2)| {
+            self.unify_inner(t1.assert_ty_ref(&Interner), t2.assert_ty_ref(&Interner), depth)
+        })
     }
 
     fn unify_inner(&mut self, ty1: &Ty, ty2: &Ty, depth: usize) -> bool {
@@ -283,10 +311,26 @@ impl InferenceTable {
         let ty1 = self.resolve_ty_shallow(ty1);
         let ty2 = self.resolve_ty_shallow(ty2);
         if ty1.equals_ctor(&ty2) {
-            match (ty1.substs(), ty2.substs()) {
-                (Some(st1), Some(st2)) => self.unify_substs(st1, st2, depth + 1),
-                (None, None) => true,
-                _ => false,
+            match (ty1.kind(&Interner), ty2.kind(&Interner)) {
+                (TyKind::Adt(_, substs1), TyKind::Adt(_, substs2))
+                | (TyKind::FnDef(_, substs1), TyKind::FnDef(_, substs2))
+                | (
+                    TyKind::Function(FnPointer { substitution: FnSubst(substs1), .. }),
+                    TyKind::Function(FnPointer { substitution: FnSubst(substs2), .. }),
+                )
+                | (TyKind::Tuple(_, substs1), TyKind::Tuple(_, substs2))
+                | (TyKind::OpaqueType(_, substs1), TyKind::OpaqueType(_, substs2))
+                | (TyKind::AssociatedType(_, substs1), TyKind::AssociatedType(_, substs2))
+                | (TyKind::Closure(.., substs1), TyKind::Closure(.., substs2)) => {
+                    self.unify_substs(substs1, substs2, depth + 1)
+                }
+                (TyKind::Array(ty1, c1), TyKind::Array(ty2, c2)) if c1 == c2 => {
+                    self.unify_inner(ty1, ty2, depth + 1)
+                }
+                (TyKind::Ref(_, _, ty1), TyKind::Ref(_, _, ty2))
+                | (TyKind::Raw(_, ty1), TyKind::Raw(_, ty2))
+                | (TyKind::Slice(ty1), TyKind::Slice(ty2)) => self.unify_inner(ty1, ty2, depth + 1),
+                _ => true, /* we checked equals_ctor already */
             }
         } else {
             self.unify_inner_trivial(&ty1, &ty2, depth)
@@ -294,14 +338,23 @@ impl InferenceTable {
     }
 
     pub(super) fn unify_inner_trivial(&mut self, ty1: &Ty, ty2: &Ty, depth: usize) -> bool {
-        match (ty1.interned(&Interner), ty2.interned(&Interner)) {
-            (TyKind::Unknown, _) | (_, TyKind::Unknown) => true,
+        match (ty1.kind(&Interner), ty2.kind(&Interner)) {
+            (TyKind::Error, _) | (_, TyKind::Error) => true,
 
             (TyKind::Placeholder(p1), TyKind::Placeholder(p2)) if *p1 == *p2 => true,
 
-            (TyKind::Dyn(dyn1), TyKind::Dyn(dyn2)) if dyn1.len() == dyn2.len() => {
-                for (pred1, pred2) in dyn1.iter().zip(dyn2.iter()) {
-                    if !self.unify_preds(pred1, pred2, depth + 1) {
+            (TyKind::Dyn(dyn1), TyKind::Dyn(dyn2))
+                if dyn1.bounds.skip_binders().interned().len()
+                    == dyn2.bounds.skip_binders().interned().len() =>
+            {
+                for (pred1, pred2) in dyn1
+                    .bounds
+                    .skip_binders()
+                    .interned()
+                    .iter()
+                    .zip(dyn2.bounds.skip_binders().interned().iter())
+                {
+                    if !self.unify_preds(pred1.skip_binders(), pred2.skip_binders(), depth + 1) {
                         return false;
                     }
                 }
@@ -323,7 +376,14 @@ impl InferenceTable {
                 == self.type_variable_table.is_diverging(*tv2) =>
             {
                 // both type vars are unknown since we tried to resolve them
-                self.var_unification_table.union(tv1.to_inner(), tv2.to_inner());
+                if !self
+                    .var_unification_table
+                    .unioned(from_inference_var(*tv1), from_inference_var(*tv2))
+                {
+                    self.var_unification_table
+                        .union(from_inference_var(*tv1), from_inference_var(*tv2));
+                    self.revision += 1;
+                }
                 true
             }
 
@@ -358,9 +418,10 @@ impl InferenceTable {
             ) => {
                 // the type var is unknown since we tried to resolve it
                 self.var_unification_table.union_value(
-                    tv.to_inner(),
+                    from_inference_var(*tv),
                     TypeVarValue::Known(other.clone().intern(&Interner)),
                 );
+                self.revision += 1;
                 true
             }
 
@@ -368,26 +429,32 @@ impl InferenceTable {
         }
     }
 
-    fn unify_preds(
-        &mut self,
-        pred1: &GenericPredicate,
-        pred2: &GenericPredicate,
-        depth: usize,
-    ) -> bool {
+    fn unify_preds(&mut self, pred1: &WhereClause, pred2: &WhereClause, depth: usize) -> bool {
         match (pred1, pred2) {
-            (GenericPredicate::Implemented(tr1), GenericPredicate::Implemented(tr2))
-                if tr1.trait_ == tr2.trait_ =>
+            (WhereClause::Implemented(tr1), WhereClause::Implemented(tr2))
+                if tr1.trait_id == tr2.trait_id =>
             {
-                self.unify_substs(&tr1.substs, &tr2.substs, depth + 1)
+                self.unify_substs(&tr1.substitution, &tr2.substitution, depth + 1)
             }
-            (GenericPredicate::Projection(proj1), GenericPredicate::Projection(proj2))
-                if proj1.projection_ty.associated_ty_id == proj2.projection_ty.associated_ty_id =>
-            {
-                self.unify_substs(
-                    &proj1.projection_ty.substitution,
-                    &proj2.projection_ty.substitution,
-                    depth + 1,
-                ) && self.unify_inner(&proj1.ty, &proj2.ty, depth + 1)
+            (
+                WhereClause::AliasEq(AliasEq { alias: alias1, ty: ty1 }),
+                WhereClause::AliasEq(AliasEq { alias: alias2, ty: ty2 }),
+            ) => {
+                let (substitution1, substitution2) = match (alias1, alias2) {
+                    (AliasTy::Projection(projection_ty1), AliasTy::Projection(projection_ty2))
+                        if projection_ty1.associated_ty_id == projection_ty2.associated_ty_id =>
+                    {
+                        (&projection_ty1.substitution, &projection_ty2.substitution)
+                    }
+                    (AliasTy::Opaque(opaque1), AliasTy::Opaque(opaque2))
+                        if opaque1.opaque_ty_id == opaque2.opaque_ty_id =>
+                    {
+                        (&opaque1.substitution, &opaque2.substitution)
+                    }
+                    _ => return false,
+                };
+                self.unify_substs(&substitution1, &substitution2, depth + 1)
+                    && self.unify_inner(&ty1, &ty2, depth + 1)
             }
             _ => false,
         }
@@ -404,9 +471,9 @@ impl InferenceTable {
             if i > 0 {
                 cov_mark::hit!(type_var_resolves_to_int_var);
             }
-            match &ty.0 {
+            match ty.kind(&Interner) {
                 TyKind::InferenceVar(tv, _) => {
-                    let inner = tv.to_inner();
+                    let inner = from_inference_var(*tv);
                     match self.var_unification_table.inlined_probe_value(inner).known() {
                         Some(known_ty) => {
                             // The known_ty can't be a type var itself
@@ -427,55 +494,63 @@ impl InferenceTable {
     /// be resolved as far as possible, i.e. contain no type variables with
     /// known type.
     fn resolve_ty_as_possible_inner(&mut self, tv_stack: &mut Vec<TypeVarId>, ty: Ty) -> Ty {
-        ty.fold(&mut |ty| match ty.interned(&Interner) {
-            &TyKind::InferenceVar(tv, kind) => {
-                let inner = tv.to_inner();
-                if tv_stack.contains(&inner) {
-                    cov_mark::hit!(type_var_cycles_resolve_as_possible);
-                    // recursive type
-                    return self.type_variable_table.fallback_value(tv, kind);
+        fold_tys(
+            ty,
+            |ty, _| match ty.kind(&Interner) {
+                &TyKind::InferenceVar(tv, kind) => {
+                    let inner = from_inference_var(tv);
+                    if tv_stack.contains(&inner) {
+                        cov_mark::hit!(type_var_cycles_resolve_as_possible);
+                        // recursive type
+                        return self.type_variable_table.fallback_value(tv, kind);
+                    }
+                    if let Some(known_ty) =
+                        self.var_unification_table.inlined_probe_value(inner).known()
+                    {
+                        // known_ty may contain other variables that are known by now
+                        tv_stack.push(inner);
+                        let result = self.resolve_ty_as_possible_inner(tv_stack, known_ty.clone());
+                        tv_stack.pop();
+                        result
+                    } else {
+                        ty
+                    }
                 }
-                if let Some(known_ty) =
-                    self.var_unification_table.inlined_probe_value(inner).known()
-                {
-                    // known_ty may contain other variables that are known by now
-                    tv_stack.push(inner);
-                    let result = self.resolve_ty_as_possible_inner(tv_stack, known_ty.clone());
-                    tv_stack.pop();
-                    result
-                } else {
-                    ty
-                }
-            }
-            _ => ty,
-        })
+                _ => ty,
+            },
+            DebruijnIndex::INNERMOST,
+        )
     }
 
     /// Resolves the type completely; type variables without known type are
     /// replaced by TyKind::Unknown.
     fn resolve_ty_completely_inner(&mut self, tv_stack: &mut Vec<TypeVarId>, ty: Ty) -> Ty {
-        ty.fold(&mut |ty| match ty.interned(&Interner) {
-            &TyKind::InferenceVar(tv, kind) => {
-                let inner = tv.to_inner();
-                if tv_stack.contains(&inner) {
-                    cov_mark::hit!(type_var_cycles_resolve_completely);
-                    // recursive type
-                    return self.type_variable_table.fallback_value(tv, kind);
+        fold_tys(
+            ty,
+            |ty, _| match ty.kind(&Interner) {
+                &TyKind::InferenceVar(tv, kind) => {
+                    let inner = from_inference_var(tv);
+                    if tv_stack.contains(&inner) {
+                        cov_mark::hit!(type_var_cycles_resolve_completely);
+                        // recursive type
+                        return self.type_variable_table.fallback_value(tv, kind);
+                    }
+                    if let Some(known_ty) =
+                        self.var_unification_table.inlined_probe_value(inner).known()
+                    {
+                        // known_ty may contain other variables that are known by now
+                        tv_stack.push(inner);
+                        let result = self.resolve_ty_completely_inner(tv_stack, known_ty.clone());
+                        tv_stack.pop();
+                        result
+                    } else {
+                        self.type_variable_table.fallback_value(tv, kind)
+                    }
                 }
-                if let Some(known_ty) =
-                    self.var_unification_table.inlined_probe_value(inner).known()
-                {
-                    // known_ty may contain other variables that are known by now
-                    tv_stack.push(inner);
-                    let result = self.resolve_ty_completely_inner(tv_stack, known_ty.clone());
-                    tv_stack.pop();
-                    result
-                } else {
-                    self.type_variable_table.fallback_value(tv, kind)
-                }
-            }
-            _ => ty,
-        })
+                _ => ty,
+            },
+            DebruijnIndex::INNERMOST,
+        )
     }
 }
 
@@ -497,6 +572,14 @@ impl UnifyKey for TypeVarId {
     fn tag() -> &'static str {
         "TypeVarId"
     }
+}
+
+fn from_inference_var(var: InferenceVar) -> TypeVarId {
+    TypeVarId(var.index())
+}
+
+fn to_inference_var(TypeVarId(index): TypeVarId) -> InferenceVar {
+    index.into()
 }
 
 /// The value of a type variable: either we already know the type, or we don't

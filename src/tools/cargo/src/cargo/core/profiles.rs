@@ -1,11 +1,10 @@
-use crate::core::compiler::{CompileMode, Unit};
+use crate::core::compiler::{CompileKind, CompileMode, Unit};
 use crate::core::resolver::features::FeaturesFor;
 use crate::core::{Feature, PackageId, PackageIdSpec, Resolve, Shell, Target, Workspace};
-use crate::util::errors::CargoResultExt;
 use crate::util::interning::InternedString;
 use crate::util::toml::{ProfilePackageSpec, StringOrBool, TomlProfile, TomlProfiles, U32OrBool};
 use crate::util::{closest_msg, config, CargoResult, Config};
-use anyhow::bail;
+use anyhow::{bail, Context as _};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
 use std::{cmp, env, fmt, hash};
@@ -291,6 +290,7 @@ impl Profiles {
         is_local: bool,
         unit_for: UnitFor,
         mode: CompileMode,
+        kind: CompileKind,
     ) -> Profile {
         let (profile_name, inherits) = if !self.named_profiles_enabled {
             // With the feature disabled, we degrade `--profile` back to the
@@ -342,6 +342,23 @@ impl Profiles {
                     // TODO: Fixme, broken with named profiles.
                     let maker = self.get_profile_maker(inherits).unwrap();
                     profile.panic = maker.get_profile(Some(pkg_id), is_member, unit_for).panic;
+                }
+            }
+        }
+
+        // Default macOS debug information to being stored in the "unpacked"
+        // split-debuginfo format. At the time of this writing that's the only
+        // platform which has a stable `-Csplit-debuginfo` option for rustc,
+        // and it's typically much faster than running `dsymutil` on all builds
+        // in incremental cases.
+        if let Some(debug) = profile.debuginfo {
+            if profile.split_debuginfo.is_none() && debug > 0 {
+                let target = match &kind {
+                    CompileKind::Host => self.rustc_host.as_str(),
+                    CompileKind::Target(target) => target.short_name(),
+                };
+                if target.contains("-apple-") {
+                    profile.split_debuginfo = Some(InternedString::new("unpacked"));
                 }
             }
         }
@@ -1124,11 +1141,10 @@ fn get_config_profile(ws: &Workspace<'_>, name: &str) -> CargoResult<Option<Toml
     profile
         .val
         .validate(name, ws.unstable_features(), &mut warnings)
-        .chain_err(|| {
-            anyhow::format_err!(
+        .with_context(|| {
+            format!(
                 "config profile `{}` is not valid (defined in `{}`)",
-                name,
-                profile.definition
+                name, profile.definition
             )
         })?;
     for warning in warnings {

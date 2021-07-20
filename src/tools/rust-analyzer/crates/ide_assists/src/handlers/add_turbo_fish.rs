@@ -26,7 +26,7 @@ use crate::{
 pub(crate) fn add_turbo_fish(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
     let ident = ctx.find_token_syntax_at_offset(SyntaxKind::IDENT).or_else(|| {
         let arg_list = ctx.find_node_at_offset::<ast::ArgList>()?;
-        if arg_list.args().count() > 0 {
+        if arg_list.args().next().is_some() {
             return None;
         }
         cov_mark::hit!(add_turbo_fish_after_call);
@@ -38,7 +38,7 @@ pub(crate) fn add_turbo_fish(acc: &mut Assists, ctx: &AssistContext) -> Option<(
         cov_mark::hit!(add_turbo_fish_one_fish_is_enough);
         return None;
     }
-    let name_ref = ast::NameRef::cast(ident.parent())?;
+    let name_ref = ast::NameRef::cast(ident.parent()?)?;
     let def = match NameRefClass::classify(&ctx.sema, &name_ref)? {
         NameRefClass::Definition(def) => def,
         NameRefClass::ExternCrate(_) | NameRefClass::FieldShorthand { .. } => return None,

@@ -6,16 +6,15 @@
 use std::iter::successors;
 
 use base_db::CrateId;
+use chalk_ir::{cast::Cast, fold::Fold, interner::HasInterner, VariableKind};
 use hir_def::lang_item::LangItemTarget;
 use hir_expand::name::name;
 use log::{info, warn};
 
 use crate::{
-    db::HirDatabase,
-    to_assoc_type_id,
-    traits::{InEnvironment, Solution},
-    utils::generics,
-    BoundVar, Canonical, DebruijnIndex, Interner, Obligation, Substs, TraitRef, Ty, TyKind,
+    db::HirDatabase, static_lifetime, AliasEq, AliasTy, BoundVar, Canonical, CanonicalVarKinds,
+    DebruijnIndex, InEnvironment, Interner, ProjectionTyExt, Solution, Substitution, Ty, TyBuilder,
+    TyKind,
 };
 
 const AUTODEREF_RECURSION_LIMIT: usize = 10;
@@ -25,9 +24,9 @@ pub fn autoderef<'a>(
     krate: Option<CrateId>,
     ty: InEnvironment<Canonical<Ty>>,
 ) -> impl Iterator<Item = Canonical<Ty>> + 'a {
-    let InEnvironment { value: ty, environment } = ty;
+    let InEnvironment { goal: ty, environment } = ty;
     successors(Some(ty), move |ty| {
-        deref(db, krate?, InEnvironment { value: ty, environment: environment.clone() })
+        deref(db, krate?, InEnvironment { goal: ty, environment: environment.clone() })
     })
     .take(AUTODEREF_RECURSION_LIMIT)
 }
@@ -37,10 +36,19 @@ pub(crate) fn deref(
     krate: CrateId,
     ty: InEnvironment<&Canonical<Ty>>,
 ) -> Option<Canonical<Ty>> {
-    if let Some(derefed) = ty.value.value.builtin_deref() {
-        Some(Canonical { value: derefed, kinds: ty.value.kinds.clone() })
+    let _p = profile::span("deref");
+    if let Some(derefed) = builtin_deref(&ty.goal.value) {
+        Some(Canonical { value: derefed, binders: ty.goal.binders.clone() })
     } else {
         deref_by_trait(db, krate, ty)
+    }
+}
+
+fn builtin_deref(ty: &Ty) -> Option<Ty> {
+    match ty.kind(&Interner) {
+        TyKind::Ref(.., ty) => Some(ty.clone()),
+        TyKind::Raw(.., ty) => Some(ty.clone()),
+        _ => None,
     }
 }
 
@@ -49,30 +57,31 @@ fn deref_by_trait(
     krate: CrateId,
     ty: InEnvironment<&Canonical<Ty>>,
 ) -> Option<Canonical<Ty>> {
+    let _p = profile::span("deref_by_trait");
     let deref_trait = match db.lang_item(krate, "deref".into())? {
         LangItemTarget::TraitId(it) => it,
         _ => return None,
     };
     let target = db.trait_data(deref_trait).associated_type_by_name(&name![Target])?;
 
-    let generic_params = generics(db.upcast(), target.into());
-    if generic_params.len() != 1 {
-        // the Target type + Deref trait should only have one generic parameter,
-        // namely Deref's Self type
-        return None;
-    }
+    let projection = {
+        let b = TyBuilder::assoc_type_projection(db, target);
+        if b.remaining() != 1 {
+            // the Target type + Deref trait should only have one generic parameter,
+            // namely Deref's Self type
+            return None;
+        }
+        b.push(ty.goal.value.clone()).build()
+    };
 
     // FIXME make the Canonical / bound var handling nicer
 
-    let parameters =
-        Substs::build_for_generics(&generic_params).push(ty.value.value.clone()).build();
-
     // Check that the type implements Deref at all
-    let trait_ref = TraitRef { trait_: deref_trait, substs: parameters.clone() };
+    let trait_ref = projection.trait_ref(db);
     let implements_goal = Canonical {
-        kinds: ty.value.kinds.clone(),
+        binders: ty.goal.binders.clone(),
         value: InEnvironment {
-            value: Obligation::Trait(trait_ref),
+            goal: trait_ref.cast(&Interner),
             environment: ty.environment.clone(),
         },
     };
@@ -81,23 +90,27 @@ fn deref_by_trait(
     }
 
     // Now do the assoc type projection
-    let projection = super::traits::ProjectionPredicate {
-        ty: TyKind::BoundVar(BoundVar::new(DebruijnIndex::INNERMOST, ty.value.kinds.len()))
-            .intern(&Interner),
-        projection_ty: super::ProjectionTy {
-            associated_ty_id: to_assoc_type_id(target),
-            substitution: parameters,
-        },
+    let alias_eq = AliasEq {
+        alias: AliasTy::Projection(projection),
+        ty: TyKind::BoundVar(BoundVar::new(
+            DebruijnIndex::INNERMOST,
+            ty.goal.binders.len(&Interner),
+        ))
+        .intern(&Interner),
     };
 
-    let obligation = super::Obligation::Projection(projection);
+    let in_env = InEnvironment { goal: alias_eq.cast(&Interner), environment: ty.environment };
 
-    let in_env = InEnvironment { value: obligation, environment: ty.environment };
-
-    let canonical = Canonical::new(
-        in_env,
-        ty.value.kinds.iter().copied().chain(Some(chalk_ir::TyVariableKind::General)),
-    );
+    let canonical = Canonical {
+        value: in_env,
+        binders: CanonicalVarKinds::from_iter(
+            &Interner,
+            ty.goal.binders.iter(&Interner).cloned().chain(Some(chalk_ir::WithKind::new(
+                VariableKind::Ty(chalk_ir::TyVariableKind::General),
+                chalk_ir::UniverseIndex::ROOT,
+            ))),
+        ),
+    };
 
     let solution = db.trait_solve(krate, canonical)?;
 
@@ -118,22 +131,58 @@ fn deref_by_trait(
             // assumptions will be broken. We would need to properly introduce
             // new variables in that case
 
-            for i in 1..vars.0.kinds.len() {
-                if vars.0.value[i - 1].interned(&Interner)
+            for i in 1..vars.binders.len(&Interner) {
+                if vars.value.subst.at(&Interner, i - 1).assert_ty_ref(&Interner).kind(&Interner)
                     != &TyKind::BoundVar(BoundVar::new(DebruijnIndex::INNERMOST, i - 1))
                 {
-                    warn!("complex solution for derefing {:?}: {:?}, ignoring", ty.value, solution);
+                    warn!("complex solution for derefing {:?}: {:?}, ignoring", ty.goal, solution);
                     return None;
                 }
             }
-            Some(Canonical {
-                value: vars.0.value[vars.0.value.len() - 1].clone(),
-                kinds: vars.0.kinds.clone(),
-            })
+            // FIXME: we remove lifetime variables here since they can confuse
+            // the method resolution code later
+            Some(fixup_lifetime_variables(Canonical {
+                value: vars
+                    .value
+                    .subst
+                    .at(&Interner, vars.value.subst.len(&Interner) - 1)
+                    .assert_ty_ref(&Interner)
+                    .clone(),
+                binders: vars.binders.clone(),
+            }))
         }
         Solution::Ambig(_) => {
-            info!("Ambiguous solution for derefing {:?}: {:?}", ty.value, solution);
+            info!("Ambiguous solution for derefing {:?}: {:?}", ty.goal, solution);
             None
         }
     }
+}
+
+fn fixup_lifetime_variables<T: Fold<Interner, Result = T> + HasInterner<Interner = Interner>>(
+    c: Canonical<T>,
+) -> Canonical<T> {
+    // Removes lifetime variables from the Canonical, replacing them by static lifetimes.
+    let mut i = 0;
+    let subst = Substitution::from_iter(
+        &Interner,
+        c.binders.iter(&Interner).map(|vk| match vk.kind {
+            VariableKind::Ty(_) => {
+                let index = i;
+                i += 1;
+                BoundVar::new(DebruijnIndex::INNERMOST, index).to_ty(&Interner).cast(&Interner)
+            }
+            VariableKind::Lifetime => static_lifetime().cast(&Interner),
+            VariableKind::Const(_) => unimplemented!(),
+        }),
+    );
+    let binders = CanonicalVarKinds::from_iter(
+        &Interner,
+        c.binders.iter(&Interner).filter(|vk| match vk.kind {
+            VariableKind::Ty(_) => true,
+            VariableKind::Lifetime => false,
+            VariableKind::Const(_) => true,
+        }),
+    );
+    let value = subst.apply(c.value, &Interner);
+    Canonical { binders, value }
 }

@@ -13,32 +13,22 @@
 
 #![unstable(feature = "stdsimd", issue = "27731")]
 #![feature(const_fn, staged_api, stdsimd, doc_cfg, allow_internal_unstable)]
+#![deny(rust_2018_idioms)]
 #![allow(clippy::shadow_reuse)]
 #![deny(clippy::missing_inline_in_public_items)]
-#![cfg_attr(target_os = "linux", feature(linkage))]
 #![cfg_attr(all(target_os = "freebsd", target_arch = "aarch64"), feature(llvm_asm))]
 #![cfg_attr(test, allow(unused_imports))]
+#![cfg_attr(feature = "std_detect_file_io", feature(vec_spare_capacity))]
 #![no_std]
 
-cfg_if::cfg_if! {
-    if #[cfg(any(feature = "std_detect_file_io", feature = "std_detect_env_override"))] {
-        #[cfg_attr(test, macro_use(println))]
-        extern crate std;
+// rust-lang/rust#83888: removing `extern crate` gives an error that `vec_spare_capacity` is unknown
+#[cfg_attr(feature = "std_detect_file_io", allow(unused_extern_crates))]
+#[cfg(feature = "std_detect_file_io")]
+extern crate alloc;
 
-        #[allow(unused_imports)]
-        use std::{arch, env, fs, io, mem, sync};
-    } else {
-        #[cfg(test)]
-        #[macro_use(println)]
-        extern crate std;
-
-        #[allow(unused_imports)]
-        use core::{arch, mem, sync};
-    }
-}
-
-#[cfg(feature = "std_detect_dlsym_getauxval")]
-extern crate libc;
+#[cfg(test)]
+#[macro_use]
+extern crate std;
 
 #[doc(hidden)]
 #[unstable(feature = "stdsimd", issue = "27731")]

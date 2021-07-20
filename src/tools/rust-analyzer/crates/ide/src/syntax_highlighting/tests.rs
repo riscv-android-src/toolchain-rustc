@@ -1,6 +1,8 @@
+use std::time::Instant;
+
 use expect_test::{expect_file, ExpectFile};
 use ide_db::SymbolKind;
-use test_utils::{bench, bench_fixture, skip_slow_tests};
+use test_utils::{bench, bench_fixture, skip_slow_tests, AssertLinear};
 
 use crate::{fixture, FileRange, HlTag, TextRange};
 
@@ -129,6 +131,16 @@ macro_rules! keyword_frag {
     ($type:ty) => ($type)
 }
 
+macro with_args($i:ident) {
+    $i
+}
+
+macro without_args {
+    ($i:ident) => {
+        $i
+    }
+}
+
 // comment
 fn main() {
     println!("Hello, {}!", 92);
@@ -248,6 +260,36 @@ fn benchmark_syntax_highlighting_long_struct() {
 }
 
 #[test]
+fn syntax_highlighting_not_quadratic() {
+    if skip_slow_tests() {
+        return;
+    }
+
+    let mut al = AssertLinear::default();
+    while al.next_round() {
+        for i in 6..=10 {
+            let n = 1 << i;
+
+            let fixture = bench_fixture::big_struct_n(n);
+            let (analysis, file_id) = fixture::file(&fixture);
+
+            let time = Instant::now();
+
+            let hash = analysis
+                .highlight(file_id)
+                .unwrap()
+                .iter()
+                .filter(|it| it.highlight.tag == HlTag::Symbol(SymbolKind::Struct))
+                .count();
+            assert!(hash > n as usize);
+
+            let elapsed = time.elapsed();
+            al.sample(n as f64, elapsed.as_millis() as f64);
+        }
+    }
+}
+
+#[test]
 fn benchmark_syntax_highlighting_parser() {
     if skip_slow_tests() {
         return;
@@ -265,7 +307,7 @@ fn benchmark_syntax_highlighting_parser() {
             .filter(|it| it.highlight.tag == HlTag::Symbol(SymbolKind::Function))
             .count()
     };
-    assert_eq!(hash, 1629);
+    assert_eq!(hash, 1632);
 }
 
 #[test]
@@ -468,7 +510,7 @@ fn main() {
 }
 
 #[test]
-fn test_highlight_doctest() {
+fn test_highlight_doc_comment() {
     check_highlighting(
         r#"
 /// ```
@@ -516,7 +558,7 @@ impl Foo {
     ///        comment */
     ///
     /// let multi_line_string = "Foo
-    ///   bar
+    ///   bar\n
     ///          ";
     ///
     /// ```
@@ -533,6 +575,19 @@ impl Foo {
     }
 }
 
+/// [`Foo`](Foo) is a struct
+/// This function is > [`all_the_links`](all_the_links) <
+/// [`noop`](noop) is a macro below
+/// [`Item`] is a struct in the module [`module`]
+///
+/// [`Item`]: module::Item
+/// [mix_and_match]: ThisShouldntResolve
+pub fn all_the_links() {}
+
+pub mod module {
+    pub struct Item;
+}
+
 /// ```
 /// noop!(1);
 /// ```
@@ -541,6 +596,38 @@ macro_rules! noop {
         $expr
     }
 }
+
+/// ```rust
+/// let _ = example(&[1, 2, 3]);
+/// ```
+///
+/// ```
+/// loop {}
+#[cfg_attr(not(feature = "false"), doc = "loop {}")]
+#[doc = "loop {}"]
+/// ```
+///
+#[cfg_attr(feature = "alloc", doc = "```rust")]
+#[cfg_attr(not(feature = "alloc"), doc = "```ignore")]
+/// let _ = example(&alloc::vec![1, 2, 3]);
+/// ```
+pub fn mix_and_match() {}
+
+/**
+It is beyond me why you'd use these when you got ///
+```rust
+let _ = example(&[1, 2, 3]);
+```
+ */
+pub fn block_comments() {}
+
+/**
+    Really, I don't get it
+    ```rust
+    let _ = example(&[1, 2, 3]);
+    ```
+*/
+pub fn block_comments2() {}
 "#
         .trim(),
         expect_file!["./test_data/highlight_doctest.html"],

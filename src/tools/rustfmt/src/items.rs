@@ -17,7 +17,8 @@ use crate::comment::{
 use crate::config::lists::*;
 use crate::config::{BraceStyle, Config, IndentStyle, Version};
 use crate::expr::{
-    is_empty_block, is_simple_block_stmt, rewrite_assign_rhs, rewrite_assign_rhs_with, RhsTactics,
+    is_empty_block, is_simple_block_stmt, rewrite_assign_rhs, rewrite_assign_rhs_with,
+    rewrite_assign_rhs_with_comments, RhsTactics,
 };
 use crate::lists::{definitive_tactic, itemize_list, write_list, ListFormatting, Separator};
 use crate::macros::{rewrite_macro, MacroPosition};
@@ -157,7 +158,7 @@ impl<'a> Item<'a> {
 #[derive(Debug)]
 enum BodyElement<'a> {
     // Stmt(&'a ast::Stmt),
-    // Field(&'a ast::Field),
+    // Field(&'a ast::ExprField),
     // Variant(&'a ast::Variant),
     // Item(&'a ast::Item),
     ForeignItem(&'a ast::ForeignItem),
@@ -504,8 +505,8 @@ impl<'a> FmtVisitor<'a> {
             )
             .collect()
         };
-        let mut items: Vec<_> =
-            itemize_list_with(self.config.width_heuristics().struct_variant_width);
+        let mut items: Vec<_> = itemize_list_with(self.config.struct_variant_width());
+
         // If one of the variants use multiple lines, use multi-lined formatting for all variants.
         let has_multiline_variant = items.iter().any(|item| item.inner_as_ref().contains('\n'));
         let has_single_line_variant = items.iter().any(|item| !item.inner_as_ref().contains('\n'));
@@ -1273,7 +1274,7 @@ fn format_unit_struct(
 pub(crate) fn format_struct_struct(
     context: &RewriteContext<'_>,
     struct_parts: &StructParts<'_>,
-    fields: &[ast::StructField],
+    fields: &[ast::FieldDef],
     offset: Indent,
     one_line_width: Option<usize>,
 ) -> Option<String> {
@@ -1410,7 +1411,7 @@ fn format_empty_struct_or_tuple(
 fn format_tuple_struct(
     context: &RewriteContext<'_>,
     struct_parts: &StructParts<'_>,
-    fields: &[ast::StructField],
+    fields: &[ast::FieldDef],
     offset: Indent,
 ) -> Option<String> {
     let mut result = String::with_capacity(1024);
@@ -1478,7 +1479,7 @@ fn format_tuple_struct(
             fields.iter(),
             shape,
             span,
-            context.config.width_heuristics().fn_call_width,
+            context.config.fn_call_width(),
             None,
         )?;
     }
@@ -1630,7 +1631,7 @@ fn type_annotation_spacing(config: &Config) -> (&str, &str) {
 
 pub(crate) fn rewrite_struct_field_prefix(
     context: &RewriteContext<'_>,
-    field: &ast::StructField,
+    field: &ast::FieldDef,
 ) -> Option<String> {
     let vis = format_visibility(context, &field.vis);
     let type_annotation_spacing = type_annotation_spacing(context.config);
@@ -1645,7 +1646,7 @@ pub(crate) fn rewrite_struct_field_prefix(
     })
 }
 
-impl Rewrite for ast::StructField {
+impl Rewrite for ast::FieldDef {
     fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
         rewrite_struct_field(context, self, shape, 0)
     }
@@ -1653,7 +1654,7 @@ impl Rewrite for ast::StructField {
 
 pub(crate) fn rewrite_struct_field(
     context: &RewriteContext<'_>,
-    field: &ast::StructField,
+    field: &ast::FieldDef,
     shape: Shape,
     lhs_max_width: usize,
 ) -> Option<String> {
@@ -1822,14 +1823,22 @@ fn rewrite_static(
     };
 
     if let Some(expr) = static_parts.expr_opt {
+        let comments_lo = context.snippet_provider.span_after(static_parts.span, "=");
+        let expr_lo = expr.span.lo();
+        let comments_span = mk_sp(comments_lo, expr_lo);
+
         let lhs = format!("{}{} =", prefix, ty_str);
+
         // 1 = ;
         let remaining_width = context.budget(offset.block_indent + 1);
-        rewrite_assign_rhs(
+        rewrite_assign_rhs_with_comments(
             context,
-            lhs,
+            &lhs,
             &**expr,
             Shape::legacy(remaining_width, offset.block_only()),
+            RhsTactics::Default,
+            comments_span,
+            true,
         )
         .and_then(|res| recover_comment_removed(res, static_parts.span, context))
         .map(|s| if s.ends_with(';') { s } else { s + ";" })
@@ -3262,8 +3271,8 @@ pub(crate) fn rewrite_extern_crate(
 /// Returns `true` for `mod foo;`, false for `mod foo { .. }`.
 pub(crate) fn is_mod_decl(item: &ast::Item) -> bool {
     match item.kind {
-        ast::ItemKind::Mod(ref m) => m.inner.hi() != item.span.hi(),
-        _ => false,
+        ast::ItemKind::Mod(_, ast::ModKind::Loaded(_, ast::Inline::Yes, _)) => false,
+        _ => true,
     }
 }
 

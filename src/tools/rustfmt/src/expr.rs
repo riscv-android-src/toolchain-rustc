@@ -9,8 +9,8 @@ use rustc_span::{BytePos, Span};
 use crate::chains::rewrite_chain;
 use crate::closures;
 use crate::comment::{
-    combine_strs_with_missing_comments, comment_style, contains_comment, recover_comment_removed,
-    rewrite_comment, rewrite_missing_comment, CharClasses, FindUncommented,
+    combine_strs_with_missing_comments, contains_comment, recover_comment_removed, rewrite_comment,
+    rewrite_missing_comment, CharClasses, FindUncommented,
 };
 use crate::config::lists::*;
 use crate::config::{Config, ControlBraceStyle, IndentStyle, Version};
@@ -106,15 +106,10 @@ pub(crate) fn format_expr(
             })
         }
         ast::ExprKind::Unary(op, ref subexpr) => rewrite_unary_op(context, op, subexpr, shape),
-        ast::ExprKind::Struct(ref path, ref fields, ref struct_rest) => rewrite_struct_lit(
-            context,
-            path,
-            fields,
-            struct_rest,
-            &expr.attrs,
-            expr.span,
-            shape,
-        ),
+        ast::ExprKind::Struct(ref struct_expr) => {
+            let ast::StructExpr { fields, path, rest } = &**struct_expr;
+            rewrite_struct_lit(context, path, fields, rest, &expr.attrs, expr.span, shape)
+        }
         ast::ExprKind::Tup(ref items) => {
             rewrite_tuple(context, items.iter(), expr.span, shape, items.len() == 1)
         }
@@ -829,38 +824,16 @@ impl<'a> ControlFlow<'a> {
             let comments_lo = context
                 .snippet_provider
                 .span_after(self.span, self.connector.trim());
-            let missing_comments = if let Some(comment) =
-                rewrite_missing_comment(mk_sp(comments_lo, expr.span.lo()), cond_shape, context)
-            {
-                if !self.connector.is_empty() && !comment.is_empty() {
-                    if comment_style(&comment, false).is_line_comment() || comment.contains("\n") {
-                        let newline = &pat_shape
-                            .indent
-                            .block_indent(context.config)
-                            .to_string_with_newline(context.config);
-                        // An extra space is added when the lhs and rhs are joined
-                        // so we need to remove one space from the end to ensure
-                        // the comment and rhs are aligned.
-                        let mut suffix = newline.as_ref().to_string();
-                        if !suffix.is_empty() {
-                            suffix.truncate(suffix.len() - 1);
-                        }
-                        format!("{}{}{}", newline, comment, suffix)
-                    } else {
-                        format!(" {}", comment)
-                    }
-                } else {
-                    comment
-                }
-            } else {
-                "".to_owned()
-            };
-
-            let result = format!(
-                "{}{}{}{}",
-                matcher, pat_string, self.connector, missing_comments
+            let comments_span = mk_sp(comments_lo, expr.span.lo());
+            return rewrite_assign_rhs_with_comments(
+                context,
+                &format!("{}{}{}", matcher, pat_string, self.connector),
+                expr,
+                cond_shape,
+                RhsTactics::Default,
+                comments_span,
+                true,
             );
-            return rewrite_assign_rhs(context, result, expr, cond_shape);
         }
 
         let expr_rw = expr.rewrite(context, cond_shape);
@@ -926,22 +899,11 @@ impl<'a> ControlFlow<'a> {
                 || last_line_offsetted(shape.used_width(), &pat_expr_string));
 
         // Try to format if-else on single line.
-        if self.allow_single_line
-            && context
-                .config
-                .width_heuristics()
-                .single_line_if_else_max_width
-                > 0
-        {
+        if self.allow_single_line && context.config.single_line_if_else_max_width() > 0 {
             let trial = self.rewrite_single_line(&pat_expr_string, context, shape.width);
 
             if let Some(cond_str) = trial {
-                if cond_str.len()
-                    <= context
-                        .config
-                        .width_heuristics()
-                        .single_line_if_else_max_width
-                {
+                if cond_str.len() <= context.config.single_line_if_else_max_width() {
                     return Some((cond_str, 0));
                 }
             }
@@ -1273,7 +1235,7 @@ pub(crate) fn rewrite_call(
         args.iter(),
         shape,
         span,
-        context.config.width_heuristics().fn_call_width,
+        context.config.fn_call_width(),
         choose_separator_tactic(context, span),
     )
 }
@@ -1518,14 +1480,14 @@ fn rewrite_index(
     }
 }
 
-fn struct_lit_can_be_aligned(fields: &[ast::Field], has_base: bool) -> bool {
+fn struct_lit_can_be_aligned(fields: &[ast::ExprField], has_base: bool) -> bool {
     !has_base && fields.iter().all(|field| !field.is_shorthand)
 }
 
 fn rewrite_struct_lit<'a>(
     context: &RewriteContext<'_>,
     path: &ast::Path,
-    fields: &'a [ast::Field],
+    fields: &'a [ast::ExprField],
     struct_rest: &ast::StructRest,
     attrs: &[ast::Attribute],
     span: Span,
@@ -1534,7 +1496,7 @@ fn rewrite_struct_lit<'a>(
     debug!("rewrite_struct_lit: shape {:?}", shape);
 
     enum StructLitField<'a> {
-        Regular(&'a ast::Field),
+        Regular(&'a ast::ExprField),
         Base(&'a ast::Expr),
         Rest(&'a Span),
     }
@@ -1690,7 +1652,7 @@ pub(crate) fn struct_lit_field_separator(config: &Config) -> &str {
 
 pub(crate) fn rewrite_field(
     context: &RewriteContext<'_>,
-    field: &ast::Field,
+    field: &ast::ExprField,
     shape: Shape,
     prefix_max_width: usize,
 ) -> Option<String> {
@@ -1812,7 +1774,7 @@ pub(crate) fn rewrite_tuple<'a, T: 'a + IntoOverflowableItem<'a>>(
             items,
             shape,
             span,
-            context.config.width_heuristics().fn_call_width,
+            context.config.fn_call_width(),
             force_tactic,
         )
     } else {
@@ -1899,14 +1861,13 @@ pub(crate) fn rewrite_assign_rhs<S: Into<String>, R: Rewrite>(
     rewrite_assign_rhs_with(context, lhs, ex, shape, RhsTactics::Default)
 }
 
-pub(crate) fn rewrite_assign_rhs_with<S: Into<String>, R: Rewrite>(
+pub(crate) fn rewrite_assign_rhs_expr<R: Rewrite>(
     context: &RewriteContext<'_>,
-    lhs: S,
+    lhs: &str,
     ex: &R,
     shape: Shape,
     rhs_tactics: RhsTactics,
 ) -> Option<String> {
-    let lhs = lhs.into();
     let last_line_width = last_line_width(&lhs).saturating_sub(if lhs.contains('\n') {
         shape.indent.width()
     } else {
@@ -1918,14 +1879,58 @@ pub(crate) fn rewrite_assign_rhs_with<S: Into<String>, R: Rewrite>(
         offset: shape.offset + last_line_width + 1,
         ..shape
     });
-    let rhs = choose_rhs(
+    let has_rhs_comment = if let Some(offset) = lhs.find_last_uncommented("=") {
+        lhs.trim_end().len() > offset + 1
+    } else {
+        false
+    };
+
+    choose_rhs(
         context,
         ex,
         orig_shape,
         ex.rewrite(context, orig_shape),
         rhs_tactics,
-    )?;
+        has_rhs_comment,
+    )
+}
+
+pub(crate) fn rewrite_assign_rhs_with<S: Into<String>, R: Rewrite>(
+    context: &RewriteContext<'_>,
+    lhs: S,
+    ex: &R,
+    shape: Shape,
+    rhs_tactics: RhsTactics,
+) -> Option<String> {
+    let lhs = lhs.into();
+    let rhs = rewrite_assign_rhs_expr(context, &lhs, ex, shape, rhs_tactics)?;
     Some(lhs + &rhs)
+}
+
+pub(crate) fn rewrite_assign_rhs_with_comments<S: Into<String>, R: Rewrite>(
+    context: &RewriteContext<'_>,
+    lhs: S,
+    ex: &R,
+    shape: Shape,
+    rhs_tactics: RhsTactics,
+    between_span: Span,
+    allow_extend: bool,
+) -> Option<String> {
+    let lhs = lhs.into();
+    let contains_comment = contains_comment(context.snippet(between_span));
+    let shape = if contains_comment {
+        shape.block_left(context.config.tab_spaces())?
+    } else {
+        shape
+    };
+    let rhs = rewrite_assign_rhs_expr(context, &lhs, ex, shape, rhs_tactics)?;
+
+    if contains_comment {
+        let rhs = rhs.trim_start();
+        combine_strs_with_missing_comments(context, &lhs, &rhs, between_span, shape, allow_extend)
+    } else {
+        Some(lhs + &rhs)
+    }
 }
 
 fn choose_rhs<R: Rewrite>(
@@ -1934,6 +1939,7 @@ fn choose_rhs<R: Rewrite>(
     shape: Shape,
     orig_rhs: Option<String>,
     rhs_tactics: RhsTactics,
+    has_rhs_comment: bool,
 ) -> Option<String> {
     match orig_rhs {
         Some(ref new_str)
@@ -1950,13 +1956,14 @@ fn choose_rhs<R: Rewrite>(
                 .indent
                 .block_indent(context.config)
                 .to_string_with_newline(context.config);
+            let before_space_str = if has_rhs_comment { "" } else { " " };
 
             match (orig_rhs, new_rhs) {
                 (Some(ref orig_rhs), Some(ref new_rhs))
                     if wrap_str(new_rhs.clone(), context.config.max_width(), new_shape)
                         .is_none() =>
                 {
-                    Some(format!(" {}", orig_rhs))
+                    Some(format!("{}{}", before_space_str, orig_rhs))
                 }
                 (Some(ref orig_rhs), Some(ref new_rhs))
                     if prefer_next_line(orig_rhs, new_rhs, rhs_tactics) =>
@@ -1966,10 +1973,11 @@ fn choose_rhs<R: Rewrite>(
                 (None, Some(ref new_rhs)) => Some(format!("{}{}", new_indent_str, new_rhs)),
                 (None, None) if rhs_tactics == RhsTactics::AllowOverflow => {
                     let shape = shape.infinite_width();
-                    expr.rewrite(context, shape).map(|s| format!(" {}", s))
+                    expr.rewrite(context, shape)
+                        .map(|s| format!("{}{}", before_space_str, s))
                 }
                 (None, None) => None,
-                (Some(orig_rhs), _) => Some(format!(" {}", orig_rhs)),
+                (Some(orig_rhs), _) => Some(format!("{}{}", before_space_str, orig_rhs)),
             }
         }
     }

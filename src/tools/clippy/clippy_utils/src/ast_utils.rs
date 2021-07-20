@@ -5,6 +5,7 @@
 #![allow(clippy::similar_names, clippy::wildcard_imports, clippy::enum_glob_use)]
 
 use crate::{both, over};
+use if_chain::if_chain;
 use rustc_ast::ptr::P;
 use rustc_ast::{self as ast, *};
 use rustc_span::symbol::Ident;
@@ -169,9 +170,9 @@ pub fn eq_expr(l: &Expr, r: &Expr) -> bool {
         (Path(lq, lp), Path(rq, rp)) => both(lq, rq, |l, r| eq_qself(l, r)) && eq_path(lp, rp),
         (MacCall(l), MacCall(r)) => eq_mac_call(l, r),
         (Struct(lse), Struct(rse)) => {
-            eq_path(&lse.path, &rse.path) &&
-            eq_struct_rest(&lse.rest, &rse.rest) &&
-            unordered_over(&lse.fields, &rse.fields, |l, r| eq_field(l, r))
+            eq_path(&lse.path, &rse.path)
+                && eq_struct_rest(&lse.rest, &rse.rest)
+                && unordered_over(&lse.fields, &rse.fields, |l, r| eq_field(l, r))
         },
         _ => false,
     }
@@ -408,6 +409,10 @@ pub fn eq_use_tree(l: &UseTree, r: &UseTree) -> bool {
     eq_path(&l.prefix, &r.prefix) && eq_use_tree_kind(&l.kind, &r.kind)
 }
 
+pub fn eq_anon_const(l: &AnonConst, r: &AnonConst) -> bool {
+    eq_expr(&l.value, &r.value)
+}
+
 pub fn eq_use_tree_kind(l: &UseTreeKind, r: &UseTreeKind) -> bool {
     use UseTreeKind::*;
     match (l, r) {
@@ -416,10 +421,6 @@ pub fn eq_use_tree_kind(l: &UseTreeKind, r: &UseTreeKind) -> bool {
         (Nested(l), Nested(r)) => over(l, r, |(l, _), (r, _)| eq_use_tree(l, r)),
         _ => false,
     }
-}
-
-pub fn eq_anon_const(l: &AnonConst, r: &AnonConst) -> bool {
-    eq_expr(&l.value, &r.value)
 }
 
 pub fn eq_defaultness(l: Defaultness, r: Defaultness) -> bool {
@@ -570,4 +571,35 @@ pub fn eq_mac_args(l: &MacArgs, r: &MacArgs) -> bool {
         (Eq(_, lt), Eq(_, rt)) => lt.kind == rt.kind,
         _ => false,
     }
+}
+
+/// Extract args from an assert-like macro.
+///
+/// Currently working with:
+/// - `assert_eq!` and `assert_ne!`
+/// - `debug_assert_eq!` and `debug_assert_ne!`
+///
+/// For example:
+///
+/// `debug_assert_eq!(a, b)` will return Some([a, b])
+pub fn extract_assert_macro_args(mut expr: &Expr) -> Option<[&Expr; 2]> {
+    if_chain! {
+        if let ExprKind::If(_, ref block, _) = expr.kind;
+        if let StmtKind::Semi(ref e) = block.stmts.get(0)?.kind;
+        then {
+            expr = e;
+        }
+    }
+    if_chain! {
+        if let ExprKind::Block(ref block, _) = expr.kind;
+        if let StmtKind::Expr(ref expr) = block.stmts.get(0)?.kind;
+        if let ExprKind::Match(ref match_expr, _) = expr.kind;
+        if let ExprKind::Tup(ref tup) = match_expr.kind;
+        if let [a, b, ..] = tup.as_slice();
+        if let (&ExprKind::AddrOf(_, _, ref a), &ExprKind::AddrOf(_, _, ref b)) = (&a.kind, &b.kind);
+        then {
+            return Some([&*a, &*b]);
+        }
+    }
+    None
 }

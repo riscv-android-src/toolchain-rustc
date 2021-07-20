@@ -12,6 +12,8 @@ use crate::{display::TryToNav, FilePosition, NavigationTarget, RangeInfo};
 //
 // | VS Code | **Go to Type Definition*
 // |===
+//
+// image::https://user-images.githubusercontent.com/48062697/113020657-b560f500-917a-11eb-9007-0f809733a338.gif[]
 pub(crate) fn goto_type_definition(
     db: &RootDatabase,
     position: FilePosition,
@@ -22,7 +24,7 @@ pub(crate) fn goto_type_definition(
     let token: SyntaxToken = pick_best(file.syntax().token_at_offset(position.offset))?;
     let token: SyntaxToken = sema.descend_into_macros(token);
 
-    let (ty, node) = sema.ancestors_with_macros(token.parent()).find_map(|node| {
+    let (ty, node) = sema.token_ancestors_with_macros(token).find_map(|node| {
         let ty = match_ast! {
             match node {
                 ast::Expr(it) => sema.type_of_expr(&it)?,

@@ -1,8 +1,10 @@
 //! Feature: completion with imports-on-the-fly
 //!
 //! When completing names in the current scope, proposes additional imports from other modules or crates,
-//! if they can be qualified in the scope and their name contains all symbols from the completion input
-//! (case-insensitive, in any order or places).
+//! if they can be qualified in the scope and their name contains all symbols from the completion input.
+//!
+//! To be considered applicable, the name must contain all input symbols in the given order, not necessarily adjacent.
+//! If any input symbol is not lowercased, the name must contain all symbols in exact case; otherwise the contaning is checked case-insensitively.
 //!
 //! ```
 //! fn main() {
@@ -111,6 +113,9 @@ pub(crate) fn import_on_the_fly(acc: &mut Completions, ctx: &CompletionContext) 
     if ctx.use_item_syntax.is_some()
         || ctx.attribute_under_caret.is_some()
         || ctx.mod_declaration_under_caret.is_some()
+        || ctx.record_lit_syntax.is_some()
+        || ctx.has_trait_parent
+        || ctx.has_impl_parent
     {
         return None;
     }
@@ -127,7 +132,7 @@ pub(crate) fn import_on_the_fly(acc: &mut Completions, ctx: &CompletionContext) 
 
     let user_input_lowercased = potential_import_name.to_lowercase();
     let import_assets = import_assets(ctx, potential_import_name)?;
-    let import_scope = ImportScope::find_insert_use_container(
+    let import_scope = ImportScope::find_insert_use_container_with_macros(
         position_for_import(ctx, Some(import_assets.import_candidate()))?,
         &ctx.sema,
     )?;
@@ -402,7 +407,7 @@ fn main() {
         check(
             fixture,
             expect![[r#"
-                fn weird_function() (dep::test_mod::TestTrait) -> ()
+                fn weird_function() (dep::test_mod::TestTrait) fn()
             "#]],
         );
 
@@ -495,7 +500,7 @@ fn main() {
         check(
             fixture,
             expect![[r#"
-                me random_method() (dep::test_mod::TestTrait) -> ()
+                me random_method() (dep::test_mod::TestTrait) fn(&self)
             "#]],
         );
 
@@ -665,7 +670,7 @@ fn main() {
 }
         "#,
             expect![[r#"
-                me random_method() (dep::test_mod::TestTrait) -> () DEPRECATED
+                me random_method() (dep::test_mod::TestTrait) fn(&self) DEPRECATED
             "#]],
         );
 
@@ -696,7 +701,7 @@ fn main() {
 "#,
             expect![[r#"
                 ct SPECIAL_CONST (dep::test_mod::TestTrait) DEPRECATED
-                fn weird_function() (dep::test_mod::TestTrait) -> () DEPRECATED
+                fn weird_function() (dep::test_mod::TestTrait) fn() DEPRECATED
             "#]],
         );
     }
@@ -942,9 +947,207 @@ mod foo {
 }
 
 fn main() {
-    bar::Ass$0
+    bar::ASS$0
 }"#,
             expect![[]],
         )
+    }
+
+    #[test]
+    fn unqualified_assoc_items_are_omitted() {
+        check(
+            r#"
+mod something {
+    pub trait BaseTrait {
+        fn test_function() -> i32;
+    }
+
+    pub struct Item1;
+    pub struct Item2;
+
+    impl BaseTrait for Item1 {
+        fn test_function() -> i32 {
+            1
+        }
+    }
+
+    impl BaseTrait for Item2 {
+        fn test_function() -> i32 {
+            2
+        }
+    }
+}
+
+fn main() {
+    test_f$0
+}"#,
+            expect![[]],
+        )
+    }
+
+    #[test]
+    fn case_matters() {
+        check(
+            r#"
+mod foo {
+    pub const TEST_CONST: usize = 3;
+    pub fn test_function() -> i32 {
+        4
+    }
+}
+
+fn main() {
+    TE$0
+}"#,
+            expect![[r#"
+        ct foo::TEST_CONST
+    "#]],
+        );
+
+        check(
+            r#"
+mod foo {
+    pub const TEST_CONST: usize = 3;
+    pub fn test_function() -> i32 {
+        4
+    }
+}
+
+fn main() {
+    te$0
+}"#,
+            expect![[r#"
+        ct foo::TEST_CONST
+        fn test_function() (foo::test_function) fn() -> i32
+    "#]],
+        );
+
+        check(
+            r#"
+mod foo {
+    pub const TEST_CONST: usize = 3;
+    pub fn test_function() -> i32 {
+        4
+    }
+}
+
+fn main() {
+    Te$0
+}"#,
+            expect![[]],
+        );
+    }
+
+    #[test]
+    fn no_fuzzy_during_fields_of_record_lit_syntax() {
+        check(
+            r#"
+mod m {
+    pub fn some_fn() -> i32 {
+        42
+    }
+}
+struct Foo {
+    some_field: i32,
+}
+fn main() {
+    let _ = Foo { so$0 };
+}
+"#,
+            expect![[]],
+        );
+    }
+
+    #[test]
+    fn fuzzy_after_fields_of_record_lit_syntax() {
+        check(
+            r#"
+mod m {
+    pub fn some_fn() -> i32 {
+        42
+    }
+}
+struct Foo {
+    some_field: i32,
+}
+fn main() {
+    let _ = Foo { some_field: so$0 };
+}
+"#,
+            expect![[r#"
+                fn some_fn() (m::some_fn) fn() -> i32
+            "#]],
+        );
+    }
+
+    #[test]
+    fn no_flyimports_in_traits_and_impl_declarations() {
+        check(
+            r#"
+mod m {
+    pub fn some_fn() -> i32 {
+        42
+    }
+}
+trait Foo {
+    som$0
+}
+"#,
+            expect![[r#""#]],
+        );
+
+        check(
+            r#"
+mod m {
+    pub fn some_fn() -> i32 {
+        42
+    }
+}
+struct Foo;
+impl Foo {
+    som$0
+}
+"#,
+            expect![[r#""#]],
+        );
+
+        check(
+            r#"
+mod m {
+    pub fn some_fn() -> i32 {
+        42
+    }
+}
+struct Foo;
+trait Bar {}
+impl Bar for Foo {
+    som$0
+}
+"#,
+            expect![[r#""#]],
+        );
+    }
+
+    #[test]
+    fn no_inherent_candidates_proposed() {
+        check(
+            r#"
+mod baz {
+    pub trait DefDatabase {
+        fn method1(&self);
+    }
+    pub trait HirDatabase: DefDatabase {
+        fn method2(&self);
+    }
+}
+
+mod bar {
+    fn test(db: &dyn crate::baz::HirDatabase) {
+        db.metho$0
+    }
+}
+            "#,
+            expect![[r#""#]],
+        );
     }
 }

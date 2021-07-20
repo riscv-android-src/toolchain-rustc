@@ -208,6 +208,16 @@
                 "command": "rust-analyzer.peekTests",
                 "title": "Peek related tests",
                 "category": "Rust Analyzer"
+            },
+            {
+                "command": "rust-analyzer.moveItemUp",
+                "title": "Move item up",
+                "category": "Rust Analyzer"
+            },
+            {
+                "command": "rust-analyzer.moveItemDown",
+                "title": "Move item down",
+                "category": "Rust Analyzer"
             }
         ],
         "keybindings": [
@@ -424,6 +434,11 @@
                     "default": true,
                     "type": "boolean"
                 },
+                "rust-analyzer.cargo.useRustcWrapperForBuildScripts": {
+                    "markdownDescription": "Use `RUSTC_WRAPPER=rust-analyzer` when running build scripts to\navoid compiling unnecessary things.",
+                    "default": true,
+                    "type": "boolean"
+                },
                 "rust-analyzer.cargo.noDefaultFeatures": {
                     "markdownDescription": "Do not activate the `default` feature.",
                     "default": false,
@@ -550,6 +565,11 @@
                     },
                     "uniqueItems": true
                 },
+                "rust-analyzer.diagnostics.remapPrefix": {
+                    "markdownDescription": "Map of prefixes to be substituted when parsing diagnostic file paths.\nThis should be the reverse mapping of what is passed to `rustc` as `--remap-path-prefix`.",
+                    "default": {},
+                    "type": "object"
+                },
                 "rust-analyzer.diagnostics.warningsAsHint": {
                     "markdownDescription": "List of warnings that should be displayed with info severity.\n\nThe warnings will be indicated by a blue squiggly underline in code\nand a blue icon in the `Problems Panel`.",
                     "default": [],
@@ -615,8 +635,8 @@
                     "type": "boolean"
                 },
                 "rust-analyzer.inlayHints.maxLength": {
-                    "markdownDescription": "Maximum length for inlay hints. Default is unlimited.",
-                    "default": null,
+                    "markdownDescription": "Maximum length for inlay hints. Set to null to have an unlimited length.",
+                    "default": 25,
                     "type": [
                         "null",
                         "integer"
@@ -690,7 +710,7 @@
                 },
                 "rust-analyzer.procMacro.enable": {
                     "markdownDescription": "Enable support for procedural macros, implies `#rust-analyzer.cargo.runBuildScripts#`.",
-                    "default": false,
+                    "default": true,
                     "type": "boolean"
                 },
                 "rust-analyzer.procMacro.server": {

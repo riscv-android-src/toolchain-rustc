@@ -53,11 +53,12 @@ mod path_resolution;
 
 #[cfg(test)]
 mod tests;
+mod proc_macro;
 
 use std::sync::Arc;
 
 use base_db::{CrateId, Edition, FileId};
-use hir_expand::{diagnostics::DiagnosticSink, name::Name, InFile};
+use hir_expand::{diagnostics::DiagnosticSink, name::Name, InFile, MacroDefId};
 use la_arena::Arena;
 use profile::Count;
 use rustc_hash::FxHashMap;
@@ -72,6 +73,8 @@ use crate::{
     per_ns::PerNs,
     AstId, BlockId, BlockLoc, LocalModuleId, ModuleDefId, ModuleId,
 };
+
+use self::proc_macro::ProcMacroDef;
 
 /// Contains the results of (early) name resolution.
 ///
@@ -94,6 +97,12 @@ pub struct DefMap {
     /// a dependency (`std` or `core`).
     prelude: Option<ModuleId>,
     extern_prelude: FxHashMap<Name, ModuleDefId>,
+
+    /// Side table with additional proc. macro info, for use by name resolution in downstream
+    /// crates.
+    ///
+    /// (the primary purpose is to resolve derive helpers)
+    exported_proc_macros: FxHashMap<MacroDefId, ProcMacroDef>,
 
     edition: Edition,
     diagnostics: Vec<DefDiagnostic>,
@@ -213,7 +222,7 @@ impl DefMap {
     ) -> Option<Arc<DefMap>> {
         let block: BlockLoc = db.lookup_intern_block(block_id);
 
-        let item_tree = db.item_tree(block.ast_id.file_id);
+        let item_tree = db.file_item_tree(block.ast_id.file_id);
         if item_tree.inner_items_of_block(block.ast_id.value).is_empty() {
             return None;
         }
@@ -237,6 +246,7 @@ impl DefMap {
             krate,
             edition,
             extern_prelude: FxHashMap::default(),
+            exported_proc_macros: FxHashMap::default(),
             prelude: None,
             root,
             modules,
@@ -312,6 +322,23 @@ impl DefMap {
         (res.resolved_def, res.segment_index)
     }
 
+    pub(crate) fn resolve_path_locally(
+        &self,
+        db: &dyn DefDatabase,
+        original_module: LocalModuleId,
+        path: &ModPath,
+        shadow: BuiltinShadowMode,
+    ) -> (PerNs, Option<usize>) {
+        let res = self.resolve_path_fp_with_macro_single(
+            db,
+            ResolveMode::Other,
+            original_module,
+            path,
+            shadow,
+        );
+        (res.resolved_def, res.segment_index)
+    }
+
     /// Ascends the `DefMap` hierarchy and calls `f` with every `DefMap` and containing module.
     ///
     /// If `f` returns `Some(val)`, iteration is stopped and `Some(val)` is returned. If `f` returns
@@ -382,6 +409,45 @@ impl DefMap {
             }
         }
     }
+
+    pub fn dump_block_scopes(&self, db: &dyn DefDatabase) -> String {
+        let mut buf = String::new();
+        let mut arc;
+        let mut current_map = self;
+        while let Some(block) = &current_map.block {
+            format_to!(buf, "{:?} in {:?}\n", block.block, block.parent);
+            arc = block.parent.def_map(db);
+            current_map = &*arc;
+        }
+
+        format_to!(buf, "crate scope\n");
+        buf
+    }
+
+    fn shrink_to_fit(&mut self) {
+        // Exhaustive match to require handling new fields.
+        let Self {
+            _c: _,
+            exported_proc_macros,
+            extern_prelude,
+            diagnostics,
+            modules,
+            block: _,
+            edition: _,
+            krate: _,
+            prelude: _,
+            root: _,
+        } = self;
+
+        extern_prelude.shrink_to_fit();
+        exported_proc_macros.shrink_to_fit();
+        diagnostics.shrink_to_fit();
+        modules.shrink_to_fit();
+        for (_, module) in modules.iter_mut() {
+            module.children.shrink_to_fit();
+            module.scope.shrink_to_fit();
+        }
+    }
 }
 
 impl ModuleData {
@@ -429,7 +495,7 @@ mod diagnostics {
 
         UnresolvedProcMacro { ast: MacroCallKind },
 
-        UnresolvedMacroCall { ast: AstId<ast::MacroCall> },
+        UnresolvedMacroCall { ast: AstId<ast::MacroCall>, path: ModPath },
 
         MacroError { ast: MacroCallKind, message: String },
     }
@@ -494,8 +560,9 @@ mod diagnostics {
         pub(super) fn unresolved_macro_call(
             container: LocalModuleId,
             ast: AstId<ast::MacroCall>,
+            path: ModPath,
         ) -> Self {
-            Self { in_module: container, kind: DiagnosticKind::UnresolvedMacroCall { ast } }
+            Self { in_module: container, kind: DiagnosticKind::UnresolvedMacroCall { ast, path } }
         }
 
         pub(super) fn add_to(
@@ -561,12 +628,12 @@ mod diagnostics {
                 DiagnosticKind::UnresolvedProcMacro { ast } => {
                     let mut precise_location = None;
                     let (file, ast, name) = match ast {
-                        MacroCallKind::FnLike(ast) => {
-                            let node = ast.to_node(db.upcast());
-                            (ast.file_id, SyntaxNodePtr::from(AstPtr::new(&node)), None)
+                        MacroCallKind::FnLike { ast_id } => {
+                            let node = ast_id.to_node(db.upcast());
+                            (ast_id.file_id, SyntaxNodePtr::from(AstPtr::new(&node)), None)
                         }
-                        MacroCallKind::Attr(ast, name) => {
-                            let node = ast.to_node(db.upcast());
+                        MacroCallKind::Derive { ast_id, derive_name, .. } => {
+                            let node = ast_id.to_node(db.upcast());
 
                             // Compute the precise location of the macro name's token in the derive
                             // list.
@@ -587,7 +654,7 @@ mod diagnostics {
                                     });
                                 for token in tokens {
                                     if token.kind() == SyntaxKind::IDENT
-                                        && token.text() == name.as_str()
+                                        && token.text() == derive_name.as_str()
                                     {
                                         precise_location = Some(token.text_range());
                                         break 'outer;
@@ -596,9 +663,9 @@ mod diagnostics {
                             }
 
                             (
-                                ast.file_id,
+                                ast_id.file_id,
                                 SyntaxNodePtr::from(AstPtr::new(&node)),
-                                Some(name.clone()),
+                                Some(derive_name.clone()),
                             )
                         }
                     };
@@ -610,20 +677,24 @@ mod diagnostics {
                     });
                 }
 
-                DiagnosticKind::UnresolvedMacroCall { ast } => {
+                DiagnosticKind::UnresolvedMacroCall { ast, path } => {
                     let node = ast.to_node(db.upcast());
-                    sink.push(UnresolvedMacroCall { file: ast.file_id, node: AstPtr::new(&node) });
+                    sink.push(UnresolvedMacroCall {
+                        file: ast.file_id,
+                        node: AstPtr::new(&node),
+                        path: path.clone(),
+                    });
                 }
 
                 DiagnosticKind::MacroError { ast, message } => {
                     let (file, ast) = match ast {
-                        MacroCallKind::FnLike(ast) => {
-                            let node = ast.to_node(db.upcast());
-                            (ast.file_id, SyntaxNodePtr::from(AstPtr::new(&node)))
+                        MacroCallKind::FnLike { ast_id, .. } => {
+                            let node = ast_id.to_node(db.upcast());
+                            (ast_id.file_id, SyntaxNodePtr::from(AstPtr::new(&node)))
                         }
-                        MacroCallKind::Attr(ast, _) => {
-                            let node = ast.to_node(db.upcast());
-                            (ast.file_id, SyntaxNodePtr::from(AstPtr::new(&node)))
+                        MacroCallKind::Derive { ast_id, .. } => {
+                            let node = ast_id.to_node(db.upcast());
+                            (ast_id.file_id, SyntaxNodePtr::from(AstPtr::new(&node)))
                         }
                     };
                     sink.push(MacroError { file, node: ast, message: message.clone() });

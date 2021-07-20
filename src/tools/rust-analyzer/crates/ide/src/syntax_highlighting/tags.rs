@@ -18,19 +18,19 @@ pub struct HlMods(u32);
 pub enum HlTag {
     Symbol(SymbolKind),
 
+    Attribute,
     BoolLiteral,
     BuiltinType,
     ByteLiteral,
     CharLiteral,
-    NumericLiteral,
-    StringLiteral,
-    Attribute,
     Comment,
     EscapeSequence,
     FormatSpecifier,
     Keyword,
+    NumericLiteral,
+    Operator(HlOperator),
     Punctuation(HlPunct),
-    Operator,
+    StringLiteral,
     UnresolvedReference,
 
     // For things which don't have a specific highlight.
@@ -40,24 +40,33 @@ pub enum HlTag {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum HlMod {
+    /// Used for items in traits and impls.
+    Associated = 0,
     /// Used to differentiate individual elements within attributes.
-    Attribute = 0,
+    Attribute,
+    /// Callable item or value.
+    Callable,
+    /// Value that is being consumed in a function call
+    Consuming,
     /// Used with keywords like `if` and `break`.
     ControlFlow,
     /// `foo` in `fn foo(x: i32)` is a definition, `foo` in `foo(90 + 2)` is
     /// not.
     Definition,
+    /// Doc-strings like this one.
     Documentation,
+    /// Highlighting injection like rust code in doc strings or ra_fixture.
     Injected,
+    /// Used for intra doc links in doc injection.
+    IntraDocLink,
+    /// Mutable binding.
     Mutable,
-    Consuming,
-    Callable,
-    /// Used for associated functions
+    /// Used for associated functions.
     Static,
-    /// Used for items in impls&traits.
-    Associated,
-
-    /// Keep this last!
+    /// Used for items in traits and trait impls.
+    Trait,
+    // Keep this last!
+    /// Used for unsafe functions, mutable statics, union accesses and unsafe operations.
     Unsafe,
 }
 
@@ -79,6 +88,20 @@ pub enum HlPunct {
     Colon,
     /// ;
     Semi,
+    ///
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum HlOperator {
+    /// |, &, !, ^, |=, &=, ^=
+    Bitwise,
+    /// +, -, *, /, +=, -=, *=, /=
+    Arithmetic,
+    /// &&, ||, !
+    Logical,
+    /// >, <, ==, >=, <=, !=
+    Comparison,
     ///
     Other,
 }
@@ -129,7 +152,13 @@ impl HlTag {
                 HlPunct::Other => "punctuation",
             },
             HlTag::NumericLiteral => "numeric_literal",
-            HlTag::Operator => "operator",
+            HlTag::Operator(op) => match op {
+                HlOperator::Bitwise => "bitwise",
+                HlOperator::Arithmetic => "arithmetic",
+                HlOperator::Logical => "logical",
+                HlOperator::Comparison => "comparison",
+                HlOperator::Other => "operator",
+            },
             HlTag::StringLiteral => "string_literal",
             HlTag::UnresolvedReference => "unresolved_reference",
             HlTag::None => "none",
@@ -145,32 +174,36 @@ impl fmt::Display for HlTag {
 
 impl HlMod {
     const ALL: &'static [HlMod; HlMod::Unsafe as u8 as usize + 1] = &[
+        HlMod::Associated,
         HlMod::Attribute,
+        HlMod::Callable,
+        HlMod::Consuming,
         HlMod::ControlFlow,
         HlMod::Definition,
         HlMod::Documentation,
         HlMod::Injected,
+        HlMod::IntraDocLink,
         HlMod::Mutable,
-        HlMod::Consuming,
-        HlMod::Callable,
         HlMod::Static,
-        HlMod::Associated,
+        HlMod::Trait,
         HlMod::Unsafe,
     ];
 
     fn as_str(self) -> &'static str {
         match self {
+            HlMod::Associated => "associated",
             HlMod::Attribute => "attribute",
+            HlMod::Callable => "callable",
+            HlMod::Consuming => "consuming",
             HlMod::ControlFlow => "control",
             HlMod::Definition => "declaration",
             HlMod::Documentation => "documentation",
             HlMod::Injected => "injected",
+            HlMod::IntraDocLink => "intra_doc_link",
             HlMod::Mutable => "mutable",
-            HlMod::Consuming => "consuming",
-            HlMod::Unsafe => "unsafe",
-            HlMod::Callable => "callable",
             HlMod::Static => "static",
-            HlMod::Associated => "associated",
+            HlMod::Trait => "trait",
+            HlMod::Unsafe => "unsafe",
         }
     }
 
@@ -198,6 +231,24 @@ impl fmt::Display for Highlight {
 impl From<HlTag> for Highlight {
     fn from(tag: HlTag) -> Highlight {
         Highlight::new(tag)
+    }
+}
+
+impl From<HlOperator> for Highlight {
+    fn from(op: HlOperator) -> Highlight {
+        Highlight::new(HlTag::Operator(op))
+    }
+}
+
+impl From<HlPunct> for Highlight {
+    fn from(punct: HlPunct) -> Highlight {
+        Highlight::new(HlTag::Punctuation(punct))
+    }
+}
+
+impl From<SymbolKind> for Highlight {
+    fn from(sym: SymbolKind) -> Highlight {
+        Highlight::new(HlTag::Symbol(sym))
     }
 }
 

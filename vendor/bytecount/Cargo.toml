@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "bytecount"
-version = "0.6.0"
+version = "0.6.2"
 authors = ["Andre Bogus <bogusandre@gmail.de>", "Joshua Landau <joshua@landau.ws>"]
 exclude = ["/.travis.yml", "/appveyor.yml"]
 description = "count occurrences of a given byte, or the number of UTF-8 code points, in a byte slice, fast"
@@ -29,8 +29,9 @@ bench = false
 name = "bench"
 harness = false
 [dependencies.packed_simd]
-version = "0.3.1"
+version = "0.3.4"
 optional = true
+package = "packed_simd_2"
 [dev-dependencies.criterion]
 version = "0.3"
 default-features = false

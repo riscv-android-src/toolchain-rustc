@@ -68,8 +68,6 @@ dep-info-basedir = "…"        # path for the base directory for targets in dep
 pipelining = true             # rustc pipelining
 
 [cargo-new]
-name = "Your Name"        # name to use in `authors` field
-email = "you@example.com" # email address to use in `authors` field
 vcs = "none"              # VCS to use ('git', 'hg', 'pijul', 'fossil', 'none')
 
 [http]
@@ -96,6 +94,7 @@ offline = false             # do not access the network
 [profile.<name>]         # Modify profile settings via config.
 opt-level = 0            # Optimization level.
 debug = true             # Include debug info.
+split-debuginfo = '...'  # Debug info splitting behavior.
 debug-assertions = true  # Enables debug assertions.
 overflow-checks = true   # Enables runtime integer overflow checks.
 lto = false              # Sets link-time optimization.
@@ -402,25 +401,12 @@ schedule overlapping invocations of `rustc` in parallel when possible.
 The `[cargo-new]` table defines defaults for the [`cargo new`] command.
 
 ##### `cargo-new.name`
-* Type: string
-* Default: from environment
-* Environment: `CARGO_NAME` or `CARGO_CARGO_NEW_NAME`
 
-Defines the name to use in the `authors` field when creating a new
-`Cargo.toml` file. If not specified in the config, Cargo searches the
-environment or your `git` configuration as described in the [`cargo new`]
-documentation.
+This option is deprecated and unused.
 
 ##### `cargo-new.email`
-* Type: string
-* Default: from environment
-* Environment: `CARGO_EMAIL` or `CARGO_CARGO_NEW_EMAIL`
 
-Defines the email address used in the `authors` field when creating a new
-`Cargo.toml` file. If not specified in the config, Cargo searches the
-environment or your `git` configuration as described in the [`cargo new`]
-documentation. The `email` value may be set to an empty string to prevent
-Cargo from placing an address in the authors field.
+This option is deprecated and unused.
 
 ##### `cargo-new.vcs`
 * Type: string
@@ -617,6 +603,13 @@ See [codegen-units](profiles.md#codegen-units).
 * Environment: `CARGO_PROFILE_<name>_DEBUG`
 
 See [debug](profiles.md#debug).
+
+##### `profile.<name>.split-debuginfo`
+* Type: string
+* Default: See profile docs.
+* Environment: `CARGO_PROFILE_<name>_SPLIT_DEBUGINFO`
+
+See [split-debuginfo](profiles.md#split-debuginfo).
 
 ##### `profile.<name>.debug-assertions`
 * Type: boolean

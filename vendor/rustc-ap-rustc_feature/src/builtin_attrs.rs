@@ -188,7 +188,6 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ungated!(reexport_test_harness_main, Normal, template!(NameValueStr: "name")),
 
     // Macros:
-    ungated!(derive, Normal, template!(List: "Trait1, Trait2, ...")),
     ungated!(automatically_derived, Normal, template!(Word)),
     // FIXME(#14407)
     ungated!(macro_use, Normal, template!(Word, List: "name1, name2, ...")),
@@ -228,8 +227,8 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         template!(List: r#"name = "...", /*opt*/ kind = "dylib|static|...", /*opt*/ wasm_import_module = "...""#),
     ),
     ungated!(link_name, AssumedUsed, template!(NameValueStr: "name")),
-    ungated!(no_link, Normal, template!(Word)),
-    ungated!(repr, Normal, template!(List: "C")),
+    ungated!(no_link, AssumedUsed, template!(Word)),
+    ungated!(repr, AssumedUsed, template!(List: "C")),
     ungated!(export_name, AssumedUsed, template!(NameValueStr: "name")),
     ungated!(link_section, AssumedUsed, template!(NameValueStr: "name")),
     ungated!(no_mangle, AssumedUsed, template!(Word)),
@@ -241,6 +240,10 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     gated!(
         const_eval_limit, CrateLevel, template!(NameValueStr: "N"), const_eval_limit,
         experimental!(const_eval_limit)
+    ),
+    gated!(
+        move_size_limit, CrateLevel, template!(NameValueStr: "N"), large_assignments,
+        experimental!(move_size_limit)
     ),
 
     // Entry point:
@@ -270,6 +273,13 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         template!(List: "address, memory, thread"),
         experimental!(no_sanitize)
     ),
+    ungated!(
+        // Not exclusively gated at the crate level (though crate-level is
+        // supported). The feature can alternatively be enabled on individual
+        // functions.
+        no_coverage, AssumedUsed,
+        template!(Word),
+    ),
 
     // FIXME: #14408 assume docs are used since rustdoc looks at them.
     ungated!(doc, AssumedUsed, template!(List: "hidden|inline|...", NameValueStr: "string")),
@@ -280,11 +290,6 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
 
     // Linking:
     gated!(naked, AssumedUsed, template!(Word), naked_functions, experimental!(naked)),
-    gated!(
-        link_args, Normal, template!(NameValueStr: "args"),
-        "the `link_args` attribute is experimental and not portable across platforms, \
-        it is recommended to use `#[link(name = \"foo\")] instead",
-    ),
     gated!(
         link_ordinal, AssumedUsed, template!(List: "ordinal"), raw_dylib,
         experimental!(link_ordinal)
@@ -323,7 +328,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         "custom test frameworks are an unstable feature",
     ),
     // RFC #1268
-    gated!(marker, Normal, template!(Word), marker_trait_attr, experimental!(marker)),
+    gated!(marker, AssumedUsed, template!(Word), marker_trait_attr, experimental!(marker)),
     gated!(
         thread_local, AssumedUsed, template!(Word),
         "`#[thread_local]` is an experimental feature, and does not currently handle destructors",
@@ -471,6 +476,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
 
     rustc_attr!(rustc_promotable, AssumedUsed, template!(Word), IMPL_DETAIL),
     rustc_attr!(rustc_args_required_const, AssumedUsed, template!(List: "N"), INTERNAL_UNSTABLE),
+    rustc_attr!(rustc_legacy_const_generics, AssumedUsed, template!(List: "N"), INTERNAL_UNSTABLE),
 
     // ==========================================================================
     // Internal attributes, Layout related:
@@ -540,6 +546,15 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     rustc_attr!(
         rustc_specialization_trait, Normal, template!(Word),
         "the `#[rustc_specialization_trait]` attribute is used to check specializations"
+    ),
+    rustc_attr!(
+        rustc_main, Normal, template!(Word),
+        "the `#[rustc_main]` attribute is used internally to specify test entry point function",
+    ),
+    rustc_attr!(
+        rustc_skip_array_during_method_dispatch, Normal, template!(Word),
+        "the `#[rustc_skip_array_during_method_dispatch]` attribute is used to exclude a trait \
+        from method dispatch when the receiver is an array, for compatibility in editions < 2021."
     ),
 
     // ==========================================================================

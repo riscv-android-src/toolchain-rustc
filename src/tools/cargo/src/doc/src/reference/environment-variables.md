@@ -46,8 +46,6 @@ system:
   will otherwise be used. See also [`build.incremental`] config value.
 * `CARGO_CACHE_RUSTC_INFO` — If this is set to 0 then Cargo will not try to cache
   compiler version information.
-* `CARGO_NAME` — The author name to use for [`cargo new`].
-* `CARGO_EMAIL` — The author email to use for [`cargo new`].
 * `HTTPS_PROXY` or `https_proxy` or `http_proxy` — The HTTP proxy to use, see
   [`http.proxy`] for more detail.
 * `HTTP_TIMEOUT` — The HTTP timeout in seconds, see [`http.timeout`] for more
@@ -78,8 +76,6 @@ supported environment variables are:
 * `CARGO_BUILD_INCREMENTAL` — Incremental compilation, see [`build.incremental`].
 * `CARGO_BUILD_DEP_INFO_BASEDIR` — Dep-info relative directory, see [`build.dep-info-basedir`].
 * `CARGO_BUILD_PIPELINING` — Whether or not to use `rustc` pipelining, see [`build.pipelining`].
-* `CARGO_CARGO_NEW_NAME` — The author name to use with [`cargo new`], see [`cargo-new.name`].
-* `CARGO_CARGO_NEW_EMAIL` — The author email to use with [`cargo new`], see [`cargo-new.email`].
 * `CARGO_CARGO_NEW_VCS` — The default source control system with [`cargo new`], see [`cargo-new.vcs`].
 * `CARGO_HTTP_DEBUG` — Enables HTTP debugging, see [`http.debug`].
 * `CARGO_HTTP_PROXY` — Enables HTTP proxy, see [`http.proxy`].
@@ -334,6 +330,7 @@ let out_dir = env::var("OUT_DIR").unwrap();
                    changed by editing `.cargo/config.toml`; see the documentation
                    about [cargo configuration][cargo-config] for more
                    information.
+* `CARGO_PKG_<var>` - The package information variables, with the same names and values as are [provided during crate building][variables set for crates].
 
 [unix-like platforms]: ../../reference/conditional-compilation.html#unix-and-windows
 [windows-like platforms]: ../../reference/conditional-compilation.html#unix-and-windows
@@ -350,6 +347,7 @@ let out_dir = env::var("OUT_DIR").unwrap();
 [jobserver]: https://www.gnu.org/software/make/manual/html_node/Job-Slots.html
 [cargo-config]: config.md
 [Target Triple]: ../appendix/glossary.md#target
+[variables set for crates]: #environment-variables-cargo-sets-for-crates
 
 ### Environment variables Cargo sets for 3rd party subcommands
 

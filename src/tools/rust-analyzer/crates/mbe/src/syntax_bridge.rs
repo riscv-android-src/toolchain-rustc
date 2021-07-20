@@ -43,18 +43,18 @@ pub struct TokenMap {
 
 /// Convert the syntax tree (what user has written) to a `TokenTree` (what macro
 /// will consume).
-pub fn ast_to_token_tree(ast: &impl ast::AstNode) -> Option<(tt::Subtree, TokenMap)> {
+pub fn ast_to_token_tree(ast: &impl ast::AstNode) -> (tt::Subtree, TokenMap) {
     syntax_node_to_token_tree(ast.syntax())
 }
 
 /// Convert the syntax node to a `TokenTree` (what macro
 /// will consume).
-pub fn syntax_node_to_token_tree(node: &SyntaxNode) -> Option<(tt::Subtree, TokenMap)> {
+pub fn syntax_node_to_token_tree(node: &SyntaxNode) -> (tt::Subtree, TokenMap) {
     let global_offset = node.text_range().start();
     let mut c = Convertor::new(node, global_offset);
-    let subtree = c.go()?;
+    let subtree = c.go();
     c.id_alloc.map.entries.shrink_to_fit();
-    Some((subtree, c.id_alloc.map))
+    (subtree, c.id_alloc.map)
 }
 
 // The following items are what `rustc` macro can be parsed into :
@@ -108,7 +108,7 @@ pub fn parse_to_token_tree(text: &str) -> Option<(tt::Subtree, TokenMap)> {
         },
     };
 
-    let subtree = conv.go()?;
+    let subtree = conv.go();
     Some((subtree, conv.id_alloc.map))
 }
 
@@ -130,7 +130,7 @@ pub fn parse_exprs_with_sep(tt: &tt::Subtree, sep: char) -> Vec<tt::Subtree> {
         res.push(match expanded.value {
             None => break,
             Some(tt @ tt::TokenTree::Leaf(_)) => {
-                tt::Subtree { delimiter: None, token_trees: vec![tt.into()] }
+                tt::Subtree { delimiter: None, token_trees: vec![tt] }
             }
             Some(tt::TokenTree::Subtree(tt)) => tt,
         });
@@ -213,7 +213,7 @@ fn doc_comment_text(comment: &ast::Comment) -> SmolStr {
 
     // Quote the string
     // Note that `tt::Literal` expect an escaped string
-    let text = format!("{:?}", text.escape_debug().to_string());
+    let text = format!("\"{}\"", text.escape_debug());
     text.into()
 }
 
@@ -222,14 +222,10 @@ fn convert_doc_comment(token: &syntax::SyntaxToken) -> Option<Vec<tt::TokenTree>
     let doc = comment.kind().doc?;
 
     // Make `doc="\" Comments\""
-    let mut meta_tkns = Vec::new();
-    meta_tkns.push(mk_ident("doc"));
-    meta_tkns.push(mk_punct('='));
-    meta_tkns.push(mk_doc_literal(&comment));
+    let meta_tkns = vec![mk_ident("doc"), mk_punct('='), mk_doc_literal(&comment)];
 
     // Make `#![]`
-    let mut token_trees = Vec::new();
-    token_trees.push(mk_punct('#'));
+    let mut token_trees = vec![mk_punct('#')];
     if let ast::CommentPlacement::Inner = doc {
         token_trees.push(mk_punct('!'));
     }
@@ -323,21 +319,18 @@ trait SrcToken: std::fmt::Debug {
 trait TokenConvertor {
     type Token: SrcToken;
 
-    fn go(&mut self) -> Option<tt::Subtree> {
+    fn go(&mut self) -> tt::Subtree {
         let mut subtree = tt::Subtree::default();
         subtree.delimiter = None;
         while self.peek().is_some() {
             self.collect_leaf(&mut subtree.token_trees);
         }
-        if subtree.token_trees.is_empty() {
-            return None;
-        }
         if subtree.token_trees.len() == 1 {
             if let tt::TokenTree::Subtree(first) = &subtree.token_trees[0] {
-                return Some(first.clone());
+                return first.clone();
             }
         }
-        Some(subtree)
+        subtree
     }
 
     fn collect_leaf(&mut self, result: &mut Vec<tt::TokenTree>) {
@@ -354,7 +347,7 @@ trait TokenConvertor {
             return;
         }
 
-        result.push(if k.is_punct() {
+        result.push(if k.is_punct() && k != UNDERSCORE {
             assert_eq!(range.len(), TextSize::of('.'));
             let delim = match k {
                 T!['('] => Some((tt::DelimiterKind::Parenthesis, T![')'])),
@@ -366,7 +359,7 @@ trait TokenConvertor {
             if let Some((kind, closed)) = delim {
                 let mut subtree = tt::Subtree::default();
                 let (id, idx) = self.id_alloc().open_delim(range);
-                subtree.delimiter = Some(tt::Delimiter { kind, id });
+                subtree.delimiter = Some(tt::Delimiter { id, kind });
 
                 while self.peek().map(|it| it.kind() != closed).unwrap_or(false) {
                     self.collect_leaf(&mut subtree.token_trees);
@@ -399,7 +392,9 @@ trait TokenConvertor {
                     {
                         tt::Spacing::Alone
                     }
-                    Some(next) if next.kind().is_punct() => tt::Spacing::Joint,
+                    Some(next) if next.kind().is_punct() && next.kind() != UNDERSCORE => {
+                        tt::Spacing::Joint
+                    }
                     _ => tt::Spacing::Alone,
                 };
                 let char = match token.to_char() {
@@ -419,6 +414,7 @@ trait TokenConvertor {
             let leaf: tt::Leaf = match k {
                 T![true] | T![false] => make_leaf!(Ident),
                 IDENT => make_leaf!(Ident),
+                UNDERSCORE => make_leaf!(Ident),
                 k if k.is_keyword() => make_leaf!(Ident),
                 k if k.is_literal() => make_leaf!(Literal),
                 LIFETIME_IDENT => {
@@ -731,7 +727,7 @@ impl<'a> TreeSink for TtTreeSink<'a> {
             // Note: We always assume the semi-colon would be the last token in
             // other parts of RA such that we don't add whitespace here.
             if curr.spacing == tt::Spacing::Alone && curr.char != ';' {
-                self.inner.token(WHITESPACE, " ".into());
+                self.inner.token(WHITESPACE, " ");
                 self.text_pos += TextSize::of(' ');
             }
         }
@@ -862,7 +858,7 @@ mod tests {
         // - T!['}']
         // - WHITE_SPACE
         let token_tree = ast::TokenTree::cast(token_tree).unwrap();
-        let tt = ast_to_token_tree(&token_tree).unwrap().0;
+        let tt = ast_to_token_tree(&token_tree).0;
 
         assert_eq!(tt.delimiter_kind(), Some(tt::DelimiterKind::Brace));
     }
@@ -871,7 +867,7 @@ mod tests {
     fn test_token_tree_multi_char_punct() {
         let source_file = ast::SourceFile::parse("struct Foo { a: x::Y }").ok().unwrap();
         let struct_def = source_file.syntax().descendants().find_map(ast::Struct::cast).unwrap();
-        let tt = ast_to_token_tree(&struct_def).unwrap().0;
+        let tt = ast_to_token_tree(&struct_def).0;
         token_tree_to_syntax_node(&tt, FragmentKind::Item).unwrap();
     }
 }

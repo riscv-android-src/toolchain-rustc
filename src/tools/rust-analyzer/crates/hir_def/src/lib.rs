@@ -27,6 +27,7 @@ pub mod dyn_map;
 pub mod keys;
 
 pub mod item_tree;
+pub mod intern;
 
 pub mod adt;
 pub mod data;
@@ -55,15 +56,17 @@ use std::{
     sync::Arc,
 };
 
+use adt::VariantData;
 use base_db::{impl_intern_key, salsa, CrateId};
 use hir_expand::{
     ast_id_map::FileAstId,
-    eager::{expand_eager_macro, ErrorEmitted},
+    eager::{expand_eager_macro, ErrorEmitted, ErrorSink},
     hygiene::Hygiene,
-    AstId, HirFileId, InFile, MacroCallId, MacroCallKind, MacroDefId, MacroDefKind,
+    AstId, AttrId, HirFileId, InFile, MacroCallId, MacroCallKind, MacroDefId, MacroDefKind,
 };
 use la_arena::Idx;
 use nameres::DefMap;
+use path::ModPath;
 use syntax::ast;
 
 use crate::builtin_type::BuiltinType;
@@ -76,7 +79,11 @@ use stdx::impl_from;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId {
     krate: CrateId,
+    /// If this `ModuleId` was derived from a `DefMap` for a block expression, this stores the
+    /// `BlockId` of that block expression. If `None`, this module is part of the crate-level
+    /// `DefMap` of `krate`.
     block: Option<BlockId>,
+    /// The module's ID in its originating `DefMap`.
     pub local_id: LocalModuleId,
 }
 
@@ -87,7 +94,7 @@ impl ModuleId {
                 db.block_def_map(block).unwrap_or_else(|| {
                     // NOTE: This should be unreachable - all `ModuleId`s come from their `DefMap`s,
                     // so the `DefMap` here must exist.
-                    panic!("no `block_def_map` for `ModuleId` {:?}", self);
+                    unreachable!("no `block_def_map` for `ModuleId` {:?}", self);
                 })
             }
             None => db.crate_def_map(self.krate),
@@ -100,6 +107,18 @@ impl ModuleId {
 
     pub fn containing_module(&self, db: &dyn db::DefDatabase) -> Option<ModuleId> {
         self.def_map(db).containing_module(self.local_id)
+    }
+
+    /// Returns `true` if this module represents a block expression.
+    ///
+    /// Returns `false` if this module is a submodule *inside* a block expression
+    /// (eg. `m` in `{ mod m {} }`).
+    pub fn is_block_root(&self, db: &dyn db::DefDatabase) -> bool {
+        if self.block.is_none() {
+            return false;
+        }
+
+        self.def_map(db)[self.local_id].parent.is_none()
     }
 }
 
@@ -429,6 +448,16 @@ impl_from!(
     for AttrDefId
 );
 
+impl From<AssocContainerId> for AttrDefId {
+    fn from(acid: AssocContainerId) -> Self {
+        match acid {
+            AssocContainerId::ModuleId(mid) => AttrDefId::ModuleId(mid),
+            AssocContainerId::ImplId(iid) => AttrDefId::ImplId(iid),
+            AssocContainerId::TraitId(tid) => AttrDefId::TraitId(tid),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VariantId {
     EnumVariantId(EnumVariantId),
@@ -436,6 +465,26 @@ pub enum VariantId {
     UnionId(UnionId),
 }
 impl_from!(EnumVariantId, StructId, UnionId for VariantId);
+
+impl VariantId {
+    pub fn variant_data(self, db: &dyn db::DefDatabase) -> Arc<VariantData> {
+        match self {
+            VariantId::StructId(it) => db.struct_data(it).variant_data.clone(),
+            VariantId::UnionId(it) => db.union_data(it).variant_data.clone(),
+            VariantId::EnumVariantId(it) => {
+                db.enum_data(it.parent).variants[it.local_id].variant_data.clone()
+            }
+        }
+    }
+
+    pub fn file_id(self, db: &dyn db::DefDatabase) -> HirFileId {
+        match self {
+            VariantId::EnumVariantId(it) => it.parent.lookup(db).id.file_id(),
+            VariantId::StructId(it) => it.lookup(db).id.file_id(),
+            VariantId::UnionId(it) => it.lookup(db).id.file_id(),
+        }
+    }
+}
 
 trait Intern {
     type ID;
@@ -583,7 +632,7 @@ pub trait AsMacroCall {
         krate: CrateId,
         resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
     ) -> Option<MacroCallId> {
-        self.as_call_id_with_errors(db, krate, resolver, &mut |_| ())
+        self.as_call_id_with_errors(db, krate, resolver, &mut |_| ()).ok()?.ok()
     }
 
     fn as_call_id_with_errors(
@@ -592,7 +641,7 @@ pub trait AsMacroCall {
         krate: CrateId,
         resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
         error_sink: &mut dyn FnMut(mbe::ExpandError),
-    ) -> Option<MacroCallId>;
+    ) -> Result<Result<MacroCallId, ErrorEmitted>, UnresolvedMacro>;
 }
 
 impl AsMacroCall for InFile<&ast::MacroCall> {
@@ -601,25 +650,28 @@ impl AsMacroCall for InFile<&ast::MacroCall> {
         db: &dyn db::DefDatabase,
         krate: CrateId,
         resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
-        error_sink: &mut dyn FnMut(mbe::ExpandError),
-    ) -> Option<MacroCallId> {
+        mut error_sink: &mut dyn FnMut(mbe::ExpandError),
+    ) -> Result<Result<MacroCallId, ErrorEmitted>, UnresolvedMacro> {
         let ast_id = AstId::new(self.file_id, db.ast_id_map(self.file_id).ast_id(self.value));
         let h = Hygiene::new(db.upcast(), self.file_id);
         let path = self.value.path().and_then(|path| path::ModPath::from_src(path, &h));
 
-        if path.is_none() {
-            error_sink(mbe::ExpandError::Other("malformed macro invocation".into()));
-        }
+        let path = match error_sink
+            .option(path, || mbe::ExpandError::Other("malformed macro invocation".into()))
+        {
+            Ok(path) => path,
+            Err(error) => {
+                return Ok(Err(error));
+            }
+        };
 
         macro_call_as_call_id(
-            &AstIdWithPath::new(ast_id.file_id, ast_id.value, path?),
+            &AstIdWithPath::new(ast_id.file_id, ast_id.value, path),
             db,
             krate,
             resolver,
             error_sink,
         )
-        .ok()?
-        .ok()
     }
 }
 
@@ -636,7 +688,10 @@ impl<T: ast::AstNode> AstIdWithPath<T> {
     }
 }
 
-struct UnresolvedMacro;
+#[derive(Debug)]
+pub struct UnresolvedMacro {
+    pub path: ModPath,
+}
 
 fn macro_call_as_call_id(
     call: &AstIdWithPath<ast::MacroCall>,
@@ -645,9 +700,10 @@ fn macro_call_as_call_id(
     resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
     error_sink: &mut dyn FnMut(mbe::ExpandError),
 ) -> Result<Result<MacroCallId, ErrorEmitted>, UnresolvedMacro> {
-    let def: MacroDefId = resolver(call.path.clone()).ok_or(UnresolvedMacro)?;
+    let def: MacroDefId =
+        resolver(call.path.clone()).ok_or_else(|| UnresolvedMacro { path: call.path.clone() })?;
 
-    let res = if let MacroDefKind::BuiltInEager(_) = def.kind {
+    let res = if let MacroDefKind::BuiltInEager(..) = def.kind {
         let macro_call = InFile::new(call.ast_id.file_id, call.ast_id.to_node(db.upcast()));
         let hygiene = Hygiene::new(db.upcast(), call.ast_id.file_id);
 
@@ -661,24 +717,36 @@ fn macro_call_as_call_id(
         )
         .map(MacroCallId::from)
     } else {
-        Ok(def.as_lazy_macro(db.upcast(), krate, MacroCallKind::FnLike(call.ast_id)).into())
+        Ok(def
+            .as_lazy_macro(db.upcast(), krate, MacroCallKind::FnLike { ast_id: call.ast_id })
+            .into())
     };
     Ok(res)
 }
 
-fn item_attr_as_call_id(
+fn derive_macro_as_call_id(
     item_attr: &AstIdWithPath<ast::Item>,
+    derive_attr: AttrId,
     db: &dyn db::DefDatabase,
     krate: CrateId,
     resolver: impl Fn(path::ModPath) -> Option<MacroDefId>,
 ) -> Result<MacroCallId, UnresolvedMacro> {
-    let def: MacroDefId = resolver(item_attr.path.clone()).ok_or(UnresolvedMacro)?;
-    let last_segment = item_attr.path.segments().last().ok_or(UnresolvedMacro)?;
+    let def: MacroDefId = resolver(item_attr.path.clone())
+        .ok_or_else(|| UnresolvedMacro { path: item_attr.path.clone() })?;
+    let last_segment = item_attr
+        .path
+        .segments()
+        .last()
+        .ok_or_else(|| UnresolvedMacro { path: item_attr.path.clone() })?;
     let res = def
         .as_lazy_macro(
             db.upcast(),
             krate,
-            MacroCallKind::Attr(item_attr.ast_id, last_segment.to_string()),
+            MacroCallKind::Derive {
+                ast_id: item_attr.ast_id,
+                derive_name: last_segment.to_string(),
+                derive_attr,
+            },
         )
         .into();
     Ok(res)

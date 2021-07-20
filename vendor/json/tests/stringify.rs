@@ -140,8 +140,8 @@ fn stringify_typed_opt_vec() {
 #[test]
 fn stringify_object() {
     let object = object!{
-        "name" => "Maciej",
-        "age" => 30
+        name: "Maciej",
+        age: 30
     };
 
     assert_eq!(object.dump(), r#"{"name":"Maciej","age":30}"#);
@@ -163,8 +163,8 @@ fn stringify_raw_object() {
 fn stringify_btree_map() {
     let mut map = BTreeMap::new();
 
-    map.insert("name".into(), "Maciej".into());
-    map.insert("age".into(), 30.into());
+    map.insert("name", JsonValue::from("Maciej"));
+    map.insert("age", JsonValue::from(30));
 
     // BTreeMap will sort keys
     assert_eq!(stringify(map), r#"{"age":30,"name":"Maciej"}"#);
@@ -174,8 +174,8 @@ fn stringify_btree_map() {
 fn stringify_hash_map() {
     let mut map = HashMap::new();
 
-    map.insert("name".into(), "Maciej".into());
-    map.insert("age".into(), 30.into());
+    map.insert("name", JsonValue::from("Maciej"));
+    map.insert("age", JsonValue::from(30));
 
     // HashMap does not sort keys, but depending on hashing used the
     // order can be different. Safe bet is to parse the result and
@@ -183,8 +183,8 @@ fn stringify_hash_map() {
     let parsed = parse(&stringify(map)).unwrap();
 
     assert_eq!(parsed, object!{
-        "name" => "Maciej",
-        "age" => 30
+        name: "Maciej",
+        age: 30
     });
 }
 
@@ -234,13 +234,13 @@ fn stringify_control_escaped() {
 #[test]
 fn stringify_pretty_object() {
     let object = object!{
-        "name" => "Urlich",
-        "age" => 50,
-        "parents" => object!{
-            "mother" => "Helga",
-            "father" => "Brutus"
+        name: "Urlich",
+        age: 50,
+        parents: {
+            mother: "Helga",
+            father: "Brutus"
         },
-        "cars" => array![ "Golf", "Mercedes", "Porsche" ]
+        cars: [ "Golf", "Mercedes", "Porsche" ]
     };
 
     let expected = "{\n  \"name\": \"Urlich\",\n  \"age\": 50,\n  \"parents\": {\n    \"mother\": \"Helga\",\n    \"father\": \"Brutus\"\n  },\n  \"cars\": [\n    \"Golf\",\n    \"Mercedes\",\n    \"Porsche\"\n  ]\n}";

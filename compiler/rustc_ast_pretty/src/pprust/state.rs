@@ -2149,10 +2149,10 @@ impl<'a> State<'a> {
                                     None => s.word("_"),
                                 }
                             }
-                            InlineAsmOperand::Const { expr } => {
+                            InlineAsmOperand::Const { anon_const } => {
                                 s.word("const");
                                 s.space();
-                                s.print_expr(expr);
+                                s.print_expr(&anon_const.value);
                             }
                             InlineAsmOperand::Sym { expr } => {
                                 s.word("sym");
@@ -2290,10 +2290,6 @@ impl<'a> State<'a> {
             self.word_space(":");
             self.print_type(ty);
         }
-    }
-
-    pub fn print_usize(&mut self, i: usize) {
-        self.s.word(i.to_string())
     }
 
     crate fn print_name(&mut self, name: Symbol) {
@@ -2659,8 +2655,10 @@ impl<'a> State<'a> {
                     s.word_space(":");
                     s.print_type(ty);
                     s.print_type_bounds(":", &param.bounds);
-                    if let Some(ref _default) = default {
-                        // FIXME(const_generics_defaults): print the `default` value here
+                    if let Some(ref default) = default {
+                        s.s.space();
+                        s.word_space("=");
+                        s.print_expr(&default.value);
                     }
                 }
             }

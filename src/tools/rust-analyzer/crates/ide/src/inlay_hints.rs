@@ -52,6 +52,8 @@ pub struct InlayHint {
 //
 // | VS Code | **Rust Analyzer: Toggle inlay hints*
 // |===
+//
+// image::https://user-images.githubusercontent.com/48062697/113020660-b5f98b80-917a-11eb-8d70-3be3fd558cdd.png[]
 pub(crate) fn inlay_hints(
     db: &RootDatabase,
     file_id: FileId,
@@ -219,7 +221,7 @@ fn hint_iterator(
     let strukt = std::iter::successors(Some(ty.clone()), |ty| ty.remove_ref())
         .last()
         .and_then(|strukt| strukt.as_adt())?;
-    let krate = strukt.krate(db)?;
+    let krate = strukt.krate(db);
     if krate != famous_defs.core()? {
         return None;
     }
@@ -232,7 +234,7 @@ fn hint_iterator(
             hir::AssocItem::TypeAlias(alias) if alias.name(db) == known::Item => Some(alias),
             _ => None,
         })?;
-        if let Some(ty) = ty.normalize_trait_assoc_type(db, iter_trait, &[], assoc_type_item) {
+        if let Some(ty) = ty.normalize_trait_assoc_type(db, &[], assoc_type_item) {
             const LABEL_START: &str = "impl Iterator<Item = ";
             const LABEL_END: &str = ">";
 
@@ -416,7 +418,7 @@ fn get_string_representation(expr: &ast::Expr) -> Option<String> {
     match expr {
         ast::Expr::MethodCallExpr(method_call_expr) => {
             let name_ref = method_call_expr.name_ref()?;
-            match name_ref.text() {
+            match name_ref.text().as_str() {
                 "clone" => method_call_expr.receiver().map(|rec| rec.to_string()),
                 name_ref => Some(name_ref.to_owned()),
             }

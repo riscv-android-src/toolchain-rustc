@@ -9,13 +9,11 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(bool_to_option)]
-#![feature(const_fn)]
 #![feature(const_panic)]
 #![feature(nll)]
 #![feature(never_type)]
 #![feature(associated_type_bounds)]
 #![feature(exhaustive_patterns)]
-#![feature(str_split_once)]
 
 #[macro_use]
 extern crate rustc_macros;
@@ -29,5 +27,5 @@ pub mod spec;
 
 /// Requirements for a `StableHashingContext` to be used in this crate.
 /// This is a hack to allow using the `HashStable_Generic` derive macro
-/// instead of implementing everything in librustc_middle.
+/// instead of implementing everything in `rustc_middle`.
 pub trait HashStableContext {}

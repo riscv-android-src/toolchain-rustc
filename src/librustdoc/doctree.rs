@@ -5,7 +5,7 @@ use rustc_span::{self, Span, Symbol};
 use rustc_hir as hir;
 
 crate struct Module<'hir> {
-    crate name: Option<Symbol>,
+    crate name: Symbol,
     crate where_outer: Span,
     crate where_inner: Span,
     crate mods: Vec<Module<'hir>>,
@@ -14,11 +14,10 @@ crate struct Module<'hir> {
     crate items: Vec<(&'hir hir::Item<'hir>, Option<Symbol>)>,
     crate foreigns: Vec<(&'hir hir::ForeignItem<'hir>, Option<Symbol>)>,
     crate macros: Vec<(&'hir hir::MacroDef<'hir>, Option<Symbol>)>,
-    crate is_crate: bool,
 }
 
 impl Module<'hir> {
-    crate fn new(name: Option<Symbol>) -> Module<'hir> {
+    crate fn new(name: Symbol) -> Module<'hir> {
         Module {
             name,
             id: hir::CRATE_HIR_ID,
@@ -28,7 +27,6 @@ impl Module<'hir> {
             items: Vec::new(),
             foreigns: Vec::new(),
             macros: Vec::new(),
-            is_crate: false,
         }
     }
 }

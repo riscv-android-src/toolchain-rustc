@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "notify"
-version = "5.0.0-pre.6"
+version = "5.0.0-pre.7"
 authors = ["Félix Saparelli <me@passcod.name>", "Daniel Faust <hessijames@gmail.com>"]
 exclude = ["/clippy.toml", ".github/*"]
 description = "Cross-platform filesystem notification library"
@@ -22,7 +22,7 @@ documentation = "https://docs.rs/notify"
 readme = "README.md"
 keywords = ["events", "filesystem", "notify", "watch"]
 categories = ["filesystem"]
-license = "CC0-1.0"
+license = "CC0-1.0 OR Artistic-2.0"
 repository = "https://github.com/notify-rs/notify.git"
 [dependencies.anymap]
 version = "0.12.1"

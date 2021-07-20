@@ -3,7 +3,7 @@ use crate::clean::*;
 use crate::core::DocContext;
 use crate::fold::DocFolder;
 
-use rustc_data_structures::fx::{FxHashSet};
+use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_middle::ty::DefIdTree;
 use rustc_span::symbol::sym;
@@ -117,19 +117,14 @@ crate fn collect_trait_impls(krate: Crate, cx: &mut DocContext<'_>) -> Crate {
         }
     }
 
-    let items = if let Some(ref mut it) = krate.module {
-        if let ModuleItem(Module { ref mut items, .. }) = *it.kind {
-            items
-        } else {
-            panic!("collect-trait-impls can't run");
-        }
+    let items = if let ModuleItem(Module { ref mut items, .. }) = *krate.module.kind {
+        items
     } else {
         panic!("collect-trait-impls can't run");
     };
 
     items.extend(synth_impls);
     items.extend(new_items);
-
     krate
 }
 

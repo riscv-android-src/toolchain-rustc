@@ -10,15 +10,15 @@
 use std::{ffi::OsString, iter, path::PathBuf};
 
 use flycheck::FlycheckConfig;
-use hir::PrefixKind;
 use ide::{AssistConfig, CompletionConfig, DiagnosticsConfig, HoverConfig, InlayHintsConfig};
 use ide_db::helpers::{
-    insert_use::{InsertUseConfig, MergeBehavior},
+    insert_use::{InsertUseConfig, PrefixKind},
+    merge_imports::MergeBehavior,
     SnippetCap,
 };
 use lsp_types::{ClientCapabilities, MarkupKind};
 use project_model::{CargoConfig, ProjectJson, ProjectJsonData, ProjectManifest, RustcSource};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{de::DeserializeOwned, Deserialize};
 use vfs::AbsPathBuf;
 
@@ -49,6 +49,9 @@ config_data! {
         /// Run build scripts (`build.rs`) for more precise code analysis.
         cargo_runBuildScripts |
         cargo_loadOutDirsFromCheck: bool = "true",
+        /// Use `RUSTC_WRAPPER=rust-analyzer` when running build scripts to
+        /// avoid compiling unnecessary things.
+        cargo_useRustcWrapperForBuildScripts: bool = "true",
         /// Do not activate the `default` feature.
         cargo_noDefaultFeatures: bool    = "false",
         /// Compilation target (target triple).
@@ -97,6 +100,9 @@ config_data! {
         diagnostics_enableExperimental: bool    = "true",
         /// List of rust-analyzer diagnostics to disable.
         diagnostics_disabled: FxHashSet<String> = "[]",
+        /// Map of prefixes to be substituted when parsing diagnostic file paths.
+        /// This should be the reverse mapping of what is passed to `rustc` as `--remap-path-prefix`.
+        diagnostics_remapPrefix: FxHashMap<String, String> = "{}",
         /// List of warnings that should be displayed with info severity.
         ///
         /// The warnings will be indicated by a blue squiggly underline in code
@@ -132,8 +138,8 @@ config_data! {
 
         /// Whether to show inlay type hints for method chains.
         inlayHints_chainingHints: bool      = "true",
-        /// Maximum length for inlay hints. Default is unlimited.
-        inlayHints_maxLength: Option<usize> = "null",
+        /// Maximum length for inlay hints. Set to null to have an unlimited length.
+        inlayHints_maxLength: Option<usize> = "25",
         /// Whether to show function parameter name inlay hints at the call
         /// site.
         inlayHints_parameterHints: bool     = "true",
@@ -172,7 +178,7 @@ config_data! {
         notifications_cargoTomlNotFound: bool      = "true",
 
         /// Enable support for procedural macros, implies `#rust-analyzer.cargo.runBuildScripts#`.
-        procMacro_enable: bool                     = "false",
+        procMacro_enable: bool                     = "true",
         /// Internal config, path to proc-macro server executable (typically,
         /// this is rust-analyzer itself, but we override this in tests).
         procMacro_server: Option<PathBuf>          = "null",
@@ -398,6 +404,17 @@ impl Config {
     pub fn will_rename(&self) -> bool {
         try_or!(self.caps.workspace.as_ref()?.file_operations.as_ref()?.will_rename?, false)
     }
+    pub fn change_annotation_support(&self) -> bool {
+        try_!(self
+            .caps
+            .workspace
+            .as_ref()?
+            .workspace_edit
+            .as_ref()?
+            .change_annotation_support
+            .as_ref()?)
+        .is_some()
+    }
     pub fn code_action_resolve(&self) -> bool {
         try_or!(
             self.caps
@@ -446,8 +463,8 @@ impl Config {
     pub fn hover_actions(&self) -> bool {
         self.experimental("hoverActions")
     }
-    pub fn status_notification(&self) -> bool {
-        self.experimental("statusNotification")
+    pub fn server_status_notification(&self) -> bool {
+        self.experimental("serverStatusNotification")
     }
 
     pub fn publish_diagnostics(&self) -> bool {
@@ -461,6 +478,7 @@ impl Config {
     }
     pub fn diagnostics_map(&self) -> DiagnosticsMapConfig {
         DiagnosticsMapConfig {
+            remap_prefix: self.data.diagnostics_remapPrefix.clone(),
             warnings_as_info: self.data.diagnostics_warningsAsInfo.clone(),
             warnings_as_hint: self.data.diagnostics_warningsAsHint.clone(),
         }
@@ -493,6 +511,9 @@ impl Config {
     }
     pub fn run_build_scripts(&self) -> bool {
         self.data.cargo_runBuildScripts || self.data.procMacro_enable
+    }
+    pub fn wrap_rustc(&self) -> bool {
+        self.data.cargo_useRustcWrapperForBuildScripts
     }
     pub fn cargo(&self) -> CargoConfig {
         let rustc_source = self.data.rustcSource.as_ref().map(|rustc_src| {
@@ -657,6 +678,19 @@ impl Config {
     pub fn code_lens_refresh(&self) -> bool {
         try_or!(self.caps.workspace.as_ref()?.code_lens.as_ref()?.refresh_support?, false)
     }
+    pub fn insert_replace_support(&self) -> bool {
+        try_or!(
+            self.caps
+                .text_document
+                .as_ref()?
+                .completion
+                .as_ref()?
+                .completion_item
+                .as_ref()?
+                .insert_replace_support?,
+            false
+        )
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -805,6 +839,9 @@ fn field_props(field: &str, ty: &str, doc: &[&str], default: &str) -> serde_json
             "type": "array",
             "items": { "type": "string" },
             "uniqueItems": true,
+        },
+        "FxHashMap<String, String>" => set! {
+            "type": "object",
         },
         "Option<usize>" => set! {
             "type": ["null", "integer"],

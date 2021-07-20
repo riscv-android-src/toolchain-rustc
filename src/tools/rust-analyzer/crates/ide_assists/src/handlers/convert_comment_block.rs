@@ -1,14 +1,6 @@
 use itertools::Itertools;
-use std::convert::identity;
 use syntax::{
-    ast::{
-        self,
-        edit::IndentLevel,
-        Comment, CommentKind,
-        CommentPlacement::{Inner, Outer},
-        CommentShape::{self, Block, Line},
-        Whitespace,
-    },
+    ast::{self, edit::IndentLevel, Comment, CommentKind, CommentShape, Whitespace},
     AstToken, Direction, SyntaxElement, TextRange,
 };
 
@@ -30,21 +22,18 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 ///   */
 /// ```
 pub(crate) fn convert_comment_block(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    if let Some(comment) = ctx.find_token_at_offset::<ast::Comment>() {
-        // Only allow comments which are alone on their line
-        if let Some(prev) = comment.syntax().prev_token() {
-            if Whitespace::cast(prev).filter(|w| w.text().contains('\n')).is_none() {
-                return None;
-            }
+    let comment = ctx.find_token_at_offset::<ast::Comment>()?;
+    // Only allow comments which are alone on their line
+    if let Some(prev) = comment.syntax().prev_token() {
+        if Whitespace::cast(prev).filter(|w| w.text().contains('\n')).is_none() {
+            return None;
         }
-
-        return match comment.kind().shape {
-            ast::CommentShape::Block => block_to_line(acc, comment),
-            ast::CommentShape::Line => line_to_block(acc, comment),
-        };
     }
 
-    return None;
+    match comment.kind().shape {
+        ast::CommentShape::Block => block_to_line(acc, comment),
+        ast::CommentShape::Line => line_to_block(acc, comment),
+    }
 }
 
 fn block_to_line(acc: &mut Assists, comment: ast::Comment) -> Option<()> {
@@ -56,8 +45,7 @@ fn block_to_line(acc: &mut Assists, comment: ast::Comment) -> Option<()> {
         target,
         |edit| {
             let indentation = IndentLevel::from_token(comment.syntax());
-            let line_prefix =
-                comment_kind_prefix(CommentKind { shape: CommentShape::Line, ..comment.kind() });
+            let line_prefix = CommentKind { shape: CommentShape::Line, ..comment.kind() }.prefix();
 
             let text = comment.text();
             let text = &text[comment.prefix().len()..(text.len() - "*/".len())].trim();
@@ -106,7 +94,7 @@ fn line_to_block(acc: &mut Assists, comment: ast::Comment) -> Option<()> {
                 comments.into_iter().map(|c| line_comment_text(indentation, c)).join("\n");
 
             let block_prefix =
-                comment_kind_prefix(CommentKind { shape: CommentShape::Block, ..comment.kind() });
+                CommentKind { shape: CommentShape::Block, ..comment.kind() }.prefix();
 
             let output =
                 format!("{}\n{}\n{}*/", block_prefix, block_comment_body, indentation.to_string());
@@ -140,7 +128,7 @@ fn relevant_line_comments(comment: &ast::Comment) -> Vec<Comment> {
         .filter(|s| !skippable(s))
         .map(|not| not.into_token().and_then(Comment::cast).filter(same_prefix))
         .take_while(|opt_com| opt_com.is_some())
-        .filter_map(identity)
+        .flatten()
         .skip(1); // skip the first element so we don't duplicate it in next_comments
 
     let next_comments = comment
@@ -149,7 +137,7 @@ fn relevant_line_comments(comment: &ast::Comment) -> Vec<Comment> {
         .filter(|s| !skippable(s))
         .map(|not| not.into_token().and_then(Comment::cast).filter(same_prefix))
         .take_while(|opt_com| opt_com.is_some())
-        .filter_map(identity);
+        .flatten();
 
     let mut comments: Vec<_> = prev_comments.collect();
     comments.reverse();
@@ -180,17 +168,6 @@ fn line_comment_text(indentation: IndentLevel, comm: ast::Comment) -> String {
         contents.to_owned()
     } else {
         indentation.to_string() + &contents
-    }
-}
-
-fn comment_kind_prefix(ck: ast::CommentKind) -> &'static str {
-    match (ck.shape, ck.doc) {
-        (Line, Some(Inner)) => "//!",
-        (Line, Some(Outer)) => "///",
-        (Line, None) => "//",
-        (Block, Some(Inner)) => "/*!",
-        (Block, Some(Outer)) => "/**",
-        (Block, None) => "/*",
     }
 }
 

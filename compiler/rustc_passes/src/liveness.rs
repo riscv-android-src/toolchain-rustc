@@ -103,6 +103,7 @@ use rustc_span::Span;
 use std::collections::VecDeque;
 use std::io;
 use std::io::prelude::*;
+use std::iter;
 use std::rc::Rc;
 
 mod rwu_table;
@@ -1066,7 +1067,6 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                 for (op, _op_sp) in asm.operands.iter().rev() {
                     match op {
                         hir::InlineAsmOperand::In { expr, .. }
-                        | hir::InlineAsmOperand::Const { expr, .. }
                         | hir::InlineAsmOperand::Sym { expr, .. } => {
                             succ = self.propagate_through_expr(expr, succ)
                         }
@@ -1084,6 +1084,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                             }
                             succ = self.propagate_through_expr(in_expr, succ);
                         }
+                        hir::InlineAsmOperand::Const { .. } => {}
                     }
                 }
                 succ
@@ -1093,7 +1094,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                 let ia = &asm.inner;
                 let outputs = asm.outputs_exprs;
                 let inputs = asm.inputs_exprs;
-                let succ = ia.outputs.iter().zip(outputs).rev().fold(succ, |succ, (o, output)| {
+                let succ = iter::zip(&ia.outputs, outputs).rev().fold(succ, |succ, (o, output)| {
                     // see comment on places
                     // in propagate_through_place_components()
                     if o.is_indirect {
@@ -1344,7 +1345,7 @@ fn check_expr<'tcx>(this: &mut Liveness<'_, 'tcx>, expr: &'tcx Expr<'tcx>) {
             }
 
             // Output operands must be places
-            for (o, output) in asm.inner.outputs.iter().zip(asm.outputs_exprs) {
+            for (o, output) in iter::zip(&asm.inner.outputs, asm.outputs_exprs) {
                 if !o.is_indirect {
                     this.check_place(output);
                 }
@@ -1475,7 +1476,7 @@ impl<'tcx> Liveness<'_, 'tcx> {
         for p in body.params {
             self.check_unused_vars_in_pat(&p.pat, Some(entry_ln), |spans, hir_id, ln, var| {
                 if !self.live_on_entry(ln, var) {
-                    self.report_unsed_assign(hir_id, spans, var, |name| {
+                    self.report_unused_assign(hir_id, spans, var, |name| {
                         format!("value passed to `{}` is never read", name)
                     });
                 }
@@ -1614,13 +1615,13 @@ impl<'tcx> Liveness<'_, 'tcx> {
 
     fn warn_about_dead_assign(&self, spans: Vec<Span>, hir_id: HirId, ln: LiveNode, var: Variable) {
         if !self.live_on_exit(ln, var) {
-            self.report_unsed_assign(hir_id, spans, var, |name| {
+            self.report_unused_assign(hir_id, spans, var, |name| {
                 format!("value assigned to `{}` is never read", name)
             });
         }
     }
 
-    fn report_unsed_assign(
+    fn report_unused_assign(
         &self,
         hir_id: HirId,
         spans: Vec<Span>,

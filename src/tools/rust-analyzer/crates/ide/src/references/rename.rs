@@ -1,8 +1,11 @@
-//! FIXME: write short doc here
+//! Renaming functionality
+//!
+//! All reference and file rename requests go through here where the corresponding [`SourceChange`]s
+//! will be calculated.
 use std::fmt::{self, Display};
 
 use either::Either;
-use hir::{HasSource, InFile, Module, ModuleDef, ModuleSource, Semantics};
+use hir::{AsAssocItem, InFile, Module, ModuleDef, ModuleSource, Semantics};
 use ide_db::{
     base_db::{AnchoredPathBuf, FileId},
     defs::{Definition, NameClass, NameRefClass},
@@ -47,6 +50,17 @@ pub(crate) fn prepare_rename(
     let sema = Semantics::new(db);
     let source_file = sema.parse(position.file_id);
     let syntax = source_file.syntax();
+
+    let def = find_definition(&sema, syntax, position)?;
+    match def {
+        Definition::SelfType(_) => bail!("Cannot rename `Self`"),
+        Definition::ModuleDef(ModuleDef::BuiltinType(_)) => bail!("Cannot rename builtin type"),
+        _ => {}
+    };
+    let nav =
+        def.try_to_nav(sema.db).ok_or_else(|| format_err!("No references found at position"))?;
+    nav.focus_range.ok_or_else(|| format_err!("No identifier available to rename"))?;
+
     let name_like = sema
         .find_node_at_offset_with_descend(&syntax, position.offset)
         .ok_or_else(|| format_err!("No references found at position"))?;
@@ -67,6 +81,8 @@ pub(crate) fn prepare_rename(
 //
 // | VS Code | kbd:[F2]
 // |===
+//
+// image::https://user-images.githubusercontent.com/48062697/113065582-055aae80-91b1-11eb-8ade-2b58e6d81883.gif[]
 pub(crate) fn rename(
     db: &RootDatabase,
     position: FilePosition,
@@ -196,7 +212,7 @@ fn rename_mod(
                 file_id,
                 TextEdit::replace(name.syntax().text_range(), new_name.to_string()),
             ),
-            _ => unreachable!(),
+            _ => never!("Module source node is missing a name"),
         }
     }
     let def = Definition::ModuleDef(ModuleDef::Module(module));
@@ -216,40 +232,44 @@ fn rename_reference(
 ) -> RenameResult<SourceChange> {
     let ident_kind = check_identifier(new_name)?;
 
-    let def_is_lbl_or_lt = matches!(
-        def,
+    if matches!(
+        def, // is target a lifetime?
         Definition::GenericParam(hir::GenericParam::LifetimeParam(_)) | Definition::Label(_)
-    );
-    match (ident_kind, def) {
-        (IdentifierKind::ToSelf, _)
-        | (IdentifierKind::Underscore, _)
-        | (IdentifierKind::Ident, _)
-            if def_is_lbl_or_lt =>
-        {
-            cov_mark::hit!(rename_not_a_lifetime_ident_ref);
-            bail!("Invalid name `{}`: not a lifetime identifier", new_name)
+    ) {
+        match ident_kind {
+            IdentifierKind::Ident | IdentifierKind::ToSelf | IdentifierKind::Underscore => {
+                cov_mark::hit!(rename_not_a_lifetime_ident_ref);
+                bail!("Invalid name `{}`: not a lifetime identifier", new_name);
+            }
+            IdentifierKind::Lifetime => cov_mark::hit!(rename_lifetime),
         }
-        (IdentifierKind::Lifetime, _) if def_is_lbl_or_lt => cov_mark::hit!(rename_lifetime),
-        (IdentifierKind::Lifetime, _) => {
-            cov_mark::hit!(rename_not_an_ident_ref);
-            bail!("Invalid name `{}`: not an identifier", new_name)
-        }
-        (IdentifierKind::ToSelf, Definition::Local(local)) if local.is_self(sema.db) => {
-            // no-op
-            cov_mark::hit!(rename_self_to_self);
-            return Ok(SourceChange::default());
-        }
-        (ident_kind, Definition::Local(local)) if local.is_self(sema.db) => {
-            cov_mark::hit!(rename_self_to_param);
-            return rename_self_to_param(sema, local, new_name, ident_kind);
-        }
-        (IdentifierKind::ToSelf, Definition::Local(local)) => {
-            cov_mark::hit!(rename_to_self);
-            return rename_to_self(sema, local);
-        }
-        (IdentifierKind::ToSelf, _) => bail!("Invalid name `{}`: not an identifier", new_name),
-        (IdentifierKind::Ident, _) | (IdentifierKind::Underscore, _) => {
-            cov_mark::hit!(rename_ident)
+    } else {
+        match (ident_kind, def) {
+            (IdentifierKind::Lifetime, _) => {
+                cov_mark::hit!(rename_not_an_ident_ref);
+                bail!("Invalid name `{}`: not an identifier", new_name);
+            }
+            (IdentifierKind::ToSelf, Definition::Local(local)) => {
+                if local.is_self(sema.db) {
+                    // no-op
+                    cov_mark::hit!(rename_self_to_self);
+                    return Ok(SourceChange::default());
+                } else {
+                    cov_mark::hit!(rename_to_self);
+                    return rename_to_self(sema, local);
+                }
+            }
+            (ident_kind, Definition::Local(local)) => {
+                if let Some(self_param) = local.as_self_param(sema.db) {
+                    cov_mark::hit!(rename_self_to_param);
+                    return rename_self_to_param(sema, local, self_param, new_name, ident_kind);
+                } else {
+                    cov_mark::hit!(rename_local);
+                }
+            }
+            (IdentifierKind::ToSelf, _) => bail!("Invalid name `{}`: not an identifier", new_name),
+            (IdentifierKind::Ident, _) => cov_mark::hit!(rename_non_local),
+            (IdentifierKind::Underscore, _) => (),
         }
     }
 
@@ -275,46 +295,32 @@ fn rename_to_self(sema: &Semantics<RootDatabase>, local: hir::Local) -> RenameRe
 
     let fn_def = match local.parent(sema.db) {
         hir::DefWithBody::Function(func) => func,
-        _ => bail!("Cannot rename non-param local to self"),
+        _ => bail!("Cannot rename local to self outside of function"),
     };
 
-    // FIXME: reimplement this on the hir instead
-    // as of the time of this writing params in hir don't keep their names
-    let fn_ast = fn_def
-        .source(sema.db)
-        .ok_or_else(|| format_err!("Cannot rename non-param local to self"))?
-        .value;
-
-    let first_param_range = fn_ast
-        .param_list()
-        .and_then(|p| p.params().next())
-        .ok_or_else(|| format_err!("Method has no parameters"))?
-        .syntax()
-        .text_range();
-    let InFile { file_id, value: local_source } = local.source(sema.db);
-    match local_source {
-        either::Either::Left(pat)
-            if !first_param_range.contains_range(pat.syntax().text_range()) =>
-        {
-            bail!("Only the first parameter can be self");
-        }
-        _ => (),
-    }
-
-    let impl_block = fn_ast
-        .syntax()
-        .ancestors()
-        .find_map(|node| ast::Impl::cast(node))
-        .and_then(|def| sema.to_def(&def))
-        .ok_or_else(|| format_err!("No impl block found for function"))?;
-    if fn_def.self_param(sema.db).is_some() {
+    if let Some(_) = fn_def.self_param(sema.db) {
         bail!("Method already has a self parameter");
     }
 
     let params = fn_def.assoc_fn_params(sema.db);
-    let first_param = params.first().ok_or_else(|| format_err!("Method has no parameters"))?;
+    let first_param = params
+        .first()
+        .ok_or_else(|| format_err!("Cannot rename local to self unless it is a parameter"))?;
+    if first_param.as_local(sema.db) != local {
+        bail!("Only the first parameter may be renamed to self");
+    }
+
+    let assoc_item = fn_def
+        .as_assoc_item(sema.db)
+        .ok_or_else(|| format_err!("Cannot rename parameter to self for free function"))?;
+    let impl_ = match assoc_item.container(sema.db) {
+        hir::AssocItemContainer::Trait(_) => {
+            bail!("Cannot rename parameter to self for trait functions");
+        }
+        hir::AssocItemContainer::Impl(impl_) => impl_,
+    };
     let first_param_ty = first_param.ty();
-    let impl_ty = impl_block.target_ty(sema.db);
+    let impl_ty = impl_.self_ty(sema.db);
     let (ty, self_param) = if impl_ty.remove_ref().is_some() {
         // if the impl is a ref to the type we can just match the `&T` with self directly
         (first_param_ty.clone(), "self")
@@ -328,6 +334,9 @@ fn rename_to_self(sema: &Semantics<RootDatabase>, local: hir::Local) -> RenameRe
         bail!("Parameter type differs from impl block type");
     }
 
+    let InFile { file_id, value: param_source } =
+        first_param.source(sema.db).ok_or_else(|| format_err!("No source for parameter found"))?;
+
     let def = Definition::Local(local);
     let usages = def.usages(sema).all();
     let mut source_change = SourceChange::default();
@@ -336,25 +345,20 @@ fn rename_to_self(sema: &Semantics<RootDatabase>, local: hir::Local) -> RenameRe
     }));
     source_change.insert_source_edit(
         file_id.original_file(sema.db),
-        TextEdit::replace(first_param_range, String::from(self_param)),
+        TextEdit::replace(param_source.syntax().text_range(), String::from(self_param)),
     );
-
     Ok(source_change)
 }
 
 fn rename_self_to_param(
     sema: &Semantics<RootDatabase>,
     local: hir::Local,
+    self_param: hir::SelfParam,
     new_name: &str,
     identifier_kind: IdentifierKind,
 ) -> RenameResult<SourceChange> {
-    let (file_id, self_param) = match local.source(sema.db) {
-        InFile { file_id, value: Either::Right(self_param) } => (file_id, self_param),
-        _ => {
-            never!(true, "rename_self_to_param invoked on a non-self local");
-            bail!("rename_self_to_param invoked on a non-self local");
-        }
-    };
+    let InFile { file_id, value: self_param } =
+        self_param.source(sema.db).ok_or_else(|| format_err!("cannot find function source"))?;
 
     let def = Definition::Local(local);
     let usages = def.usages(sema).all();
@@ -510,10 +514,12 @@ fn source_edit_from_def(
     def: Definition,
     new_name: &str,
 ) -> RenameResult<(FileId, TextEdit)> {
-    let nav = def.try_to_nav(sema.db).unwrap();
+    let nav =
+        def.try_to_nav(sema.db).ok_or_else(|| format_err!("No references found at position"))?;
 
     let mut replacement_text = String::new();
-    let mut repl_range = nav.focus_or_full_range();
+    let mut repl_range =
+        nav.focus_range.ok_or_else(|| format_err!("No identifier available to rename"))?;
     if let Definition::Local(local) = def {
         if let Either::Left(pat) = local.source(sema.db).value {
             if matches!(
@@ -632,6 +638,49 @@ foo!(Foo$0);",
     }
 
     #[test]
+    fn test_prepare_rename_tuple_field() {
+        check_prepare(
+            r#"
+struct Foo(i32);
+
+fn baz() {
+    let mut x = Foo(4);
+    x.0$0 = 5;
+}
+"#,
+            expect![[r#"No identifier available to rename"#]],
+        );
+    }
+
+    #[test]
+    fn test_prepare_rename_builtin() {
+        check_prepare(
+            r#"
+fn foo() {
+    let x: i32$0 = 0;
+}
+"#,
+            expect![[r#"Cannot rename builtin type"#]],
+        );
+    }
+
+    #[test]
+    fn test_prepare_rename_self() {
+        check_prepare(
+            r#"
+struct Foo {}
+
+impl Foo {
+    fn foo(self) -> Self$0 {
+        self
+    }
+}
+"#,
+            expect![[r#"Cannot rename `Self`"#]],
+        );
+    }
+
+    #[test]
     fn test_rename_to_underscore() {
         check("_", r#"fn main() { let i$0 = 1; }"#, r#"fn main() { let _ = 1; }"#);
     }
@@ -709,7 +758,7 @@ foo!(Foo$0);",
 
     #[test]
     fn test_rename_for_local() {
-        cov_mark::check!(rename_ident);
+        cov_mark::check!(rename_local);
         check(
             "k",
             r#"
@@ -1250,6 +1299,7 @@ pub mod foo$0;
 
     #[test]
     fn test_enum_variant_from_module_1() {
+        cov_mark::check!(rename_non_local);
         check(
             "Baz",
             r#"
@@ -1360,7 +1410,7 @@ fn f(foo$0: &mut Foo) -> i32 {
     foo.i
 }
 "#,
-            "error: No impl block found for function",
+            "error: Cannot rename parameter to self for free function",
         );
         check(
             "self",
@@ -1390,7 +1440,7 @@ impl Foo {
     }
 }
 "#,
-            "error: Only the first parameter can be self",
+            "error: Only the first parameter may be renamed to self",
         );
     }
 
@@ -1791,5 +1841,51 @@ fn foo() {
 }
 "#,
         )
+    }
+
+    #[test]
+    fn test_rename_tuple_field() {
+        check(
+            "foo",
+            r#"
+struct Foo(i32);
+
+fn baz() {
+    let mut x = Foo(4);
+    x.0$0 = 5;
+}
+"#,
+            "error: No identifier available to rename",
+        );
+    }
+
+    #[test]
+    fn test_rename_builtin() {
+        check(
+            "foo",
+            r#"
+fn foo() {
+    let x: i32$0 = 0;
+}
+"#,
+            "error: Cannot rename builtin type",
+        );
+    }
+
+    #[test]
+    fn test_rename_self() {
+        check(
+            "foo",
+            r#"
+struct Foo {}
+
+impl Foo {
+    fn foo(self) -> Self$0 {
+        self
+    }
+}
+"#,
+            "error: Cannot rename `Self`",
+        );
     }
 }

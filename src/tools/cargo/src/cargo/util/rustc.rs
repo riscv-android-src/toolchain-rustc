@@ -4,12 +4,13 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use anyhow::Context as _;
+use cargo_util::{paths, ProcessBuilder, ProcessError};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::util::interning::InternedString;
-use crate::util::paths;
-use crate::util::{self, profile, CargoResult, CargoResultExt, ProcessBuilder, StableHasher};
+use crate::util::{profile, CargoResult, StableHasher};
 
 /// Information on the `rustc` executable
 #[derive(Debug)]
@@ -45,9 +46,15 @@ impl Rustc {
     ) -> CargoResult<Rustc> {
         let _p = profile::start("Rustc::new");
 
-        let mut cache = Cache::load(&path, rustup_rustc, cache_location);
+        let mut cache = Cache::load(
+            wrapper.as_deref(),
+            workspace_wrapper.as_deref(),
+            &path,
+            rustup_rustc,
+            cache_location,
+        );
 
-        let mut cmd = util::process(&path);
+        let mut cmd = ProcessBuilder::new(&path);
         cmd.arg("-vV");
         let verbose_version = cache.cached_output(&cmd, 0)?.0;
 
@@ -66,7 +73,7 @@ impl Rustc {
         };
 
         let host = InternedString::new(extract("host: ")?);
-        let version = semver::Version::parse(extract("release: ")?).chain_err(|| {
+        let version = semver::Version::parse(extract("release: ")?).with_context(|| {
             format!(
                 "rustc version does not appear to be a valid semver version, from:\n{}",
                 verbose_version
@@ -86,18 +93,18 @@ impl Rustc {
 
     /// Gets a process builder set up to use the found rustc version, with a wrapper if `Some`.
     pub fn process(&self) -> ProcessBuilder {
-        util::process(self.path.as_path()).wrapped(self.wrapper.as_ref())
+        ProcessBuilder::new(self.path.as_path()).wrapped(self.wrapper.as_ref())
     }
 
     /// Gets a process builder set up to use the found rustc version, with a wrapper if `Some`.
     pub fn workspace_process(&self) -> ProcessBuilder {
-        util::process(self.path.as_path())
+        ProcessBuilder::new(self.path.as_path())
             .wrapped(self.workspace_wrapper.as_ref())
             .wrapped(self.wrapper.as_ref())
     }
 
     pub fn process_no_wrapper(&self) -> ProcessBuilder {
-        util::process(&self.path)
+        ProcessBuilder::new(&self.path)
     }
 
     /// Gets the output for the given command.
@@ -154,8 +161,17 @@ struct Output {
 }
 
 impl Cache {
-    fn load(rustc: &Path, rustup_rustc: &Path, cache_location: Option<PathBuf>) -> Cache {
-        match (cache_location, rustc_fingerprint(rustc, rustup_rustc)) {
+    fn load(
+        wrapper: Option<&Path>,
+        workspace_wrapper: Option<&Path>,
+        rustc: &Path,
+        rustup_rustc: &Path,
+        cache_location: Option<PathBuf>,
+    ) -> Cache {
+        match (
+            cache_location,
+            rustc_fingerprint(wrapper, workspace_wrapper, rustc, rustup_rustc),
+        ) {
             (Some(cache_location), Ok(rustc_fingerprint)) => {
                 let empty = CacheData {
                     rustc_fingerprint,
@@ -218,13 +234,13 @@ impl Cache {
             let output = cmd
                 .build_command()
                 .output()
-                .chain_err(|| format!("could not execute process {} (never executed)", cmd))?;
+                .with_context(|| format!("could not execute process {} (never executed)", cmd))?;
             let stdout = String::from_utf8(output.stdout)
                 .map_err(|e| anyhow::anyhow!("{}: {:?}", e, e.as_bytes()))
-                .chain_err(|| anyhow::anyhow!("`{}` didn't return utf8 output", cmd))?;
+                .with_context(|| format!("`{}` didn't return utf8 output", cmd))?;
             let stderr = String::from_utf8(output.stderr)
                 .map_err(|e| anyhow::anyhow!("{}: {:?}", e, e.as_bytes()))
-                .chain_err(|| anyhow::anyhow!("`{}` didn't return utf8 output", cmd))?;
+                .with_context(|| format!("`{}` didn't return utf8 output", cmd))?;
             self.data.outputs.insert(
                 key,
                 Output {
@@ -232,7 +248,7 @@ impl Cache {
                     status: if output.status.success() {
                         String::new()
                     } else {
-                        util::exit_status_to_string(output.status)
+                        cargo_util::exit_status_to_string(output.status)
                     },
                     code: output.status.code(),
                     stdout,
@@ -245,7 +261,7 @@ impl Cache {
         if output.success {
             Ok((output.stdout.clone(), output.stderr.clone()))
         } else {
-            Err(util::process_error_raw(
+            Err(ProcessError::new_raw(
                 &format!("process didn't exit successfully: {}", cmd),
                 output.code,
                 &output.status,
@@ -272,13 +288,29 @@ impl Drop for Cache {
     }
 }
 
-fn rustc_fingerprint(path: &Path, rustup_rustc: &Path) -> CargoResult<u64> {
+fn rustc_fingerprint(
+    wrapper: Option<&Path>,
+    workspace_wrapper: Option<&Path>,
+    rustc: &Path,
+    rustup_rustc: &Path,
+) -> CargoResult<u64> {
     let mut hasher = StableHasher::new();
 
-    let path = paths::resolve_executable(path)?;
-    path.hash(&mut hasher);
+    let hash_exe = |hasher: &mut _, path| -> CargoResult<()> {
+        let path = paths::resolve_executable(path)?;
+        path.hash(hasher);
 
-    paths::mtime(&path)?.hash(&mut hasher);
+        paths::mtime(&path)?.hash(hasher);
+        Ok(())
+    };
+
+    hash_exe(&mut hasher, rustc)?;
+    if let Some(wrapper) = wrapper {
+        hash_exe(&mut hasher, wrapper)?;
+    }
+    if let Some(workspace_wrapper) = workspace_wrapper {
+        hash_exe(&mut hasher, workspace_wrapper)?;
+    }
 
     // Rustup can change the effective compiler without touching
     // the `rustc` binary, so we try to account for this here.
@@ -291,7 +323,7 @@ fn rustc_fingerprint(path: &Path, rustup_rustc: &Path) -> CargoResult<u64> {
     //
     // If we don't see rustup env vars, but it looks like the compiler
     // is managed by rustup, we conservatively bail out.
-    let maybe_rustup = rustup_rustc == path;
+    let maybe_rustup = rustup_rustc == rustc;
     match (
         maybe_rustup,
         env::var("RUSTUP_HOME"),

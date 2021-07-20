@@ -1,10 +1,11 @@
 //! Transforms `ast::Expr` into an equivalent `hir_def::expr::Expr`
 //! representation.
 
-use std::mem;
+use std::{mem, sync::Arc};
 
 use either::Either;
 use hir_expand::{
+    ast_id_map::{AstIdMap, FileAstId},
     hygiene::Hygiene,
     name::{name, AsName, Name},
     ExpandError, HirFileId,
@@ -24,34 +25,54 @@ use crate::{
     body::{Body, BodySourceMap, Expander, LabelSource, PatPtr, SyntheticSyntax},
     builtin_type::{BuiltinFloat, BuiltinInt, BuiltinUint},
     db::DefDatabase,
-    diagnostics::{InactiveCode, MacroError, UnresolvedProcMacro},
+    diagnostics::{InactiveCode, MacroError, UnresolvedMacroCall, UnresolvedProcMacro},
     expr::{
         dummy_expr_id, ArithOp, Array, BinaryOp, BindingAnnotation, CmpOp, Expr, ExprId, Label,
         LabelId, Literal, LogicOp, MatchArm, Ordering, Pat, PatId, RecordFieldPat, RecordLitField,
         Statement,
     },
+    intern::Interned,
     item_scope::BuiltinShadowMode,
     path::{GenericArgs, Path},
     type_ref::{Mutability, Rawness, TypeRef},
-    AdtId, BlockLoc, ModuleDefId,
+    AdtId, BlockLoc, ModuleDefId, UnresolvedMacro,
 };
 
 use super::{diagnostics::BodyDiagnostic, ExprSource, PatSource};
 
-pub(crate) struct LowerCtx {
+pub struct LowerCtx {
     hygiene: Hygiene,
+    file_id: Option<HirFileId>,
+    source_ast_id_map: Option<Arc<AstIdMap>>,
 }
 
 impl LowerCtx {
-    pub(crate) fn new(db: &dyn DefDatabase, file_id: HirFileId) -> Self {
-        LowerCtx { hygiene: Hygiene::new(db.upcast(), file_id) }
+    pub fn new(db: &dyn DefDatabase, file_id: HirFileId) -> Self {
+        LowerCtx {
+            hygiene: Hygiene::new(db.upcast(), file_id),
+            file_id: Some(file_id),
+            source_ast_id_map: Some(db.ast_id_map(file_id)),
+        }
     }
-    pub(crate) fn with_hygiene(hygiene: &Hygiene) -> Self {
-        LowerCtx { hygiene: hygiene.clone() }
+
+    pub fn with_hygiene(hygiene: &Hygiene) -> Self {
+        LowerCtx { hygiene: hygiene.clone(), file_id: None, source_ast_id_map: None }
+    }
+
+    pub(crate) fn hygiene(&self) -> &Hygiene {
+        &self.hygiene
+    }
+
+    pub(crate) fn file_id(&self) -> HirFileId {
+        self.file_id.unwrap()
     }
 
     pub(crate) fn lower_path(&self, ast: ast::Path) -> Option<Path> {
-        Path::from_src(ast, &self.hygiene)
+        Path::from_src(ast, self)
+    }
+
+    pub(crate) fn ast_id<N: AstNode>(&self, item: &N) -> Option<FileAstId<N>> {
+        self.source_ast_id_map.as_ref().map(|ast_id_map| ast_id_map.ast_id(item))
     }
 }
 
@@ -74,6 +95,7 @@ pub(super) fn lower(
             _c: Count::new(),
         },
         expander,
+        statements_in_scope: Vec::new(),
     }
     .collect(params, body)
 }
@@ -83,6 +105,7 @@ struct ExprCollector<'a> {
     expander: Expander,
     body: Body,
     source_map: BodySourceMap,
+    statements_in_scope: Vec<Statement>,
 }
 
 impl ExprCollector<'_> {
@@ -177,12 +200,15 @@ impl ExprCollector<'_> {
     }
 
     fn collect_expr(&mut self, expr: ast::Expr) -> ExprId {
-        let syntax_ptr = AstPtr::new(&expr);
-        if self.check_cfg(&expr).is_none() {
-            return self.missing_expr();
-        }
+        self.maybe_collect_expr(expr).unwrap_or_else(|| self.missing_expr())
+    }
 
-        match expr {
+    /// Returns `None` if the expression is `#[cfg]`d out.
+    fn maybe_collect_expr(&mut self, expr: ast::Expr) -> Option<ExprId> {
+        let syntax_ptr = AstPtr::new(&expr);
+        self.check_cfg(&expr)?;
+
+        Some(match expr {
             ast::Expr::IfExpr(e) => {
                 let then_branch = self.collect_block_opt(e.then_branch());
 
@@ -211,8 +237,9 @@ impl ExprCollector<'_> {
                                     guard: None,
                                 },
                             ];
-                            return self
-                                .alloc_expr(Expr::Match { expr: match_expr, arms }, syntax_ptr);
+                            return Some(
+                                self.alloc_expr(Expr::Match { expr: match_expr, arms }, syntax_ptr),
+                            );
                         }
                     },
                 };
@@ -283,8 +310,9 @@ impl ExprCollector<'_> {
                             ];
                             let match_expr =
                                 self.alloc_expr_desugared(Expr::Match { expr: match_expr, arms });
-                            return self
-                                .alloc_expr(Expr::Loop { body: match_expr, label }, syntax_ptr);
+                            return Some(
+                                self.alloc_expr(Expr::Loop { body: match_expr, label }, syntax_ptr),
+                            );
                         }
                     },
                 };
@@ -301,7 +329,7 @@ impl ExprCollector<'_> {
             ast::Expr::CallExpr(e) => {
                 let callee = self.collect_expr_opt(e.expr());
                 let args = if let Some(arg_list) = e.arg_list() {
-                    arg_list.args().map(|e| self.collect_expr(e)).collect()
+                    arg_list.args().filter_map(|e| self.maybe_collect_expr(e)).collect()
                 } else {
                     Vec::new()
                 };
@@ -310,13 +338,15 @@ impl ExprCollector<'_> {
             ast::Expr::MethodCallExpr(e) => {
                 let receiver = self.collect_expr_opt(e.receiver());
                 let args = if let Some(arg_list) = e.arg_list() {
-                    arg_list.args().map(|e| self.collect_expr(e)).collect()
+                    arg_list.args().filter_map(|e| self.maybe_collect_expr(e)).collect()
                 } else {
                     Vec::new()
                 };
                 let method_name = e.name_ref().map(|nr| nr.as_name()).unwrap_or_else(Name::missing);
-                let generic_args =
-                    e.generic_arg_list().and_then(|it| GenericArgs::from_ast(&self.ctx(), it));
+                let generic_args = e
+                    .generic_arg_list()
+                    .and_then(|it| GenericArgs::from_ast(&self.ctx(), it))
+                    .map(Box::new);
                 self.alloc_expr(
                     Expr::MethodCall { receiver, method_name, args, generic_args },
                     syntax_ptr,
@@ -378,24 +408,23 @@ impl ExprCollector<'_> {
                 self.alloc_expr(Expr::Yield { expr }, syntax_ptr)
             }
             ast::Expr::RecordExpr(e) => {
-                let path = e.path().and_then(|path| self.expander.parse_path(path));
-                let mut field_ptrs = Vec::new();
+                let path = e.path().and_then(|path| self.expander.parse_path(path)).map(Box::new);
                 let record_lit = if let Some(nfl) = e.record_expr_field_list() {
                     let fields = nfl
                         .fields()
-                        .inspect(|field| field_ptrs.push(AstPtr::new(field)))
                         .filter_map(|field| {
                             self.check_cfg(&field)?;
 
                             let name = field.field_name()?.as_name();
 
-                            Some(RecordLitField {
-                                name,
-                                expr: match field.expr() {
-                                    Some(e) => self.collect_expr(e),
-                                    None => self.missing_expr(),
-                                },
-                            })
+                            let expr = match field.expr() {
+                                Some(e) => self.collect_expr(e),
+                                None => self.missing_expr(),
+                            };
+                            let src = self.expander.to_source(AstPtr::new(&field));
+                            self.source_map.field_map.insert(src.clone(), expr);
+                            self.source_map.field_map_back.insert(expr, src);
+                            Some(RecordLitField { name, expr })
                         })
                         .collect();
                     let spread = nfl.spread().map(|s| self.collect_expr(s));
@@ -404,12 +433,7 @@ impl ExprCollector<'_> {
                     Expr::RecordLit { path, fields: Vec::new(), spread: None }
                 };
 
-                let res = self.alloc_expr(record_lit, syntax_ptr);
-                for (i, ptr) in field_ptrs.into_iter().enumerate() {
-                    let src = self.expander.to_source(ptr);
-                    self.source_map.field_map.insert((res, i), src);
-                }
-                res
+                self.alloc_expr(record_lit, syntax_ptr)
             }
             ast::Expr::FieldExpr(e) => {
                 let expr = self.collect_expr_opt(e.expr());
@@ -429,7 +453,7 @@ impl ExprCollector<'_> {
             }
             ast::Expr::CastExpr(e) => {
                 let expr = self.collect_expr_opt(e.expr());
-                let type_ref = TypeRef::from_ast_opt(&self.ctx(), e.ty());
+                let type_ref = Interned::new(TypeRef::from_ast_opt(&self.ctx(), e.ty()));
                 self.alloc_expr(Expr::Cast { expr, type_ref }, syntax_ptr)
             }
             ast::Expr::RefExpr(e) => {
@@ -463,13 +487,16 @@ impl ExprCollector<'_> {
                 if let Some(pl) = e.param_list() {
                     for param in pl.params() {
                         let pat = self.collect_pat_opt(param.pat());
-                        let type_ref = param.ty().map(|it| TypeRef::from_ast(&self.ctx(), it));
+                        let type_ref =
+                            param.ty().map(|it| Interned::new(TypeRef::from_ast(&self.ctx(), it)));
                         args.push(pat);
                         arg_types.push(type_ref);
                     }
                 }
-                let ret_type =
-                    e.ret_type().and_then(|r| r.ty()).map(|it| TypeRef::from_ast(&self.ctx(), it));
+                let ret_type = e
+                    .ret_type()
+                    .and_then(|r| r.ty())
+                    .map(|it| Interned::new(TypeRef::from_ast(&self.ctx(), it)));
                 let body = self.collect_expr_opt(e.body());
                 self.alloc_expr(Expr::Lambda { args, arg_types, ret_type, body }, syntax_ptr)
             }
@@ -524,8 +551,9 @@ impl ExprCollector<'_> {
                 }
             }
             ast::Expr::MacroCall(e) => {
+                let macro_ptr = AstPtr::new(&e);
                 let mut ids = vec![];
-                self.collect_macro_call(e, syntax_ptr.clone(), |this, expansion| {
+                self.collect_macro_call(e, macro_ptr, true, |this, expansion| {
                     ids.push(match expansion {
                         Some(it) => this.collect_expr(it),
                         None => this.alloc_expr(Expr::Missing, syntax_ptr.clone()),
@@ -533,13 +561,23 @@ impl ExprCollector<'_> {
                 });
                 ids[0]
             }
-        }
+            ast::Expr::MacroStmts(e) => {
+                e.statements().for_each(|s| self.collect_stmt(s));
+                let tail = e
+                    .expr()
+                    .map(|e| self.collect_expr(e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Missing, syntax_ptr.clone()));
+
+                self.alloc_expr(Expr::MacroStmts { tail }, syntax_ptr)
+            }
+        })
     }
 
     fn collect_macro_call<F: FnMut(&mut Self, Option<T>), T: ast::AstNode>(
         &mut self,
         e: ast::MacroCall,
-        syntax_ptr: AstPtr<ast::Expr>,
+        syntax_ptr: AstPtr<ast::MacroCall>,
+        is_error_recoverable: bool,
         mut collector: F,
     ) {
         // File containing the macro call. Expansion errors will be attached here.
@@ -547,6 +585,21 @@ impl ExprCollector<'_> {
 
         let macro_call = self.expander.to_source(AstPtr::new(&e));
         let res = self.expander.enter_expand(self.db, e);
+
+        let res = match res {
+            Ok(res) => res,
+            Err(UnresolvedMacro { path }) => {
+                self.source_map.diagnostics.push(BodyDiagnostic::UnresolvedMacroCall(
+                    UnresolvedMacroCall {
+                        file: outer_file,
+                        node: syntax_ptr.cast().unwrap(),
+                        path,
+                    },
+                ));
+                collector(self, None);
+                return;
+            }
+        };
 
         match &res.err {
             Some(ExpandError::UnresolvedProcMacro) => {
@@ -573,7 +626,7 @@ impl ExprCollector<'_> {
             Some((mark, expansion)) => {
                 // FIXME: Statements are too complicated to recover from error for now.
                 // It is because we don't have any hygiene for local variable expansion right now.
-                if T::can_cast(syntax::SyntaxKind::MACRO_STMTS) && res.err.is_some() {
+                if !is_error_recoverable && res.err.is_some() {
                     self.expander.exit(self.db, mark);
                     collector(self, None);
                 } else {
@@ -596,59 +649,59 @@ impl ExprCollector<'_> {
         }
     }
 
-    fn collect_stmt(&mut self, s: ast::Stmt) -> Option<Vec<Statement>> {
-        let stmt =
-            match s {
-                ast::Stmt::LetStmt(stmt) => {
-                    self.check_cfg(&stmt)?;
-
-                    let pat = self.collect_pat_opt(stmt.pat());
-                    let type_ref = stmt.ty().map(|it| TypeRef::from_ast(&self.ctx(), it));
-                    let initializer = stmt.initializer().map(|e| self.collect_expr(e));
-                    vec![Statement::Let { pat, type_ref, initializer }]
+    fn collect_stmt(&mut self, s: ast::Stmt) {
+        match s {
+            ast::Stmt::LetStmt(stmt) => {
+                if self.check_cfg(&stmt).is_none() {
+                    return;
                 }
-                ast::Stmt::ExprStmt(stmt) => {
-                    self.check_cfg(&stmt)?;
+                let pat = self.collect_pat_opt(stmt.pat());
+                let type_ref =
+                    stmt.ty().map(|it| Interned::new(TypeRef::from_ast(&self.ctx(), it)));
+                let initializer = stmt.initializer().map(|e| self.collect_expr(e));
+                self.statements_in_scope.push(Statement::Let { pat, type_ref, initializer });
+            }
+            ast::Stmt::ExprStmt(stmt) => {
+                if self.check_cfg(&stmt).is_none() {
+                    return;
+                }
 
-                    // Note that macro could be expended to multiple statements
-                    if let Some(ast::Expr::MacroCall(m)) = stmt.expr() {
-                        let syntax_ptr = AstPtr::new(&stmt.expr().unwrap());
-                        let mut stmts = vec![];
+                // Note that macro could be expended to multiple statements
+                if let Some(ast::Expr::MacroCall(m)) = stmt.expr() {
+                    let macro_ptr = AstPtr::new(&m);
+                    let syntax_ptr = AstPtr::new(&stmt.expr().unwrap());
 
-                        self.collect_macro_call(m, syntax_ptr.clone(), |this, expansion| {
-                            match expansion {
-                                Some(expansion) => {
-                                    let statements: ast::MacroStmts = expansion;
+                    self.collect_macro_call(
+                        m,
+                        macro_ptr,
+                        false,
+                        |this, expansion| match expansion {
+                            Some(expansion) => {
+                                let statements: ast::MacroStmts = expansion;
 
-                                    statements.statements().for_each(|stmt| {
-                                        if let Some(mut r) = this.collect_stmt(stmt) {
-                                            stmts.append(&mut r);
-                                        }
-                                    });
-                                    if let Some(expr) = statements.expr() {
-                                        stmts.push(Statement::Expr(this.collect_expr(expr)));
-                                    }
-                                }
-                                None => {
-                                    stmts.push(Statement::Expr(
-                                        this.alloc_expr(Expr::Missing, syntax_ptr.clone()),
-                                    ));
+                                statements.statements().for_each(|stmt| this.collect_stmt(stmt));
+                                if let Some(expr) = statements.expr() {
+                                    let expr = this.collect_expr(expr);
+                                    this.statements_in_scope.push(Statement::Expr(expr));
                                 }
                             }
-                        });
-                        stmts
-                    } else {
-                        vec![Statement::Expr(self.collect_expr_opt(stmt.expr()))]
-                    }
+                            None => {
+                                let expr = this.alloc_expr(Expr::Missing, syntax_ptr.clone());
+                                this.statements_in_scope.push(Statement::Expr(expr));
+                            }
+                        },
+                    );
+                } else {
+                    let expr = self.collect_expr_opt(stmt.expr());
+                    self.statements_in_scope.push(Statement::Expr(expr));
                 }
-                ast::Stmt::Item(item) => {
-                    self.check_cfg(&item)?;
-
-                    return None;
+            }
+            ast::Stmt::Item(item) => {
+                if self.check_cfg(&item).is_none() {
+                    return;
                 }
-            };
-
-        Some(stmt)
+            }
+        }
     }
 
     fn collect_block(&mut self, block: ast::BlockExpr) -> ExprId {
@@ -656,18 +709,22 @@ impl ExprCollector<'_> {
         let block_loc =
             BlockLoc { ast_id, module: self.expander.def_map.module_id(self.expander.module) };
         let block_id = self.db.intern_block(block_loc);
-        self.body.block_scopes.push(block_id);
 
-        let opt_def_map = self.db.block_def_map(block_id);
-        let has_def_map = opt_def_map.is_some();
-        let def_map = opt_def_map.unwrap_or_else(|| self.expander.def_map.clone());
-        let module = if has_def_map { def_map.root() } else { self.expander.module };
+        let (module, def_map) = match self.db.block_def_map(block_id) {
+            Some(def_map) => {
+                self.body.block_scopes.push(block_id);
+                (def_map.root(), def_map)
+            }
+            None => (self.expander.module, self.expander.def_map.clone()),
+        };
         let prev_def_map = mem::replace(&mut self.expander.def_map, def_map);
         let prev_local_module = mem::replace(&mut self.expander.module, module);
+        let prev_statements = std::mem::take(&mut self.statements_in_scope);
 
-        let statements =
-            block.statements().filter_map(|s| self.collect_stmt(s)).flatten().collect();
+        block.statements().for_each(|s| self.collect_stmt(s));
+
         let tail = block.tail_expr().map(|e| self.collect_expr(e));
+        let statements = std::mem::replace(&mut self.statements_in_scope, prev_statements);
         let syntax_node_ptr = AstPtr::new(&block.into());
         let expr_id = self.alloc_expr(
             Expr::Block { id: block_id, statements, tail, label: None },
@@ -734,7 +791,7 @@ impl ExprCollector<'_> {
                 }
             }
             ast::Pat::TupleStructPat(p) => {
-                let path = p.path().and_then(|path| self.expander.parse_path(path));
+                let path = p.path().and_then(|path| self.expander.parse_path(path)).map(Box::new);
                 let (args, ellipsis) = self.collect_tuple_pat(p.fields());
                 Pat::TupleStruct { path, args, ellipsis }
             }
@@ -744,7 +801,7 @@ impl ExprCollector<'_> {
                 Pat::Ref { pat, mutability }
             }
             ast::Pat::PathPat(p) => {
-                let path = p.path().and_then(|path| self.expander.parse_path(path));
+                let path = p.path().and_then(|path| self.expander.parse_path(path)).map(Box::new);
                 path.map(Pat::Path).unwrap_or(Pat::Missing)
             }
             ast::Pat::OrPat(p) => {
@@ -758,7 +815,7 @@ impl ExprCollector<'_> {
             }
             ast::Pat::WildcardPat(_) => Pat::Wild,
             ast::Pat::RecordPat(p) => {
-                let path = p.path().and_then(|path| self.expander.parse_path(path));
+                let path = p.path().and_then(|path| self.expander.parse_path(path)).map(Box::new);
                 let args: Vec<_> = p
                     .record_pat_field_list()
                     .expect("every struct should have a field list")
@@ -820,8 +877,23 @@ impl ExprCollector<'_> {
                     Pat::Missing
                 }
             }
+            ast::Pat::MacroPat(mac) => match mac.macro_call() {
+                Some(call) => {
+                    let macro_ptr = AstPtr::new(&call);
+                    let mut pat = None;
+                    self.collect_macro_call(call, macro_ptr, true, |this, expanded_pat| {
+                        pat = Some(this.collect_pat_opt(expanded_pat));
+                    });
+
+                    match pat {
+                        Some(pat) => return pat,
+                        None => Pat::Missing,
+                    }
+                }
+                None => Pat::Missing,
+            },
             // FIXME: implement
-            ast::Pat::RangePat(_) | ast::Pat::MacroPat(_) => Pat::Missing,
+            ast::Pat::RangePat(_) => Pat::Missing,
         };
         let ptr = AstPtr::new(&pat);
         self.alloc_pat(pattern, Either::Left(ptr))

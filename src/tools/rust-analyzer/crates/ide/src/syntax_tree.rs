@@ -14,6 +14,7 @@ use syntax::{
 //
 // | VS Code | **Rust Analyzer: Show Syntax Tree**
 // |===
+// image::https://user-images.githubusercontent.com/48062697/113065586-068bdb80-91b1-11eb-9507-fee67f9f45a0.gif[]
 pub(crate) fn syntax_tree(
     db: &RootDatabase,
     file_id: FileId,
@@ -27,7 +28,7 @@ pub(crate) fn syntax_tree(
                 if let Some(tree) = syntax_tree_for_string(&token, text_range) {
                     return tree;
                 }
-                token.parent()
+                token.parent().unwrap()
             }
         };
 

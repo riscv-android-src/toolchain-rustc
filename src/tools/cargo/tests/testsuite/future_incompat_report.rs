@@ -52,6 +52,23 @@ fn gate_future_incompat_report() {
 }
 
 #[cargo_test]
+fn test_zero_future_incompat() {
+    if !is_nightly() {
+        return;
+    }
+
+    let p = project()
+        .file("Cargo.toml", &basic_manifest("foo", "0.0.0"))
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build --future-incompat-report -Z unstable-options -Z future-incompat-report")
+        .masquerade_as_nightly_cargo()
+        .with_stderr_contains("note: 0 dependencies had future-incompat warnings")
+        .run();
+}
+
+#[cargo_test]
 fn test_single_crate() {
     if !is_nightly() {
         return;
@@ -147,7 +164,7 @@ fn test_multi_crate() {
     let stderr = std::str::from_utf8(&output.stderr).unwrap();
 
     // Find '--id <ID>' in the output
-    let mut iter = stderr.split(" ");
+    let mut iter = stderr.split(' ');
     iter.find(|w| *w == "--id").unwrap();
     let id = iter
         .next()

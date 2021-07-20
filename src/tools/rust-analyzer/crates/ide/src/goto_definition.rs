@@ -1,15 +1,14 @@
 use either::Either;
-use hir::{HasAttrs, ModuleDef, Semantics};
+use hir::{InFile, Semantics};
 use ide_db::{
-    defs::{Definition, NameClass, NameRefClass},
+    defs::{NameClass, NameRefClass},
     RootDatabase,
 };
-use syntax::{
-    ast, match_ast, AstNode, AstToken, SyntaxKind::*, SyntaxToken, TextSize, TokenAtOffset, T,
-};
+use syntax::{ast, match_ast, AstNode, AstToken, SyntaxKind::*, SyntaxToken, TokenAtOffset, T};
 
 use crate::{
-    display::TryToNav, doc_links::extract_definitions_from_markdown, runnables::doc_owner_to_def,
+    display::TryToNav,
+    doc_links::{doc_attributes, extract_definitions_from_markdown, resolve_doc_path_for_def},
     FilePosition, NavigationTarget, RangeInfo,
 };
 
@@ -22,6 +21,8 @@ use crate::{
 //
 // | VS Code | kbd:[F12]
 // |===
+//
+// image::https://user-images.githubusercontent.com/48062697/113065563-025fbe00-91b1-11eb-83e4-a5a703610b23.gif[]
 pub(crate) fn goto_definition(
     db: &RootDatabase,
     position: FilePosition,
@@ -30,9 +31,18 @@ pub(crate) fn goto_definition(
     let file = sema.parse(position.file_id).syntax().clone();
     let original_token = pick_best(file.token_at_offset(position.offset))?;
     let token = sema.descend_into_macros(original_token.clone());
-    let parent = token.parent();
-    if let Some(comment) = ast::Comment::cast(token) {
-        let nav = def_for_doc_comment(&sema, position, &comment)?.try_to_nav(db)?;
+    let parent = token.parent()?;
+    if let Some(_) = ast::Comment::cast(token) {
+        let (attributes, def) = doc_attributes(&sema, &parent)?;
+
+        let (docs, doc_mapping) = attributes.docs_with_rangemap(db)?;
+        let (_, link, ns) =
+            extract_definitions_from_markdown(docs.as_str()).into_iter().find(|(range, ..)| {
+                doc_mapping.map(range.clone()).map_or(false, |InFile { file_id, value: range }| {
+                    file_id == position.file_id.into() && range.contains(position.offset)
+                })
+            })?;
+        let nav = resolve_doc_path_for_def(db, def, &link, ns)?.try_to_nav(db)?;
         return Some(RangeInfo::new(original_token.text_range(), vec![nav]));
     }
 
@@ -56,53 +66,6 @@ pub(crate) fn goto_definition(
     };
 
     Some(RangeInfo::new(original_token.text_range(), nav.into_iter().collect()))
-}
-
-fn def_for_doc_comment(
-    sema: &Semantics<RootDatabase>,
-    position: FilePosition,
-    doc_comment: &ast::Comment,
-) -> Option<hir::ModuleDef> {
-    let parent = doc_comment.syntax().parent();
-    let (link, ns) = extract_positioned_link_from_comment(position, doc_comment)?;
-
-    let def = doc_owner_to_def(sema, parent)?;
-    match def {
-        Definition::ModuleDef(def) => match def {
-            ModuleDef::Module(it) => it.resolve_doc_path(sema.db, &link, ns),
-            ModuleDef::Function(it) => it.resolve_doc_path(sema.db, &link, ns),
-            ModuleDef::Adt(it) => it.resolve_doc_path(sema.db, &link, ns),
-            ModuleDef::Variant(it) => it.resolve_doc_path(sema.db, &link, ns),
-            ModuleDef::Const(it) => it.resolve_doc_path(sema.db, &link, ns),
-            ModuleDef::Static(it) => it.resolve_doc_path(sema.db, &link, ns),
-            ModuleDef::Trait(it) => it.resolve_doc_path(sema.db, &link, ns),
-            ModuleDef::TypeAlias(it) => it.resolve_doc_path(sema.db, &link, ns),
-            ModuleDef::BuiltinType(_) => return None,
-        },
-        Definition::Macro(it) => it.resolve_doc_path(sema.db, &link, ns),
-        Definition::Field(it) => it.resolve_doc_path(sema.db, &link, ns),
-        Definition::SelfType(_)
-        | Definition::Local(_)
-        | Definition::GenericParam(_)
-        | Definition::Label(_) => return None,
-    }
-}
-
-fn extract_positioned_link_from_comment(
-    position: FilePosition,
-    comment: &ast::Comment,
-) -> Option<(String, Option<hir::Namespace>)> {
-    let comment_range = comment.syntax().text_range();
-    let doc_comment = comment.doc_comment()?;
-    let def_links = extract_definitions_from_markdown(doc_comment);
-    let (def_link, ns, _) = def_links.iter().min_by_key(|(_, _, def_link_range)| {
-        let matched_position = comment_range.start() + TextSize::from(def_link_range.start as u32);
-        match position.offset.checked_sub(matched_position) {
-            Some(distance) => distance,
-            None => comment_range.end(),
-        }
-    })?;
-    Some((def_link.to_string(), ns.clone()))
 }
 
 fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
@@ -145,6 +108,13 @@ mod tests {
 
         let nav = navs.pop().unwrap();
         assert_eq!(expected, FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() });
+    }
+
+    fn check_unresolved(ra_fixture: &str) {
+        let (analysis, position) = fixture::position(ra_fixture);
+        let navs = analysis.goto_definition(position).unwrap().expect("no definition found").info;
+
+        assert!(navs.is_empty(), "didn't expect this to resolve anywhere: {:?}", navs)
     }
 
     #[test]
@@ -964,6 +934,16 @@ fn f() -> impl Iterator<Item$0 = u8> {}
     }
 
     #[test]
+    fn unknown_assoc_ty() {
+        check_unresolved(
+            r#"
+trait Iterator { type Item; }
+fn f() -> impl Iterator<Invalid$0 = u8> {}
+"#,
+        )
+    }
+
+    #[test]
     fn goto_def_for_assoc_ty_in_path_multiple() {
         check(
             r#"
@@ -1136,7 +1116,7 @@ fn foo<'foo>(_: &'foo ()) {
     fn goto_def_for_intra_doc_link_same_file() {
         check(
             r#"
-/// Blah, [`bar`](bar) .. [`foo`](foo)$0 has [`bar`](bar)
+/// Blah, [`bar`](bar) .. [`foo`](foo$0) has [`bar`](bar)
 pub fn bar() { }
 
 /// You might want to see [`std::fs::read()`] too.
@@ -1160,5 +1140,80 @@ struct S;
 //! [`super::S$0`]
 "#,
         )
+    }
+
+    #[test]
+    fn goto_incomplete_field() {
+        check(
+            r#"
+struct A { a: u32 }
+         //^
+fn foo() { A { a$0: }; }
+"#,
+        )
+    }
+
+    #[test]
+    fn goto_proc_macro() {
+        check(
+            r#"
+//- /main.rs crate:main deps:mac
+use mac::fn_macro;
+
+fn_macro$0!();
+
+//- /mac.rs crate:mac
+#[proc_macro]
+fn fn_macro() {}
+ //^^^^^^^^
+            "#,
+        )
+    }
+
+    #[test]
+    fn goto_intra_doc_links() {
+        check(
+            r#"
+
+pub mod theitem {
+    /// This is the item. Cool!
+    pub struct TheItem;
+             //^^^^^^^
+}
+
+/// Gives you a [`TheItem$0`].
+///
+/// [`TheItem`]: theitem::TheItem
+pub fn gimme() -> theitem::TheItem {
+    theitem::TheItem
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_ident_from_pat_macro() {
+        check(
+            r#"
+macro_rules! pat {
+    ($name:ident) => { Enum::Variant1($name) }
+}
+
+enum Enum {
+    Variant1(u8),
+    Variant2,
+}
+
+fn f(e: Enum) {
+    match e {
+        pat!(bind) => {
+           //^^^^
+            bind$0
+        }
+        Enum::Variant2 => {}
+    }
+}
+"#,
+        );
     }
 }

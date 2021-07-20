@@ -1,4 +1,4 @@
-// Copyright (c) 2016, 2018 vergen developers
+// Copyright (c) 2016, 2018, 2021 vergen developers
 //
 // Licensed under the Apache License, Version 2.0
 // <LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0> or the MIT
@@ -6,150 +6,88 @@
 // option. All files in the project carrying such notice may not be copied,
 // modified, or distributed except according to those terms.
 
-//! Flags used to control the build script output.
+//! Internal Constants
 
-bitflags!(
-    /// Constants Flags
-    ///
-    /// Use these to toggle off the generation of constants you won't use.
-    ///
-    /// ```
-    /// # extern crate vergen;
-    /// #
-    /// # use vergen::ConstantsFlags;
-    /// #
-    /// # fn main() {
-    /// let mut actual_flags = ConstantsFlags::all();
-    /// actual_flags.toggle(ConstantsFlags::SHA_SHORT);
-    /// actual_flags.toggle(ConstantsFlags::BUILD_DATE);
-    /// actual_flags.toggle(ConstantsFlags::SEMVER_LIGHTWEIGHT);
-    /// actual_flags.toggle(ConstantsFlags::SEMVER_FROM_CARGO_PKG);
-    ///
-    /// let expected_flags = ConstantsFlags::BUILD_TIMESTAMP |
-    ///     ConstantsFlags::SHA |
-    ///     ConstantsFlags::COMMIT_DATE |
-    ///     ConstantsFlags::TARGET_TRIPLE |
-    ///     ConstantsFlags::SEMVER |
-    ///     ConstantsFlags::REBUILD_ON_HEAD_CHANGE;
-    ///
-    /// assert_eq!(actual_flags, expected_flags)
-    /// # }
-    /// ```
-    pub struct ConstantsFlags: u64 {
-        /// Generate the build timestamp constant.
-        ///
-        /// `2018-08-09T15:15:57.282334589+00:00`
-        const BUILD_TIMESTAMP        = 0b0000_0000_0001;
-        /// Generate the build date constant.
-        ///
-        /// `2018-08-09`
-        const BUILD_DATE             = 0b0000_0000_0010;
-        /// Generate the SHA constant.
-        ///
-        /// `75b390dc6c05a6a4aa2791cc7b3934591803bc22`
-        const SHA                    = 0b0000_0000_0100;
-        /// Generate the short SHA constant.
-        ///
-        /// `75b390d`
-        const SHA_SHORT              = 0b0000_0000_1000;
-        /// Generate the commit date constant.
-        ///
-        /// `2018-08-08`
-        const COMMIT_DATE            = 0b0000_0001_0000;
-        /// Generate the target triple constant.
-        ///
-        /// `x86_64-unknown-linux-gnu`
-        const TARGET_TRIPLE          = 0b0000_0010_0000;
-        /// Generate the semver constant.
-        ///
-        /// This defaults to the output of `git describe`.  If that output is
-        /// empty, the the `CARGO_PKG_VERSION` environment variable is used.
-        ///
-        /// `v0.1.0`
-        const SEMVER                 = 0b0000_0100_0000;
-        /// Generate the semver constant, including lightweight tags.
-        ///
-        /// This defaults to the output of `git describe --tags`.  If that output
-        /// is empty, the the `CARGO_PKG_VERSION` environment variable is used.
-        ///
-        /// `v0.1.0`
-        const SEMVER_LIGHTWEIGHT     = 0b0000_1000_0000;
-        /// Generate the `cargo:rebuild-if-changed=.git/HEAD` and the
-        /// `cargo:rebuild-if-changed=.git/<ref>` cargo build output.
-        const REBUILD_ON_HEAD_CHANGE = 0b0001_0000_0000;
-        /// Generate the semver constant from `CARGO_PKG_VERSION`.  This is
-        /// mutually exclusive with the `SEMVER` flag.
-        ///
-        /// `0.1.0`
-        const SEMVER_FROM_CARGO_PKG  = 0b0010_0000_0000;
-    }
-);
+// Build Constants
+pub(crate) const BUILD_TIMESTAMP_NAME: &str = "VERGEN_BUILD_TIMESTAMP";
+pub(crate) const BUILD_DATE_NAME: &str = "VERGEN_BUILD_DATE";
+pub(crate) const BUILD_TIME_NAME: &str = "VERGEN_BUILD_TIME";
+pub(crate) const BUILD_SEMVER_NAME: &str = "VERGEN_BUILD_SEMVER";
 
-/// const prefix for codegen
-pub const CONST_PREFIX: &str = "pub const ";
-/// const type for codegen
-pub const CONST_TYPE: &str = ": &str = ";
+// git Constants
+pub(crate) const GIT_BRANCH_NAME: &str = "VERGEN_GIT_BRANCH";
+pub(crate) const GIT_COMMIT_DATE_NAME: &str = "VERGEN_GIT_COMMIT_DATE";
+pub(crate) const GIT_COMMIT_TIME_NAME: &str = "VERGEN_GIT_COMMIT_TIME";
+pub(crate) const GIT_COMMIT_TIMESTAMP_NAME: &str = "VERGEN_GIT_COMMIT_TIMESTAMP";
+pub(crate) const GIT_SEMVER_NAME: &str = "VERGEN_GIT_SEMVER";
+pub(crate) const GIT_SEMVER_TAGS_NAME: &str = "VERGEN_GIT_SEMVER_LIGHTWEIGHT";
+pub(crate) const GIT_SHA_NAME: &str = "VERGEN_GIT_SHA";
+pub(crate) const GIT_SHA_SHORT_NAME: &str = "VERGEN_GIT_SHA_SHORT";
 
-pub const BUILD_TIMESTAMP_NAME: &str = "VERGEN_BUILD_TIMESTAMP";
-pub const BUILD_TIMESTAMP_COMMENT: &str = "/// Build Timestamp (UTC)";
-pub const BUILD_DATE_NAME: &str = "VERGEN_BUILD_DATE";
-pub const BUILD_DATE_COMMENT: &str = "/// Compile Time - Short (UTC)";
-pub const SHA_NAME: &str = "VERGEN_SHA";
-pub const SHA_COMMENT: &str = "/// Commit SHA";
-pub const SHA_SHORT_NAME: &str = "VERGEN_SHA_SHORT";
-pub const SHA_SHORT_COMMENT: &str = "/// Commit SHA - Short";
-pub const COMMIT_DATE_NAME: &str = "VERGEN_COMMIT_DATE";
-pub const COMMIT_DATE_COMMENT: &str = "/// Commit Date";
-pub const TARGET_TRIPLE_NAME: &str = "VERGEN_TARGET_TRIPLE";
-pub const TARGET_TRIPLE_COMMENT: &str = "/// Target Triple";
-pub const SEMVER_NAME: &str = "VERGEN_SEMVER";
-pub const SEMVER_COMMENT: &str = "/// Semver";
-pub const SEMVER_TAGS_NAME: &str = "VERGEN_SEMVER_LIGHTWEIGHT";
-pub const SEMVER_TAGS_COMMENT: &str = "/// Semver (Lightweight)";
+// rustc Constants
+pub(crate) const RUSTC_CHANNEL_NAME: &str = "VERGEN_RUSTC_CHANNEL";
+pub(crate) const RUSTC_HOST_TRIPLE_NAME: &str = "VERGEN_RUSTC_HOST_TRIPLE";
+pub(crate) const RUSTC_SEMVER_NAME: &str = "VERGEN_RUSTC_SEMVER";
+pub(crate) const RUSTC_COMMIT_HASH: &str = "VERGEN_RUSTC_COMMIT_HASH";
+pub(crate) const RUSTC_COMMIT_DATE: &str = "VERGEN_RUSTC_COMMIT_DATE";
+pub(crate) const RUSTC_LLVM_VERSION: &str = "VERGEN_RUSTC_LLVM_VERSION";
+
+// cargo Constants
+pub(crate) const CARGO_TARGET_TRIPLE: &str = "VERGEN_CARGO_TARGET_TRIPLE";
+pub(crate) const CARGO_PROFILE: &str = "VERGEN_CARGO_PROFILE";
+pub(crate) const CARGO_FEATURES: &str = "VERGEN_CARGO_FEATURES";
+
+// sysinfo Constants
+pub(crate) const SYSINFO_NAME: &str = "VERGEN_SYSINFO_NAME";
+pub(crate) const SYSINFO_OS_VERSION: &str = "VERGEN_SYSINFO_OS_VERSION";
+pub(crate) const SYSINFO_USER: &str = "VERGEN_SYSINFO_USER";
+pub(crate) const SYSINFO_MEMORY: &str = "VERGEN_SYSINFO_TOTAL_MEMORY";
+pub(crate) const SYSINFO_CPU_VENDOR: &str = "VERGEN_SYSINFO_CPU_VENDOR";
+pub(crate) const SYSINFO_CPU_CORE_COUNT: &str = "VERGEN_SYSINFO_CPU_CORE_COUNT";
+pub(crate) const SYSINFO_CPU_NAME: &str = "VERGEN_SYSINFO_CPU_NAME";
+pub(crate) const SYSINFO_CPU_BRAND: &str = "VERGEN_SYSINFO_CPU_BRAND";
+pub(crate) const SYSINFO_CPU_FREQUENCY: &str = "VERGEN_SYSINFO_CPU_FREQUENCY";
 
 #[cfg(test)]
 mod test {
     use super::*;
 
     #[test]
-    fn bitflags_dont_change() {
-        assert_eq!(ConstantsFlags::BUILD_TIMESTAMP.bits(), 0b0000_0001);
-        assert_eq!(ConstantsFlags::BUILD_DATE.bits(), 0b0000_0010);
-        assert_eq!(ConstantsFlags::SHA.bits(), 0b0000_0100);
-        assert_eq!(ConstantsFlags::SHA_SHORT.bits(), 0b0000_1000);
-        assert_eq!(ConstantsFlags::COMMIT_DATE.bits(), 0b0001_0000);
-        assert_eq!(ConstantsFlags::TARGET_TRIPLE.bits(), 0b0010_0000);
-        assert_eq!(ConstantsFlags::SEMVER.bits(), 0b0100_0000);
-        assert_eq!(ConstantsFlags::SEMVER_LIGHTWEIGHT.bits(), 0b1000_0000);
-        assert_eq!(
-            ConstantsFlags::REBUILD_ON_HEAD_CHANGE.bits(),
-            0b0001_0000_0000
-        );
-        assert_eq!(
-            ConstantsFlags::SEMVER_FROM_CARGO_PKG.bits(),
-            0b0010_0000_0000
-        );
-    }
-
-    #[test]
     fn constants_dont_change() {
-        assert_eq!(CONST_PREFIX, "pub const ");
-        assert_eq!(CONST_TYPE, ": &str = ");
+        // Build Constants
         assert_eq!(BUILD_TIMESTAMP_NAME, "VERGEN_BUILD_TIMESTAMP");
-        assert_eq!(BUILD_TIMESTAMP_COMMENT, "/// Build Timestamp (UTC)");
         assert_eq!(BUILD_DATE_NAME, "VERGEN_BUILD_DATE");
-        assert_eq!(BUILD_DATE_COMMENT, "/// Compile Time - Short (UTC)");
-        assert_eq!(SHA_NAME, "VERGEN_SHA");
-        assert_eq!(SHA_COMMENT, "/// Commit SHA");
-        assert_eq!(SHA_SHORT_NAME, "VERGEN_SHA_SHORT");
-        assert_eq!(SHA_SHORT_COMMENT, "/// Commit SHA - Short");
-        assert_eq!(COMMIT_DATE_NAME, "VERGEN_COMMIT_DATE");
-        assert_eq!(COMMIT_DATE_COMMENT, "/// Commit Date");
-        assert_eq!(TARGET_TRIPLE_NAME, "VERGEN_TARGET_TRIPLE");
-        assert_eq!(TARGET_TRIPLE_COMMENT, "/// Target Triple");
-        assert_eq!(SEMVER_NAME, "VERGEN_SEMVER");
-        assert_eq!(SEMVER_COMMENT, "/// Semver");
-        assert_eq!(SEMVER_TAGS_NAME, "VERGEN_SEMVER_LIGHTWEIGHT");
-        assert_eq!(SEMVER_TAGS_COMMENT, "/// Semver (Lightweight)");
+
+        // git Constants
+        assert_eq!(GIT_BRANCH_NAME, "VERGEN_GIT_BRANCH");
+        assert_eq!(GIT_SHA_NAME, "VERGEN_GIT_SHA");
+        assert_eq!(GIT_SHA_SHORT_NAME, "VERGEN_GIT_SHA_SHORT");
+        assert_eq!(GIT_COMMIT_DATE_NAME, "VERGEN_GIT_COMMIT_DATE");
+        assert_eq!(GIT_SEMVER_NAME, "VERGEN_GIT_SEMVER");
+        assert_eq!(GIT_SEMVER_TAGS_NAME, "VERGEN_GIT_SEMVER_LIGHTWEIGHT");
+
+        // rustc Constants
+        assert_eq!(RUSTC_SEMVER_NAME, "VERGEN_RUSTC_SEMVER");
+        assert_eq!(RUSTC_CHANNEL_NAME, "VERGEN_RUSTC_CHANNEL");
+        assert_eq!(RUSTC_HOST_TRIPLE_NAME, "VERGEN_RUSTC_HOST_TRIPLE");
+        assert_eq!(RUSTC_COMMIT_HASH, "VERGEN_RUSTC_COMMIT_HASH");
+        assert_eq!(RUSTC_COMMIT_DATE, "VERGEN_RUSTC_COMMIT_DATE");
+        assert_eq!(RUSTC_LLVM_VERSION, "VERGEN_RUSTC_LLVM_VERSION");
+
+        // cargo Constants
+        assert_eq!(CARGO_TARGET_TRIPLE, "VERGEN_CARGO_TARGET_TRIPLE");
+        assert_eq!(CARGO_PROFILE, "VERGEN_CARGO_PROFILE");
+        assert_eq!(CARGO_FEATURES, "VERGEN_CARGO_FEATURES");
+
+        // sysinfo Constants
+        assert_eq!(SYSINFO_NAME, "VERGEN_SYSINFO_NAME");
+        assert_eq!(SYSINFO_OS_VERSION, "VERGEN_SYSINFO_OS_VERSION");
+        assert_eq!(SYSINFO_USER, "VERGEN_SYSINFO_USER");
+        assert_eq!(SYSINFO_MEMORY, "VERGEN_SYSINFO_TOTAL_MEMORY");
+        assert_eq!(SYSINFO_CPU_VENDOR, "VERGEN_SYSINFO_CPU_VENDOR");
+        assert_eq!(SYSINFO_CPU_CORE_COUNT, "VERGEN_SYSINFO_CPU_CORE_COUNT");
+        assert_eq!(SYSINFO_CPU_NAME, "VERGEN_SYSINFO_CPU_NAME");
+        assert_eq!(SYSINFO_CPU_BRAND, "VERGEN_SYSINFO_CPU_BRAND");
+        assert_eq!(SYSINFO_CPU_FREQUENCY, "VERGEN_SYSINFO_CPU_FREQUENCY");
     }
 }

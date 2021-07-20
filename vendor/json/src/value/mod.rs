@@ -1,14 +1,14 @@
-use { Result, Error };
+use std::ops::{Index, IndexMut, Deref};
+use std::convert::TryInto;
+use std::{fmt, mem, usize, u8, u16, u32, u64, isize, i8, i16, i32, i64, f32};
+use std::io::{self, Write};
 
-use std::ops::{ Index, IndexMut, Deref };
-use std::{ fmt, mem, usize, u8, u16, u32, u64, isize, i8, i16, i32, i64, f32 };
-use std::io::{ self, Write };
-
-use short::Short;
-use number::Number;
-use object::Object;
-use iterators::{ Members, MembersMut, Entries, EntriesMut };
-use codegen::{ Generator, PrettyGenerator, DumpGenerator, WriterGenerator, PrettyWriterGenerator };
+use crate::{Result, Error};
+use crate::short::Short;
+use crate::number::Number;
+use crate::object::Object;
+use crate::iterators::{ Members, MembersMut, Entries, EntriesMut };
+use crate::codegen::{ Generator, PrettyGenerator, DumpGenerator, WriterGenerator, PrettyWriterGenerator };
 
 mod implements;
 
@@ -230,11 +230,7 @@ impl JsonValue {
 
     pub fn as_u64(&self) -> Option<u64> {
         self.as_number().and_then(|value| {
-            if value.is_sign_positive() {
-                Some(value.into())
-            } else {
-                None
-            }
+            value.try_into().ok()
         })
     }
 
@@ -255,7 +251,7 @@ impl JsonValue {
     }
 
     pub fn as_i64(&self) -> Option<i64> {
-        self.as_number().map(|value| value.into())
+        self.as_number().and_then(|value| value.try_into().ok())
     }
 
     pub fn as_i32(&self) -> Option<i32> {
@@ -483,8 +479,8 @@ impl JsonValue {
     }
 
     /// Works on `JsonValue::Object` - inserts a new entry, or override an existing
-    /// one into the object. Note that `key` has to be a `&str` slice and not an owned 
-    /// `String`. The internals of `Object` will handle the heap allocation of the key 
+    /// one into the object. Note that `key` has to be a `&str` slice and not an owned
+    /// `String`. The internals of `Object` will handle the heap allocation of the key
     /// if needed for better performance.
     pub fn insert<T>(&mut self, key: &str, value: T) -> Result<()>
     where T: Into<JsonValue> {
@@ -608,7 +604,7 @@ impl IndexMut<usize> for JsonValue {
 /// #
 /// # fn main() {
 /// let object = object!{
-///     "foo" => "bar"
+///     foo: "bar"
 /// };
 ///
 /// assert!(object["foo"] == "bar");

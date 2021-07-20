@@ -1543,7 +1543,7 @@ extern "rust-intrinsic" {
     /// let num_trailing = unsafe { cttz_nonzero(x) };
     /// assert_eq!(num_trailing, 3);
     /// ```
-    #[rustc_const_unstable(feature = "const_cttz", issue = "none")]
+    #[rustc_const_stable(feature = "const_cttz", since = "1.53.0")]
     pub fn cttz_nonzero<T: Copy>(x: T) -> T;
 
     /// Reverses the bytes in an integer type `T`.
@@ -1843,7 +1843,7 @@ pub(crate) fn is_aligned_and_not_null<T>(ptr: *const T) -> bool {
 pub const unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
     extern "rust-intrinsic" {
         #[rustc_const_unstable(feature = "const_intrinsic_copy", issue = "80697")]
-        fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
+        pub fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
     }
 
     // FIXME: Perform these checks only at run time

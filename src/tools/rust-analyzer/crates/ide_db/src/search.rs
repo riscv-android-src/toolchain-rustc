@@ -6,15 +6,16 @@
 
 use std::{convert::TryInto, mem};
 
-use base_db::{FileId, FileRange, SourceDatabaseExt};
-use hir::{DefWithBody, HasSource, Module, ModuleSource, Semantics, Visibility};
+use base_db::{FileId, FileRange, SourceDatabase, SourceDatabaseExt};
+use hir::{
+    DefWithBody, HasAttrs, HasSource, InFile, ModuleDef, ModuleSource, Semantics, Visibility,
+};
 use once_cell::unsync::Lazy;
 use rustc_hash::FxHashMap;
 use syntax::{ast, match_ast, AstNode, TextRange, TextSize};
 
-use crate::defs::NameClass;
 use crate::{
-    defs::{Definition, NameRefClass},
+    defs::{Definition, NameClass, NameRefClass},
     RootDatabase,
 };
 
@@ -78,6 +79,76 @@ impl SearchScope {
         SearchScope { entries }
     }
 
+    fn crate_graph(db: &RootDatabase) -> SearchScope {
+        let mut entries = FxHashMap::default();
+
+        let graph = db.crate_graph();
+        for krate in graph.iter() {
+            let root_file = graph[krate].root_file_id;
+            let source_root_id = db.file_source_root(root_file);
+            let source_root = db.source_root(source_root_id);
+            entries.extend(source_root.iter().map(|id| (id, None)));
+        }
+        SearchScope { entries }
+    }
+
+    fn reverse_dependencies(db: &RootDatabase, of: hir::Crate) -> SearchScope {
+        let mut entries = FxHashMap::default();
+        for rev_dep in of.transitive_reverse_dependencies(db) {
+            let root_file = rev_dep.root_file(db);
+            let source_root_id = db.file_source_root(root_file);
+            let source_root = db.source_root(source_root_id);
+            entries.extend(source_root.iter().map(|id| (id, None)));
+        }
+        SearchScope { entries }
+    }
+
+    fn krate(db: &RootDatabase, of: hir::Crate) -> SearchScope {
+        let root_file = of.root_file(db);
+        let source_root_id = db.file_source_root(root_file);
+        let source_root = db.source_root(source_root_id);
+        SearchScope {
+            entries: source_root.iter().map(|id| (id, None)).collect::<FxHashMap<_, _>>(),
+        }
+    }
+
+    fn module(db: &RootDatabase, module: hir::Module) -> SearchScope {
+        let mut entries = FxHashMap::default();
+
+        let mut to_visit = vec![module];
+        let mut is_first = true;
+        while let Some(module) = to_visit.pop() {
+            let src = module.definition_source(db);
+            let file_id = src.file_id.original_file(db);
+            match src.value {
+                ModuleSource::Module(m) => {
+                    if is_first {
+                        let range = Some(m.syntax().text_range());
+                        entries.insert(file_id, range);
+                    } else {
+                        // We have already added the enclosing file to the search scope,
+                        // so do nothing.
+                    }
+                }
+                ModuleSource::BlockExpr(b) => {
+                    if is_first {
+                        let range = Some(b.syntax().text_range());
+                        entries.insert(file_id, range);
+                    } else {
+                        // We have already added the enclosing file to the search scope,
+                        // so do nothing.
+                    }
+                }
+                ModuleSource::SourceFile(_) => {
+                    entries.insert(file_id, None);
+                }
+            };
+            is_first = false;
+            to_visit.extend(module.children(db));
+        }
+        SearchScope { entries }
+    }
+
     pub fn empty() -> SearchScope {
         SearchScope::new(FxHashMap::default())
     }
@@ -138,135 +209,95 @@ impl IntoIterator for SearchScope {
 impl Definition {
     fn search_scope(&self, db: &RootDatabase) -> SearchScope {
         let _p = profile::span("search_scope");
+
+        if let Definition::ModuleDef(hir::ModuleDef::BuiltinType(_)) = self {
+            return SearchScope::crate_graph(db);
+        }
+
         let module = match self.module(db) {
             Some(it) => it,
             None => return SearchScope::empty(),
         };
-        let module_src = module.definition_source(db);
-        let file_id = module_src.file_id.original_file(db);
+        let InFile { file_id, value: module_source } = module.definition_source(db);
+        let file_id = file_id.original_file(db);
 
         if let Definition::Local(var) = self {
             let range = match var.parent(db) {
-                DefWithBody::Function(f) => {
-                    f.source(db).and_then(|src| Some(src.value.syntax().text_range()))
-                }
-                DefWithBody::Const(c) => {
-                    c.source(db).and_then(|src| Some(src.value.syntax().text_range()))
-                }
-                DefWithBody::Static(s) => {
-                    s.source(db).and_then(|src| Some(src.value.syntax().text_range()))
-                }
+                DefWithBody::Function(f) => f.source(db).map(|src| src.value.syntax().text_range()),
+                DefWithBody::Const(c) => c.source(db).map(|src| src.value.syntax().text_range()),
+                DefWithBody::Static(s) => s.source(db).map(|src| src.value.syntax().text_range()),
             };
-            let mut res = FxHashMap::default();
-            res.insert(file_id, range);
-            return SearchScope::new(res);
+            return match range {
+                Some(range) => SearchScope::file_range(FileRange { file_id, range }),
+                None => SearchScope::single_file(file_id),
+            };
         }
 
         if let Definition::GenericParam(hir::GenericParam::LifetimeParam(param)) = self {
             let range = match param.parent(db) {
                 hir::GenericDef::Function(it) => {
-                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    it.source(db).map(|src| src.value.syntax().text_range())
                 }
                 hir::GenericDef::Adt(it) => match it {
                     hir::Adt::Struct(it) => {
-                        it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                        it.source(db).map(|src| src.value.syntax().text_range())
                     }
-                    hir::Adt::Union(it) => {
-                        it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
-                    }
-                    hir::Adt::Enum(it) => {
-                        it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
-                    }
+                    hir::Adt::Union(it) => it.source(db).map(|src| src.value.syntax().text_range()),
+                    hir::Adt::Enum(it) => it.source(db).map(|src| src.value.syntax().text_range()),
                 },
                 hir::GenericDef::Trait(it) => {
-                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    it.source(db).map(|src| src.value.syntax().text_range())
                 }
                 hir::GenericDef::TypeAlias(it) => {
-                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    it.source(db).map(|src| src.value.syntax().text_range())
                 }
                 hir::GenericDef::Impl(it) => {
-                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    it.source(db).map(|src| src.value.syntax().text_range())
                 }
                 hir::GenericDef::Variant(it) => {
-                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    it.source(db).map(|src| src.value.syntax().text_range())
                 }
                 hir::GenericDef::Const(it) => {
-                    it.source(db).and_then(|src| Some(src.value.syntax().text_range()))
+                    it.source(db).map(|src| src.value.syntax().text_range())
                 }
             };
-            let mut res = FxHashMap::default();
-            res.insert(file_id, range);
-            return SearchScope::new(res);
+            return match range {
+                Some(range) => SearchScope::file_range(FileRange { file_id, range }),
+                None => SearchScope::single_file(file_id),
+            };
+        }
+
+        if let Definition::Macro(macro_def) = self {
+            if macro_def.kind() == hir::MacroKind::Declarative {
+                return if macro_def.attrs(db).by_key("macro_export").exists() {
+                    SearchScope::reverse_dependencies(db, module.krate())
+                } else {
+                    SearchScope::krate(db, module.krate())
+                };
+            }
         }
 
         let vis = self.visibility(db);
-
-        if let Some(Visibility::Module(module)) = vis.and_then(|it| it.into()) {
-            let module: Module = module.into();
-            let mut res = FxHashMap::default();
-
-            let mut to_visit = vec![module];
-            let mut is_first = true;
-            while let Some(module) = to_visit.pop() {
-                let src = module.definition_source(db);
-                let file_id = src.file_id.original_file(db);
-                match src.value {
-                    ModuleSource::Module(m) => {
-                        if is_first {
-                            let range = Some(m.syntax().text_range());
-                            res.insert(file_id, range);
-                        } else {
-                            // We have already added the enclosing file to the search scope,
-                            // so do nothing.
-                        }
-                    }
-                    ModuleSource::BlockExpr(b) => {
-                        if is_first {
-                            let range = Some(b.syntax().text_range());
-                            res.insert(file_id, range);
-                        } else {
-                            // We have already added the enclosing file to the search scope,
-                            // so do nothing.
-                        }
-                    }
-                    ModuleSource::SourceFile(_) => {
-                        res.insert(file_id, None);
-                    }
-                };
-                is_first = false;
-                to_visit.extend(module.children(db));
-            }
-
-            return SearchScope::new(res);
-        }
-
         if let Some(Visibility::Public) = vis {
-            let source_root_id = db.file_source_root(file_id);
-            let source_root = db.source_root(source_root_id);
-            let mut res = source_root.iter().map(|id| (id, None)).collect::<FxHashMap<_, _>>();
-
-            let krate = module.krate();
-            for rev_dep in krate.reverse_dependencies(db) {
-                let root_file = rev_dep.root_file(db);
-                let source_root_id = db.file_source_root(root_file);
-                let source_root = db.source_root(source_root_id);
-                res.extend(source_root.iter().map(|id| (id, None)));
-            }
-            return SearchScope::new(res);
+            return SearchScope::reverse_dependencies(db, module.krate());
+        }
+        if let Some(Visibility::Module(module)) = vis {
+            return SearchScope::module(db, module.into());
         }
 
-        let mut res = FxHashMap::default();
-        let range = match module_src.value {
+        let range = match module_source {
             ModuleSource::Module(m) => Some(m.syntax().text_range()),
             ModuleSource::BlockExpr(b) => Some(b.syntax().text_range()),
             ModuleSource::SourceFile(_) => None,
         };
-        res.insert(file_id, range);
-        SearchScope::new(res)
+        match range {
+            Some(range) => SearchScope::file_range(FileRange { file_id, range }),
+            None => SearchScope::single_file(file_id),
+        }
     }
 
     pub fn usages<'a>(&'a self, sema: &'a Semantics<RootDatabase>) -> FindUsages<'a> {
-        FindUsages { def: self, sema, scope: None }
+        FindUsages { def: self, sema, scope: None, include_self_kw_refs: false }
     }
 }
 
@@ -274,9 +305,15 @@ pub struct FindUsages<'a> {
     def: &'a Definition,
     sema: &'a Semantics<'a, RootDatabase>,
     scope: Option<SearchScope>,
+    include_self_kw_refs: bool,
 }
 
 impl<'a> FindUsages<'a> {
+    pub fn include_self_kw_refs(mut self, include: bool) -> FindUsages<'a> {
+        self.include_self_kw_refs = include;
+        self
+    }
+
     pub fn in_scope(self, scope: SearchScope) -> FindUsages<'a> {
         self.set_scope(Some(scope))
     }
@@ -323,6 +360,8 @@ impl<'a> FindUsages<'a> {
         };
 
         let pat = name.as_str();
+        let search_for_self = self.include_self_kw_refs;
+
         for (file_id, search_range) in search_scope {
             let text = sema.db.file_text(file_id);
             let search_range =
@@ -330,29 +369,45 @@ impl<'a> FindUsages<'a> {
 
             let tree = Lazy::new(|| sema.parse(file_id).syntax().clone());
 
-            for (idx, _) in text.match_indices(pat) {
+            let mut handle_match = |idx: usize| -> bool {
                 let offset: TextSize = idx.try_into().unwrap();
                 if !search_range.contains_inclusive(offset) {
-                    continue;
+                    return false;
                 }
 
                 if let Some(name) = sema.find_node_at_offset_with_descend(&tree, offset) {
                     match name {
                         ast::NameLike::NameRef(name_ref) => {
                             if self.found_name_ref(&name_ref, sink) {
-                                return;
+                                return true;
                             }
                         }
                         ast::NameLike::Name(name) => {
                             if self.found_name(&name, sink) {
-                                return;
+                                return true;
                             }
                         }
                         ast::NameLike::Lifetime(lifetime) => {
                             if self.found_lifetime(&lifetime, sink) {
-                                return;
+                                return true;
                             }
                         }
+                    }
+                }
+
+                return false;
+            };
+
+            for (idx, _) in text.match_indices(pat) {
+                if handle_match(idx) {
+                    return;
+                }
+            }
+
+            if search_for_self {
+                for (idx, _) in text.match_indices("Self") {
+                    if handle_match(idx) {
+                        return;
                     }
                 }
             }
@@ -392,6 +447,24 @@ impl<'a> FindUsages<'a> {
                     access: reference_access(&def, &name_ref),
                 };
                 sink(file_id, reference)
+            }
+            Some(NameRefClass::Definition(Definition::SelfType(impl_))) => {
+                let ty = impl_.self_ty(self.sema.db);
+
+                if let Some(adt) = ty.as_adt() {
+                    if &Definition::ModuleDef(ModuleDef::Adt(adt)) == self.def {
+                        let FileRange { file_id, range } =
+                            self.sema.original_range(name_ref.syntax());
+                        let reference = FileReference {
+                            range,
+                            name: ast::NameLike::NameRef(name_ref.clone()),
+                            access: None,
+                        };
+                        return sink(file_id, reference);
+                    }
+                }
+
+                false
             }
             Some(NameRefClass::FieldShorthand { local_ref: local, field_ref: field }) => {
                 let FileRange { file_id, range } = self.sema.original_range(name_ref.syntax());

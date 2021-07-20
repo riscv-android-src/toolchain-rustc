@@ -1,6 +1,6 @@
 use expect_test::expect;
 
-use super::{check_infer, check_infer_with_mismatches};
+use super::{check_infer, check_infer_with_mismatches, check_types};
 
 #[test]
 fn infer_pattern() {
@@ -658,6 +658,28 @@ fn slice_tail_pattern() {
 fn box_pattern() {
     check_infer(
         r#"
+        pub struct Global;
+        #[lang = "owned_box"]
+        pub struct Box<T, A = Global>(T);
+
+        fn foo(params: Box<i32>) {
+            match params {
+                box integer => {}
+            }
+        }
+        "#,
+        expect![[r#"
+            83..89 'params': Box<i32, Global>
+            101..155 '{     ...   } }': ()
+            107..153 'match ...     }': ()
+            113..119 'params': Box<i32, Global>
+            130..141 'box integer': Box<i32, Global>
+            134..141 'integer': i32
+            145..147 '{}': ()
+        "#]],
+    );
+    check_infer(
+        r#"
         #[lang = "owned_box"]
         pub struct Box<T>(T);
 
@@ -802,4 +824,30 @@ fn foo(foo: Foo) {
             105..107 '{}': ()
         "#]],
     );
+}
+
+#[test]
+fn macro_pat() {
+    check_types(
+        r#"
+macro_rules! pat {
+    ($name:ident) => { Enum::Variant1($name) }
+}
+
+enum Enum {
+    Variant1(u8),
+    Variant2,
+}
+
+fn f(e: Enum) {
+    match e {
+        pat!(bind) => {
+            bind;
+          //^^^^ u8
+        }
+        Enum::Variant2 => {}
+    }
+}
+    "#,
+    )
 }

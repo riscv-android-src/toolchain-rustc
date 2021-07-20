@@ -179,7 +179,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 //     match x { _ => () } // fake read of `x`
                 // };
                 // ```
-                // FIXME(RFC2229): Remove feature gate once diagnostics are improved
+                //
+                // FIXME(RFC2229, rust#85435): Remove feature gate once diagnostics are
+                // improved and unsafe checking works properly in closure bodies again.
                 if this.tcx.features().capture_disjoint_fields {
                     for (thir_place, cause, hir_id) in fake_reads.into_iter() {
                         let place_builder =

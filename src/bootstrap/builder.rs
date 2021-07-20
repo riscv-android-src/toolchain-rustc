@@ -369,7 +369,8 @@ impl<'a> Builder<'a> {
                 tool::Rustfmt,
                 tool::Miri,
                 tool::CargoMiri,
-                native::Lld
+                native::Lld,
+                native::CrtBeginEnd
             ),
             Kind::Check | Kind::Clippy { .. } | Kind::Fix | Kind::Format => describe!(
                 check::Std,
@@ -420,6 +421,7 @@ impl<'a> Builder<'a> {
                 test::Rustfmt,
                 test::Miri,
                 test::Clippy,
+                test::RustDemangler,
                 test::CompiletestTest,
                 test::RustdocJSStd,
                 test::RustdocJSNotStd,
@@ -466,6 +468,7 @@ impl<'a> Builder<'a> {
                 dist::Rls,
                 dist::RustAnalyzer,
                 dist::Rustfmt,
+                dist::RustDemangler,
                 dist::Clippy,
                 dist::Miri,
                 dist::LlvmTools,
@@ -481,6 +484,7 @@ impl<'a> Builder<'a> {
                 install::Rls,
                 install::RustAnalyzer,
                 install::Rustfmt,
+                install::RustDemangler,
                 install::Clippy,
                 install::Miri,
                 install::Analysis,
@@ -738,12 +742,7 @@ impl<'a> Builder<'a> {
             .env("RUSTDOC_REAL", self.rustdoc(compiler))
             .env("RUSTC_BOOTSTRAP", "1");
 
-        // cfg(bootstrap), can be removed on the next beta bump
-        if compiler.stage == 0 {
-            cmd.arg("-Winvalid_codeblock_attributes");
-        } else {
-            cmd.arg("-Wrustdoc::invalid_codeblock_attributes");
-        }
+        cmd.arg("-Wrustdoc::invalid_codeblock_attributes");
 
         if self.config.deny_warnings {
             cmd.arg("-Dwarnings");
@@ -1300,12 +1299,7 @@ impl<'a> Builder<'a> {
             // fixed via better support from Cargo.
             cargo.env("RUSTC_LINT_FLAGS", lint_flags.join(" "));
 
-            // cfg(bootstrap), can be removed on the next beta bump
-            if compiler.stage == 0 {
-                rustdocflags.arg("-Winvalid_codeblock_attributes");
-            } else {
-                rustdocflags.arg("-Wrustdoc::invalid_codeblock_attributes");
-            }
+            rustdocflags.arg("-Wrustdoc::invalid_codeblock_attributes");
         }
 
         if mode == Mode::Rustc {
@@ -1633,6 +1627,11 @@ impl Cargo {
 
     pub fn add_rustc_lib_path(&mut self, builder: &Builder<'_>, compiler: Compiler) {
         builder.add_rustc_lib_path(compiler, &mut self.command);
+    }
+
+    pub fn current_dir(&mut self, dir: &Path) -> &mut Cargo {
+        self.command.current_dir(dir);
+        self
     }
 }
 

@@ -1,3 +1,4 @@
+#![feature(rustc_private)]
 #![deny(rust_2018_idioms)]
 #![warn(unreachable_pub)]
 
@@ -8,6 +9,16 @@ extern crate derive_new;
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
+
+// N.B. these crates are loaded from the sysroot, so they need extern crate.
+extern crate rustc_ast;
+extern crate rustc_ast_pretty;
+extern crate rustc_data_structures;
+extern crate rustc_errors;
+extern crate rustc_expand;
+extern crate rustc_parse;
+extern crate rustc_session;
+extern crate rustc_span;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -210,13 +221,21 @@ impl FormatReport {
         if !new_errors.is_empty() {
             errs.has_formatting_errors = true;
         }
-        if errs.has_operational_errors && errs.has_check_errors {
+        if errs.has_operational_errors && errs.has_check_errors && errs.has_unformatted_code_errors
+        {
             return;
         }
         for err in new_errors {
             match err.kind {
-                ErrorKind::LineOverflow(..) | ErrorKind::TrailingWhitespace => {
+                ErrorKind::LineOverflow(..) => {
                     errs.has_operational_errors = true;
+                }
+                ErrorKind::TrailingWhitespace => {
+                    errs.has_operational_errors = true;
+                    errs.has_unformatted_code_errors = true;
+                }
+                ErrorKind::LostComment => {
+                    errs.has_unformatted_code_errors = true;
                 }
                 ErrorKind::BadIssue(_)
                 | ErrorKind::LicenseCheck
@@ -294,6 +313,9 @@ fn format_snippet(snippet: &str, config: &Config, is_macro_def: bool) -> Option<
         config.set().emit_mode(config::EmitMode::Stdout);
         config.set().verbose(Verbosity::Quiet);
         config.set().hide_parse_errors(true);
+        if is_macro_def {
+            config.set().error_on_unformatted(true);
+        }
 
         let (formatting_error, result) = {
             let input = Input::Text(snippet.into());
@@ -302,7 +324,8 @@ fn format_snippet(snippet: &str, config: &Config, is_macro_def: bool) -> Option<
             (
                 session.errors.has_macro_format_failure
                     || session.out.as_ref().unwrap().is_empty() && !snippet.is_empty()
-                    || result.is_err(),
+                    || result.is_err()
+                    || (is_macro_def && session.has_unformatted_code_errors()),
                 result,
             )
         };
@@ -477,13 +500,18 @@ impl<'b, T: Write + 'b> Session<'b, T> {
         self.errors.has_diff
     }
 
+    pub fn has_unformatted_code_errors(&self) -> bool {
+        self.errors.has_unformatted_code_errors
+    }
+
     pub fn has_no_errors(&self) -> bool {
         !(self.has_operational_errors()
             || self.has_parsing_errors()
             || self.has_formatting_errors()
             || self.has_check_errors()
-            || self.has_diff())
-            || self.errors.has_macro_format_failure
+            || self.has_diff()
+            || self.has_unformatted_code_errors()
+            || self.errors.has_macro_format_failure)
     }
 }
 

@@ -116,7 +116,6 @@ use rustc_middle::ty::fold::{TypeFoldable, TypeFolder};
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::subst::GenericArgKind;
 use rustc_middle::ty::subst::{InternalSubsts, Subst, SubstsRef};
-use rustc_middle::ty::WithConstness;
 use rustc_middle::ty::{self, RegionKind, Ty, TyCtxt, UserType};
 use rustc_session::config;
 use rustc_session::parse::feature_err;
@@ -497,6 +496,7 @@ fn typeck_with_fallback<'tcx>(
                 let fcx = FnCtxt::new(&inh, param_env, body.value.hir_id);
                 <dyn AstConv<'_>>::ty_of_fn(
                     &fcx,
+                    id,
                     header.unsafety,
                     header.abi,
                     decl,
@@ -539,6 +539,25 @@ fn typeck_with_fallback<'tcx>(
                             kind: TypeVariableOriginKind::TypeInference,
                             span,
                         }),
+                        Node::Ty(&hir::Ty {
+                            kind: hir::TyKind::Typeof(ref anon_const), ..
+                        }) if anon_const.hir_id == id => fcx.next_ty_var(TypeVariableOrigin {
+                            kind: TypeVariableOriginKind::TypeInference,
+                            span,
+                        }),
+                        Node::Expr(&hir::Expr { kind: hir::ExprKind::InlineAsm(ia), .. })
+                            if ia.operands.iter().any(|(op, _op_sp)| match op {
+                                hir::InlineAsmOperand::Const { anon_const } => {
+                                    anon_const.hir_id == id
+                                }
+                                _ => false,
+                            }) =>
+                        {
+                            fcx.next_ty_var(TypeVariableOrigin {
+                                kind: TypeVariableOriginKind::MiscVariable,
+                                span,
+                            })
+                        }
                         _ => fallback(),
                     },
                     _ => fallback(),

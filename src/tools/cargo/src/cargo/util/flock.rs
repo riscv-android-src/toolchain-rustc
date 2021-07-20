@@ -3,12 +3,12 @@ use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Display, Path, PathBuf};
 
-use termcolor::Color::Cyan;
-
-use crate::util::errors::{CargoResult, CargoResultExt};
-use crate::util::paths;
+use crate::util::errors::CargoResult;
 use crate::util::Config;
+use anyhow::Context as _;
+use cargo_util::paths;
 use sys::*;
+use termcolor::Color::Cyan;
 
 #[derive(Debug)]
 pub struct FileLock {
@@ -225,7 +225,7 @@ impl Filesystem {
                     Err(anyhow::Error::from(e))
                 }
             })
-            .chain_err(|| format!("failed to open: {}", path.display()))?;
+            .with_context(|| format!("failed to open: {}", path.display()))?;
         match state {
             State::Exclusive => {
                 acquire(config, msg, &path, &|| try_lock_exclusive(&f), &|| {
@@ -314,7 +314,7 @@ fn acquire(
     let msg = format!("waiting for file lock on {}", msg);
     config.shell().status_with_color("Blocking", &msg, Cyan)?;
 
-    lock_block().chain_err(|| format!("failed to lock file: {}", path.display()))?;
+    lock_block().with_context(|| format!("failed to lock file: {}", path.display()))?;
     return Ok(());
 
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]

@@ -2,11 +2,11 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use super::platform::fs::MetadataExt as _;
 use crate::fs::{self, OpenOptions, Permissions};
 use crate::io;
 use crate::path::Path;
 use crate::sys;
-use crate::sys::platform::fs::MetadataExt as UnixMetadataExt;
 use crate::sys_common::{AsInner, AsInnerMut, FromInner};
 // Used for `File::read` on intra-doc links
 #[allow(unused_imports)]
@@ -109,7 +109,7 @@ pub trait FileExt {
             }
         }
         if !buf.is_empty() {
-            Err(io::Error::new(io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"))
+            Err(io::Error::new_const(io::ErrorKind::UnexpectedEof, &"failed to fill whole buffer"))
         } else {
             Ok(())
         }
@@ -191,9 +191,9 @@ pub trait FileExt {
         while !buf.is_empty() {
             match self.write_at(buf, offset) {
                 Ok(0) => {
-                    return Err(io::Error::new(
+                    return Err(io::Error::new_const(
                         io::ErrorKind::WriteZero,
-                        "failed to write whole buffer",
+                        &"failed to write whole buffer",
                     ));
                 }
                 Ok(n) => {
@@ -883,4 +883,30 @@ impl DirBuilderExt for fs::DirBuilder {
         self.as_inner_mut().set_mode(mode);
         self
     }
+}
+
+/// Change the root directory of the current process to the specified path.
+///
+/// This typically requires privileges, such as root or a specific capability.
+///
+/// This does not change the current working directory; you should call
+/// [`std::env::set_current_dir`][`crate::env::set_current_dir`] afterwards.
+///
+/// # Examples
+///
+/// ```no_run
+/// #![feature(unix_chroot)]
+/// use std::os::unix::fs;
+///
+/// fn main() -> std::io::Result<()> {
+///     fs::chroot("/sandbox")?;
+///     std::env::set_current_dir("/")?;
+///     // continue working in sandbox
+///     Ok(())
+/// }
+/// ```
+#[unstable(feature = "unix_chroot", issue = "84715")]
+#[cfg(not(target_os = "fuchsia"))]
+pub fn chroot<P: AsRef<Path>>(dir: P) -> io::Result<()> {
+    sys::fs::chroot(dir.as_ref())
 }

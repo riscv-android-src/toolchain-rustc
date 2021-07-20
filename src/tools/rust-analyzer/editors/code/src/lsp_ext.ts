@@ -10,11 +10,12 @@ export interface AnalyzerStatusParams {
 export const analyzerStatus = new lc.RequestType<AnalyzerStatusParams, string, void>("rust-analyzer/analyzerStatus");
 export const memoryUsage = new lc.RequestType0<string, void>("rust-analyzer/memoryUsage");
 
-export type Status = "loading" | "ready" | "readyPartial" | "invalid" | "needsReload";
-export interface StatusParams {
-    status: Status;
+export interface ServerStatusParams {
+    health: "ok" | "warning" | "error";
+    quiescent: boolean;
+    message?: string;
 }
-export const status = new lc.NotificationType<StatusParams>("rust-analyzer/status");
+export const serverStatus = new lc.NotificationType<ServerStatusParams>("experimental/serverStatus");
 
 export const reloadWorkspace = new lc.RequestType0<null, void>("rust-analyzer/reloadWorkspace");
 
@@ -126,4 +127,17 @@ export const openCargoToml = new lc.RequestType<OpenCargoTomlParams, lc.Location
 
 export interface OpenCargoTomlParams {
     textDocument: lc.TextDocumentIdentifier;
+}
+
+export const moveItem = new lc.RequestType<MoveItemParams, lc.TextEdit[], void>("experimental/moveItem");
+
+export interface MoveItemParams {
+    textDocument: lc.TextDocumentIdentifier;
+    range: lc.Range;
+    direction: Direction;
+}
+
+export const enum Direction {
+    Up = "Up",
+    Down = "Down"
 }

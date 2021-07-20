@@ -28,12 +28,14 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Error;
+use anyhow::{Context as _, Error};
 use lazycell::LazyCell;
 use log::debug;
 
 pub use self::build_config::{BuildConfig, CompileMode, MessageFormat};
-pub use self::build_context::{BuildContext, FileFlavor, FileType, RustcTargetData, TargetInfo};
+pub use self::build_context::{
+    BuildContext, FileFlavor, FileType, RustDocFingerprint, RustcTargetData, TargetInfo,
+};
 use self::build_plan::BuildPlan;
 pub use self::compilation::{Compilation, Doctest, UnitOutput};
 pub use self::compile_kind::{CompileKind, CompileTarget};
@@ -52,11 +54,11 @@ pub use crate::core::compiler::unit::{Unit, UnitInterner};
 use crate::core::manifest::TargetSourcePath;
 use crate::core::profiles::{PanicStrategy, Profile, Strip};
 use crate::core::{Feature, PackageId, Target};
-use crate::util::errors::{self, CargoResult, CargoResultExt, ProcessError, VerboseError};
+use crate::util::errors::{CargoResult, VerboseError};
 use crate::util::interning::InternedString;
-use crate::util::machine_message::Message;
-use crate::util::{self, machine_message, ProcessBuilder};
-use crate::util::{add_path_args, internal, join_paths, paths, profile};
+use crate::util::machine_message::{self, Message};
+use crate::util::{add_path_args, internal, iter_join_onto, profile};
+use cargo_util::{paths, ProcessBuilder, ProcessError};
 
 const RUSTDOC_CRATE_VERSION_FLAG: &str = "--crate-version";
 
@@ -227,9 +229,14 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
     let pass_l_flag = unit.target.is_lib() || !unit.pkg.targets().iter().any(|t| t.is_lib());
     let link_type = (&unit.target).into();
 
-    let dep_info_name = match cx.files().metadata(unit) {
-        Some(metadata) => format!("{}-{}.d", unit.target.crate_name(), metadata),
-        None => format!("{}.d", unit.target.crate_name()),
+    let dep_info_name = if cx.files().use_extra_filename(unit) {
+        format!(
+            "{}-{}.d",
+            unit.target.crate_name(),
+            cx.files().metadata(unit)
+        )
+    } else {
+        format!("{}.d", unit.target.crate_name())
     };
     let rustc_dep_info_loc = root.join(dep_info_name);
     let dep_info_loc = fingerprint::dep_info_loc(cx, unit);
@@ -301,7 +308,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                 .as_ref()
                 .and_then(|perr| perr.code)
             {
-                Some(n) if errors::is_simple_exit_code(n) => VerboseError::new(err).into(),
+                Some(n) if cargo_util::is_simple_exit_code(n) => VerboseError::new(err).into(),
                 _ => err,
             }
         }
@@ -329,7 +336,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                 },
             )
             .map_err(verbose_if_simple_exit_code)
-            .chain_err(|| format!("could not compile `{}`", name))?;
+            .with_context(|| format!("could not compile `{}`", name))?;
         }
 
         if rustc_dep_info_loc.exists() {
@@ -343,7 +350,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                 // Do not track source files in the fingerprint for registry dependencies.
                 is_local,
             )
-            .chain_err(|| {
+            .with_context(|| {
                 internal(format!(
                     "could not parse/generate dep info at: {}",
                     rustc_dep_info_loc.display()
@@ -502,7 +509,7 @@ fn add_plugin_deps(
     build_scripts: &BuildScripts,
     root_output: &Path,
 ) -> CargoResult<()> {
-    let var = util::dylib_path_envvar();
+    let var = paths::dylib_path_envvar();
     let search_path = rustc.get_env(var).unwrap_or_default();
     let mut search_path = env::split_paths(&search_path).collect::<Vec<_>>();
     for (pkg_id, metadata) in &build_scripts.plugins {
@@ -514,7 +521,7 @@ fn add_plugin_deps(
             root_output,
         ));
     }
-    let search_path = join_paths(&search_path, var)?;
+    let search_path = paths::join_paths(&search_path, var)?;
     rustc.env(var, &search_path);
     Ok(())
 }
@@ -592,14 +599,14 @@ fn rustdoc(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Work> {
     // script_metadata is not needed here, it is only for tests.
     let mut rustdoc = cx.compilation.rustdoc_process(unit, None)?;
     rustdoc.inherit_jobserver(&cx.jobserver);
-    rustdoc.arg("--crate-name").arg(&unit.target.crate_name());
+    let crate_name = unit.target.crate_name();
+    rustdoc.arg("--crate-name").arg(&crate_name);
     add_path_args(bcx.ws, unit, &mut rustdoc);
     add_cap_lints(bcx, unit, &mut rustdoc);
 
     if let CompileKind::Target(target) = unit.kind {
         rustdoc.arg("--target").arg(target.rustc_target());
     }
-
     let doc_dir = cx.files().out_dir(unit);
 
     // Create the documentation directory ahead of time as rustdoc currently has
@@ -607,13 +614,14 @@ fn rustdoc(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Work> {
     // it doesn't already exist.
     paths::create_dir_all(&doc_dir)?;
 
-    rustdoc.arg("-o").arg(doc_dir);
+    rustdoc.arg("-o").arg(&doc_dir);
 
     for feat in &unit.features {
         rustdoc.arg("--cfg").arg(&format!("feature=\"{}\"", feat));
     }
 
     add_error_format_and_color(cx, &mut rustdoc, false);
+    add_allow_features(cx, &mut rustdoc);
 
     if let Some(args) = cx.bcx.extra_args_for(unit) {
         rustdoc.args(args);
@@ -646,6 +654,13 @@ fn rustdoc(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Work> {
                 }
             }
         }
+        let crate_dir = doc_dir.join(&crate_name);
+        if crate_dir.exists() {
+            // Remove output from a previous build. This ensures that stale
+            // files for removed items are removed.
+            log::debug!("removing pre-existing doc directory {:?}", crate_dir);
+            paths::remove_dir_all(crate_dir)?;
+        }
         state.running(&rustdoc);
 
         rustdoc
@@ -663,7 +678,7 @@ fn rustdoc(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Work> {
                 },
                 false,
             )
-            .chain_err(|| format!("could not document `{}`", name))?;
+            .with_context(|| format!("could not document `{}`", name))?;
         Ok(())
     }))
 }
@@ -693,6 +708,15 @@ fn add_cap_lints(bcx: &BuildContext<'_, '_>, unit: &Unit, cmd: &mut ProcessBuild
     // don't fail compilation.
     } else if !unit.is_local() {
         cmd.arg("--cap-lints").arg("warn");
+    }
+}
+
+/// Forward -Zallow-features if it is set for cargo.
+fn add_allow_features(cx: &Context<'_, '_>, cmd: &mut ProcessBuilder) {
+    if let Some(allow) = &cx.bcx.config.cli_unstable().allow_features {
+        let mut arg = String::from("-Zallow-features=");
+        let _ = iter_join_onto(&mut arg, allow, ",");
+        cmd.arg(&arg);
     }
 }
 
@@ -772,6 +796,7 @@ fn build_base_args(
 
     add_path_args(bcx.ws, unit, cmd);
     add_error_format_and_color(cx, cmd, cx.rmeta_required(unit));
+    add_allow_features(cx, cmd);
 
     if !test {
         for crate_type in crate_types.iter() {
@@ -869,15 +894,10 @@ fn build_base_args(
         cmd.arg("--cfg").arg(&format!("feature=\"{}\"", feat));
     }
 
-    match cx.files().metadata(unit) {
-        Some(m) => {
-            cmd.arg("-C").arg(&format!("metadata={}", m));
-            cmd.arg("-C").arg(&format!("extra-filename=-{}", m));
-        }
-        None => {
-            cmd.arg("-C")
-                .arg(&format!("metadata={}", cx.files().target_short_hash(unit)));
-        }
+    let meta = cx.files().metadata(unit);
+    cmd.arg("-C").arg(&format!("metadata={}", meta));
+    if cx.files().use_extra_filename(unit) {
+        cmd.arg("-C").arg(&format!("extra-filename=-{}", meta));
     }
 
     if rpath {
@@ -924,7 +944,7 @@ fn build_base_args(
             .env("RUSTC_BOOTSTRAP", "1");
     }
 
-    if bcx.config.cli_unstable().enable_future_incompat_feature {
+    if bcx.config.cli_unstable().future_incompat_report {
         cmd.arg("-Z").arg("emit-future-incompat-report");
     }
 

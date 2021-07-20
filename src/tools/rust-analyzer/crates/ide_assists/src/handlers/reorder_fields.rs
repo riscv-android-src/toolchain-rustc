@@ -1,9 +1,8 @@
+use either::Either;
 use itertools::Itertools;
 use rustc_hash::FxHashMap;
 
-use hir::{Adt, ModuleDef, PathResolution, Semantics, Struct};
-use ide_db::RootDatabase;
-use syntax::{algo, ast, match_ast, AstNode, SyntaxKind, SyntaxKind::*, SyntaxNode};
+use syntax::{ast, ted, AstNode};
 
 use crate::{AssistContext, AssistId, AssistKind, Assists};
 
@@ -23,87 +22,86 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 // ```
 //
 pub(crate) fn reorder_fields(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    reorder::<ast::RecordExpr>(acc, ctx).or_else(|| reorder::<ast::RecordPat>(acc, ctx))
-}
+    let record = ctx
+        .find_node_at_offset::<ast::RecordExpr>()
+        .map(Either::Left)
+        .or_else(|| ctx.find_node_at_offset::<ast::RecordPat>().map(Either::Right))?;
 
-fn reorder<R: AstNode>(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
-    let record = ctx.find_node_at_offset::<R>()?;
-    let path = record.syntax().children().find_map(ast::Path::cast)?;
-
+    let path = record.as_ref().either(|it| it.path(), |it| it.path())?;
     let ranks = compute_fields_ranks(&path, &ctx)?;
+    let get_rank_of_field =
+        |of: Option<_>| *ranks.get(&of.unwrap_or_default()).unwrap_or(&usize::MAX);
 
-    let fields = get_fields(&record.syntax());
-    let sorted_fields = sorted_by_rank(&fields, |node| {
-        *ranks.get(&get_field_name(node)).unwrap_or(&usize::max_value())
-    });
+    let field_list = match &record {
+        Either::Left(it) => Either::Left(it.record_expr_field_list()?),
+        Either::Right(it) => Either::Right(it.record_pat_field_list()?),
+    };
+    let fields = match field_list {
+        Either::Left(it) => Either::Left((
+            it.fields()
+                .sorted_unstable_by_key(|field| {
+                    get_rank_of_field(field.field_name().map(|it| it.to_string()))
+                })
+                .collect::<Vec<_>>(),
+            it,
+        )),
+        Either::Right(it) => Either::Right((
+            it.fields()
+                .sorted_unstable_by_key(|field| {
+                    get_rank_of_field(field.field_name().map(|it| it.to_string()))
+                })
+                .collect::<Vec<_>>(),
+            it,
+        )),
+    };
 
-    if sorted_fields == fields {
+    let is_sorted = fields.as_ref().either(
+        |(sorted, field_list)| field_list.fields().zip(sorted).all(|(a, b)| a == *b),
+        |(sorted, field_list)| field_list.fields().zip(sorted).all(|(a, b)| a == *b),
+    );
+    if is_sorted {
         cov_mark::hit!(reorder_sorted_fields);
         return None;
     }
-
-    let target = record.syntax().text_range();
+    let target = record.as_ref().either(AstNode::syntax, AstNode::syntax).text_range();
     acc.add(
         AssistId("reorder_fields", AssistKind::RefactorRewrite),
         "Reorder record fields",
         target,
-        |edit| {
-            let mut rewriter = algo::SyntaxRewriter::default();
-            for (old, new) in fields.iter().zip(&sorted_fields) {
-                rewriter.replace(old, new);
+        |builder| match fields {
+            Either::Left((sorted, field_list)) => {
+                replace(builder.make_ast_mut(field_list).fields(), sorted)
             }
-            edit.rewrite(rewriter);
+            Either::Right((sorted, field_list)) => {
+                replace(builder.make_ast_mut(field_list).fields(), sorted)
+            }
         },
     )
 }
 
-fn get_fields_kind(node: &SyntaxNode) -> Vec<SyntaxKind> {
-    match node.kind() {
-        RECORD_EXPR => vec![RECORD_EXPR_FIELD],
-        RECORD_PAT => vec![RECORD_PAT_FIELD, IDENT_PAT],
-        _ => vec![],
-    }
-}
-
-fn get_field_name(node: &SyntaxNode) -> String {
-    let res = match_ast! {
-        match node {
-            ast::RecordExprField(field) => field.field_name().map(|it| it.to_string()),
-            ast::RecordPatField(field) => field.field_name().map(|it| it.to_string()),
-            _ => None,
-        }
-    };
-    res.unwrap_or_default()
-}
-
-fn get_fields(record: &SyntaxNode) -> Vec<SyntaxNode> {
-    let kinds = get_fields_kind(record);
-    record.children().flat_map(|n| n.children()).filter(|n| kinds.contains(&n.kind())).collect()
-}
-
-fn sorted_by_rank(
-    fields: &[SyntaxNode],
-    get_rank: impl Fn(&SyntaxNode) -> usize,
-) -> Vec<SyntaxNode> {
-    fields.iter().cloned().sorted_by_key(get_rank).collect()
-}
-
-fn struct_definition(path: &ast::Path, sema: &Semantics<RootDatabase>) -> Option<Struct> {
-    match sema.resolve_path(path) {
-        Some(PathResolution::Def(ModuleDef::Adt(Adt::Struct(s)))) => Some(s),
-        _ => None,
-    }
+fn replace<T: AstNode + PartialEq>(
+    fields: impl Iterator<Item = T>,
+    sorted_fields: impl IntoIterator<Item = T>,
+) {
+    fields.zip(sorted_fields).for_each(|(field, sorted_field)| {
+        ted::replace(field.syntax(), sorted_field.syntax().clone_for_update())
+    });
 }
 
 fn compute_fields_ranks(path: &ast::Path, ctx: &AssistContext) -> Option<FxHashMap<String, usize>> {
-    Some(
-        struct_definition(path, &ctx.sema)?
-            .fields(ctx.db())
-            .iter()
-            .enumerate()
-            .map(|(idx, field)| (field.name(ctx.db()).to_string(), idx))
-            .collect(),
-    )
+    let strukt = match ctx.sema.resolve_path(path) {
+        Some(hir::PathResolution::Def(hir::ModuleDef::Adt(hir::Adt::Struct(it)))) => it,
+        _ => return None,
+    };
+
+    let res = strukt
+        .fields(ctx.db())
+        .into_iter()
+        .enumerate()
+        .map(|(idx, field)| (field.name(ctx.db()).to_string(), idx))
+        .collect();
+
+    Some(res)
 }
 
 #[cfg(test)]
@@ -118,11 +116,7 @@ mod tests {
         check_assist_not_applicable(
             reorder_fields,
             r#"
-struct Foo {
-    foo: i32,
-    bar: i32,
-}
-
+struct Foo { foo: i32, bar: i32 }
 const test: Foo = $0Foo { foo: 0, bar: 0 };
 "#,
         )
@@ -133,8 +127,8 @@ const test: Foo = $0Foo { foo: 0, bar: 0 };
         check_assist_not_applicable(
             reorder_fields,
             r#"
-struct Foo {};
-const test: Foo = $0Foo {}
+struct Foo {}
+const test: Foo = $0Foo {};
 "#,
         )
     }
@@ -144,16 +138,15 @@ const test: Foo = $0Foo {}
         check_assist(
             reorder_fields,
             r#"
-struct Foo {foo: i32, bar: i32};
-const test: Foo = $0Foo {bar: 0, foo: 1}
+struct Foo { foo: i32, bar: i32 }
+const test: Foo = $0Foo { bar: 0, foo: 1 };
 "#,
             r#"
-struct Foo {foo: i32, bar: i32};
-const test: Foo = Foo {foo: 1, bar: 0}
+struct Foo { foo: i32, bar: i32 }
+const test: Foo = Foo { foo: 1, bar: 0 };
 "#,
         )
     }
-
     #[test]
     fn reorder_struct_pattern() {
         check_assist(
@@ -186,10 +179,7 @@ fn f(f: Foo) -> {
         check_assist(
             reorder_fields,
             r#"
-struct Foo {
-    foo: String,
-    bar: String,
-}
+struct Foo { foo: String, bar: String }
 
 impl Foo {
     fn new() -> Foo {
@@ -203,10 +193,7 @@ impl Foo {
 }
 "#,
             r#"
-struct Foo {
-    foo: String,
-    bar: String,
-}
+struct Foo { foo: String, bar: String }
 
 impl Foo {
     fn new() -> Foo {

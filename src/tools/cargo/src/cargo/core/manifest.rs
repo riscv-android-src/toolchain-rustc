@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use semver::Version;
 use serde::ser;
 use serde::Serialize;
 use url::Url;
 
-use crate::core::compiler::CrateType;
+use crate::core::compiler::{CompileKind, CrateType};
 use crate::core::resolver::ResolveBehavior;
 use crate::core::{Dependency, PackageId, PackageIdSpec, SourceId, Summary};
 use crate::core::{Edition, Feature, Features, WorkspaceConfig};
@@ -31,6 +32,8 @@ pub enum EitherManifest {
 pub struct Manifest {
     summary: Summary,
     targets: Vec<Target>,
+    default_kind: Option<CompileKind>,
+    forced_kind: Option<CompileKind>,
     links: Option<String>,
     warnings: Warnings,
     exclude: Vec<String>,
@@ -365,6 +368,8 @@ compact_debug! {
 impl Manifest {
     pub fn new(
         summary: Summary,
+        default_kind: Option<CompileKind>,
+        forced_kind: Option<CompileKind>,
         targets: Vec<Target>,
         exclude: Vec<String>,
         include: Vec<String>,
@@ -387,6 +392,8 @@ impl Manifest {
     ) -> Manifest {
         Manifest {
             summary,
+            default_kind,
+            forced_kind,
             targets,
             warnings: Warnings::new(),
             exclude,
@@ -412,6 +419,12 @@ impl Manifest {
 
     pub fn dependencies(&self) -> &[Dependency] {
         self.summary.dependencies()
+    }
+    pub fn default_kind(&self) -> Option<CompileKind> {
+        self.default_kind
+    }
+    pub fn forced_kind(&self) -> Option<CompileKind> {
+        self.forced_kind
     }
     pub fn exclude(&self) -> &[String] {
         &self.exclude
@@ -496,11 +509,18 @@ impl Manifest {
         if self.im_a_teapot.is_some() {
             self.unstable_features
                 .require(Feature::test_dummy_unstable())
-                .chain_err(|| {
-                    anyhow::format_err!(
-                        "the `im-a-teapot` manifest key is unstable and may \
-                         not work properly in England"
-                    )
+                .with_context(|| {
+                    "the `im-a-teapot` manifest key is unstable and may \
+                     not work properly in England"
+                })?;
+        }
+
+        if self.default_kind.is_some() || self.forced_kind.is_some() {
+            self.unstable_features
+                .require(Feature::per_package_target())
+                .with_context(|| {
+                    "the `package.default-target` and `package.forced-target` \
+                     manifest keys are unstable and may not work properly"
                 })?;
         }
 

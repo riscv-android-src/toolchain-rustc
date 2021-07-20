@@ -76,7 +76,7 @@ fn format_project<T: FormatHandler>(
     // Parse the crate.
     let mut report = FormatReport::new();
     let directory_ownership = input.to_directory_ownership();
-    let krate = match Parser::parse_crate(config, input, directory_ownership, &parse_session) {
+    let krate = match Parser::parse_crate(input, &parse_session) {
         Ok(krate) => krate,
         // Surface parse error via Session (errors are merged there from report)
         Err(e) => {
@@ -92,7 +92,7 @@ fn format_project<T: FormatHandler>(
     let mut context = FormatContext::new(&krate, report, parse_session, config, handler);
     let files = modules::ModResolver::new(
         &context.parse_session,
-        directory_ownership.unwrap_or(DirectoryOwnership::UnownedViaMod),
+        directory_ownership.unwrap_or(DirectoryOwnership::UnownedViaBlock),
         !input_is_stdin && !config.skip_children(),
     )
     .visit_crate(&krate)?;
@@ -145,7 +145,7 @@ impl<'a, T: FormatHandler + 'a> FormatContext<'a, T> {
         module: &Module<'_>,
         is_macro_def: bool,
     ) -> Result<(), ErrorKind> {
-        let snippet_provider = self.parse_session.snippet_provider(module.as_ref().inner);
+        let snippet_provider = self.parse_session.snippet_provider(module.span);
         let mut visitor = FmtVisitor::from_parse_sess(
             &self.parse_session,
             &self.config,
@@ -331,6 +331,9 @@ pub(crate) struct ReportedErrors {
 
     /// Formatted code differs from existing code (--check only).
     pub(crate) has_diff: bool,
+
+    /// Formatted code missed something, like lost comments or extra trailing space
+    pub(crate) has_unformatted_code_errors: bool,
 }
 
 impl ReportedErrors {
@@ -342,6 +345,7 @@ impl ReportedErrors {
         self.has_macro_format_failure |= other.has_macro_format_failure;
         self.has_check_errors |= other.has_check_errors;
         self.has_diff |= other.has_diff;
+        self.has_unformatted_code_errors |= other.has_unformatted_code_errors;
     }
 }
 

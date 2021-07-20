@@ -107,7 +107,7 @@ pub struct CompletionItemCapability {
 
     /// The client supports the `insertTextMode` property on
     /// a completion item to override the whitespace handling mode
-    /// as defined by the client (see `insertTextMode`).
+    /// as defined by the client.
     ///
     /// @since 3.16.0
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,6 +200,14 @@ pub struct CompletionClientCapabilities {
     /// `textDocument/completion` requestion.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_support: Option<bool>,
+
+    /// The client's default when the completion item doesn't provide a
+    /// `insertTextMode` property.
+    ///
+    /// @since 3.17.0
+    #[cfg(feature = "proposed")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insert_text_mode: Option<InsertTextMode>,
 }
 
 /// A special text edit to provide an insert and a replace operation.
@@ -413,28 +421,43 @@ pub struct CompletionItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preselect: Option<bool>,
 
-    /// A string that shoud be used when comparing this item
-    /// with other items. When `falsy` the label is used.
+    /// A string that should be used when comparing this item
+    /// with other items. When `falsy` the label is used
+    /// as the sort text for this item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_text: Option<String>,
 
     /// A string that should be used when filtering a set of
-    /// completion items. When `falsy` the label is used.
+    /// completion items. When `falsy` the label is used as the
+    /// filter text for this item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter_text: Option<String>,
 
-    /// A string that should be inserted a document when selecting
-    /// this completion. When `falsy` the label is used.
+    /// A string that should be inserted into a document when selecting
+    /// this completion. When `falsy` the label is used as the insert text
+    /// for this item.
+    ///
+    /// The `insertText` is subject to interpretation by the client side.
+    /// Some tools might not take the string literally. For example
+    /// VS Code when code complete is requested in this example
+    /// `con<cursor position>` and a completion item with an `insertText` of
+    /// `console` is provided it will only insert `sole`. Therefore it is
+    /// recommended to use `textEdit` instead since it avoids additional client
+    /// side interpretation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insert_text: Option<String>,
 
     /// The format of the insert text. The format applies to both the `insertText` property
-    /// and the `newText` property of a provided `textEdit`.
+    /// and the `newText` property of a provided `textEdit`. If omitted defaults to `InsertTextFormat.PlainText`.
+    ///
+    /// @since 3.16.0
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insert_text_format: Option<InsertTextFormat>,
 
-    /// How whitespace and indentation is handled during completion item insertion.
-    /// If not provided the clients default value depends on the `textDocument.completion.insertTextMode` client capability.
+    /// How whitespace and indentation is handled during completion
+    /// item insertion. If not provided the client's default value is used.
+    ///
+    /// @since 3.16.0
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insert_text_mode: Option<InsertTextMode>,
 
@@ -443,8 +466,9 @@ pub struct CompletionItem {
     /// insertText is ignored.
     ///
     /// Most editors support two different operation when accepting a completion item. One is to insert a
-    /// completion text and the other is to replace an existing text with a competion text. Since this can
-    /// usually not predetermend by a server it can report both ranges. Clients need to signal support for
+
+    /// completion text and the other is to replace an existing text with a completion text. Since this can
+    /// usually not predetermined by a server it can report both ranges. Clients need to signal support for
     /// `InsertReplaceEdits` via the `textDocument.completion.insertReplaceSupport` client capability
     /// property.
     ///
@@ -468,6 +492,13 @@ pub struct CompletionItem {
     /// additionalTextEdits-property.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<Command>,
+
+    /// An optional set of characters that when pressed while this completion is
+    /// active will accept it first and then type that character. *Note* that all
+    /// commit characters should have `length=1` and that superfluous characters
+    /// will be ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_characters: Option<Vec<String>>,
 
     /// An data entry field that is preserved on a completion item between
     /// a completion and a completion resolve request.

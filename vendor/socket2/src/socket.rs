@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[cfg(target_os = "linux")]
-use std::ffi::{CStr, CString};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{self, Ipv4Addr, Ipv6Addr, Shutdown};
@@ -369,73 +367,6 @@ impl Socket {
     /// from this socket.
     pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
         self.inner.set_ttl(ttl)
-    }
-
-    /// Gets the value of the `TCP_MAXSEG` option on this socket.
-    ///
-    /// The `TCP_MAXSEG` option denotes the TCP Maximum Segment
-    /// Size and is only available on TCP sockets.
-    #[cfg(all(unix, not(target_os = "redox")))]
-    pub fn mss(&self) -> io::Result<u32> {
-        self.inner.mss()
-    }
-
-    /// Sets the value of the `TCP_MAXSEG` option on this socket.
-    ///
-    /// The `TCP_MAXSEG` option denotes the TCP Maximum Segment
-    /// Size and is only available on TCP sockets.
-    #[cfg(all(unix, not(target_os = "redox")))]
-    pub fn set_mss(&self, mss: u32) -> io::Result<()> {
-        self.inner.set_mss(mss)
-    }
-
-    /// Gets the value for the `SO_MARK` option on this socket.
-    ///
-    /// This value gets the socket mark field for each packet sent through
-    /// this socket.
-    ///
-    /// This function is only available on Linux and requires the
-    /// `CAP_NET_ADMIN` capability.
-    #[cfg(target_os = "linux")]
-    pub fn mark(&self) -> io::Result<u32> {
-        self.inner.mark()
-    }
-
-    /// Sets the value for the `SO_MARK` option on this socket.
-    ///
-    /// This value sets the socket mark field for each packet sent through
-    /// this socket. Changing the mark can be used for mark-based routing
-    /// without netfilter or for packet filtering.
-    ///
-    /// This function is only available on Linux and requires the
-    /// `CAP_NET_ADMIN` capability.
-    #[cfg(target_os = "linux")]
-    pub fn set_mark(&self, mark: u32) -> io::Result<()> {
-        self.inner.set_mark(mark)
-    }
-
-    /// Gets the value for the `SO_BINDTODEVICE` option on this socket.
-    ///
-    /// This value gets the socket binded device's interface name.
-    ///
-    /// This function is only available on Linux.
-    #[cfg(target_os = "linux")]
-    pub fn device(&self) -> io::Result<Option<CString>> {
-        self.inner.device()
-    }
-
-    /// Sets the value for the `SO_BINDTODEVICE` option on this socket.
-    ///
-    /// If a socket is bound to an interface, only packets received from that
-    /// particular interface are processed by the socket. Note that this only
-    /// works for some socket types, particularly `AF_INET` sockets.
-    ///
-    /// If `interface` is `None` or an empty string it removes the binding.
-    ///
-    /// This function is only available on Linux.
-    #[cfg(target_os = "linux")]
-    pub fn bind_device(&self, interface: Option<&CStr>) -> io::Result<()> {
-        self.inner.bind_device(interface)
     }
 
     /// Gets the value of the `IPV6_UNICAST_HOPS` option for this socket.

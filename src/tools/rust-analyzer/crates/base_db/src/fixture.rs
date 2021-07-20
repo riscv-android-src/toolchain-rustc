@@ -1,63 +1,5 @@
-//! Fixtures are strings containing rust source code with optional metadata.
-//! A fixture without metadata is parsed into a single source file.
-//! Use this to test functionality local to one file.
-//!
-//! Simple Example:
-//! ```
-//! r#"
-//! fn main() {
-//!     println!("Hello World")
-//! }
-//! "#
-//! ```
-//!
-//! Metadata can be added to a fixture after a `//-` comment.
-//! The basic form is specifying filenames,
-//! which is also how to define multiple files in a single test fixture
-//!
-//! Example using two files in the same crate:
-//! ```
-//! "
-//! //- /main.rs
-//! mod foo;
-//! fn main() {
-//!     foo::bar();
-//! }
-//!
-//! //- /foo.rs
-//! pub fn bar() {}
-//! "
-//! ```
-//!
-//! Example using two crates with one file each, with one crate depending on the other:
-//! ```
-//! r#"
-//! //- /main.rs crate:a deps:b
-//! fn main() {
-//!     b::foo();
-//! }
-//! //- /lib.rs crate:b
-//! pub fn b() {
-//!     println!("Hello World")
-//! }
-//! "#
-//! ```
-//!
-//! Metadata allows specifying all settings and variables
-//! that are available in a real rust project:
-//! - crate names via `crate:cratename`
-//! - dependencies via `deps:dep1,dep2`
-//! - configuration settings via `cfg:dbg=false,opt_level=2`
-//! - environment variables via `env:PATH=/bin,RUST_LOG=debug`
-//!
-//! Example using all available metadata:
-//! ```
-//! "
-//! //- /lib.rs crate:foo deps:bar,baz cfg:foo=a,bar=b env:OUTDIR=path/to,OTHER=foo
-//! fn insert_source_code_here() {}
-//! "
-//! ```
-use std::{str::FromStr, sync::Arc};
+//! A set of high-level utility fixture methods to use in tests.
+use std::{mem, str::FromStr, sync::Arc};
 
 use cfg::CfgOptions;
 use rustc_hash::FxHashMap;
@@ -93,7 +35,7 @@ pub trait WithFixture: Default + SourceDatabaseExt + 'static {
     fn with_position(ra_fixture: &str) -> (Self, FilePosition) {
         let (db, file_id, range_or_offset) = Self::with_range_or_offset(ra_fixture);
         let offset = match range_or_offset {
-            RangeOrOffset::Range(_) => panic!(),
+            RangeOrOffset::Range(_) => panic!("Expected a cursor position, got a range instead"),
             RangeOrOffset::Offset(it) => it,
         };
         (db, FilePosition { file_id, offset })
@@ -103,7 +45,7 @@ pub trait WithFixture: Default + SourceDatabaseExt + 'static {
         let (db, file_id, range_or_offset) = Self::with_range_or_offset(ra_fixture);
         let range = match range_or_offset {
             RangeOrOffset::Range(it) => it,
-            RangeOrOffset::Offset(_) => panic!(),
+            RangeOrOffset::Offset(_) => panic!("Expected a cursor range, got a position instead"),
         };
         (db, FileRange { file_id, range })
     }
@@ -112,7 +54,9 @@ pub trait WithFixture: Default + SourceDatabaseExt + 'static {
         let fixture = ChangeFixture::parse(ra_fixture);
         let mut db = Self::default();
         fixture.change.apply(&mut db);
-        let (file_id, range_or_offset) = fixture.file_position.unwrap();
+        let (file_id, range_or_offset) = fixture
+            .file_position
+            .expect("Could not find file position in fixture. Did you forget to add an `$0`?");
         (db, file_id, range_or_offset)
     }
 
@@ -148,6 +92,7 @@ impl ChangeFixture {
         let mut file_set = FileSet::default();
         let source_root_prefix = "/".to_string();
         let mut file_id = FileId(0);
+        let mut roots = Vec::new();
 
         let mut file_position = None;
 
@@ -167,6 +112,10 @@ impl ChangeFixture {
 
             let meta = FileMeta::from(entry);
             assert!(meta.path.starts_with(&source_root_prefix));
+
+            if meta.introduce_new_source_root {
+                roots.push(SourceRoot::new_local(mem::take(&mut file_set)));
+            }
 
             if let Some(krate) = meta.krate {
                 let crate_name = CrateName::normalize_dashes(&krate);
@@ -192,7 +141,7 @@ impl ChangeFixture {
 
             change.change_file(file_id, Some(Arc::new(text)));
             let path = VfsPath::new_virtual_path(meta.path);
-            file_set.insert(file_id, path.into());
+            file_set.insert(file_id, path);
             files.push(file_id);
             file_id.0 += 1;
         }
@@ -215,7 +164,8 @@ impl ChangeFixture {
             }
         }
 
-        change.set_roots(vec![SourceRoot::new_local(file_set)]);
+        roots.push(SourceRoot::new_local(mem::take(&mut file_set)));
+        change.set_roots(roots);
         change.set_crate_graph(crate_graph);
 
         ChangeFixture { file_position, files, change }
@@ -229,6 +179,7 @@ struct FileMeta {
     cfg: CfgOptions,
     edition: Edition,
     env: Env,
+    introduce_new_source_root: bool,
 }
 
 impl From<Fixture> for FileMeta {
@@ -247,6 +198,7 @@ impl From<Fixture> for FileMeta {
                 .as_ref()
                 .map_or(Edition::Edition2018, |v| Edition::from_str(&v).unwrap()),
             env: f.env.into_iter().collect(),
+            introduce_new_source_root: f.introduce_new_source_root,
         }
     }
 }

@@ -58,6 +58,32 @@ Each new feature described below should explain how to use it.
 [nightly channel]: ../../book/appendix-07-nightly-rust.html
 [stabilized]: https://doc.crates.io/contrib/process/unstable.html#stabilization
 
+### allow-features
+
+This permanently-unstable flag makes it so that only a listed set of
+unstable features can be used. Specifically, if you pass
+`-Zallow-features=foo,bar`, you'll continue to be able to pass `-Zfoo`
+and `-Zbar` to `cargo`, but you will be unable to pass `-Zbaz`. You can
+pass an empty string (`-Zallow-features=`) to disallow all unstable
+features.
+
+`-Zallow-features` also restricts which unstable features can be passed
+to the `cargo-features` entry in `Cargo.toml`. If, for example, you want
+to allow
+
+```toml
+cargo-features = ["test-dummy-unstable"]
+```
+
+where `test-dummy-unstable` is unstable, that features would also be
+disallowed by `-Zallow-features=`, and allowed with
+`-Zallow-features=test-dummy-unstable`.
+
+The list of features passed to cargo's `-Zallow-features` is also passed
+to any Rust tools that cargo ends up calling (like `rustc` or
+`rustdoc`). Thus, if you run `cargo -Zallow-features=`, no unstable
+Cargo _or_ Rust features can be used.
+
 ### extra-link-arg
 * Original Pull Request: [#7811](https://github.com/rust-lang/cargo/pull/7811)
 
@@ -869,6 +895,26 @@ In this example, the `std` feature enables the `std` feature on the `serde`
 dependency. However, unlike the normal `serde/std` syntax, it will not enable
 the optional dependency `serde` unless something else has included it.
 
+### per-package-target
+
+The `per-package-target` feature adds two keys to the manifest:
+`package.default-target` and `package.forced-target`. The first makes
+the package be compiled by default (ie. when no `--target` argument is
+passed) for some target. The second one makes the package always be
+compiled for the target.
+
+Example:
+
+```toml
+[package]
+forced-target = "wasm32-unknown-unknown"
+```
+
+In this example, the crate is always built for
+`wasm32-unknown-unknown`, for instance because it is going to be used
+as a plugin for a main program that runs on the host (or provided on
+the command line) target.
+
 ### credential-process
 * Tracking Issue: [#8933](https://github.com/rust-lang/cargo/issues/8933)
 * RFC: [#2730](https://github.com/rust-lang/rfcs/pull/2730)
@@ -1091,38 +1137,6 @@ The 2021 edition will set the default [resolver version] to "2".
 [edition]: ../../edition-guide/index.html
 [resolver version]: resolver.md#resolver-versions
 
-<script>
-(function() {
-    var fragments = {
-        "#edition": "manifest.html#the-edition-field",
-        "#compile-progress": "config.html#termprogresswhen",
-        "#rename-dependency": "specifying-dependencies.html#renaming-dependencies-in-cargotoml",
-        "#alternate-registries": "registries.html",
-        "#offline-mode": "../commands/cargo.html",
-        "#publish-lockfile": "../commands/cargo-package.html",
-        "#default-run": "manifest.html#the-default-run-field",
-        "#cache-messages": "https://github.com/rust-lang/cargo/pull/7450",
-        "#install-upgrade": "../commands/cargo-install.html",
-        "#profile-overrides": "profiles.html#overrides",
-        "#config-profiles": "config.html#profile",
-        "#crate-versions": "https://github.com/rust-lang/cargo/pull/8509",
-        "#features": "features.html#feature-resolver-version-2",
-        "#package-features": "features.html#resolver-version-2-command-line-flags",
-        "#resolver": "resolver.html#resolver-versions",
-    };
-    var target = fragments[window.location.hash];
-    if (target) {
-        if (target.startsWith('https')) {
-          window.location.replace(target);
-        } else {
-          var url = window.location.toString();
-          var base = url.substring(0, url.lastIndexOf('/'));
-          window.location.replace(base + "/" + target);
-        }
-    }
-})();
-</script>
-
 ### future incompat report
 * RFC: [#2834](https://github.com/rust-lang/rfcs/blob/master/text/2834-cargo-report-future-incompat.md)
 * rustc Tracking Issue: [#71249](https://github.com/rust-lang/rust/issues/71249)
@@ -1181,3 +1195,52 @@ lowest precedence.
 
 Relative `path` dependencies in such a `[patch]` section are resolved
 relative to the configuration file they appear in.
+
+## `cargo config`
+
+* Original Issue: [#2362](https://github.com/rust-lang/cargo/issues/2362)
+* Tracking Issue: [#9301](https://github.com/rust-lang/cargo/issues/9301)
+
+The `cargo config` subcommand provides a way to display the configuration
+files that cargo loads. It currently includes the `get` subcommand which
+can take an optional config value to display.
+
+```console
+cargo +nightly -Zunstable-options config get build.rustflags
+```
+
+If no config value is included, it will display all config values. See the
+`--help` output for more options available.
+
+
+<script>
+(function() {
+    var fragments = {
+        "#edition": "manifest.html#the-edition-field",
+        "#compile-progress": "config.html#termprogresswhen",
+        "#rename-dependency": "specifying-dependencies.html#renaming-dependencies-in-cargotoml",
+        "#alternate-registries": "registries.html",
+        "#offline-mode": "../commands/cargo.html",
+        "#publish-lockfile": "../commands/cargo-package.html",
+        "#default-run": "manifest.html#the-default-run-field",
+        "#cache-messages": "https://github.com/rust-lang/cargo/pull/7450",
+        "#install-upgrade": "../commands/cargo-install.html",
+        "#profile-overrides": "profiles.html#overrides",
+        "#config-profiles": "config.html#profile",
+        "#crate-versions": "https://github.com/rust-lang/cargo/pull/8509",
+        "#features": "features.html#feature-resolver-version-2",
+        "#package-features": "features.html#resolver-version-2-command-line-flags",
+        "#resolver": "resolver.html#resolver-versions",
+    };
+    var target = fragments[window.location.hash];
+    if (target) {
+        if (target.startsWith('https')) {
+          window.location.replace(target);
+        } else {
+          var url = window.location.toString();
+          var base = url.substring(0, url.lastIndexOf('/'));
+          window.location.replace(base + "/" + target);
+        }
+    }
+})();
+</script>

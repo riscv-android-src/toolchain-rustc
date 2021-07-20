@@ -29,9 +29,13 @@ pub fn ty(text: &str) -> ast::Type {
 pub fn ty_unit() -> ast::Type {
     ty("()")
 }
-// FIXME: handle types of length == 1
 pub fn ty_tuple(types: impl IntoIterator<Item = ast::Type>) -> ast::Type {
-    let contents = types.into_iter().join(", ");
+    let mut count: usize = 0;
+    let mut contents = types.into_iter().inspect(|_| count += 1).join(", ");
+    if count == 1 {
+        contents.push(',');
+    }
+
     ty(&format!("({})", contents))
 }
 // FIXME: handle path to type
@@ -133,6 +137,17 @@ pub fn use_(visibility: Option<ast::Visibility>, use_tree: ast::UseTree) -> ast:
     ast_from_text(&format!("{}use {};", visibility, use_tree))
 }
 
+pub fn record_expr(path: ast::Path, fields: ast::RecordExprFieldList) -> ast::RecordExpr {
+    ast_from_text(&format!("fn f() {{ {} {} }}", path, fields))
+}
+
+pub fn record_expr_field_list(
+    fields: impl IntoIterator<Item = ast::RecordExprField>,
+) -> ast::RecordExprFieldList {
+    let fields = fields.into_iter().join(", ");
+    ast_from_text(&format!("fn f() {{ S {{ {} }} }}", fields))
+}
+
 pub fn record_expr_field(name: ast::NameRef, expr: Option<ast::Expr>) -> ast::RecordExprField {
     return match expr {
         Some(expr) => from_text(&format!("{}: {}", name, expr)),
@@ -174,6 +189,11 @@ pub fn block_expr(
 pub fn expr_unit() -> ast::Expr {
     expr_from_text("()")
 }
+pub fn expr_literal(text: &str) -> ast::Literal {
+    assert_eq!(text.trim(), text);
+    ast_from_text(&format!("fn f() {{ let _ = {}; }}", text))
+}
+
 pub fn expr_empty_block() -> ast::Expr {
     expr_from_text("{}")
 }
@@ -263,14 +283,14 @@ pub fn arg_list(args: impl IntoIterator<Item = ast::Expr>) -> ast::ArgList {
 }
 
 pub fn ident_pat(name: ast::Name) -> ast::IdentPat {
-    return from_text(name.text());
+    return from_text(&name.text());
 
     fn from_text(text: &str) -> ast::IdentPat {
         ast_from_text(&format!("fn f({}: ())", text))
     }
 }
 pub fn ident_mut_pat(name: ast::Name) -> ast::IdentPat {
-    return from_text(name.text());
+    return from_text(&name.text());
 
     fn from_text(text: &str) -> ast::IdentPat {
         ast_from_text(&format!("fn f(mut {}: ())", text))
@@ -285,13 +305,23 @@ pub fn wildcard_pat() -> ast::WildcardPat {
     }
 }
 
+pub fn literal_pat(lit: &str) -> ast::LiteralPat {
+    return from_text(lit);
+
+    fn from_text(text: &str) -> ast::LiteralPat {
+        ast_from_text(&format!("fn f() {{ match x {{ {} => {{}} }} }}", text))
+    }
+}
+
 /// Creates a tuple of patterns from an iterator of patterns.
 ///
-/// Invariant: `pats` must be length > 1
-///
-/// FIXME handle `pats` length == 1
+/// Invariant: `pats` must be length > 0
 pub fn tuple_pat(pats: impl IntoIterator<Item = ast::Pat>) -> ast::TuplePat {
-    let pats_str = pats.into_iter().map(|p| p.to_string()).join(", ");
+    let mut count: usize = 0;
+    let mut pats_str = pats.into_iter().inspect(|_| count += 1).join(", ");
+    if count == 1 {
+        pats_str.push(',');
+    }
     return from_text(&format!("({})", pats_str));
 
     fn from_text(text: &str) -> ast::TuplePat {
@@ -318,6 +348,21 @@ pub fn record_pat(path: ast::Path, pats: impl IntoIterator<Item = ast::Pat>) -> 
     fn from_text(text: &str) -> ast::RecordPat {
         ast_from_text(&format!("fn f({}: ())", text))
     }
+}
+
+pub fn record_pat_with_fields(path: ast::Path, fields: ast::RecordPatFieldList) -> ast::RecordPat {
+    ast_from_text(&format!("fn f({} {}: ()))", path, fields))
+}
+
+pub fn record_pat_field_list(
+    fields: impl IntoIterator<Item = ast::RecordPatField>,
+) -> ast::RecordPatFieldList {
+    let fields = fields.into_iter().join(", ");
+    ast_from_text(&format!("fn f(S {{ {} }}: ()))", fields))
+}
+
+pub fn record_pat_field(name_ref: ast::NameRef, pat: ast::Pat) -> ast::RecordPatField {
+    ast_from_text(&format!("fn f(S {{ {}: {} }}: ()))", name_ref, pat))
 }
 
 /// Returns a `BindPat` if the path has just one segment, a `PathPat` otherwise.
@@ -390,6 +435,7 @@ pub fn token(kind: SyntaxKind) -> SyntaxToken {
     tokens::SOURCE_FILE
         .tree()
         .syntax()
+        .clone_for_update()
         .descendants_with_tokens()
         .filter_map(|it| it.into_token())
         .find(|it| it.kind() == kind)
@@ -526,7 +572,7 @@ fn ast_from_text<N: AstNode>(text: &str) -> N {
 }
 
 fn unroot(n: SyntaxNode) -> SyntaxNode {
-    SyntaxNode::new_root(n.green().to_owned())
+    SyntaxNode::new_root(n.green())
 }
 
 pub mod tokens {
@@ -544,6 +590,7 @@ pub mod tokens {
         SOURCE_FILE
             .tree()
             .syntax()
+            .clone_for_update()
             .descendants_with_tokens()
             .filter_map(|it| it.into_token())
             .find(|it| it.kind() == WHITESPACE && it.text() == " ")
@@ -553,7 +600,7 @@ pub mod tokens {
     pub fn whitespace(text: &str) -> SyntaxToken {
         assert!(text.trim().is_empty());
         let sf = SourceFile::parse(text).ok().unwrap();
-        sf.syntax().first_child_or_token().unwrap().into_token().unwrap()
+        sf.syntax().clone_for_update().first_child_or_token().unwrap().into_token().unwrap()
     }
 
     pub fn doc_comment(text: &str) -> SyntaxToken {
@@ -569,19 +616,23 @@ pub mod tokens {
     }
 
     pub fn single_newline() -> SyntaxToken {
-        SOURCE_FILE
+        let res = SOURCE_FILE
             .tree()
             .syntax()
+            .clone_for_update()
             .descendants_with_tokens()
             .filter_map(|it| it.into_token())
             .find(|it| it.kind() == WHITESPACE && it.text() == "\n")
-            .unwrap()
+            .unwrap();
+        res.detach();
+        res
     }
 
     pub fn blank_line() -> SyntaxToken {
         SOURCE_FILE
             .tree()
             .syntax()
+            .clone_for_update()
             .descendants_with_tokens()
             .filter_map(|it| it.into_token())
             .find(|it| it.kind() == WHITESPACE && it.text() == "\n\n")

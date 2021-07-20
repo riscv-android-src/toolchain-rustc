@@ -69,7 +69,7 @@ use self::types::{FeaturesSet, RcVecIter, RemainingDeps, ResolverProgress};
 pub use self::encode::Metadata;
 pub use self::encode::{EncodableDependency, EncodablePackageId, EncodableResolve};
 pub use self::errors::{ActivateError, ActivateResult, ResolveError};
-pub use self::features::{ForceAllTargets, HasDevUnits};
+pub use self::features::{CliFeatures, ForceAllTargets, HasDevUnits};
 pub use self::resolve::{Resolve, ResolveVersion};
 pub use self::types::{ResolveBehavior, ResolveOpts};
 
@@ -133,8 +133,7 @@ pub fn resolve(
         Some(config) => config.cli_unstable().minimal_versions,
         None => false,
     };
-    let mut registry =
-        RegistryQueryer::new(registry, replacements, try_to_use, minimal_versions, config);
+    let mut registry = RegistryQueryer::new(registry, replacements, try_to_use, minimal_versions);
     let cx = activate_deps_loop(cx, &mut registry, summaries, config)?;
 
     let mut cksums = HashMap::new();
@@ -193,7 +192,7 @@ fn activate_deps_loop(
     // Activate all the initial summaries to kick off some work.
     for &(ref summary, ref opts) in summaries {
         debug!("initial activation: {}", summary.package_id());
-        let res = activate(&mut cx, registry, None, summary.clone(), opts.clone());
+        let res = activate(&mut cx, registry, None, summary.clone(), opts);
         match res {
             Ok(Some((frame, _))) => remaining_deps.push(frame),
             Ok(None) => (),
@@ -379,9 +378,8 @@ fn activate_deps_loop(
             let pid = candidate.package_id();
             let opts = ResolveOpts {
                 dev_deps: false,
-                features: RequestedFeatures {
+                features: RequestedFeatures::DepFeatures {
                     features: Rc::clone(&features),
-                    all_features: false,
                     uses_default_features: dep.uses_default_features(),
                 },
             };
@@ -392,7 +390,7 @@ fn activate_deps_loop(
                 dep.package_name(),
                 candidate.version()
             );
-            let res = activate(&mut cx, registry, Some((&parent, &dep)), candidate, opts);
+            let res = activate(&mut cx, registry, Some((&parent, &dep)), candidate, &opts);
 
             let successfully_activated = match res {
                 // Success! We've now activated our `candidate` in our context
@@ -604,7 +602,7 @@ fn activate(
     registry: &mut RegistryQueryer<'_>,
     parent: Option<(&Summary, &Dependency)>,
     candidate: Summary,
-    opts: ResolveOpts,
+    opts: &ResolveOpts,
 ) -> ActivateResult<Option<(DepsFrame, Duration)>> {
     let candidate_pid = candidate.package_id();
     cx.age += 1;
@@ -626,7 +624,7 @@ fn activate(
         }
     }
 
-    let activated = cx.flag_activated(&candidate, &opts, parent)?;
+    let activated = cx.flag_activated(&candidate, opts, parent)?;
 
     let candidate = match registry.replacement_summary(candidate_pid) {
         Some(replace) => {
@@ -635,7 +633,7 @@ fn activate(
             // does. TBH it basically cause panics in the test suite if
             // `parent` is passed through here and `[replace]` is otherwise
             // on life support so it's not critical to fix bugs anyway per se.
-            if cx.flag_activated(replace, &opts, None)? && activated {
+            if cx.flag_activated(replace, opts, None)? && activated {
                 return Ok(None);
             }
             trace!(
@@ -656,7 +654,7 @@ fn activate(
 
     let now = Instant::now();
     let (used_features, deps) =
-        &*registry.build_deps(cx, parent.map(|p| p.0.package_id()), &candidate, &opts)?;
+        &*registry.build_deps(cx, parent.map(|p| p.0.package_id()), &candidate, opts)?;
 
     // Record what list of features is active for this package.
     if !used_features.is_empty() {

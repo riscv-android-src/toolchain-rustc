@@ -2,11 +2,15 @@
 
 use hir::{HasSource, HirDisplay, Type};
 use ide_db::SymbolKind;
+use itertools::Itertools;
 use syntax::ast::Fn;
 
 use crate::{
-    item::{CompletionItem, CompletionItemKind, CompletionKind, ImportEdit},
-    render::{builder_ext::Params, RenderContext},
+    item::{CompletionItem, CompletionItemKind, CompletionKind, CompletionRelevance, ImportEdit},
+    render::{
+        builder_ext::Params, compute_exact_name_match, compute_ref_match, compute_type_match,
+        RenderContext,
+    },
 };
 
 pub(crate) fn render_fn<'a>(
@@ -16,7 +20,17 @@ pub(crate) fn render_fn<'a>(
     fn_: hir::Function,
 ) -> Option<CompletionItem> {
     let _p = profile::span("render_fn");
-    Some(FunctionRender::new(ctx, local_name, fn_)?.render(import_to_add))
+    Some(FunctionRender::new(ctx, local_name, fn_, false)?.render(import_to_add))
+}
+
+pub(crate) fn render_method<'a>(
+    ctx: RenderContext<'a>,
+    import_to_add: Option<ImportEdit>,
+    local_name: Option<String>,
+    fn_: hir::Function,
+) -> Option<CompletionItem> {
+    let _p = profile::span("render_method");
+    Some(FunctionRender::new(ctx, local_name, fn_, true)?.render(import_to_add))
 }
 
 #[derive(Debug)]
@@ -25,6 +39,7 @@ struct FunctionRender<'a> {
     name: String,
     func: hir::Function,
     ast_node: Fn,
+    is_method: bool,
 }
 
 impl<'a> FunctionRender<'a> {
@@ -32,11 +47,12 @@ impl<'a> FunctionRender<'a> {
         ctx: RenderContext<'a>,
         local_name: Option<String>,
         fn_: hir::Function,
+        is_method: bool,
     ) -> Option<FunctionRender<'a>> {
         let name = local_name.unwrap_or_else(|| fn_.name(ctx.db()).to_string());
         let ast_node = fn_.source(ctx.db())?.value;
 
-        Some(FunctionRender { ctx, name, func: fn_, ast_node })
+        Some(FunctionRender { ctx, name, func: fn_, ast_node, is_method })
     }
 
     fn render(self, import_to_add: Option<ImportEdit>) -> CompletionItem {
@@ -52,15 +68,65 @@ impl<'a> FunctionRender<'a> {
                 self.ctx.is_deprecated(self.func) || self.ctx.is_deprecated_assoc_item(self.func),
             )
             .detail(self.detail())
-            .add_call_parens(self.ctx.completion, self.name, params)
+            .add_call_parens(self.ctx.completion, self.name.clone(), params)
             .add_import(import_to_add);
+
+        let ret_type = self.func.ret_type(self.ctx.db());
+        item.set_relevance(CompletionRelevance {
+            type_match: compute_type_match(self.ctx.completion, &ret_type),
+            exact_name_match: compute_exact_name_match(self.ctx.completion, self.name.clone()),
+            ..CompletionRelevance::default()
+        });
+
+        if let Some(ref_match) = compute_ref_match(self.ctx.completion, &ret_type) {
+            // FIXME
+            // For now we don't properly calculate the edits for ref match
+            // completions on methods, so we've disabled them. See #8058.
+            if !self.is_method {
+                item.ref_match(ref_match);
+            }
+        }
 
         item.build()
     }
 
     fn detail(&self) -> String {
-        let ty = self.func.ret_type(self.ctx.db());
-        format!("-> {}", ty.display(self.ctx.db()))
+        let ret_ty = self.func.ret_type(self.ctx.db());
+        let ret = if ret_ty.is_unit() {
+            // Omit the return type if it is the unit type
+            String::new()
+        } else {
+            format!(" {}", self.ty_display())
+        };
+
+        format!("fn({}){}", self.params_display(), ret)
+    }
+
+    fn params_display(&self) -> String {
+        if let Some(self_param) = self.func.self_param(self.ctx.db()) {
+            let params = self
+                .func
+                .assoc_fn_params(self.ctx.db())
+                .into_iter()
+                .skip(1) // skip the self param because we are manually handling that
+                .map(|p| p.ty().display(self.ctx.db()).to_string());
+
+            std::iter::once(self_param.display(self.ctx.db()).to_owned()).chain(params).join(", ")
+        } else {
+            let params = self
+                .func
+                .assoc_fn_params(self.ctx.db())
+                .into_iter()
+                .map(|p| p.ty().display(self.ctx.db()).to_string())
+                .join(", ");
+            params
+        }
+    }
+
+    fn ty_display(&self) -> String {
+        let ret_ty = self.func.ret_type(self.ctx.db());
+
+        format!("-> {}", ret_ty.display(self.ctx.db()))
     }
 
     fn add_arg(&self, arg: &str, ty: &Type) -> String {

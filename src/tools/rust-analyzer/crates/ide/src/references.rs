@@ -29,7 +29,7 @@ use crate::{display::TryToNav, FilePosition, NavigationTarget};
 
 #[derive(Debug, Clone)]
 pub struct ReferenceSearchResult {
-    pub declaration: Declaration,
+    pub declaration: Option<Declaration>,
     pub references: FxHashMap<FileId, Vec<(TextRange, Option<ReferenceAccess>)>>,
 }
 
@@ -48,6 +48,8 @@ pub struct Declaration {
 //
 // | VS Code | kbd:[Shift+Alt+F12]
 // |===
+//
+// image::https://user-images.githubusercontent.com/48062697/113020670-b7c34f00-917a-11eb-8003-370ac5f2b3cb.gif[]
 pub(crate) fn find_all_refs(
     sema: &Semantics<RootDatabase>,
     position: FilePosition,
@@ -91,10 +93,10 @@ pub(crate) fn find_all_refs(
             _ => {}
         }
     }
-    let nav = def.try_to_nav(sema.db)?;
-    let decl_range = nav.focus_or_full_range();
-
-    let declaration = Declaration { nav, access: decl_access(&def, &syntax, decl_range) };
+    let declaration = def.try_to_nav(sema.db).map(|nav| {
+        let decl_range = nav.focus_or_full_range();
+        Declaration { nav, access: decl_access(&def, &syntax, decl_range) }
+    });
     let references = usages
         .into_iter()
         .map(|(file_id, refs)| {
@@ -148,14 +150,15 @@ fn decl_access(def: &Definition, syntax: &SyntaxNode, range: TextRange) -> Optio
 
 fn get_name_of_item_declaration(syntax: &SyntaxNode, position: FilePosition) -> Option<ast::Name> {
     let token = syntax.token_at_offset(position.offset).right_biased()?;
+    let token_parent = token.parent()?;
     let kind = token.kind();
     if kind == T![;] {
-        ast::Struct::cast(token.parent())
+        ast::Struct::cast(token_parent)
             .filter(|struct_| struct_.field_list().is_none())
             .and_then(|struct_| struct_.name())
     } else if kind == T!['{'] {
         match_ast! {
-            match (token.parent()) {
+            match token_parent {
                 ast::RecordFieldList(rfl) => match_ast! {
                     match (rfl.syntax().parent()?) {
                         ast::Variant(it) => it.name(),
@@ -169,7 +172,7 @@ fn get_name_of_item_declaration(syntax: &SyntaxNode, position: FilePosition) -> 
             }
         }
     } else if kind == T!['('] {
-        let tfl = ast::TupleFieldList::cast(token.parent())?;
+        let tfl = ast::TupleFieldList::cast(token_parent)?;
         match_ast! {
             match (tfl.syntax().parent()?) {
                 ast::Variant(it) => it.name(),
@@ -1004,8 +1007,7 @@ impl Foo {
         let refs = analysis.find_all_refs(pos, search_scope).unwrap().unwrap();
 
         let mut actual = String::new();
-        {
-            let decl = refs.declaration;
+        if let Some(decl) = refs.declaration {
             format_to!(actual, "{}", decl.nav.debug_render());
             if let Some(access) = decl.access {
                 format_to!(actual, " {:?}", access)
@@ -1255,6 +1257,72 @@ fn main() {
                 FileId(0) 54..55
                 FileId(0) 97..98
                 FileId(0) 101..102
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_primitives() {
+        check(
+            r#"
+fn foo(_: bool) -> bo$0ol { true }
+"#,
+            expect![[r#"
+                FileId(0) 10..14
+                FileId(0) 19..23
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_transitive() {
+        check(
+            r#"
+//- /level3.rs new_source_root: crate:level3
+pub struct Fo$0o;
+//- /level2.rs new_source_root: crate:level2 deps:level3
+pub use level3::Foo;
+//- /level1.rs new_source_root: crate:level1 deps:level2
+pub use level2::Foo;
+//- /level0.rs new_source_root: crate:level0 deps:level1
+pub use level1::Foo;
+"#,
+            expect![[r#"
+                Foo Struct FileId(0) 0..15 11..14
+
+                FileId(1) 16..19
+                FileId(2) 16..19
+                FileId(3) 16..19
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_decl_macro_references() {
+        check(
+            r#"
+//- /lib.rs crate:lib
+#[macro_use]
+mod qux;
+mod bar;
+
+pub use self::foo;
+//- /qux.rs
+#[macro_export]
+macro_rules! foo$0 {
+    () => {struct Foo;};
+}
+//- /bar.rs
+foo!();
+//- /other.rs crate:other deps:lib new_source_root:
+lib::foo!();
+"#,
+            expect![[r#"
+                foo Macro FileId(1) 0..61 29..32
+
+                FileId(0) 46..49
+                FileId(2) 0..3
+                FileId(3) 5..8
             "#]],
         );
     }

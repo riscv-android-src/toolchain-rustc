@@ -100,6 +100,7 @@ pub struct Path {
 }
 
 impl PartialEq<Symbol> for Path {
+    #[inline]
     fn eq(&self, symbol: &Symbol) -> bool {
         self.segments.len() == 1 && { self.segments[0].ident.name == *symbol }
     }
@@ -762,14 +763,6 @@ pub enum Mutability {
 }
 
 impl Mutability {
-    /// Returns `MutMutable` only if both `self` and `other` are mutable.
-    pub fn and(self, other: Self) -> Self {
-        match self {
-            Mutability::Mut => other,
-            Mutability::Not => Mutability::Not,
-        }
-    }
-
     pub fn invert(self) -> Self {
         match self {
             Mutability::Mut => Mutability::Not,
@@ -1353,7 +1346,7 @@ pub enum ExprKind {
     Field(P<Expr>, Ident),
     /// An indexing operation (e.g., `foo[2]`).
     Index(P<Expr>, P<Expr>),
-    /// A range (e.g., `1..2`, `1..`, `..2`, `1..=2`, `..=2`; and `..` in destructuring assingment).
+    /// A range (e.g., `1..2`, `1..`, `..2`, `1..=2`, `..=2`; and `..` in destructuring assignment).
     Range(Option<P<Expr>>, Option<P<Expr>>, RangeLimits),
     /// An underscore, used in destructuring assignment to ignore a value.
     Underscore,
@@ -1722,13 +1715,6 @@ impl FloatTy {
             FloatTy::F64 => sym::f64,
         }
     }
-
-    pub fn bit_width(self) -> u64 {
-        match self {
-            FloatTy::F32 => 32,
-            FloatTy::F64 => 64,
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -1764,29 +1750,6 @@ impl IntTy {
             IntTy::I128 => sym::i128,
         }
     }
-
-    pub fn bit_width(&self) -> Option<u64> {
-        Some(match *self {
-            IntTy::Isize => return None,
-            IntTy::I8 => 8,
-            IntTy::I16 => 16,
-            IntTy::I32 => 32,
-            IntTy::I64 => 64,
-            IntTy::I128 => 128,
-        })
-    }
-
-    pub fn normalize(&self, target_width: u32) -> Self {
-        match self {
-            IntTy::Isize => match target_width {
-                16 => IntTy::I16,
-                32 => IntTy::I32,
-                64 => IntTy::I64,
-                _ => unreachable!(),
-            },
-            _ => *self,
-        }
-    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Debug)]
@@ -1820,29 +1783,6 @@ impl UintTy {
             UintTy::U32 => sym::u32,
             UintTy::U64 => sym::u64,
             UintTy::U128 => sym::u128,
-        }
-    }
-
-    pub fn bit_width(&self) -> Option<u64> {
-        Some(match *self {
-            UintTy::Usize => return None,
-            UintTy::U8 => 8,
-            UintTy::U16 => 16,
-            UintTy::U32 => 32,
-            UintTy::U64 => 64,
-            UintTy::U128 => 128,
-        })
-    }
-
-    pub fn normalize(&self, target_width: u32) -> Self {
-        match self {
-            UintTy::Usize => match target_width {
-                16 => UintTy::U16,
-                32 => UintTy::U32,
-                64 => UintTy::U64,
-                _ => unreachable!(),
-            },
-            _ => *self,
         }
     }
 }
@@ -2059,7 +1999,7 @@ pub enum InlineAsmOperand {
         out_expr: Option<P<Expr>>,
     },
     Const {
-        expr: P<Expr>,
+        anon_const: AnonConst,
     },
     Sym {
         expr: P<Expr>,
@@ -2215,9 +2155,6 @@ pub struct FnDecl {
 }
 
 impl FnDecl {
-    pub fn get_self(&self) -> Option<ExplicitSelf> {
-        self.inputs.get(0).and_then(Param::to_self)
-    }
     pub fn has_self(&self) -> bool {
         self.inputs.get(0).map_or(false, Param::is_self)
     }

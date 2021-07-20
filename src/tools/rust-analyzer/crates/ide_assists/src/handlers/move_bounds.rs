@@ -1,8 +1,6 @@
 use syntax::{
-    ast::{self, edit::AstNodeEdit, make, AstNode, NameOwner, TypeBoundsOwner},
+    ast::{self, edit_in_place::GenericParamsOwnerEdit, make, AstNode, NameOwner, TypeBoundsOwner},
     match_ast,
-    SyntaxKind::*,
-    T,
 };
 
 use crate::{AssistContext, AssistId, AssistKind, Assists};
@@ -31,23 +29,6 @@ pub(crate) fn move_bounds_to_where_clause(acc: &mut Assists, ctx: &AssistContext
     }
 
     let parent = type_param_list.syntax().parent()?;
-    if parent.children_with_tokens().any(|it| it.kind() == WHERE_CLAUSE) {
-        return None;
-    }
-
-    let anchor = match_ast! {
-        match parent {
-            ast::Fn(it) => it.body()?.syntax().clone().into(),
-            ast::Trait(it) => it.assoc_item_list()?.syntax().clone().into(),
-            ast::Impl(it) => it.assoc_item_list()?.syntax().clone().into(),
-            ast::Enum(it) => it.variant_list()?.syntax().clone().into(),
-            ast::Struct(it) => {
-                it.syntax().children_with_tokens()
-                    .find(|it| it.kind() == RECORD_FIELD_LIST || it.kind() == T![;])?
-            },
-            _ => return None
-        }
-    };
 
     let target = type_param_list.syntax().text_range();
     acc.add(
@@ -55,29 +36,28 @@ pub(crate) fn move_bounds_to_where_clause(acc: &mut Assists, ctx: &AssistContext
         "Move to where clause",
         target,
         |edit| {
-            let new_params = type_param_list
-                .type_params()
-                .filter(|it| it.type_bound_list().is_some())
-                .map(|type_param| {
-                    let without_bounds = type_param.remove_bounds();
-                    (type_param, without_bounds)
-                });
+            let type_param_list = edit.make_ast_mut(type_param_list);
+            let parent = edit.make_mut(parent);
 
-            let new_type_param_list = type_param_list.replace_descendants(new_params);
-            edit.replace_ast(type_param_list.clone(), new_type_param_list);
-
-            let where_clause = {
-                let predicates = type_param_list.type_params().filter_map(build_predicate);
-                make::where_clause(predicates)
-            };
-
-            let to_insert = match anchor.prev_sibling_or_token() {
-                Some(ref elem) if elem.kind() == WHITESPACE => {
-                    format!("{} ", where_clause.syntax())
+            let where_clause: ast::WhereClause = match_ast! {
+                match parent {
+                    ast::Fn(it) => it.get_or_create_where_clause(),
+                    ast::Trait(it) => it.get_or_create_where_clause(),
+                    ast::Impl(it) => it.get_or_create_where_clause(),
+                    ast::Enum(it) => it.get_or_create_where_clause(),
+                    ast::Struct(it) => it.get_or_create_where_clause(),
+                    _ => return,
                 }
-                _ => format!(" {}", where_clause.syntax()),
             };
-            edit.insert(anchor.text_range().start(), to_insert);
+
+            for type_param in type_param_list.type_params() {
+                if let Some(tbl) = type_param.type_bound_list() {
+                    if let Some(predicate) = build_predicate(type_param) {
+                        where_clause.add_predicate(predicate)
+                    }
+                    tbl.remove()
+                }
+            }
         },
     )
 }
@@ -89,7 +69,7 @@ fn build_predicate(param: ast::TypeParam) -> Option<ast::WherePred> {
         make::path_unqualified(segment)
     };
     let predicate = make::where_pred(path, param.type_bound_list()?.bounds());
-    Some(predicate)
+    Some(predicate.clone_for_update())
 }
 
 #[cfg(test)]
@@ -102,12 +82,8 @@ mod tests {
     fn move_bounds_to_where_clause_fn() {
         check_assist(
             move_bounds_to_where_clause,
-            r#"
-            fn foo<T: u32, $0F: FnOnce(T) -> T>() {}
-            "#,
-            r#"
-            fn foo<T, F>() where T: u32, F: FnOnce(T) -> T {}
-            "#,
+            r#"fn foo<T: u32, $0F: FnOnce(T) -> T>() {}"#,
+            r#"fn foo<T, F>() where T: u32, F: FnOnce(T) -> T {}"#,
         );
     }
 
@@ -115,12 +91,8 @@ mod tests {
     fn move_bounds_to_where_clause_impl() {
         check_assist(
             move_bounds_to_where_clause,
-            r#"
-            impl<U: u32, $0T> A<U, T> {}
-            "#,
-            r#"
-            impl<U, T> A<U, T> where U: u32 {}
-            "#,
+            r#"impl<U: u32, $0T> A<U, T> {}"#,
+            r#"impl<U, T> A<U, T> where U: u32 {}"#,
         );
     }
 
@@ -128,12 +100,8 @@ mod tests {
     fn move_bounds_to_where_clause_struct() {
         check_assist(
             move_bounds_to_where_clause,
-            r#"
-            struct A<$0T: Iterator<Item = u32>> {}
-            "#,
-            r#"
-            struct A<T> where T: Iterator<Item = u32> {}
-            "#,
+            r#"struct A<$0T: Iterator<Item = u32>> {}"#,
+            r#"struct A<T> where T: Iterator<Item = u32> {}"#,
         );
     }
 
@@ -141,12 +109,8 @@ mod tests {
     fn move_bounds_to_where_clause_tuple_struct() {
         check_assist(
             move_bounds_to_where_clause,
-            r#"
-            struct Pair<$0T: u32>(T, T);
-            "#,
-            r#"
-            struct Pair<T>(T, T) where T: u32;
-            "#,
+            r#"struct Pair<$0T: u32>(T, T);"#,
+            r#"struct Pair<T>(T, T) where T: u32;"#,
         );
     }
 }

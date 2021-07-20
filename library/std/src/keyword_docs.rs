@@ -547,15 +547,18 @@ mod fn_keyword {}
 /// # fn code() { }
 /// # let iterator = 0..2;
 /// {
-///     let mut _iter = std::iter::IntoIterator::into_iter(iterator);
-///     loop {
-///         match _iter.next() {
-///             Some(loop_variable) => {
-///                 code()
-///             },
-///             None => break,
-///         }
-///     }
+///     let result = match IntoIterator::into_iter(iterator) {
+///         mut iter => loop {
+///             let next;
+///             match iter.next() {
+///                 Some(val) => next = val,
+///                 None => break,
+///             };
+///             let loop_variable = next;
+///             let () = { code(); };
+///         },
+///     };
+///     result
 /// }
 /// ```
 ///
@@ -1031,8 +1034,8 @@ mod mod_keyword {}
 /// };
 /// ```
 ///
-/// For more information on the `move` keyword, see the [closure]'s section
-/// of the Rust book or the [threads] section
+/// For more information on the `move` keyword, see the [closures][closure] section
+/// of the Rust book or the [threads] section.
 ///
 /// [closure]: ../book/ch13-01-closures.html
 /// [threads]: ../book/ch16-01-threads.html#using-move-closures-with-threads
@@ -1765,6 +1768,7 @@ mod super_keyword {}
 /// In the 2015 edition the parameters pattern was not needed for traits:
 ///
 /// ```rust,edition2015
+/// # #![allow(anonymous_parameters)]
 /// trait Tr {
 ///     fn f(i32);
 /// }

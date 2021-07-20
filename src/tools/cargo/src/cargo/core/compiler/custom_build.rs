@@ -3,10 +3,12 @@ use super::{fingerprint, Context, LinkType, Unit};
 use crate::core::compiler::context::Metadata;
 use crate::core::compiler::job_queue::JobState;
 use crate::core::{profiles::ProfileRoot, PackageId};
-use crate::util::errors::{CargoResult, CargoResultExt};
+use crate::util::errors::CargoResult;
 use crate::util::machine_message::{self, Message};
-use crate::util::{self, internal, paths, profile};
+use crate::util::{internal, profile};
+use anyhow::Context as _;
 use cargo_platform::Cfg;
+use cargo_util::paths;
 use std::collections::hash_map::{Entry, HashMap};
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -306,7 +308,7 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
         // If we have an old build directory, then just move it into place,
         // otherwise create it!
         paths::create_dir_all(&script_out_dir)
-            .chain_err(|| "failed to create script output directory for build command")?;
+            .with_context(|| "failed to create script output directory for build command")?;
 
         // For all our native lib dependencies, pick up their metadata to pass
         // along to this custom build command. We're also careful to augment our
@@ -368,7 +370,7 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
                 },
                 true,
             )
-            .chain_err(|| format!("failed to run custom build command for `{}`", pkg_descr));
+            .with_context(|| format!("failed to run custom build command for `{}`", pkg_descr));
 
         if let Err(error) = output {
             insert_warnings_in_build_outputs(
@@ -394,7 +396,7 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
         // modified in the middle of the build.
         paths::set_file_time_no_err(output_file, timestamp);
         paths::write(&err_file, &output.stderr)?;
-        paths::write(&root_output_file, util::path2bytes(&script_out_dir)?)?;
+        paths::write(&root_output_file, paths::path2bytes(&script_out_dir)?)?;
         let parsed_output = BuildOutput::parse(
             &output.stdout,
             library_name,
@@ -866,7 +868,7 @@ fn prev_build_output(cx: &mut Context<'_, '_>, unit: &Unit) -> (Option<BuildOutp
     let output_file = script_run_dir.join("output");
 
     let prev_script_out_dir = paths::read_bytes(&root_output_file)
-        .and_then(|bytes| util::bytes2path(&bytes))
+        .and_then(|bytes| paths::bytes2path(&bytes))
         .unwrap_or_else(|_| script_out_dir.clone());
 
     let extra_link_arg = cx.bcx.config.cli_unstable().extra_link_arg;

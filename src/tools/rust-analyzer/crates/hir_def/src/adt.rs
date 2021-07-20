@@ -15,6 +15,7 @@ use tt::{Delimiter, DelimiterKind, Leaf, Subtree, TokenTree};
 use crate::{
     body::{CfgExpander, LowerCtx},
     db::DefDatabase,
+    intern::Interned,
     item_tree::{AttrOwner, Field, Fields, ItemTree, ModItem, RawVisibilityId},
     src::HasChildSource,
     src::HasSource,
@@ -31,12 +32,14 @@ pub struct StructData {
     pub name: Name,
     pub variant_data: Arc<VariantData>,
     pub repr: Option<ReprKind>,
+    pub visibility: RawVisibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumData {
     pub name: Name,
     pub variants: Arena<EnumVariantData>,
+    pub visibility: RawVisibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +59,7 @@ pub enum VariantData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldData {
     pub name: Name,
-    pub type_ref: TypeRef,
+    pub type_ref: Interned<TypeRef>,
     pub visibility: RawVisibility,
 }
 
@@ -92,7 +95,7 @@ impl StructData {
     pub(crate) fn struct_data_query(db: &dyn DefDatabase, id: StructId) -> Arc<StructData> {
         let loc = id.lookup(db);
         let krate = loc.container.krate;
-        let item_tree = db.item_tree(loc.id.file_id);
+        let item_tree = loc.id.item_tree(db);
         let repr = repr_from_value(db, krate, &item_tree, ModItem::from(loc.id.value).into());
         let cfg_options = db.crate_graph()[loc.container.krate].cfg_options.clone();
 
@@ -102,12 +105,13 @@ impl StructData {
             name: strukt.name.clone(),
             variant_data: Arc::new(variant_data),
             repr,
+            visibility: item_tree[strukt.visibility].clone(),
         })
     }
     pub(crate) fn union_data_query(db: &dyn DefDatabase, id: UnionId) -> Arc<StructData> {
         let loc = id.lookup(db);
         let krate = loc.container.krate;
-        let item_tree = db.item_tree(loc.id.file_id);
+        let item_tree = loc.id.item_tree(db);
         let repr = repr_from_value(db, krate, &item_tree, ModItem::from(loc.id.value).into());
         let cfg_options = db.crate_graph()[loc.container.krate].cfg_options.clone();
 
@@ -118,6 +122,7 @@ impl StructData {
             name: union.name.clone(),
             variant_data: Arc::new(variant_data),
             repr,
+            visibility: item_tree[union.visibility].clone(),
         })
     }
 }
@@ -126,7 +131,7 @@ impl EnumData {
     pub(crate) fn enum_data_query(db: &dyn DefDatabase, e: EnumId) -> Arc<EnumData> {
         let loc = e.lookup(db);
         let krate = loc.container.krate;
-        let item_tree = db.item_tree(loc.id.file_id);
+        let item_tree = loc.id.item_tree(db);
         let cfg_options = db.crate_graph()[krate].cfg_options.clone();
 
         let enum_ = &item_tree[loc.id.value];
@@ -150,7 +155,11 @@ impl EnumData {
             }
         }
 
-        Arc::new(EnumData { name: enum_.name.clone(), variants })
+        Arc::new(EnumData {
+            name: enum_.name.clone(),
+            variants,
+            visibility: item_tree[enum_.visibility].clone(),
+        })
     }
 
     pub fn variant(&self, name: &Name) -> Option<LocalEnumVariantId> {
@@ -284,7 +293,7 @@ fn lower_struct(
                     || Either::Left(fd.clone()),
                     || FieldData {
                         name: Name::new_tuple_field(i),
-                        type_ref: TypeRef::from_ast_opt(&ctx, fd.ty()),
+                        type_ref: Interned::new(TypeRef::from_ast_opt(&ctx, fd.ty())),
                         visibility: RawVisibility::from_ast(db, ast.with_value(fd.visibility())),
                     },
                 );
@@ -301,7 +310,7 @@ fn lower_struct(
                     || Either::Right(fd.clone()),
                     || FieldData {
                         name: fd.name().map(|n| n.as_name()).unwrap_or_else(Name::missing),
-                        type_ref: TypeRef::from_ast_opt(&ctx, fd.ty()),
+                        type_ref: Interned::new(TypeRef::from_ast_opt(&ctx, fd.ty())),
                         visibility: RawVisibility::from_ast(db, ast.with_value(fd.visibility())),
                     },
                 );
@@ -350,7 +359,7 @@ fn lower_field(
 ) -> FieldData {
     FieldData {
         name: field.name.clone(),
-        type_ref: item_tree[field.type_ref].clone(),
+        type_ref: field.type_ref.clone(),
         visibility: item_tree[override_visibility.unwrap_or(field.visibility)].clone(),
     }
 }

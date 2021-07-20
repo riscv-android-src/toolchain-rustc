@@ -29,8 +29,8 @@ a!{}
 ```rust,compile_fail
 #![recursion_limit = "1"]
 
-// This fails because it requires two recursive steps to auto-derefence.
-(|_: &u8| {})(&&1);
+// This fails because it requires two recursive steps to auto-dereference.
+(|_: &u8| {})(&&&1);
 ```
 
 ## The `type_length_limit` attribute

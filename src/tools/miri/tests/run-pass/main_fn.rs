@@ -1,5 +1,7 @@
-#![feature(main)]
+#![feature(imported_main)]
 
-#[main]
-fn foo() {
+mod foo {
+    pub(crate) fn bar() {}
 }
+
+use foo::bar as main;

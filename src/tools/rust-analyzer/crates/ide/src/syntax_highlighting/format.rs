@@ -28,10 +28,10 @@ pub(super) fn highlight_format_string(
 }
 
 fn is_format_string(string: &ast::String) -> Option<()> {
-    let parent = string.syntax().parent();
+    let parent = string.syntax().parent()?;
 
     let name = parent.parent().and_then(ast::MacroCall::cast)?.path()?.segment()?.name_ref()?;
-    if !matches!(name.text(), "format_args" | "format_args_nl") {
+    if !matches!(name.text().as_str(), "format_args" | "format_args_nl") {
         return None;
     }
 

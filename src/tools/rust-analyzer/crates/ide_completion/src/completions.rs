@@ -2,36 +2,38 @@
 
 pub(crate) mod attribute;
 pub(crate) mod dot;
-pub(crate) mod record;
-pub(crate) mod pattern;
+pub(crate) mod flyimport;
 pub(crate) mod fn_param;
 pub(crate) mod keyword;
-pub(crate) mod snippet;
-pub(crate) mod qualified_path;
-pub(crate) mod unqualified_path;
-pub(crate) mod postfix;
+pub(crate) mod lifetime;
 pub(crate) mod macro_in_item_position;
-pub(crate) mod trait_impl;
 pub(crate) mod mod_;
-pub(crate) mod flyimport;
+pub(crate) mod pattern;
+pub(crate) mod postfix;
+pub(crate) mod qualified_path;
+pub(crate) mod record;
+pub(crate) mod snippet;
+pub(crate) mod trait_impl;
+pub(crate) mod unqualified_path;
 
 use std::iter;
 
 use hir::{known, ModPath, ScopeDef, Type};
+use ide_db::SymbolKind;
 
 use crate::{
-    item::Builder,
+    item::{Builder, CompletionKind},
     render::{
         const_::render_const,
         enum_variant::render_variant,
-        function::render_fn,
+        function::{render_fn, render_method},
         macro_::render_macro,
         pattern::{render_struct_pat, render_variant_pat},
         render_field, render_resolution, render_tuple_field,
         type_alias::render_type_alias,
         RenderContext,
     },
-    CompletionContext, CompletionItem,
+    CompletionContext, CompletionItem, CompletionItemKind,
 };
 
 /// Represents an in-progress set of completions being built.
@@ -56,7 +58,7 @@ impl Builder {
 
 impl Completions {
     pub(crate) fn add(&mut self, item: CompletionItem) {
-        self.buf.push(item.into())
+        self.buf.push(item)
     }
 
     pub(crate) fn add_all<I>(&mut self, items: I)
@@ -75,6 +77,13 @@ impl Completions {
     pub(crate) fn add_tuple_field(&mut self, ctx: &CompletionContext, field: usize, ty: &Type) {
         let item = render_tuple_field(RenderContext::new(ctx), field, ty);
         self.add(item);
+    }
+
+    pub(crate) fn add_static_lifetime(&mut self, ctx: &CompletionContext) {
+        let mut item =
+            CompletionItem::new(CompletionKind::Reference, ctx.source_range(), "'static");
+        item.kind(CompletionItemKind::SymbolKind(SymbolKind::LifetimeParam));
+        self.add(item.build());
     }
 
     pub(crate) fn add_resolution(
@@ -110,6 +119,17 @@ impl Completions {
         local_name: Option<String>,
     ) {
         if let Some(item) = render_fn(RenderContext::new(ctx), None, local_name, func) {
+            self.add(item)
+        }
+    }
+
+    pub(crate) fn add_method(
+        &mut self,
+        ctx: &CompletionContext,
+        func: hir::Function,
+        local_name: Option<String>,
+    ) {
+        if let Some(item) = render_method(RenderContext::new(ctx), None, local_name, func) {
             self.add(item)
         }
     }
@@ -200,7 +220,7 @@ fn complete_enum_variants(
         };
 
         if let Some(impl_) = ctx.impl_def.as_ref().and_then(|impl_| ctx.sema.to_def(impl_)) {
-            if impl_.target_ty(ctx.db) == *ty {
+            if impl_.self_ty(ctx.db) == *ty {
                 for &variant in &variants {
                     let self_path = hir::ModPath::from_segments(
                         hir::PathKind::Plain,

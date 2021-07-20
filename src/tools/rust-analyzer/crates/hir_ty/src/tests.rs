@@ -288,7 +288,7 @@ fn visit_module(
     }
 
     fn visit_body(db: &TestDB, body: &Body, cb: &mut dyn FnMut(DefWithBodyId)) {
-        for def_map in body.block_scopes.iter().filter_map(|block| db.block_def_map(*block)) {
+        for (_, def_map) in body.blocks(db) {
             for (mod_id, _) in def_map.modules() {
                 visit_module(db, &def_map, mod_id, cb);
             }
@@ -368,4 +368,73 @@ fn check_infer_with_mismatches(ra_fixture: &str, expect: Expect) {
     let mut actual = infer_with_mismatches(ra_fixture, true);
     actual.push('\n');
     expect.assert_eq(&actual);
+}
+
+#[test]
+fn salsa_bug() {
+    let (mut db, pos) = TestDB::with_position(
+        "
+        //- /lib.rs
+        trait Index {
+            type Output;
+        }
+
+        type Key<S: UnificationStoreBase> = <S as UnificationStoreBase>::Key;
+
+        pub trait UnificationStoreBase: Index<Output = Key<Self>> {
+            type Key;
+
+            fn len(&self) -> usize;
+        }
+
+        pub trait UnificationStoreMut: UnificationStoreBase {
+            fn push(&mut self, value: Self::Key);
+        }
+
+        fn main() {
+            let x = 1;
+            x.push(1);$0
+        }
+    ",
+    );
+
+    let module = db.module_for_file(pos.file_id);
+    let crate_def_map = module.def_map(&db);
+    visit_module(&db, &crate_def_map, module.local_id, &mut |def| {
+        db.infer(def);
+    });
+
+    let new_text = "
+        //- /lib.rs
+        trait Index {
+            type Output;
+        }
+
+        type Key<S: UnificationStoreBase> = <S as UnificationStoreBase>::Key;
+
+        pub trait UnificationStoreBase: Index<Output = Key<Self>> {
+            type Key;
+
+            fn len(&self) -> usize;
+        }
+
+        pub trait UnificationStoreMut: UnificationStoreBase {
+            fn push(&mut self, value: Self::Key);
+        }
+
+        fn main() {
+
+            let x = 1;
+            x.push(1);
+        }
+    "
+    .to_string();
+
+    db.set_file_text(pos.file_id, Arc::new(new_text));
+
+    let module = db.module_for_file(pos.file_id);
+    let crate_def_map = module.def_map(&db);
+    visit_module(&db, &crate_def_map, module.local_id, &mut |def| {
+        db.infer(def);
+    });
 }

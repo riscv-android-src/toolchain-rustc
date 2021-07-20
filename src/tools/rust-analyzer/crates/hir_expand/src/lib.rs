@@ -15,6 +15,7 @@ pub mod proc_macro;
 pub mod quote;
 pub mod eager;
 
+use either::Either;
 pub use mbe::{ExpandError, ExpandResult};
 
 use std::hash::Hash;
@@ -83,7 +84,11 @@ impl HirFileId {
                     }
                     MacroCallId::EagerMacro(id) => {
                         let loc = db.lookup_intern_eager_expansion(id);
-                        loc.call.file_id
+                        if let Some(included_file) = loc.included_file {
+                            return included_file;
+                        } else {
+                            loc.call.file_id
+                        }
                     }
                 };
                 file_id.original_file(db)
@@ -143,10 +148,10 @@ impl HirFileId {
 
                 let arg_tt = loc.kind.arg(db)?;
 
-                let def = loc.def.ast_id.and_then(|id| {
+                let def = loc.def.ast_id().left().and_then(|id| {
                     let def_tt = match id.to_node(db) {
                         ast::Macro::MacroRules(mac) => mac.token_tree()?,
-                        ast::Macro::MacroDef(_) => return None,
+                        ast::Macro::MacroDef(mac) => mac.body()?,
                     };
                     Some(InFile::new(id.file_id, def_tt))
                 });
@@ -180,12 +185,27 @@ impl HirFileId {
                 };
                 let loc: MacroCallLoc = db.lookup_intern_macro(lazy_id);
                 let item = match loc.def.kind {
-                    MacroDefKind::BuiltInDerive(_) => loc.kind.node(db),
+                    MacroDefKind::BuiltInDerive(..) => loc.kind.node(db),
                     _ => return None,
                 };
                 Some(item.with_value(ast::Item::cast(item.value.clone())?))
             }
         }
+    }
+
+    /// Return whether this file is an include macro
+    pub fn is_include_macro(&self, db: &dyn db::AstDatabase) -> bool {
+        match self.0 {
+            HirFileIdRepr::MacroFile(macro_file) => match macro_file.macro_call_id {
+                MacroCallId::EagerMacro(id) => {
+                    let loc = db.lookup_intern_eager_expansion(id);
+                    return loc.included_file.is_some();
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        false
     }
 }
 
@@ -224,7 +244,6 @@ impl From<EagerMacroId> for MacroCallId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MacroDefId {
     pub krate: CrateId,
-    pub ast_id: Option<AstId<ast::Macro>>,
     pub kind: MacroDefKind,
 
     pub local_inner: bool,
@@ -239,16 +258,27 @@ impl MacroDefId {
     ) -> LazyMacroId {
         db.intern_macro(MacroCallLoc { def: self, krate, kind })
     }
+
+    pub fn ast_id(&self) -> Either<AstId<ast::Macro>, AstId<ast::Fn>> {
+        let id = match &self.kind {
+            MacroDefKind::Declarative(id) => id,
+            MacroDefKind::BuiltIn(_, id) => id,
+            MacroDefKind::BuiltInDerive(_, id) => id,
+            MacroDefKind::BuiltInEager(_, id) => id,
+            MacroDefKind::ProcMacro(_, id) => return Either::Right(*id),
+        };
+        Either::Left(*id)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MacroDefKind {
-    Declarative,
-    BuiltIn(BuiltinFnLikeExpander),
+    Declarative(AstId<ast::Macro>),
+    BuiltIn(BuiltinFnLikeExpander, AstId<ast::Macro>),
     // FIXME: maybe just Builtin and rename BuiltinFnLikeExpander to BuiltinExpander
-    BuiltInDerive(BuiltinDeriveExpander),
-    BuiltInEager(EagerExpander),
-    ProcMacro(ProcMacroExpander),
+    BuiltInDerive(BuiltinDeriveExpander, AstId<ast::Macro>),
+    BuiltInEager(EagerExpander, AstId<ast::Macro>),
+    ProcMacro(ProcMacroExpander, AstId<ast::Fn>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -260,22 +290,27 @@ pub struct MacroCallLoc {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MacroCallKind {
-    FnLike(AstId<ast::MacroCall>),
-    Attr(AstId<ast::Item>, String),
+    FnLike { ast_id: AstId<ast::MacroCall> },
+    Derive { ast_id: AstId<ast::Item>, derive_name: String, derive_attr: AttrId },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AttrId(pub u32);
 
 impl MacroCallKind {
     fn file_id(&self) -> HirFileId {
         match self {
-            MacroCallKind::FnLike(ast_id) => ast_id.file_id,
-            MacroCallKind::Attr(ast_id, _) => ast_id.file_id,
+            MacroCallKind::FnLike { ast_id, .. } => ast_id.file_id,
+            MacroCallKind::Derive { ast_id, .. } => ast_id.file_id,
         }
     }
 
     fn node(&self, db: &dyn db::AstDatabase) -> InFile<SyntaxNode> {
         match self {
-            MacroCallKind::FnLike(ast_id) => ast_id.with_value(ast_id.to_node(db).syntax().clone()),
-            MacroCallKind::Attr(ast_id, _) => {
+            MacroCallKind::FnLike { ast_id, .. } => {
+                ast_id.with_value(ast_id.to_node(db).syntax().clone())
+            }
+            MacroCallKind::Derive { ast_id, .. } => {
                 ast_id.with_value(ast_id.to_node(db).syntax().clone())
             }
         }
@@ -283,10 +318,10 @@ impl MacroCallKind {
 
     fn arg(&self, db: &dyn db::AstDatabase) -> Option<SyntaxNode> {
         match self {
-            MacroCallKind::FnLike(ast_id) => {
+            MacroCallKind::FnLike { ast_id, .. } => {
                 Some(ast_id.to_node(db).token_tree()?.syntax().clone())
             }
-            MacroCallKind::Attr(ast_id, _) => Some(ast_id.to_node(db).syntax().clone()),
+            MacroCallKind::Derive { ast_id, .. } => Some(ast_id.to_node(db).syntax().clone()),
         }
     }
 }
@@ -304,6 +339,8 @@ pub struct EagerCallLoc {
     pub(crate) subtree: Arc<tt::Subtree>,
     pub(crate) krate: CrateId,
     pub(crate) call: AstId<ast::MacroCall>,
+    // The included file ID of the include macro.
+    pub(crate) included_file: Option<FileId>,
 }
 
 /// ExpansionInfo mainly describes how to map text range between src and expanded macro
@@ -475,7 +512,7 @@ fn original_range_opt(
     let single = skip_trivia_token(node.value.first_token()?, Direction::Next)?
         == skip_trivia_token(node.value.last_token()?, Direction::Prev)?;
 
-    Some(node.value.descendants().find_map(|it| {
+    node.value.descendants().find_map(|it| {
         let first = skip_trivia_token(it.first_token()?, Direction::Next)?;
         let first = ascend_call_token(db, &expansion, node.with_value(first))?;
 
@@ -487,7 +524,7 @@ fn original_range_opt(
         }
 
         Some(first.with_value(first.value.text_range().cover(last.value.text_range())))
-    })?)
+    })
 }
 
 fn ascend_call_token(
@@ -510,7 +547,10 @@ impl InFile<SyntaxToken> {
         self,
         db: &dyn db::AstDatabase,
     ) -> impl Iterator<Item = InFile<SyntaxNode>> + '_ {
-        self.map(|it| it.parent()).ancestors_with_macros(db)
+        self.value
+            .parent()
+            .into_iter()
+            .flat_map(move |parent| InFile::new(self.file_id, parent).ancestors_with_macros(db))
     }
 }
 

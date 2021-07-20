@@ -36,7 +36,7 @@ impl Progress {
 
 impl GlobalState {
     pub(crate) fn show_message(&mut self, typ: lsp_types::MessageType, message: String) {
-        let message = message.into();
+        let message = message;
         self.send_notification::<lsp_types::notification::ShowMessage>(
             lsp_types::ShowMessageParams { typ, message },
         )
@@ -150,8 +150,16 @@ pub(crate) fn all_edits_are_disjoint(
             edit_ranges.push(edit.range);
         }
         Some(lsp_types::CompletionTextEdit::InsertAndReplace(edit)) => {
-            edit_ranges.push(edit.insert);
-            edit_ranges.push(edit.replace);
+            let replace = edit.replace;
+            let insert = edit.insert;
+            if replace.start != insert.start
+                || insert.start > insert.end
+                || insert.end > replace.end
+            {
+                // insert has to be a prefix of replace but it is not
+                return false;
+            }
+            edit_ranges.push(replace);
         }
         None => {}
     }
@@ -314,18 +322,6 @@ mod tests {
             Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
                 new_text: "new_text".to_string(),
                 insert: disjoint_edit.range,
-                replace: joint_edit.range,
-            }));
-        completion_with_joint_edits.additional_text_edits = None;
-        assert!(
-            !all_edits_are_disjoint(&completion_with_joint_edits, &[]),
-            "Completion with disjoint edits fails the validation even with empty extra edits"
-        );
-
-        completion_with_joint_edits.text_edit =
-            Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
-                new_text: "new_text".to_string(),
-                insert: disjoint_edit.range,
                 replace: disjoint_edit_2.range,
             }));
         completion_with_joint_edits.additional_text_edits = Some(vec![joint_edit]);
@@ -360,11 +356,11 @@ mod tests {
             "Completion with disjoint edits is valid"
         );
         assert!(
-            !all_edits_are_disjoint(&completion_with_disjoint_edits, &[joint_edit.clone()]),
+            !all_edits_are_disjoint(&completion_with_disjoint_edits, &[joint_edit]),
             "Completion with disjoint edits and joint extra edit is invalid"
         );
         assert!(
-            all_edits_are_disjoint(&completion_with_disjoint_edits, &[disjoint_edit_2.clone()]),
+            all_edits_are_disjoint(&completion_with_disjoint_edits, &[disjoint_edit_2]),
             "Completion with disjoint edits and joint extra edit is valid"
         );
     }

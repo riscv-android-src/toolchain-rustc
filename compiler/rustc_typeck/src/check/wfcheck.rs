@@ -24,6 +24,7 @@ use rustc_trait_selection::opaque_types::may_define_opaque_type;
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use rustc_trait_selection::traits::{self, ObligationCause, ObligationCauseCode};
 
+use std::iter;
 use std::ops::ControlFlow;
 
 /// Helper type of a temporary returned by `.for_item(...)`.
@@ -314,17 +315,20 @@ fn check_param_wf(tcx: TyCtxt<'_>, param: &hir::GenericParam<'_>) {
                         ),
                     )
                 } else {
-                    tcx.sess
-                        .struct_span_err(
-                            hir_ty.span,
-                            &format!(
-                                "{} is forbidden as the type of a const generic parameter",
-                                unsupported_type
-                            ),
-                        )
-                        .note("the only supported types are integers, `bool` and `char`")
-                        .help("more complex types are supported with `#![feature(const_generics)]`")
-                        .emit()
+                    let mut err = tcx.sess.struct_span_err(
+                        hir_ty.span,
+                        &format!(
+                            "{} is forbidden as the type of a const generic parameter",
+                            unsupported_type
+                        ),
+                    );
+                    err.note("the only supported types are integers, `bool` and `char`");
+                    if tcx.sess.is_nightly_build() {
+                        err.help(
+                            "more complex types are supported with `#![feature(const_generics)]`",
+                        );
+                    }
+                    err.emit()
                 }
             };
 
@@ -713,10 +717,11 @@ fn check_where_clauses<'tcx, 'fcx>(
     let generics = tcx.generics_of(def_id);
 
     let is_our_default = |def: &ty::GenericParamDef| match def.kind {
-        GenericParamDefKind::Type { has_default, .. } => {
+        GenericParamDefKind::Type { has_default, .. }
+        | GenericParamDefKind::Const { has_default } => {
             has_default && def.index >= generics.parent_count as u32
         }
-        _ => unreachable!(),
+        GenericParamDefKind::Lifetime => unreachable!(),
     };
 
     // Check that concrete defaults are well-formed. See test `type-check-defaults.rs`.
@@ -726,20 +731,36 @@ fn check_where_clauses<'tcx, 'fcx>(
     //
     // Here, the default `Vec<[u32]>` is not WF because `[u32]: Sized` does not hold.
     for param in &generics.params {
-        if let GenericParamDefKind::Type { .. } = param.kind {
-            if is_our_default(&param) {
-                let ty = fcx.tcx.type_of(param.def_id);
-                // Ignore dependent defaults -- that is, where the default of one type
-                // parameter includes another (e.g., `<T, U = T>`). In those cases, we can't
-                // be sure if it will error or not as user might always specify the other.
-                if !ty.needs_subst() {
+        match param.kind {
+            GenericParamDefKind::Type { .. } => {
+                if is_our_default(&param) {
+                    let ty = fcx.tcx.type_of(param.def_id);
+                    // Ignore dependent defaults -- that is, where the default of one type
+                    // parameter includes another (e.g., `<T, U = T>`). In those cases, we can't
+                    // be sure if it will error or not as user might always specify the other.
+                    if !ty.needs_subst() {
+                        fcx.register_wf_obligation(
+                            ty.into(),
+                            fcx.tcx.def_span(param.def_id),
+                            ObligationCauseCode::MiscObligation,
+                        );
+                    }
+                }
+            }
+            GenericParamDefKind::Const { .. } => {
+                // FIXME(const_generics_defaults): Figure out if this
+                // is the behavior we want, see the comment further below.
+                if is_our_default(&param) {
+                    let default_ct = tcx.const_param_default(param.def_id);
                     fcx.register_wf_obligation(
-                        ty.into(),
+                        default_ct.into(),
                         fcx.tcx.def_span(param.def_id),
                         ObligationCauseCode::MiscObligation,
                     );
                 }
             }
+            // Doesn't have defaults.
+            GenericParamDefKind::Lifetime => {}
         }
     }
 
@@ -771,9 +792,25 @@ fn check_where_clauses<'tcx, 'fcx>(
 
                 fcx.tcx.mk_param_from_def(param)
             }
+            GenericParamDefKind::Const { .. } => {
+                // FIXME(const_generics_defaults): I(@lcnr) feel like always
+                // using the const parameter is the right choice here, even
+                // if it needs substs.
+                //
+                // Before stabilizing this we probably want to get some tests
+                // where this makes a difference and figure out what's the exact
+                // behavior we want here.
 
-            GenericParamDefKind::Const => {
-                // FIXME(const_generics_defaults)
+                // If the param has a default, ...
+                if is_our_default(param) {
+                    let default_ct = tcx.const_param_default(param.def_id);
+                    // ... and it's not a dependent default, ...
+                    if !default_ct.needs_subst() {
+                        // ... then substitute it with the default.
+                        return default_ct.into();
+                    }
+                }
+
                 fcx.tcx.mk_param_from_def(param)
             }
         }
@@ -857,7 +894,7 @@ fn check_where_clauses<'tcx, 'fcx>(
     debug!("check_where_clauses: predicates={:?}", predicates.predicates);
     assert_eq!(predicates.predicates.len(), predicates.spans.len());
     let wf_obligations =
-        predicates.predicates.iter().zip(predicates.spans.iter()).flat_map(|(&p, &sp)| {
+        iter::zip(&predicates.predicates, &predicates.spans).flat_map(|(&p, &sp)| {
             traits::wf::predicate_obligations(fcx, fcx.param_env, fcx.body_id, p, sp)
         });
 
@@ -879,8 +916,8 @@ fn check_fn_or_method<'fcx, 'tcx>(
     let sig = fcx.normalize_associated_types_in(span, sig);
     let sig = fcx.tcx.liberate_late_bound_regions(def_id, sig);
 
-    for (&input_ty, span) in sig.inputs().iter().zip(hir_decl.inputs.iter().map(|t| t.span)) {
-        fcx.register_wf_obligation(input_ty.into(), span, ObligationCauseCode::MiscObligation);
+    for (&input_ty, ty) in iter::zip(sig.inputs(), hir_decl.inputs) {
+        fcx.register_wf_obligation(input_ty.into(), ty.span, ObligationCauseCode::MiscObligation);
     }
     implied_bounds.extend(sig.inputs());
 
@@ -1060,13 +1097,14 @@ fn check_method_receiver<'fcx, 'tcx>(
     debug!("check_method_receiver: sig={:?}", sig);
 
     let self_ty = fcx.normalize_associated_types_in(span, self_ty);
-    let self_ty = fcx.tcx.liberate_late_bound_regions(method.def_id, ty::Binder::bind(self_ty));
+    let self_ty =
+        fcx.tcx.liberate_late_bound_regions(method.def_id, ty::Binder::bind(self_ty, fcx.tcx));
 
     let receiver_ty = sig.inputs()[0];
 
     let receiver_ty = fcx.normalize_associated_types_in(span, receiver_ty);
     let receiver_ty =
-        fcx.tcx.liberate_late_bound_regions(method.def_id, ty::Binder::bind(receiver_ty));
+        fcx.tcx.liberate_late_bound_regions(method.def_id, ty::Binder::bind(receiver_ty, fcx.tcx));
 
     if fcx.tcx.features().arbitrary_self_types {
         if !receiver_is_valid(fcx, span, receiver_ty, self_ty, true) {

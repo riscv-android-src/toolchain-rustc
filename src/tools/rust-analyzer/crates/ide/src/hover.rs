@@ -1,7 +1,7 @@
 use either::Either;
 use hir::{
-    Adt, AsAssocItem, AssocItemContainer, FieldSource, GenericParam, HasAttrs, HasSource,
-    HirDisplay, Module, ModuleDef, ModuleSource, Semantics,
+    AsAssocItem, AssocItemContainer, GenericParam, HasAttrs, HasSource, HirDisplay, InFile, Module,
+    ModuleDef, Semantics,
 };
 use ide_db::{
     base_db::SourceDatabase,
@@ -11,11 +11,14 @@ use ide_db::{
 };
 use itertools::Itertools;
 use stdx::format_to;
-use syntax::{ast, match_ast, AstNode, SyntaxKind::*, SyntaxToken, TokenAtOffset, T};
+use syntax::{ast, match_ast, AstNode, AstToken, SyntaxKind::*, SyntaxToken, TokenAtOffset, T};
 
 use crate::{
-    display::{macro_label, ShortLabel, TryToNav},
-    doc_links::{remove_links, rewrite_links},
+    display::{macro_label, TryToNav},
+    doc_links::{
+        doc_attributes, extract_definitions_from_markdown, remove_links, resolve_doc_path_for_def,
+        rewrite_links,
+    },
     markdown_remove::remove_markdown,
     markup::Markup,
     runnables::{runnable_fn, runnable_mod},
@@ -79,6 +82,8 @@ pub struct HoverResult {
 //
 // Shows additional information, like type of an expression or documentation for definition when "focusing" code.
 // Focusing is usually hovering with a mouse, but can also be triggered with a shortcut.
+//
+// image::https://user-images.githubusercontent.com/48062697/113020658-b5f98b80-917a-11eb-9f88-3dbc27320c95.gif[]
 pub(crate) fn hover(
     db: &RootDatabase,
     position: FilePosition,
@@ -92,21 +97,44 @@ pub(crate) fn hover(
 
     let mut res = HoverResult::default();
 
-    let node = token.parent();
+    let node = token.parent()?;
+    let mut range = None;
     let definition = match_ast! {
         match node {
             // we don't use NameClass::referenced_or_defined here as we do not want to resolve
             // field pattern shorthands to their definition
             ast::Name(name) => NameClass::classify(&sema, &name).and_then(|class| match class {
                 NameClass::ConstReference(def) => Some(def),
-                def => def.defined(sema.db),
+                def => def.defined(db),
             }),
-            ast::NameRef(name_ref) => NameRefClass::classify(&sema, &name_ref).map(|d| d.referenced(sema.db)),
-            ast::Lifetime(lifetime) => NameClass::classify_lifetime(&sema, &lifetime)
-                .map_or_else(|| NameRefClass::classify_lifetime(&sema, &lifetime).map(|d| d.referenced(sema.db)), |d| d.defined(sema.db)),
-            _ => None,
+            ast::NameRef(name_ref) => {
+                NameRefClass::classify(&sema, &name_ref).map(|d| d.referenced(db))
+            },
+            ast::Lifetime(lifetime) => NameClass::classify_lifetime(&sema, &lifetime).map_or_else(
+                || NameRefClass::classify_lifetime(&sema, &lifetime).map(|d| d.referenced(db)),
+                |d| d.defined(db),
+            ),
+
+            _ => ast::Comment::cast(token.clone())
+                .and_then(|_| {
+                    let (attributes, def) = doc_attributes(&sema, &node)?;
+                    let (docs, doc_mapping) = attributes.docs_with_rangemap(db)?;
+                    let (idl_range, link, ns) =
+                        extract_definitions_from_markdown(docs.as_str()).into_iter().find_map(|(range, link, ns)| {
+                            let InFile { file_id, value: range } = doc_mapping.map(range.clone())?;
+                            if file_id == position.file_id.into() && range.contains(position.offset) {
+                                Some((range, link, ns))
+                            } else {
+                                None
+                            }
+                        })?;
+                    range = Some(idl_range);
+                    resolve_doc_path_for_def(db, def, &link, ns)
+                })
+                .map(Definition::ModuleDef),
         }
     };
+
     if let Some(definition) = definition {
         let famous_defs = match &definition {
             Definition::ModuleDef(ModuleDef::BuiltinType(_)) => {
@@ -128,15 +156,16 @@ pub(crate) fn hover(
                 res.actions.push(action);
             }
 
-            let range = sema.original_range(&node).range;
+            let range = range.unwrap_or_else(|| sema.original_range(&node).range);
             return Some(RangeInfo::new(range, res));
         }
     }
 
     if token.kind() == syntax::SyntaxKind::COMMENT {
-        // don't highlight the entire parent node on comment hover
+        cov_mark::hit!(no_highlight_on_comment_hover);
         return None;
     }
+
     if let res @ Some(_) = hover_for_keyword(&sema, links_in_hover, markdown, &token) {
         return res;
     }
@@ -176,7 +205,7 @@ fn show_implementations_action(db: &RootDatabase, def: Definition) -> Option<Hov
     let adt = match def {
         Definition::ModuleDef(ModuleDef::Trait(it)) => return it.try_to_nav(db).map(to_action),
         Definition::ModuleDef(ModuleDef::Adt(it)) => Some(it),
-        Definition::SelfType(it) => it.target_ty(db).as_adt(),
+        Definition::SelfType(it) => it.self_ty(db).as_adt(),
         _ => None,
     }?;
     adt.try_to_nav(db).map(to_action)
@@ -299,7 +328,7 @@ fn definition_owner_name(db: &RootDatabase, def: &Definition) -> Option<String> 
         Definition::ModuleDef(md) => match md {
             ModuleDef::Function(f) => match f.as_assoc_item(db)?.container(db) {
                 AssocItemContainer::Trait(t) => Some(t.name(db)),
-                AssocItemContainer::Impl(i) => i.target_ty(db).as_adt().map(|adt| adt.name(db)),
+                AssocItemContainer::Impl(i) => i.self_ty(db).as_adt().map(|adt| adt.name(db)),
             },
             ModuleDef::Variant(e) => Some(e.parent_enum(db).name(db)),
             _ => None,
@@ -331,65 +360,44 @@ fn hover_for_definition(
 ) -> Option<Markup> {
     let mod_path = definition_mod_path(db, &def);
     return match def {
-        Definition::Macro(it) => {
-            let label = macro_label(&it.source(db)?.value);
-            from_def_source_labeled(db, it, Some(label), mod_path)
-        }
-        Definition::Field(def) => {
-            let src = def.source(db)?.value;
-            if let FieldSource::Named(it) = src {
-                from_def_source_labeled(db, def, it.short_label(), mod_path)
-            } else {
+        Definition::Macro(it) => match &it.source(db)?.value {
+            Either::Left(mac) => {
+                let label = macro_label(&mac);
+                from_def_source_labeled(db, it, Some(label), mod_path)
+            }
+            Either::Right(_) => {
+                // FIXME
                 None
             }
-        }
+        },
+        Definition::Field(def) => from_hir_fmt(db, def, mod_path),
         Definition::ModuleDef(it) => match it {
-            ModuleDef::Module(it) => from_def_source_labeled(
-                db,
-                it,
-                match it.definition_source(db).value {
-                    ModuleSource::Module(it) => it.short_label(),
-                    ModuleSource::SourceFile(it) => it.short_label(),
-                    ModuleSource::BlockExpr(it) => it.short_label(),
-                },
-                mod_path,
-            ),
-            ModuleDef::Function(it) => from_def_source(db, it, mod_path),
-            ModuleDef::Adt(Adt::Struct(it)) => from_def_source(db, it, mod_path),
-            ModuleDef::Adt(Adt::Union(it)) => from_def_source(db, it, mod_path),
-            ModuleDef::Adt(Adt::Enum(it)) => from_def_source(db, it, mod_path),
-            ModuleDef::Variant(it) => from_def_source(db, it, mod_path),
-            ModuleDef::Const(it) => from_def_source(db, it, mod_path),
-            ModuleDef::Static(it) => from_def_source(db, it, mod_path),
-            ModuleDef::Trait(it) => from_def_source(db, it, mod_path),
-            ModuleDef::TypeAlias(it) => from_def_source(db, it, mod_path),
+            ModuleDef::Module(it) => from_hir_fmt(db, it, mod_path),
+            ModuleDef::Function(it) => from_hir_fmt(db, it, mod_path),
+            ModuleDef::Adt(it) => from_hir_fmt(db, it, mod_path),
+            ModuleDef::Variant(it) => from_hir_fmt(db, it, mod_path),
+            ModuleDef::Const(it) => from_hir_fmt(db, it, mod_path),
+            ModuleDef::Static(it) => from_hir_fmt(db, it, mod_path),
+            ModuleDef::Trait(it) => from_hir_fmt(db, it, mod_path),
+            ModuleDef::TypeAlias(it) => from_hir_fmt(db, it, mod_path),
             ModuleDef::BuiltinType(it) => famous_defs
                 .and_then(|fd| hover_for_builtin(fd, it))
                 .or_else(|| Some(Markup::fenced_block(&it.name()))),
         },
         Definition::Local(it) => hover_for_local(it, db),
         Definition::SelfType(impl_def) => {
-            impl_def.target_ty(db).as_adt().and_then(|adt| match adt {
-                Adt::Struct(it) => from_def_source(db, it, mod_path),
-                Adt::Union(it) => from_def_source(db, it, mod_path),
-                Adt::Enum(it) => from_def_source(db, it, mod_path),
-            })
+            impl_def.self_ty(db).as_adt().and_then(|adt| from_hir_fmt(db, adt, mod_path))
         }
+        Definition::GenericParam(it) => from_hir_fmt(db, it, None),
         Definition::Label(it) => Some(Markup::fenced_block(&it.name(db))),
-        Definition::GenericParam(it) => match it {
-            GenericParam::TypeParam(it) => Some(Markup::fenced_block(&it.display(db))),
-            GenericParam::LifetimeParam(it) => Some(Markup::fenced_block(&it.name(db))),
-            GenericParam::ConstParam(it) => from_def_source(db, it, None),
-        },
     };
 
-    fn from_def_source<A, D>(db: &RootDatabase, def: D, mod_path: Option<String>) -> Option<Markup>
+    fn from_hir_fmt<D>(db: &RootDatabase, def: D, mod_path: Option<String>) -> Option<Markup>
     where
-        D: HasSource<Ast = A> + HasAttrs + Copy,
-        A: ShortLabel,
+        D: HasAttrs + HirDisplay,
     {
-        let short_label = def.source(db)?.value.short_label();
-        from_def_source_labeled(db, def, short_label, mod_path)
+        let label = def.display(db).to_string();
+        from_def_source_labeled(db, def, Some(label), mod_path)
     }
 
     fn from_def_source_labeled<D>(
@@ -438,7 +446,7 @@ fn hover_for_keyword(
     if !token.kind().is_keyword() {
         return None;
     }
-    let famous_defs = FamousDefs(&sema, sema.scope(&token.parent()).krate());
+    let famous_defs = FamousDefs(&sema, sema.scope(&token.parent()?).krate());
     // std exposes {}_keyword modules with docstrings on the root to document keywords
     let keyword_mod = format!("{}_keyword", token.text());
     let doc_owner = find_std_module(&famous_defs, &keyword_mod)?;
@@ -472,6 +480,7 @@ fn find_std_module(famous_defs: &FamousDefs, name: &str) -> Option<hir::Module> 
 
 fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
     return tokens.max_by_key(priority);
+
     fn priority(n: &SyntaxToken) -> usize {
         match n.kind() {
             IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] | T![super] | T![crate] => 3,
@@ -670,7 +679,9 @@ fn main() { let foo_test = fo$0o(); }
                 ```
 
                 ```rust
-                pub fn foo<'a, T: AsRef<str>>(b: &'a T) -> &'a str
+                pub fn foo<'a, T>(b: &'a T) -> &'a str
+                where
+                    T: AsRef<str>,
                 ```
             "#]],
         );
@@ -878,7 +889,7 @@ fn main() { So$0me(12); }
                 ```
 
                 ```rust
-                Some
+                Some(T)
                 ```
             "#]],
         );
@@ -944,7 +955,7 @@ fn main() {
                 ```
 
                 ```rust
-                Some
+                Some(T)
                 ```
 
                 ---
@@ -1235,6 +1246,37 @@ fn f() { fo$0o!(); }
     }
 
     #[test]
+    fn test_hover_macro2_invocation() {
+        check(
+            r#"
+/// foo bar
+///
+/// foo bar baz
+macro foo() {}
+
+fn f() { fo$0o!(); }
+"#,
+            expect![[r#"
+                *foo*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                macro foo
+                ```
+
+                ---
+
+                foo bar
+
+                foo bar baz
+            "#]],
+        )
+    }
+
+    #[test]
     fn test_hover_tuple_field() {
         check(
             r#"struct TS(String, i32$0);"#,
@@ -1441,13 +1483,14 @@ fn bar() { fo$0o(); }
                 ```
             "#]],
         );
+        // Top level `pub(crate)` will be displayed as no visibility.
         check(
-            r#"pub(crate) async unsafe extern "C" fn foo$0() {}"#,
+            r#"mod m { pub(crate) async unsafe extern "C" fn foo$0() {} }"#,
             expect![[r#"
                 *foo*
 
                 ```rust
-                test
+                test::m
                 ```
 
                 ```rust
@@ -1489,11 +1532,18 @@ extern crate st$0d;
 //! abc123
             "#,
             expect![[r#"
-            *std*
-            Standard library for this test
+                *std*
 
-            Printed?
-            abc123
+                ```rust
+                extern crate std
+                ```
+
+                ---
+
+                Standard library for this test
+
+                Printed?
+                abc123
             "#]],
         );
         check(
@@ -1507,11 +1557,18 @@ extern crate std as ab$0c;
 //! abc123
             "#,
             expect![[r#"
-            *abc*
-            Standard library for this test
+                *abc*
 
-            Printed?
-            abc123
+                ```rust
+                extern crate std
+                ```
+
+                ---
+
+                Standard library for this test
+
+                Printed?
+                abc123
             "#]],
         );
     }
@@ -1543,12 +1600,21 @@ fn my() {}
     fn test_hover_struct_doc_comment() {
         check(
             r#"
-/// bar docs
+/// This is an example
+/// multiline doc
+///
+/// # Example
+///
+/// ```
+/// let five = 5;
+///
+/// assert_eq!(6, my_crate::add_one(5));
+/// ```
 struct Bar;
 
 fn foo() { let bar = Ba$0r; }
 "#,
-            expect![[r#"
+            expect![[r##"
                 *Bar*
 
                 ```rust
@@ -1561,8 +1627,17 @@ fn foo() { let bar = Ba$0r; }
 
                 ---
 
-                bar docs
-            "#]],
+                This is an example
+                multiline doc
+
+                # Example
+
+                ```
+                let five = 5;
+
+                assert_eq!(6, my_crate::add_one(5));
+                ```
+            "##]],
         );
     }
 
@@ -2021,7 +2096,7 @@ enum E {
                 ```
 
                 ```rust
-                V
+                V { field: i32 }
                 ```
 
                 ---
@@ -2417,7 +2492,7 @@ fn main() { let s$0t = S{ f1:Arg(0) }; }
                                     focus_range: 24..25,
                                     name: "S",
                                     kind: Struct,
-                                    description: "struct S",
+                                    description: "struct S<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -2463,7 +2538,7 @@ fn main() { let s$0t = S{ f1: S{ f1: Arg(0) } }; }
                                     focus_range: 24..25,
                                     name: "S",
                                     kind: Struct,
-                                    description: "struct S",
+                                    description: "struct S<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -2605,7 +2680,7 @@ fn main() { let s$0t = foo(); }
                                     focus_range: 6..9,
                                     name: "Foo",
                                     kind: Trait,
-                                    description: "trait Foo",
+                                    description: "trait Foo<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -2702,7 +2777,7 @@ fn main() { let s$0t = foo(); }
                                     focus_range: 6..9,
                                     name: "Foo",
                                     kind: Trait,
-                                    description: "trait Foo",
+                                    description: "trait Foo<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -2715,7 +2790,7 @@ fn main() { let s$0t = foo(); }
                                     focus_range: 22..25,
                                     name: "Bar",
                                     kind: Trait,
-                                    description: "trait Bar",
+                                    description: "trait Bar<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -2819,7 +2894,7 @@ fn foo(ar$0g: &impl Foo + Bar<S>) {}
                                     focus_range: 19..22,
                                     name: "Bar",
                                     kind: Trait,
-                                    description: "trait Bar",
+                                    description: "trait Bar<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -2916,7 +2991,7 @@ fn foo(ar$0g: &impl Foo<S>) {}
                                     focus_range: 6..9,
                                     name: "Foo",
                                     kind: Trait,
-                                    description: "trait Foo",
+                                    description: "trait Foo<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -2966,7 +3041,7 @@ fn main() { let s$0t = foo(); }
                                     focus_range: 49..50,
                                     name: "B",
                                     kind: Struct,
-                                    description: "struct B",
+                                    description: "struct B<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -3042,7 +3117,7 @@ fn foo(ar$0g: &dyn Foo<S>) {}
                                     focus_range: 6..9,
                                     name: "Foo",
                                     kind: Trait,
-                                    description: "trait Foo",
+                                    description: "trait Foo<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -3090,7 +3165,7 @@ fn foo(a$0rg: &impl ImplTrait<B<dyn DynTrait<B<S>>>>) {}
                                     focus_range: 6..15,
                                     name: "ImplTrait",
                                     kind: Trait,
-                                    description: "trait ImplTrait",
+                                    description: "trait ImplTrait<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -3103,7 +3178,7 @@ fn foo(a$0rg: &impl ImplTrait<B<dyn DynTrait<B<S>>>>) {}
                                     focus_range: 50..51,
                                     name: "B",
                                     kind: Struct,
-                                    description: "struct B",
+                                    description: "struct B<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -3116,7 +3191,7 @@ fn foo(a$0rg: &impl ImplTrait<B<dyn DynTrait<B<S>>>>) {}
                                     focus_range: 28..36,
                                     name: "DynTrait",
                                     kind: Trait,
-                                    description: "trait DynTrait",
+                                    description: "trait DynTrait<T>",
                                 },
                             },
                             HoverGotoTypeData {
@@ -3434,7 +3509,42 @@ mod Foo$0 {
     }
 
     #[test]
+    fn hover_doc_block_style_indentend() {
+        check(
+            r#"
+/**
+    foo
+    ```rust
+    let x = 3;
+    ```
+*/
+fn foo$0() {}
+"#,
+            expect![[r#"
+                *foo*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                fn foo()
+                ```
+
+                ---
+
+                foo
+
+                ```rust
+                let x = 3;
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
     fn hover_comments_dont_highlight_parent() {
+        cov_mark::check!(no_highlight_on_comment_hover);
         check_hover_no_result(
             r#"
 fn no_hover() {
@@ -3582,6 +3692,17 @@ mod foo$0;
 "#,
             expect![[r#"
                 *foo*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                mod foo
+                ```
+
+                ---
+
                 For the horde!
             "#]],
         );
@@ -3606,7 +3727,7 @@ use foo::bar::{self$0};
                 ```
 
                 ```rust
-                pub mod bar
+                mod bar
                 ```
 
                 ---
@@ -3656,5 +3777,184 @@ cosnt _: &str$0 = ""; }"#;
                 Docs for prim_str
             "#]],
         );
+    }
+
+    #[test]
+    fn hover_macro_expanded_function() {
+        check(
+            r#"
+struct S<'a, T>(&'a T);
+trait Clone {}
+macro_rules! foo {
+    () => {
+        fn bar<'t, T: Clone + 't>(s: &mut S<'t, T>, t: u32) -> *mut u32 where
+            't: 't + 't,
+            for<'a> T: Clone + 'a
+        { 0 as _ }
+    };
+}
+
+foo!();
+
+fn main() {
+    bar$0;
+}
+"#,
+            expect![[r#"
+                *bar*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                fn bar<'t, T>(s: &mut S<'t, T>, t: u32) -> *mut u32
+                where
+                    T: Clone + 't,
+                    't: 't + 't,
+                    for<'a> T: Clone + 'a,
+                ```
+            "#]],
+        )
+    }
+
+    #[test]
+    fn hover_intra_doc_links() {
+        check(
+            r#"
+
+pub mod theitem {
+    /// This is the item. Cool!
+    pub struct TheItem;
+}
+
+/// Gives you a [`TheItem$0`].
+///
+/// [`TheItem`]: theitem::TheItem
+pub fn gimme() -> theitem::TheItem {
+    theitem::TheItem
+}
+"#,
+            expect![[r#"
+                *[`TheItem`]*
+
+                ```rust
+                test::theitem
+                ```
+
+                ```rust
+                pub struct TheItem
+                ```
+
+                ---
+
+                This is the item. Cool!
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_generic_assoc() {
+        check(
+            r#"
+fn foo<T: A>() where T::Assoc$0: {}
+
+trait A {
+    type Assoc;
+}"#,
+            expect![[r#"
+                *Assoc*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                type Assoc
+                ```
+            "#]],
+        );
+        check(
+            r#"
+fn foo<T: A>() {
+    let _: <T>::Assoc$0;
+}
+
+trait A {
+    type Assoc;
+}"#,
+            expect![[r#"
+                *Assoc*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                type Assoc
+                ```
+            "#]],
+        );
+        check(
+            r#"
+trait A where
+    Self::Assoc$0: ,
+{
+    type Assoc;
+}"#,
+            expect![[r#"
+                *Assoc*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                type Assoc
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn string_shadowed_with_inner_items() {
+        check(
+            r#"
+//- /main.rs crate:main deps:alloc
+
+/// Custom `String` type.
+struct String;
+
+fn f() {
+    let _: String$0;
+
+    fn inner() {}
+}
+
+//- /alloc.rs crate:alloc
+#[prelude_import]
+pub use string::*;
+
+mod string {
+    /// This is `alloc::String`.
+    pub struct String;
+}
+            "#,
+            expect![[r#"
+                *String*
+
+                ```rust
+                main
+                ```
+
+                ```rust
+                struct String
+                ```
+
+                ---
+
+                Custom `String` type.
+            "#]],
+        )
     }
 }

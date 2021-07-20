@@ -97,7 +97,7 @@ mod relate_tys;
 
 /// Type checks the given `mir` in the context of the inference
 /// context `infcx`. Returns any region constraints that have yet to
-/// be proven. This result is includes liveness constraints that
+/// be proven. This result includes liveness constraints that
 /// ensure that regions appearing in the types of all local variables
 /// are live at all points where that local variable may later be
 /// used.
@@ -316,14 +316,12 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for TypeVerifier<'a, 'b, 'tcx> {
             let tcx = self.tcx();
             let maybe_uneval = match constant.literal {
                 ConstantKind::Ty(ct) => match ct.val {
-                    ty::ConstKind::Unevaluated(def, substs, promoted) => {
-                        Some((def, substs, promoted))
-                    }
+                    ty::ConstKind::Unevaluated(uv) => Some(uv),
                     _ => None,
                 },
                 _ => None,
             };
-            if let Some((def, substs, promoted)) = maybe_uneval {
+            if let Some(ty::Unevaluated { def, substs, promoted }) = maybe_uneval {
                 if let Some(promoted) = promoted {
                     let check_err = |verifier: &mut TypeVerifier<'a, 'b, 'tcx>,
                                      promoted: &Body<'tcx>,
@@ -1772,7 +1770,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         if args.len() < sig.inputs().len() || (args.len() > sig.inputs().len() && !sig.c_variadic) {
             span_mirbug!(self, term, "call to {:?} with wrong # of args", sig);
         }
-        for (n, (fn_arg, op_arg)) in sig.inputs().iter().zip(args).enumerate() {
+        for (n, (fn_arg, op_arg)) in iter::zip(sig.inputs(), args).enumerate() {
             let op_arg_ty = op_arg.ty(body, self.tcx());
             let op_arg_ty = self.normalize(op_arg_ty, term_location);
             let category = if from_hir_call {
@@ -2030,7 +2028,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                                             traits::ObligationCauseCode::RepeatVec(is_const_fn),
                                         ),
                                         self.param_env,
-                                        ty::Binder::bind(ty::TraitRef::new(
+                                        ty::Binder::dummy(ty::TraitRef::new(
                                             self.tcx().require_lang_item(
                                                 LangItem::Copy,
                                                 Some(self.last_span),

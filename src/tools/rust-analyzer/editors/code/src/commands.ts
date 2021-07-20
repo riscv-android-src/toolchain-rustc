@@ -134,6 +134,33 @@ export function joinLines(ctx: Ctx): Cmd {
     };
 }
 
+export function moveItemUp(ctx: Ctx): Cmd {
+    return moveItem(ctx, ra.Direction.Up);
+}
+
+export function moveItemDown(ctx: Ctx): Cmd {
+    return moveItem(ctx, ra.Direction.Down);
+}
+
+export function moveItem(ctx: Ctx, direction: ra.Direction): Cmd {
+    return async () => {
+        const editor = ctx.activeRustEditor;
+        const client = ctx.client;
+        if (!editor || !client) return;
+
+        const lcEdits = await client.sendRequest(ra.moveItem, {
+            range: client.code2ProtocolConverter.asRange(editor.selection),
+            textDocument: ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document),
+            direction
+        });
+
+        if (!lcEdits) return;
+
+        const edits = client.protocol2CodeConverter.asTextEdits(lcEdits);
+        await applySnippetTextEdits(editor, edits);
+    };
+}
+
 export function onEnter(ctx: Ctx): Cmd {
     async function handleKeypress() {
         const editor = ctx.activeRustEditor;
@@ -170,22 +197,28 @@ export function parentModule(ctx: Ctx): Cmd {
         const client = ctx.client;
         if (!editor || !client) return;
 
-        const response = await client.sendRequest(ra.parentModule, {
+        const locations = await client.sendRequest(ra.parentModule, {
             textDocument: ctx.client.code2ProtocolConverter.asTextDocumentIdentifier(editor.document),
             position: client.code2ProtocolConverter.asPosition(
                 editor.selection.active,
             ),
         });
-        const loc = response[0];
-        if (!loc) return;
 
-        const uri = client.protocol2CodeConverter.asUri(loc.targetUri);
-        const range = client.protocol2CodeConverter.asRange(loc.targetRange);
+        if (locations.length === 1) {
+            const loc = locations[0];
 
-        const doc = await vscode.workspace.openTextDocument(uri);
-        const e = await vscode.window.showTextDocument(doc);
-        e.selection = new vscode.Selection(range.start, range.start);
-        e.revealRange(range, vscode.TextEditorRevealType.InCenter);
+            const uri = client.protocol2CodeConverter.asUri(loc.targetUri);
+            const range = client.protocol2CodeConverter.asRange(loc.targetRange);
+
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const e = await vscode.window.showTextDocument(doc);
+            e.selection = new vscode.Selection(range.start, range.start);
+            e.revealRange(range, vscode.TextEditorRevealType.InCenter);
+        } else {
+            const uri = editor.document.uri.toString();
+            const position = client.code2ProtocolConverter.asPosition(editor.selection.active);
+            await showReferencesImpl(client, uri, position, locations.map(loc => lc.Location.create(loc.targetUri, loc.targetRange)));
+        }
     };
 }
 

@@ -220,9 +220,11 @@ impl MacroDef {
             while src.len() > 0 {
                 let rule = Rule::parse(&mut src, true)?;
                 rules.push(rule);
-                if let Err(()) = src.expect_char(';') {
+                if let Err(()) = src.expect_any_char(&[';', ',']) {
                     if src.len() > 0 {
-                        return Err(ParseError::Expected("expected `;`".to_string()));
+                        return Err(ParseError::Expected(
+                            "expected `;` or `,` to delimit rules".to_string(),
+                        ));
                     }
                     break;
                 }
@@ -356,6 +358,6 @@ impl<T> ExpandResult<T> {
 
 impl<T: Default> From<Result<T, ExpandError>> for ExpandResult<T> {
     fn from(result: Result<T, ExpandError>) -> Self {
-        result.map_or_else(|e| Self::only_err(e), |it| Self::ok(it))
+        result.map_or_else(Self::only_err, Self::ok)
     }
 }

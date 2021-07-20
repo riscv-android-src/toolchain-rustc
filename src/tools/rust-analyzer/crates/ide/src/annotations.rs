@@ -1,12 +1,13 @@
-use hir::Semantics;
+use either::Either;
+use hir::{HasSource, InFile, Semantics};
 use ide_db::{
-    base_db::{FileId, FilePosition, FileRange, SourceDatabase},
-    RootDatabase, SymbolKind,
+    base_db::{FileId, FilePosition, FileRange},
+    helpers::visit_file_defs,
+    RootDatabase,
 };
-use syntax::TextRange;
+use syntax::{ast::NameOwner, AstNode, TextRange, TextSize};
 
 use crate::{
-    file_structure::file_structure,
     fn_references::find_all_methods,
     goto_implementation::goto_implementation,
     references::find_all_refs,
@@ -18,6 +19,8 @@ use crate::{
 //
 // Provides user with annotations above items for looking up references or impl blocks
 // and running/debugging binaries.
+//
+// image::https://user-images.githubusercontent.com/48062697/113020672-b7c34f00-917a-11eb-8f6e-858735660a0e.png[]
 #[derive(Debug)]
 pub struct Annotation {
     pub range: TextRange,
@@ -75,39 +78,67 @@ pub(crate) fn annotations(
         }
     }
 
-    file_structure(&db.parse(file_id).tree())
-        .into_iter()
-        .filter(|node| {
-            matches!(
-                node.kind,
-                SymbolKind::Trait
-                    | SymbolKind::Struct
-                    | SymbolKind::Enum
-                    | SymbolKind::Union
-                    | SymbolKind::Const
-            )
-        })
-        .for_each(|node| {
-            if config.annotate_impls && node.kind != SymbolKind::Const {
+    visit_file_defs(&Semantics::new(db), file_id, &mut |def| match def {
+        Either::Left(def) => {
+            let node = match def {
+                hir::ModuleDef::Const(konst) => {
+                    konst.source(db).and_then(|node| range_and_position_of(&node, file_id))
+                }
+                hir::ModuleDef::Trait(trait_) => {
+                    trait_.source(db).and_then(|node| range_and_position_of(&node, file_id))
+                }
+                hir::ModuleDef::Adt(hir::Adt::Struct(strukt)) => {
+                    strukt.source(db).and_then(|node| range_and_position_of(&node, file_id))
+                }
+                hir::ModuleDef::Adt(hir::Adt::Enum(enum_)) => {
+                    enum_.source(db).and_then(|node| range_and_position_of(&node, file_id))
+                }
+                hir::ModuleDef::Adt(hir::Adt::Union(union)) => {
+                    union.source(db).and_then(|node| range_and_position_of(&node, file_id))
+                }
+                _ => None,
+            };
+            let (offset, range) = match node {
+                Some(node) => node,
+                None => return,
+            };
+
+            if config.annotate_impls && !matches!(def, hir::ModuleDef::Const(_)) {
                 annotations.push(Annotation {
-                    range: node.node_range,
+                    range,
                     kind: AnnotationKind::HasImpls {
-                        position: FilePosition { file_id, offset: node.navigation_range.start() },
+                        position: FilePosition { file_id, offset },
+                        data: None,
+                    },
+                });
+            }
+            if config.annotate_references {
+                annotations.push(Annotation {
+                    range,
+                    kind: AnnotationKind::HasReferences {
+                        position: FilePosition { file_id, offset },
                         data: None,
                     },
                 });
             }
 
-            if config.annotate_references {
-                annotations.push(Annotation {
-                    range: node.node_range,
-                    kind: AnnotationKind::HasReferences {
-                        position: FilePosition { file_id, offset: node.navigation_range.start() },
-                        data: None,
-                    },
-                });
+            fn range_and_position_of<T: NameOwner>(
+                node: &InFile<T>,
+                file_id: FileId,
+            ) -> Option<(TextSize, TextRange)> {
+                if node.file_id != file_id.into() {
+                    // Node is outside the file we are adding annotations to (e.g. macros).
+                    None
+                } else {
+                    Some((
+                        node.value.name()?.syntax().text_range().start(),
+                        node.value.syntax().text_range(),
+                    ))
+                }
             }
-        });
+        }
+        Either::Right(_) => (),
+    });
 
     if config.annotate_method_references {
         annotations.extend(find_all_methods(db, file_id).into_iter().map(|method| Annotation {
@@ -931,6 +962,40 @@ mod tests {
                         },
                     },
                 ]
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_no_annotations_outside_module_tree() {
+        check(
+            r#"
+//- /foo.rs
+struct Foo;
+//- /lib.rs
+// this file comes last since `check` checks the first file only
+"#,
+            expect![[r#"
+                []
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_no_annotations_macro_struct_def() {
+        check(
+            r#"
+//- /lib.rs
+macro_rules! m {
+    () => {
+        struct A {}
+    };
+}
+
+m!();
+"#,
+            expect![[r#"
+                []
             "#]],
         );
     }

@@ -1,11 +1,10 @@
 use hir::ModuleDef;
-use ide_db::helpers::mod_path_to_ast;
+use ide_db::helpers::{import_assets::NameToImport, mod_path_to_ast};
 use ide_db::items_locator;
 use itertools::Itertools;
 use syntax::{
     ast::{self, make, AstNode, NameOwner},
     SyntaxKind::{IDENT, WHITESPACE},
-    TextSize,
 };
 
 use crate::{
@@ -43,49 +42,50 @@ pub(crate) fn replace_derive_with_manual_impl(
     ctx: &AssistContext,
 ) -> Option<()> {
     let attr = ctx.find_node_at_offset::<ast::Attr>()?;
-
-    let has_derive = attr
-        .syntax()
-        .descendants_with_tokens()
-        .filter(|t| t.kind() == IDENT)
-        .find_map(syntax::NodeOrToken::into_token)
-        .filter(|t| t.text() == "derive")
-        .is_some();
-    if !has_derive {
+    let (name, args) = attr.as_simple_call()?;
+    if name != "derive" {
         return None;
     }
 
-    let trait_token = ctx.token_at_offset().find(|t| t.kind() == IDENT && t.text() != "derive")?;
-    let trait_path = make::path_unqualified(make::path_segment(make::name_ref(trait_token.text())));
+    if !args.syntax().text_range().contains(ctx.offset()) {
+        cov_mark::hit!(outside_of_attr_args);
+        return None;
+    }
+
+    let trait_token = args.syntax().token_at_offset(ctx.offset()).find(|t| t.kind() == IDENT)?;
+    let trait_name = trait_token.text();
 
     let adt = attr.syntax().parent().and_then(ast::Adt::cast)?;
-    let annotated_name = adt.name()?;
-    let insert_pos = adt.syntax().text_range().end();
 
-    let current_module = ctx.sema.scope(annotated_name.syntax()).module()?;
+    let current_module = ctx.sema.scope(adt.syntax()).module()?;
     let current_crate = current_module.krate();
 
-    let found_traits =
-        items_locator::with_exact_name(&ctx.sema, current_crate, trait_token.text().to_string())
-            .into_iter()
-            .filter_map(|item| match ModuleDef::from(item.as_module_def_id()?) {
-                ModuleDef::Trait(trait_) => Some(trait_),
-                _ => None,
-            })
-            .flat_map(|trait_| {
-                current_module
-                    .find_use_path(ctx.sema.db, hir::ModuleDef::Trait(trait_))
-                    .as_ref()
-                    .map(mod_path_to_ast)
-                    .zip(Some(trait_))
-            });
+    let found_traits = items_locator::items_with_name(
+        &ctx.sema,
+        current_crate,
+        NameToImport::Exact(trait_name.to_string()),
+        items_locator::AssocItemSearch::Exclude,
+        Some(items_locator::DEFAULT_QUERY_SEARCH_LIMIT),
+    )
+    .filter_map(|item| match ModuleDef::from(item.as_module_def_id()?) {
+        ModuleDef::Trait(trait_) => Some(trait_),
+        _ => None,
+    })
+    .flat_map(|trait_| {
+        current_module
+            .find_use_path(ctx.sema.db, hir::ModuleDef::Trait(trait_))
+            .as_ref()
+            .map(mod_path_to_ast)
+            .zip(Some(trait_))
+    });
 
     let mut no_traits_found = true;
     for (trait_path, trait_) in found_traits.inspect(|_| no_traits_found = false) {
-        add_assist(acc, ctx, &attr, &trait_path, Some(trait_), &adt, &annotated_name, insert_pos)?;
+        add_assist(acc, ctx, &attr, &args, &trait_path, Some(trait_), &adt)?;
     }
     if no_traits_found {
-        add_assist(acc, ctx, &attr, &trait_path, None, &adt, &annotated_name, insert_pos)?;
+        let trait_path = make::path_unqualified(make::path_segment(make::name_ref(trait_name)));
+        add_assist(acc, ctx, &attr, &args, &trait_path, None, &adt)?;
     }
     Some(())
 }
@@ -94,15 +94,14 @@ fn add_assist(
     acc: &mut Assists,
     ctx: &AssistContext,
     attr: &ast::Attr,
+    input: &ast::TokenTree,
     trait_path: &ast::Path,
     trait_: Option<hir::Trait>,
     adt: &ast::Adt,
-    annotated_name: &ast::Name,
-    insert_pos: TextSize,
 ) -> Option<()> {
     let target = attr.syntax().text_range();
-    let input = attr.token_tree()?;
-    let label = format!("Convert to manual  `impl {} for {}`", trait_path, annotated_name);
+    let annotated_name = adt.name()?;
+    let label = format!("Convert to manual `impl {} for {}`", trait_path, annotated_name);
     let trait_name = trait_path.segment().and_then(|seg| seg.name_ref())?;
 
     acc.add(
@@ -110,8 +109,9 @@ fn add_assist(
         label,
         target,
         |builder| {
+            let insert_pos = adt.syntax().text_range().end();
             let impl_def_with_items =
-                impl_def_from_trait(&ctx.sema, annotated_name, trait_, trait_path);
+                impl_def_from_trait(&ctx.sema, &annotated_name, trait_, trait_path);
             update_attribute(builder, &input, &trait_name, &attr);
             let trait_path = format!("{}", trait_path);
             match (ctx.config.snippet_cap, impl_def_with_items) {
@@ -161,7 +161,7 @@ fn impl_def_from_trait(
     }
     let impl_def = make::impl_trait(
         trait_path.clone(),
-        make::path_unqualified(make::path_segment(make::name_ref(annotated_name.text()))),
+        make::path_unqualified(make::path_segment(make::name_ref(&annotated_name.text()))),
     );
     let (impl_def, first_assoc_item) =
         add_trait_assoc_items_to_impl(sema, trait_items, trait_, impl_def, target_scope);
@@ -174,12 +174,13 @@ fn update_attribute(
     trait_name: &ast::NameRef,
     attr: &ast::Attr,
 ) {
+    let trait_name = trait_name.text();
     let new_attr_input = input
         .syntax()
         .descendants_with_tokens()
         .filter(|t| t.kind() == IDENT)
         .filter_map(|t| t.into_token().map(|t| t.text().to_string()))
-        .filter(|t| t != trait_name.text())
+        .filter(|t| t != &trait_name)
         .collect::<Vec<_>>();
     let has_more_derives = !new_attr_input.is_empty();
 
@@ -211,7 +212,7 @@ mod tests {
     fn add_custom_impl_debug() {
         check_assist(
             replace_derive_with_manual_impl,
-            "
+            r#"
 mod fmt {
     pub struct Error;
     pub type Result = Result<(), Error>;
@@ -225,8 +226,8 @@ mod fmt {
 struct Foo {
     bar: String,
 }
-",
-            "
+"#,
+            r#"
 mod fmt {
     pub struct Error;
     pub type Result = Result<(), Error>;
@@ -245,14 +246,14 @@ impl fmt::Debug for Foo {
         ${0:todo!()}
     }
 }
-",
+"#,
         )
     }
     #[test]
     fn add_custom_impl_all() {
         check_assist(
             replace_derive_with_manual_impl,
-            "
+            r#"
 mod foo {
     pub trait Bar {
         type Qux;
@@ -267,8 +268,8 @@ mod foo {
 struct Foo {
     bar: String,
 }
-",
-            "
+"#,
+            r#"
 mod foo {
     pub trait Bar {
         type Qux;
@@ -294,20 +295,20 @@ impl foo::Bar for Foo {
         todo!()
     }
 }
-",
+"#,
         )
     }
     #[test]
     fn add_custom_impl_for_unique_input() {
         check_assist(
             replace_derive_with_manual_impl,
-            "
+            r#"
 #[derive(Debu$0g)]
 struct Foo {
     bar: String,
 }
-            ",
-            "
+            "#,
+            r#"
 struct Foo {
     bar: String,
 }
@@ -315,7 +316,7 @@ struct Foo {
 impl Debug for Foo {
     $0
 }
-            ",
+            "#,
         )
     }
 
@@ -323,13 +324,13 @@ impl Debug for Foo {
     fn add_custom_impl_for_with_visibility_modifier() {
         check_assist(
             replace_derive_with_manual_impl,
-            "
+            r#"
 #[derive(Debug$0)]
 pub struct Foo {
     bar: String,
 }
-            ",
-            "
+            "#,
+            r#"
 pub struct Foo {
     bar: String,
 }
@@ -337,7 +338,7 @@ pub struct Foo {
 impl Debug for Foo {
     $0
 }
-            ",
+            "#,
         )
     }
 
@@ -345,18 +346,18 @@ impl Debug for Foo {
     fn add_custom_impl_when_multiple_inputs() {
         check_assist(
             replace_derive_with_manual_impl,
-            "
+            r#"
 #[derive(Display, Debug$0, Serialize)]
 struct Foo {}
-            ",
-            "
+            "#,
+            r#"
 #[derive(Display, Serialize)]
 struct Foo {}
 
 impl Debug for Foo {
     $0
 }
-            ",
+            "#,
         )
     }
 
@@ -364,10 +365,10 @@ impl Debug for Foo {
     fn test_ignore_derive_macro_without_input() {
         check_assist_not_applicable(
             replace_derive_with_manual_impl,
-            "
+            r#"
 #[derive($0)]
 struct Foo {}
-            ",
+            "#,
         )
     }
 
@@ -375,18 +376,18 @@ struct Foo {}
     fn test_ignore_if_cursor_on_param() {
         check_assist_not_applicable(
             replace_derive_with_manual_impl,
-            "
+            r#"
 #[derive$0(Debug)]
 struct Foo {}
-            ",
+            "#,
         );
 
         check_assist_not_applicable(
             replace_derive_with_manual_impl,
-            "
+            r#"
 #[derive(Debug)$0]
 struct Foo {}
-            ",
+            "#,
         )
     }
 
@@ -394,10 +395,22 @@ struct Foo {}
     fn test_ignore_if_not_derive() {
         check_assist_not_applicable(
             replace_derive_with_manual_impl,
-            "
+            r#"
 #[allow(non_camel_$0case_types)]
 struct Foo {}
-            ",
+            "#,
         )
+    }
+
+    #[test]
+    fn works_at_start_of_file() {
+        cov_mark::check!(outside_of_attr_args);
+        check_assist_not_applicable(
+            replace_derive_with_manual_impl,
+            r#"
+$0#[derive(Debug)]
+struct S;
+            "#,
+        );
     }
 }

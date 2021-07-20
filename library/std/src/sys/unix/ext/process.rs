@@ -227,14 +227,14 @@ pub trait ExitStatusExt: Sealed {
     /// If the process was stopped by a signal, returns that signal.
     ///
     /// In other words, if `WIFSTOPPED`, this returns `WSTOPSIG`.  This is only possible if the status came from
-    /// a `wait` system call which was passed `WUNTRACED`, was then converted into an `ExitStatus`.
+    /// a `wait` system call which was passed `WUNTRACED`, and was then converted into an `ExitStatus`.
     #[unstable(feature = "unix_process_wait_more", issue = "80695")]
     fn stopped_signal(&self) -> Option<i32>;
 
     /// Whether the process was continued from a stopped status.
     ///
     /// Ie, `WIFCONTINUED`.  This is only possible if the status came from a `wait` system call
-    /// which was passed `WCONTINUED`, was then converted into an `ExitStatus`.
+    /// which was passed `WCONTINUED`, and was then converted into an `ExitStatus`.
     #[unstable(feature = "unix_process_wait_more", issue = "80695")]
     fn continued(&self) -> bool;
 
@@ -274,6 +274,7 @@ impl ExitStatusExt for process::ExitStatus {
 
 #[stable(feature = "process_extensions", since = "1.2.0")]
 impl FromRawFd for process::Stdio {
+    #[inline]
     unsafe fn from_raw_fd(fd: RawFd) -> process::Stdio {
         let fd = sys::fd::FileDesc::new(fd);
         let io = sys::process::Stdio::Fd(fd);
@@ -283,6 +284,7 @@ impl FromRawFd for process::Stdio {
 
 #[stable(feature = "process_extensions", since = "1.2.0")]
 impl AsRawFd for process::ChildStdin {
+    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.as_inner().fd().raw()
     }
@@ -290,6 +292,7 @@ impl AsRawFd for process::ChildStdin {
 
 #[stable(feature = "process_extensions", since = "1.2.0")]
 impl AsRawFd for process::ChildStdout {
+    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.as_inner().fd().raw()
     }
@@ -297,6 +300,7 @@ impl AsRawFd for process::ChildStdout {
 
 #[stable(feature = "process_extensions", since = "1.2.0")]
 impl AsRawFd for process::ChildStderr {
+    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.as_inner().fd().raw()
     }
@@ -304,6 +308,7 @@ impl AsRawFd for process::ChildStderr {
 
 #[stable(feature = "into_raw_os", since = "1.4.0")]
 impl IntoRawFd for process::ChildStdin {
+    #[inline]
     fn into_raw_fd(self) -> RawFd {
         self.into_inner().into_fd().into_raw()
     }
@@ -311,6 +316,7 @@ impl IntoRawFd for process::ChildStdin {
 
 #[stable(feature = "into_raw_os", since = "1.4.0")]
 impl IntoRawFd for process::ChildStdout {
+    #[inline]
     fn into_raw_fd(self) -> RawFd {
         self.into_inner().into_fd().into_raw()
     }
@@ -318,6 +324,7 @@ impl IntoRawFd for process::ChildStdout {
 
 #[stable(feature = "into_raw_os", since = "1.4.0")]
 impl IntoRawFd for process::ChildStderr {
+    #[inline]
     fn into_raw_fd(self) -> RawFd {
         self.into_inner().into_fd().into_raw()
     }

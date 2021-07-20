@@ -140,7 +140,8 @@ pub fn add_trait_assoc_items_to_impl(
 
     let items = items
         .into_iter()
-        .map(|it| ast_transform::apply(&*ast_transform, it))
+        .map(|it| it.clone_for_update())
+        .inspect(|it| ast_transform::apply(&*ast_transform, it))
         .map(|it| match it {
             ast::AssocItem::Fn(def) => ast::AssocItem::Fn(add_body(def)),
             ast::AssocItem::TypeAlias(def) => ast::AssocItem::TypeAlias(def.remove_bounds()),
@@ -246,7 +247,7 @@ fn invert_special_case(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Opti
             let method = mce.name_ref()?;
             let arg_list = mce.arg_list()?;
 
-            let method = match method.text() {
+            let method = match method.text().as_str() {
                 "is_some" => "is_none",
                 "is_none" => "is_some",
                 "is_ok" => "is_err",
@@ -338,11 +339,11 @@ pub(crate) fn find_struct_impl(
         // (we currently use the wrong type parameter)
         // also we wouldn't want to use e.g. `impl S<u32>`
 
-        let same_ty = match blk.target_ty(db).as_adt() {
+        let same_ty = match blk.self_ty(db).as_adt() {
             Some(def) => def == struct_def,
             None => false,
         };
-        let not_trait_impl = blk.target_trait(db).is_none();
+        let not_trait_impl = blk.trait_(db).is_none();
 
         if !(same_ty && not_trait_impl) {
             None
@@ -434,7 +435,8 @@ fn generate_impl_text_inner(adt: &ast::Adt, trait_text: Option<&str>, code: &str
             }
             buf
         });
-        let generics = lifetimes.chain(type_params).format(", ");
+        let const_params = generic_params.const_params().map(|t| t.syntax().to_string());
+        let generics = lifetimes.chain(type_params).chain(const_params).format(", ");
         format_to!(buf, "<{}>", generics);
     }
     buf.push(' ');
@@ -442,7 +444,7 @@ fn generate_impl_text_inner(adt: &ast::Adt, trait_text: Option<&str>, code: &str
         buf.push_str(trait_text);
         buf.push_str(" for ");
     }
-    buf.push_str(adt.name().unwrap().text());
+    buf.push_str(&adt.name().unwrap().text());
     if let Some(generic_params) = generic_params {
         let lifetime_params = generic_params
             .lifetime_params()
@@ -452,7 +454,11 @@ fn generate_impl_text_inner(adt: &ast::Adt, trait_text: Option<&str>, code: &str
             .type_params()
             .filter_map(|it| it.name())
             .map(|it| SmolStr::from(it.text()));
-        format_to!(buf, "<{}>", lifetime_params.chain(type_params).format(", "))
+        let const_params = generic_params
+            .const_params()
+            .filter_map(|it| it.name())
+            .map(|it| SmolStr::from(it.text()));
+        format_to!(buf, "<{}>", lifetime_params.chain(type_params).chain(const_params).format(", "))
     }
 
     match adt.where_clause() {

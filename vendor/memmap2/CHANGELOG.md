@@ -6,15 +6,23 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## 0.2.2 - 2021-04-03
+### Added
+- `MmapOptions::populate`. [@adamreichold](https://github.com/adamreichold)
+
+### Fixed
+- Fix alignment computation for `flush_async` to match `flush`.
+  [@adamreichold](https://github.com/adamreichold)
+
 ## 0.2.1 - 2021-02-08
 ### Added
-- `MmapOptions::map_raw` and `MmapRaw`. [@diwic](https://github.com/diwic).
+- `MmapOptions::map_raw` and `MmapRaw`. [@diwic](https://github.com/diwic)
 
 ## 0.2.0 - 2020-12-19
 ### Changed
 - MSRV is 1.31 now (edition 2018).
-- Make anonymous memory maps private by default on unix. Thanks to [@CensoredUsername](https://github.com/CensoredUsername).
-- Add `map_copy_read_only`. [@zserik](https://github.com/zserik).
+- Make anonymous memory maps private by default on unix. [@CensoredUsername](https://github.com/CensoredUsername)
+- Add `map_copy_read_only`. [@zserik](https://github.com/zserik)
 
 ## 0.1.0 - 2020-01-18
 ### Added

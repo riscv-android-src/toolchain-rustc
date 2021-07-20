@@ -29,13 +29,14 @@ use base_db::CrateId;
 use mbe::ExpandResult;
 use parser::FragmentKind;
 use std::sync::Arc;
-use syntax::{algo::SyntaxRewriter, SyntaxNode};
+use syntax::{ted, SyntaxNode};
 
+#[derive(Debug)]
 pub struct ErrorEmitted {
     _private: (),
 }
 
-trait ErrorSink {
+pub trait ErrorSink {
     fn emit(&mut self, err: mbe::ExpandError);
 
     fn option<T>(
@@ -106,7 +107,7 @@ pub fn expand_eager_macro(
     mut diagnostic_sink: &mut dyn FnMut(mbe::ExpandError),
 ) -> Result<EagerMacroId, ErrorEmitted> {
     let parsed_args = diagnostic_sink.option_with(
-        || Some(mbe::ast_to_token_tree(&macro_call.value.token_tree()?)?.0),
+        || Some(mbe::ast_to_token_tree(&macro_call.value.token_tree()?).0),
         || err("malformed macro invocation"),
     )?;
 
@@ -124,6 +125,7 @@ pub fn expand_eager_macro(
             subtree: Arc::new(parsed_args.clone()),
             krate,
             call: call_id,
+            included_file: None,
         }
     });
     let arg_file_id: MacroCallId = arg_id.into();
@@ -140,12 +142,18 @@ pub fn expand_eager_macro(
     let subtree =
         diagnostic_sink.option(to_subtree(&result), || err("failed to parse macro result"))?;
 
-    if let MacroDefKind::BuiltInEager(eager) = def.kind {
+    if let MacroDefKind::BuiltInEager(eager, _) = def.kind {
         let res = eager.expand(db, arg_id, &subtree);
 
-        let (subtree, fragment) = diagnostic_sink.expand_result_option(res)?;
-        let eager =
-            EagerCallLoc { def, fragment, subtree: Arc::new(subtree), krate, call: call_id };
+        let expanded = diagnostic_sink.expand_result_option(res)?;
+        let eager = EagerCallLoc {
+            def,
+            fragment: expanded.fragment,
+            subtree: Arc::new(expanded.subtree),
+            krate,
+            call: call_id,
+            included_file: expanded.included_file,
+        };
 
         Ok(db.intern_eager_expansion(eager))
     } else {
@@ -154,7 +162,7 @@ pub fn expand_eager_macro(
 }
 
 fn to_subtree(node: &SyntaxNode) -> Option<tt::Subtree> {
-    let mut subtree = mbe::syntax_node_to_token_tree(node)?.0;
+    let mut subtree = mbe::syntax_node_to_token_tree(node).0;
     subtree.delimiter = None;
     Some(subtree)
 }
@@ -167,8 +175,9 @@ fn lazy_expand(
 ) -> ExpandResult<Option<InFile<SyntaxNode>>> {
     let ast_id = db.ast_id_map(macro_call.file_id).ast_id(&macro_call.value);
 
-    let id: MacroCallId =
-        def.as_lazy_macro(db, krate, MacroCallKind::FnLike(macro_call.with_value(ast_id))).into();
+    let id: MacroCallId = def
+        .as_lazy_macro(db, krate, MacroCallKind::FnLike { ast_id: macro_call.with_value(ast_id) })
+        .into();
 
     let err = db.macro_expand_error(id);
     let value = db.parse_or_expand(id.as_file()).map(|node| InFile::new(id.as_file(), node));
@@ -183,17 +192,17 @@ fn eager_macro_recur(
     macro_resolver: &dyn Fn(ast::Path) -> Option<MacroDefId>,
     mut diagnostic_sink: &mut dyn FnMut(mbe::ExpandError),
 ) -> Result<SyntaxNode, ErrorEmitted> {
-    let original = curr.value.clone();
+    let original = curr.value.clone().clone_for_update();
 
-    let children = curr.value.descendants().filter_map(ast::MacroCall::cast);
-    let mut rewriter = SyntaxRewriter::default();
+    let children = original.descendants().filter_map(ast::MacroCall::cast);
+    let mut replacements = Vec::new();
 
     // Collect replacement
     for child in children {
         let def = diagnostic_sink
             .option_with(|| macro_resolver(child.path()?), || err("failed to resolve macro"))?;
         let insert = match def.kind {
-            MacroDefKind::BuiltInEager(_) => {
+            MacroDefKind::BuiltInEager(..) => {
                 let id: MacroCallId = expand_eager_macro(
                     db,
                     krate,
@@ -205,11 +214,12 @@ fn eager_macro_recur(
                 .into();
                 db.parse_or_expand(id.as_file())
                     .expect("successful macro expansion should be parseable")
+                    .clone_for_update()
             }
-            MacroDefKind::Declarative
-            | MacroDefKind::BuiltIn(_)
-            | MacroDefKind::BuiltInDerive(_)
-            | MacroDefKind::ProcMacro(_) => {
+            MacroDefKind::Declarative(_)
+            | MacroDefKind::BuiltIn(..)
+            | MacroDefKind::BuiltInDerive(..)
+            | MacroDefKind::ProcMacro(..) => {
                 let res = lazy_expand(db, &def, curr.with_value(child.clone()), krate);
                 let val = diagnostic_sink.expand_result_option(res)?;
 
@@ -218,15 +228,14 @@ fn eager_macro_recur(
             }
         };
 
-        // check if the whole original sytnax is replaced
-        // Note that SyntaxRewriter cannot replace the root node itself
+        // check if the whole original syntax is replaced
         if child.syntax() == &original {
             return Ok(insert);
         }
 
-        rewriter.replace(child.syntax(), &insert);
+        replacements.push((child, insert));
     }
 
-    let res = rewriter.rewrite(&original);
-    Ok(res)
+    replacements.into_iter().rev().for_each(|(old, new)| ted::replace(old.syntax(), new));
+    Ok(original)
 }

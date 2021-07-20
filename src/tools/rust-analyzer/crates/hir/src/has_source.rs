@@ -111,10 +111,12 @@ impl HasSource for TypeAlias {
     }
 }
 impl HasSource for MacroDef {
-    type Ast = ast::Macro;
+    type Ast = Either<ast::Macro, ast::Fn>;
     fn source(self, db: &dyn HirDatabase) -> Option<InFile<Self::Ast>> {
-        let ast_id = self.id.ast_id?;
-        Some(InFile { file_id: ast_id.file_id, value: ast_id.to_node(db.upcast()) })
+        Some(self.id.ast_id().either(
+            |id| id.with_value(Either::Left(id.to_node(db.upcast()))),
+            |id| id.with_value(Either::Right(id.to_node(db.upcast()))),
+        ))
     }
 }
 impl HasSource for Impl {

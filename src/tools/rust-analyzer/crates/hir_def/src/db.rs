@@ -2,20 +2,23 @@
 use std::sync::Arc;
 
 use base_db::{salsa, CrateId, SourceDatabase, Upcast};
+use either::Either;
 use hir_expand::{db::AstDatabase, HirFileId};
 use la_arena::ArenaMap;
-use syntax::SmolStr;
+use syntax::{ast, AstPtr, SmolStr};
 
 use crate::{
     adt::{EnumData, StructData},
-    attr::Attrs,
+    attr::{Attrs, AttrsWithOwner},
     body::{scope::ExprScopes, Body, BodySourceMap},
     data::{ConstData, FunctionData, ImplData, StaticData, TraitData, TypeAliasData},
     generics::GenericParams,
     import_map::ImportMap,
+    intern::Interned,
     item_tree::ItemTree,
     lang_item::{LangItemTarget, LangItems},
     nameres::DefMap,
+    visibility::{self, Visibility},
     AttrDefId, BlockId, BlockLoc, ConstId, ConstLoc, DefWithBodyId, EnumId, EnumLoc, FunctionId,
     FunctionLoc, GenericDefId, ImplId, ImplLoc, LocalEnumVariantId, LocalFieldId, StaticId,
     StaticLoc, StructId, StructLoc, TraitId, TraitLoc, TypeAliasId, TypeAliasLoc, UnionId,
@@ -48,8 +51,8 @@ pub trait InternDatabase: SourceDatabase {
 
 #[salsa::query_group(DefDatabaseStorage)]
 pub trait DefDatabase: InternDatabase + AstDatabase + Upcast<dyn AstDatabase> {
-    #[salsa::invoke(ItemTree::item_tree_query)]
-    fn item_tree(&self, file_id: HirFileId) -> Arc<ItemTree>;
+    #[salsa::invoke(ItemTree::file_item_tree_query)]
+    fn file_item_tree(&self, file_id: HirFileId) -> Arc<ItemTree>;
 
     #[salsa::invoke(crate_def_map_wait)]
     #[salsa::transparent]
@@ -112,7 +115,7 @@ pub trait DefDatabase: InternDatabase + AstDatabase + Upcast<dyn AstDatabase> {
     fn expr_scopes(&self, def: DefWithBodyId) -> Arc<ExprScopes>;
 
     #[salsa::invoke(GenericParams::generic_params_query)]
-    fn generic_params(&self, def: GenericDefId) -> Arc<GenericParams>;
+    fn generic_params(&self, def: GenericDefId) -> Interned<GenericParams>;
 
     #[salsa::invoke(Attrs::variants_attrs_query)]
     fn variants_attrs(&self, def: EnumId) -> Arc<ArenaMap<LocalEnumVariantId, Attrs>>;
@@ -120,8 +123,20 @@ pub trait DefDatabase: InternDatabase + AstDatabase + Upcast<dyn AstDatabase> {
     #[salsa::invoke(Attrs::fields_attrs_query)]
     fn fields_attrs(&self, def: VariantId) -> Arc<ArenaMap<LocalFieldId, Attrs>>;
 
-    #[salsa::invoke(Attrs::attrs_query)]
-    fn attrs(&self, def: AttrDefId) -> Attrs;
+    #[salsa::invoke(crate::attr::variants_attrs_source_map)]
+    fn variants_attrs_source_map(
+        &self,
+        def: EnumId,
+    ) -> Arc<ArenaMap<LocalEnumVariantId, AstPtr<ast::Variant>>>;
+
+    #[salsa::invoke(crate::attr::fields_attrs_source_map)]
+    fn fields_attrs_source_map(
+        &self,
+        def: VariantId,
+    ) -> Arc<ArenaMap<LocalFieldId, Either<AstPtr<ast::TupleField>, AstPtr<ast::RecordField>>>>;
+
+    #[salsa::invoke(AttrsWithOwner::attrs_query)]
+    fn attrs(&self, def: AttrDefId) -> AttrsWithOwner;
 
     #[salsa::invoke(LangItems::crate_lang_items_query)]
     fn crate_lang_items(&self, krate: CrateId) -> Arc<LangItems>;
@@ -131,6 +146,12 @@ pub trait DefDatabase: InternDatabase + AstDatabase + Upcast<dyn AstDatabase> {
 
     #[salsa::invoke(ImportMap::import_map_query)]
     fn import_map(&self, krate: CrateId) -> Arc<ImportMap>;
+
+    #[salsa::invoke(visibility::field_visibilities_query)]
+    fn field_visibilities(&self, var: VariantId) -> Arc<ArenaMap<LocalFieldId, Visibility>>;
+
+    #[salsa::invoke(visibility::function_visibility_query)]
+    fn function_visibility(&self, def: FunctionId) -> Visibility;
 }
 
 fn crate_def_map_wait(db: &dyn DefDatabase, krate: CrateId) -> Arc<DefMap> {

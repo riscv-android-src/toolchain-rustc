@@ -2,14 +2,14 @@
 //! immutable, all function here return a fresh copy of the tree, instead of
 //! doing an in-place modification.
 use std::{
-    fmt, iter,
+    array, fmt, iter,
     ops::{self, RangeInclusive},
 };
 
 use arrayvec::ArrayVec;
 
 use crate::{
-    algo::{self, neighbor, SyntaxRewriter},
+    algo::{self, SyntaxRewriter},
     ast::{
         self,
         make::{self, tokens},
@@ -32,7 +32,7 @@ impl ast::BinExpr {
 impl ast::Fn {
     #[must_use]
     pub fn with_body(&self, body: ast::BlockExpr) -> ast::Fn {
-        let mut to_insert: ArrayVec<[SyntaxElement; 2]> = ArrayVec::new();
+        let mut to_insert: ArrayVec<SyntaxElement, 2> = ArrayVec::new();
         let old_body_or_semi: SyntaxElement = if let Some(old_body) = self.body() {
             old_body.syntax().clone().into()
         } else if let Some(semi) = self.semicolon_token() {
@@ -55,9 +55,8 @@ impl ast::Fn {
 
         let anchor = self.name().expect("The function must have a name").syntax().clone();
 
-        let mut to_insert: ArrayVec<[SyntaxElement; 1]> = ArrayVec::new();
-        to_insert.push(generic_args.syntax().clone().into());
-        self.insert_children(InsertPosition::After(anchor.into()), to_insert)
+        let to_insert = [generic_args.syntax().clone().into()];
+        self.insert_children(InsertPosition::After(anchor.into()), array::IntoIter::new(to_insert))
     }
 }
 
@@ -96,7 +95,7 @@ where
 impl ast::Impl {
     #[must_use]
     pub fn with_assoc_item_list(&self, items: ast::AssocItemList) -> ast::Impl {
-        let mut to_insert: ArrayVec<[SyntaxElement; 2]> = ArrayVec::new();
+        let mut to_insert: ArrayVec<SyntaxElement, 2> = ArrayVec::new();
         if let Some(old_items) = self.assoc_item_list() {
             let to_replace: SyntaxElement = old_items.syntax().clone().into();
             to_insert.push(items.syntax().clone().into());
@@ -141,7 +140,7 @@ impl ast::AssocItemList {
             },
         };
         let ws = tokens::WsBuilder::new(&format!("{}{}", whitespace, indent));
-        let to_insert: ArrayVec<[SyntaxElement; 2]> =
+        let to_insert: ArrayVec<SyntaxElement, 2> =
             [ws.ws().into(), item.syntax().clone().into()].into();
         self.insert_children(position, to_insert)
     }
@@ -192,7 +191,7 @@ impl ast::RecordExprFieldList {
             tokens::single_space()
         };
 
-        let mut to_insert: ArrayVec<[SyntaxElement; 4]> = ArrayVec::new();
+        let mut to_insert: ArrayVec<SyntaxElement, 4> = ArrayVec::new();
         to_insert.push(space.into());
         to_insert.push(field.syntax().clone().into());
         to_insert.push(make::token(T![,]).into());
@@ -305,7 +304,7 @@ impl ast::PathSegment {
                 iter::once(type_args.syntax().clone().into()),
             );
         }
-        let mut to_insert: ArrayVec<[SyntaxElement; 2]> = ArrayVec::new();
+        let mut to_insert: ArrayVec<SyntaxElement, 2> = ArrayVec::new();
         if turbo {
             to_insert.push(make::token(T![::]).into());
         }
@@ -321,28 +320,6 @@ impl ast::Use {
             return self.replace_descendant(old, use_tree);
         }
         self.clone()
-    }
-
-    pub fn remove(&self) -> SyntaxRewriter<'static> {
-        let mut res = SyntaxRewriter::default();
-        res.delete(self.syntax());
-        let next_ws = self
-            .syntax()
-            .next_sibling_or_token()
-            .and_then(|it| it.into_token())
-            .and_then(ast::Whitespace::cast);
-        if let Some(next_ws) = next_ws {
-            let ws_text = next_ws.syntax().text();
-            if ws_text.starts_with('\n') {
-                let rest = &ws_text[1..];
-                if rest.is_empty() {
-                    res.delete(next_ws.syntax())
-                } else {
-                    res.replace(next_ws.syntax(), &make::tokens::whitespace(rest));
-                }
-            }
-        }
-        res
     }
 }
 
@@ -397,22 +374,6 @@ impl ast::UseTree {
             Some(res)
         }
     }
-
-    pub fn remove(&self) -> SyntaxRewriter<'static> {
-        let mut res = SyntaxRewriter::default();
-        res.delete(self.syntax());
-        for &dir in [Direction::Next, Direction::Prev].iter() {
-            if let Some(nb) = neighbor(self, dir) {
-                self.syntax()
-                    .siblings_with_tokens(dir)
-                    .skip(1)
-                    .take_while(|it| it.as_node() != Some(nb.syntax()))
-                    .for_each(|el| res.delete(&el));
-                return res;
-            }
-        }
-        res
-    }
 }
 
 impl ast::MatchArmList {
@@ -462,8 +423,7 @@ impl ast::MatchArmList {
         let end = if let Some(comma) = start
             .siblings_with_tokens(Direction::Next)
             .skip(1)
-            .skip_while(|it| it.kind().is_trivia())
-            .next()
+            .find(|it| !it.kind().is_trivia())
             .filter(|it| it.kind() == T![,])
         {
             comma
@@ -479,11 +439,11 @@ impl ast::MatchArmList {
             Some(t) => t,
             None => return self.clone(),
         };
-        let position = InsertPosition::Before(r_curly.into());
+        let position = InsertPosition::Before(r_curly);
         let arm_ws = tokens::WsBuilder::new("    ");
         let match_indent = &leading_indent(self.syntax()).unwrap_or_default();
         let match_ws = tokens::WsBuilder::new(&format!("\n{}", match_indent));
-        let to_insert: ArrayVec<[SyntaxElement; 3]> =
+        let to_insert: ArrayVec<SyntaxElement, 3> =
             [arm_ws.ws().into(), item.syntax().clone().into(), match_ws.ws().into()].into();
         self.insert_children(position, to_insert)
     }
@@ -504,7 +464,7 @@ impl ast::GenericParamList {
     pub fn append_param(&self, item: ast::GenericParam) -> ast::GenericParamList {
         let space = tokens::single_space();
 
-        let mut to_insert: ArrayVec<[SyntaxElement; 4]> = ArrayVec::new();
+        let mut to_insert: ArrayVec<SyntaxElement, 4> = ArrayVec::new();
         if self.generic_params().next().is_some() {
             to_insert.push(space.into());
         }
@@ -594,10 +554,17 @@ impl ops::Add<u8> for IndentLevel {
 }
 
 impl IndentLevel {
+    pub fn from_element(element: &SyntaxElement) -> IndentLevel {
+        match element {
+            rowan::NodeOrToken::Node(it) => IndentLevel::from_node(it),
+            rowan::NodeOrToken::Token(it) => IndentLevel::from_token(it),
+        }
+    }
+
     pub fn from_node(node: &SyntaxNode) -> IndentLevel {
         match node.first_token() {
             Some(it) => Self::from_token(&it),
-            None => return IndentLevel(0),
+            None => IndentLevel(0),
         }
     }
 

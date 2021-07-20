@@ -1,12 +1,17 @@
-use crate::core::compiler::{BuildOutput, CompileKind, CompileMode, CompileTarget, CrateType};
+use crate::core::compiler::{
+    BuildOutput, CompileKind, CompileMode, CompileTarget, Context, CrateType,
+};
 use crate::core::{Dependency, Target, TargetKind, Workspace};
 use crate::util::config::{Config, StringList, TargetConfig};
-use crate::util::{CargoResult, CargoResultExt, ProcessBuilder, Rustc};
+use crate::util::{CargoResult, Rustc};
+use anyhow::Context as _;
 use cargo_platform::{Cfg, CfgExpr};
+use cargo_util::{paths, ProcessBuilder};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::{Entry, HashMap};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::{self, FromStr};
 
 /// Information about the platform target gleaned from querying rustc.
@@ -135,7 +140,7 @@ impl TargetInfo {
             "RUSTFLAGS",
         )?;
         let extra_fingerprint = kind.fingerprint_hash();
-        let mut process = rustc.process();
+        let mut process = rustc.workspace_process();
         process
             .arg("-")
             .arg("--crate-name")
@@ -172,7 +177,7 @@ impl TargetInfo {
 
         let (output, error) = rustc
             .cached_output(&process, extra_fingerprint)
-            .chain_err(|| "failed to run `rustc` to learn about target-specific information")?;
+            .with_context(|| "failed to run `rustc` to learn about target-specific information")?;
 
         let mut lines = output.lines();
         let mut map = HashMap::new();
@@ -208,7 +213,7 @@ impl TargetInfo {
             .map(|line| Ok(Cfg::from_str(line)?))
             .filter(TargetInfo::not_user_specific_cfg)
             .collect::<CargoResult<Vec<_>>>()
-            .chain_err(|| {
+            .with_context(|| {
                 format!(
                     "failed to parse the cfg from `rustc --print=cfg`, got:\n{}",
                     output
@@ -409,7 +414,7 @@ impl TargetInfo {
 
         process.arg("--crate-type").arg(crate_type.as_str());
 
-        let output = process.exec_with_output().chain_err(|| {
+        let output = process.exec_with_output().with_context(|| {
             format!(
                 "failed to run `rustc` to learn about crate-type {} information",
                 crate_type
@@ -650,9 +655,14 @@ fn env_args(
 }
 
 /// Collection of information about `rustc` and the host and target.
-pub struct RustcTargetData {
+pub struct RustcTargetData<'cfg> {
     /// Information about `rustc` itself.
     pub rustc: Rustc,
+
+    /// Config
+    config: &'cfg Config,
+    requested_kinds: Vec<CompileKind>,
+
     /// Build information for the "host", which is information about when
     /// `rustc` is invoked without a `--target` flag. This is used for
     /// procedural macros, build scripts, etc.
@@ -665,27 +675,17 @@ pub struct RustcTargetData {
     target_info: HashMap<CompileTarget, TargetInfo>,
 }
 
-impl RustcTargetData {
+impl<'cfg> RustcTargetData<'cfg> {
     pub fn new(
-        ws: &Workspace<'_>,
+        ws: &Workspace<'cfg>,
         requested_kinds: &[CompileKind],
-    ) -> CargoResult<RustcTargetData> {
+    ) -> CargoResult<RustcTargetData<'cfg>> {
         let config = ws.config();
         let rustc = config.load_global_rustc(Some(ws))?;
         let host_config = config.target_cfg_triple(&rustc.host)?;
         let host_info = TargetInfo::new(config, requested_kinds, &rustc, CompileKind::Host)?;
         let mut target_config = HashMap::new();
         let mut target_info = HashMap::new();
-        for kind in requested_kinds {
-            if let CompileKind::Target(target) = *kind {
-                let tcfg = config.target_cfg_triple(target.short_name())?;
-                target_config.insert(target, tcfg);
-                target_info.insert(
-                    target,
-                    TargetInfo::new(config, requested_kinds, &rustc, *kind)?,
-                );
-            }
-        }
 
         // This is a hack. The unit_dependency graph builder "pretends" that
         // `CompileKind::Host` is `CompileKind::Target(host)` if the
@@ -698,13 +698,49 @@ impl RustcTargetData {
             target_config.insert(ct, host_config.clone());
         }
 
-        Ok(RustcTargetData {
+        let mut res = RustcTargetData {
             rustc,
+            config,
+            requested_kinds: requested_kinds.into(),
             host_config,
             host_info,
             target_config,
             target_info,
-        })
+        };
+
+        // Get all kinds we currently know about.
+        //
+        // For now, targets can only ever come from the root workspace
+        // units as artifact dependencies are not a thing yet, so this
+        // correctly represents all the kinds that can happen. When we
+        // have artifact dependencies or other ways for targets to
+        // appear at places that are not the root units, we may have
+        // to revisit this.
+        let all_kinds = requested_kinds
+            .iter()
+            .copied()
+            .chain(ws.members().flat_map(|p| {
+                p.manifest()
+                    .default_kind()
+                    .into_iter()
+                    .chain(p.manifest().forced_kind())
+            }));
+        for kind in all_kinds {
+            if let CompileKind::Target(target) = kind {
+                if !res.target_config.contains_key(&target) {
+                    res.target_config
+                        .insert(target, res.config.target_cfg_triple(target.short_name())?);
+                }
+                if !res.target_info.contains_key(&target) {
+                    res.target_info.insert(
+                        target,
+                        TargetInfo::new(res.config, &res.requested_kinds, &res.rustc, kind)?,
+                    );
+                }
+            }
+        }
+
+        Ok(res)
     }
 
     /// Returns a "short" name for the given kind, suitable for keying off
@@ -756,5 +792,100 @@ impl RustcTargetData {
     /// Host or Target.
     pub fn script_override(&self, lib_name: &str, kind: CompileKind) -> Option<&BuildOutput> {
         self.target_config(kind).links_overrides.get(lib_name)
+    }
+}
+
+/// Structure used to deal with Rustdoc fingerprinting
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RustDocFingerprint {
+    pub rustc_vv: String,
+}
+
+impl RustDocFingerprint {
+    /// This function checks whether the latest version of `Rustc` used to compile this
+    /// `Workspace`'s docs was the same as the one is currently being used in this `cargo doc`
+    /// call.
+    ///
+    /// In case it's not, it takes care of removing the `doc/` folder as well as overwriting
+    /// the rustdoc fingerprint info in order to guarantee that we won't end up with mixed
+    /// versions of the `js/html/css` files that `rustdoc` autogenerates which do not have
+    /// any versioning.
+    pub fn check_rustdoc_fingerprint(cx: &Context<'_, '_>) -> CargoResult<()> {
+        if cx.bcx.config.cli_unstable().skip_rustdoc_fingerprint {
+            return Ok(());
+        }
+        let actual_rustdoc_target_data = RustDocFingerprint {
+            rustc_vv: cx.bcx.rustc().verbose_version.clone(),
+        };
+
+        let fingerprint_path = cx.files().host_root().join(".rustdoc_fingerprint.json");
+        let write_fingerprint = || -> CargoResult<()> {
+            paths::write(
+                &fingerprint_path,
+                serde_json::to_string(&actual_rustdoc_target_data)?,
+            )
+        };
+        let rustdoc_data = match paths::read(&fingerprint_path) {
+            Ok(rustdoc_data) => rustdoc_data,
+            // If the fingerprint does not exist, do not clear out the doc
+            // directories. Otherwise this ran into problems where projects
+            // like rustbuild were creating the doc directory before running
+            // `cargo doc` in a way that deleting it would break it.
+            Err(_) => return write_fingerprint(),
+        };
+        match serde_json::from_str::<RustDocFingerprint>(&rustdoc_data) {
+            Ok(fingerprint) => {
+                if fingerprint.rustc_vv == actual_rustdoc_target_data.rustc_vv {
+                    return Ok(());
+                } else {
+                    log::debug!(
+                        "doc fingerprint changed:\noriginal:\n{}\nnew:\n{}",
+                        fingerprint.rustc_vv,
+                        actual_rustdoc_target_data.rustc_vv
+                    );
+                }
+            }
+            Err(e) => {
+                log::debug!("could not deserialize {:?}: {}", fingerprint_path, e);
+            }
+        };
+        // Fingerprint does not match, delete the doc directories and write a new fingerprint.
+        log::debug!(
+            "fingerprint {:?} mismatch, clearing doc directories",
+            fingerprint_path
+        );
+        cx.bcx
+            .all_kinds
+            .iter()
+            .map(|kind| cx.files().layout(*kind).doc())
+            .filter(|path| path.exists())
+            .try_for_each(|path| clean_doc(path))?;
+        write_fingerprint()?;
+        return Ok(());
+
+        fn clean_doc(path: &Path) -> CargoResult<()> {
+            let entries = path
+                .read_dir()
+                .with_context(|| format!("failed to read directory `{}`", path.display()))?;
+            for entry in entries {
+                let entry = entry?;
+                // Don't remove hidden files. Rustdoc does not create them,
+                // but the user might have.
+                if entry
+                    .file_name()
+                    .to_str()
+                    .map_or(false, |name| name.starts_with('.'))
+                {
+                    continue;
+                }
+                let path = entry.path();
+                if entry.file_type()?.is_dir() {
+                    paths::remove_dir_all(path)?;
+                } else {
+                    paths::remove_file(path)?;
+                }
+            }
+            Ok(())
+        }
     }
 }

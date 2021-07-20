@@ -33,23 +33,20 @@ impl ast::Comment {
         prefix
     }
 
-    /// Returns the textual content of a doc comment block as a single string.
-    /// That is, strips leading `///` (+ optional 1 character of whitespace),
-    /// trailing `*/`, trailing whitespace and then joins the lines.
+    /// Returns the textual content of a doc comment node as a single string with prefix and suffix
+    /// removed.
     pub fn doc_comment(&self) -> Option<&str> {
         let kind = self.kind();
         match kind {
             CommentKind { shape, doc: Some(_) } => {
                 let prefix = kind.prefix();
                 let text = &self.text()[prefix.len()..];
-                let ws = text.chars().next().filter(|c| c.is_whitespace());
-                let text = ws.map_or(text, |ws| &text[ws.len_utf8()..]);
-                match shape {
-                    CommentShape::Block if text.ends_with("*/") => {
-                        Some(&text[..text.len() - "*/".len()])
-                    }
-                    _ => Some(text),
-                }
+                let text = if shape == CommentShape::Block {
+                    text.strip_suffix("*/").unwrap_or(text)
+                } else {
+                    text
+                };
+                Some(text)
             }
             _ => None,
         }
@@ -105,8 +102,9 @@ impl CommentKind {
         kind
     }
 
-    fn prefix(&self) -> &'static str {
-        let &(prefix, _) = CommentKind::BY_PREFIX.iter().find(|(_, kind)| kind == self).unwrap();
+    pub fn prefix(&self) -> &'static str {
+        let &(prefix, _) =
+            CommentKind::BY_PREFIX.iter().rev().find(|(_, kind)| kind == self).unwrap();
         prefix
     }
 }
@@ -497,9 +495,8 @@ pub trait HasFormatSpecifier: AstToken {
                 }
                 _ => {
                     while let Some((_, Ok(next_char))) = chars.peek() {
-                        match next_char {
-                            '{' => break,
-                            _ => {}
+                        if next_char == &'{' {
+                            break;
                         }
                         chars.next();
                     }

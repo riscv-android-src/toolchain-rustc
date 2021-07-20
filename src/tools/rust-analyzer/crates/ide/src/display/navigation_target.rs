@@ -3,9 +3,12 @@
 use std::fmt;
 
 use either::Either;
-use hir::{AssocItem, Documentation, FieldSource, HasAttrs, HasSource, InFile, ModuleSource};
+use hir::{
+    AssocItem, Documentation, FieldSource, HasAttrs, HasSource, HirDisplay, InFile, ModuleSource,
+    Semantics,
+};
 use ide_db::{
-    base_db::{FileId, FileRange, SourceDatabase},
+    base_db::{FileId, FileRange},
     symbol_index::FileSymbolKind,
     SymbolKind,
 };
@@ -17,9 +20,7 @@ use syntax::{
 
 use crate::FileSymbol;
 
-use super::short_label::ShortLabel;
-
-/// `NavigationTarget` represents and element in the editor's UI which you can
+/// `NavigationTarget` represents an element in the editor's UI which you can
 /// click on to navigate to a particular piece of code.
 ///
 /// Typically, a `NavigationTarget` corresponds to some element in the source
@@ -34,12 +35,10 @@ pub struct NavigationTarget {
     /// Clients should use this range to answer "is the cursor inside the
     /// element?" question.
     pub full_range: TextRange,
-    /// A "most interesting" range withing the `full_range`.
+    /// A "most interesting" range within the `full_range`.
     ///
     /// Typically, `full_range` is the whole syntax node, including doc
-    /// comments, and `focus_range` is the range of the identifier. "Most
-    /// interesting" range within the full range, typically the range of
-    /// identifier.
+    /// comments, and `focus_range` is the range of the identifier.
     ///
     /// Clients should place the cursor on this range when navigating to this target.
     pub focus_range: Option<TextRange>,
@@ -98,7 +97,7 @@ impl NavigationTarget {
                 SymbolKind::Module,
             );
             res.docs = module.attrs(db).docs();
-            res.description = src.value.short_label();
+            res.description = Some(module.display(db).to_string());
             return res;
         }
         module.to_nav(db)
@@ -251,8 +250,8 @@ impl ToNavFromAst for hir::Trait {
 
 impl<D> TryToNav for D
 where
-    D: HasSource + ToNavFromAst + Copy + HasAttrs,
-    D::Ast: ast::NameOwner + ShortLabel,
+    D: HasSource + ToNavFromAst + Copy + HasAttrs + HirDisplay,
+    D::Ast: ast::NameOwner,
 {
     fn try_to_nav(&self, db: &RootDatabase) -> Option<NavigationTarget> {
         let src = self.source(db)?;
@@ -262,7 +261,7 @@ where
             D::KIND,
         );
         res.docs = self.docs(db);
-        res.description = src.value.short_label();
+        res.description = Some(self.display(db).to_string());
         Some(res)
     }
 }
@@ -317,7 +316,7 @@ impl TryToNav for hir::Field {
                 let mut res =
                     NavigationTarget::from_named(db, src.with_value(it), SymbolKind::Field);
                 res.docs = self.docs(db);
-                res.description = it.short_label();
+                res.description = Some(self.display(db).to_string());
                 res
             }
             FieldSource::Pos(it) => {
@@ -338,10 +337,14 @@ impl TryToNav for hir::Field {
 impl TryToNav for hir::MacroDef {
     fn try_to_nav(&self, db: &RootDatabase) -> Option<NavigationTarget> {
         let src = self.source(db)?;
-        log::debug!("nav target {:#?}", src.value.syntax());
+        let name_owner: &dyn ast::NameOwner = match &src.value {
+            Either::Left(it) => it,
+            Either::Right(it) => it,
+        };
+        log::debug!("nav target {:#?}", name_owner.syntax());
         let mut res = NavigationTarget::from_named(
             db,
-            src.as_ref().map(|it| it as &dyn ast::NameOwner),
+            src.as_ref().with_value(name_owner),
             SymbolKind::Macro,
         );
         res.docs = self.docs(db);
@@ -500,21 +503,22 @@ impl TryToNav for hir::ConstParam {
 ///
 /// e.g. `struct Name`, `enum Name`, `fn Name`
 pub(crate) fn description_from_symbol(db: &RootDatabase, symbol: &FileSymbol) -> Option<String> {
-    let parse = db.parse(symbol.file_id);
-    let node = symbol.ptr.to_node(parse.tree().syntax());
+    let sema = Semantics::new(db);
+    let parse = sema.parse(symbol.file_id);
+    let node = symbol.ptr.to_node(parse.syntax());
 
     match_ast! {
         match node {
-            ast::Fn(it) => it.short_label(),
-            ast::Struct(it) => it.short_label(),
-            ast::Enum(it) => it.short_label(),
-            ast::Trait(it) => it.short_label(),
-            ast::Module(it) => it.short_label(),
-            ast::TypeAlias(it) => it.short_label(),
-            ast::Const(it) => it.short_label(),
-            ast::Static(it) => it.short_label(),
-            ast::RecordField(it) => it.short_label(),
-            ast::Variant(it) => it.short_label(),
+            ast::Fn(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Struct(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Enum(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Trait(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Module(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::TypeAlias(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Const(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Static(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::RecordField(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Variant(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
             _ => None,
         }
     }

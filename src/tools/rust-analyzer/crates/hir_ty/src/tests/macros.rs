@@ -31,12 +31,12 @@ struct S;
 
 #[cfg(not(test))]
 impl S {
-    fn foo3(&self) -> i32 { 0 }
+    pub fn foo3(&self) -> i32 { 0 }
 }
 
 #[cfg(test)]
 impl S {
-    fn foo4(&self) -> i32 { 0 }
+    pub fn foo4(&self) -> i32 { 0 }
 }
 "#,
     );
@@ -135,7 +135,88 @@ fn infer_path_qualified_macros_expanded() {
 }
 
 #[test]
-fn expr_macro_expanded_in_various_places() {
+fn expr_macro_def_expanded_in_various_places() {
+    check_infer(
+        r#"
+        macro spam() {
+            1isize
+        }
+
+        fn spam() {
+            spam!();
+            (spam!());
+            spam!().spam(spam!());
+            for _ in spam!() {}
+            || spam!();
+            while spam!() {}
+            break spam!();
+            return spam!();
+            match spam!() {
+                _ if spam!() => spam!(),
+            }
+            spam!()(spam!());
+            Spam { spam: spam!() };
+            spam!()[spam!()];
+            await spam!();
+            spam!() as usize;
+            &spam!();
+            -spam!();
+            spam!()..spam!();
+            spam!() + spam!();
+        }
+        "#,
+        expect![[r#"
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            !0..6 '1isize': isize
+            39..442 '{     ...!(); }': ()
+            73..94 'spam!(...am!())': {unknown}
+            100..119 'for _ ...!() {}': ()
+            104..105 '_': {unknown}
+            117..119 '{}': ()
+            124..134 '|| spam!()': || -> isize
+            140..156 'while ...!() {}': ()
+            154..156 '{}': ()
+            161..174 'break spam!()': !
+            180..194 'return spam!()': !
+            200..254 'match ...     }': isize
+            224..225 '_': isize
+            259..275 'spam!(...am!())': {unknown}
+            281..303 'Spam {...m!() }': {unknown}
+            309..325 'spam!(...am!()]': {unknown}
+            350..366 'spam!(... usize': usize
+            372..380 '&spam!()': &isize
+            386..394 '-spam!()': isize
+            400..416 'spam!(...pam!()': {unknown}
+            422..439 'spam!(...pam!()': isize
+        "#]],
+    );
+}
+
+#[test]
+fn expr_macro_rules_expanded_in_various_places() {
     check_infer(
         r#"
         macro_rules! spam {
@@ -211,6 +292,108 @@ fn expr_macro_expanded_in_various_places() {
             400..408 '-spam!()': isize
             414..430 'spam!(...pam!()': {unknown}
             436..453 'spam!(...pam!()': isize
+        "#]],
+    );
+}
+
+#[test]
+fn expr_macro_expanded_in_stmts() {
+    check_infer(
+        r#"
+        macro_rules! id { ($($es:tt)*) => { $($es)* } }
+        fn foo() {
+            id! { let a = (); }
+        }
+        "#,
+        expect![[r#"
+            !0..8 'leta=();': ()
+            !0..8 'leta=();': ()
+            !3..4 'a': ()
+            !5..7 '()': ()
+            57..84 '{     ...); } }': ()
+        "#]],
+    );
+}
+
+#[test]
+fn recurisve_macro_expanded_in_stmts() {
+    check_infer(
+        r#"
+        macro_rules! ng {
+            ([$($tts:tt)*]) => {
+                $($tts)*;
+            };
+            ([$($tts:tt)*] $head:tt $($rest:tt)*) => {
+                ng! {
+                    [$($tts)* $head] $($rest)*
+                }
+            };
+        }
+        fn foo() {
+            ng!([] let a = 3);
+            let b = a;
+        }
+        "#,
+        expect![[r#"
+            !0..7 'leta=3;': {unknown}
+            !0..7 'leta=3;': {unknown}
+            !0..13 'ng!{[leta=3]}': {unknown}
+            !0..13 'ng!{[leta=]3}': {unknown}
+            !0..13 'ng!{[leta]=3}': {unknown}
+            !3..4 'a': i32
+            !5..6 '3': i32
+            196..237 '{     ...= a; }': ()
+            229..230 'b': i32
+            233..234 'a': i32
+        "#]],
+    );
+}
+
+#[test]
+fn recursive_inner_item_macro_rules() {
+    check_infer(
+        r#"
+        macro_rules! mac {
+            () => { mac!($)};
+            ($x:tt) => { macro_rules! blub { () => { 1 }; } };
+        }
+        fn foo() {
+            mac!();
+            let a = blub!();
+        }
+        "#,
+        expect![[r#"
+            !0..1 '1': i32
+            !0..26 'macro_...>{1};}': {unknown}
+            !0..26 'macro_...>{1};}': {unknown}
+            107..143 '{     ...!(); }': ()
+            129..130 'a': i32
+        "#]],
+    );
+}
+
+#[test]
+fn infer_macro_defining_block_with_items() {
+    check_infer(
+        r#"
+        macro_rules! foo {
+            () => {{
+                fn bar() -> usize { 0 }
+                bar()
+            }};
+        }
+        fn main() {
+            let _a = foo!();
+        }
+    "#,
+        expect![[r#"
+            !15..18 '{0}': usize
+            !16..17 '0': usize
+            !0..24 '{fnbar...bar()}': usize
+            !18..21 'bar': fn bar() -> usize
+            !18..23 'bar()': usize
+            98..122 '{     ...!(); }': ()
+            108..110 '_a': usize
         "#]],
     );
 }
@@ -569,6 +752,29 @@ fn bar() -> u32 {0}
 }
 
 #[test]
+fn infer_builtin_macros_include_child_mod() {
+    check_types(
+        r#"
+//- /main.rs
+#[rustc_builtin_macro]
+macro_rules! include {() => {}}
+
+include!("f/foo.rs");
+
+fn main() {
+    bar::bar();
+}          //^ u32
+
+//- /f/foo.rs
+pub mod bar;
+
+//- /f/bar.rs
+pub fn bar() -> u32 {0}
+"#,
+    );
+}
+
+#[test]
 fn infer_builtin_macros_include_str() {
     check_types(
         r#"
@@ -859,12 +1065,211 @@ fn macro_in_arm() {
         }
         "#,
         expect![[r#"
+            !0..2 '()': ()
             51..110 '{     ...  }; }': ()
             61..62 'x': u32
             65..107 'match ...     }': u32
             71..73 '()': ()
-            84..91 'unit!()': ()
             95..100 '92u32': u32
+        "#]],
+    );
+}
+
+#[test]
+fn macro_in_type_alias_position() {
+    check_infer(
+        r#"
+        macro_rules! U32 {
+            () => { u32 };
+        }
+
+        trait Foo {
+            type Ty;
+        }
+
+        impl<T> Foo for T {
+            type Ty = U32!();
+        }
+
+        type TayTo = U32!();
+
+        fn testy() {
+            let a: <() as Foo>::Ty;
+            let b: TayTo;
+        }
+        "#,
+        expect![[r#"
+            147..196 '{     ...yTo; }': ()
+            157..158 'a': u32
+            185..186 'b': u32
+        "#]],
+    );
+}
+
+#[test]
+fn nested_macro_in_type_alias_position() {
+    check_infer(
+        r#"
+        macro_rules! U32Inner2 {
+            () => { u32 };
+        }
+
+        macro_rules! U32Inner1 {
+            () => { U32Inner2!() };
+        }
+
+        macro_rules! U32 {
+            () => { U32Inner1!() };
+        }
+
+        trait Foo {
+            type Ty;
+        }
+
+        impl<T> Foo for T {
+            type Ty = U32!();
+        }
+
+        type TayTo = U32!();
+
+        fn testy() {
+            let a: <() as Foo>::Ty;
+            let b: TayTo;
+        }
+        "#,
+        expect![[r#"
+            259..308 '{     ...yTo; }': ()
+            269..270 'a': u32
+            297..298 'b': u32
+        "#]],
+    );
+}
+
+#[test]
+fn macros_in_type_alias_position_generics() {
+    check_infer(
+        r#"
+        struct Foo<A, B>(A, B);
+
+        macro_rules! U32 {
+            () => { u32 };
+        }
+
+        macro_rules! Bar {
+            () => { Foo<U32!(), U32!()> };
+        }
+
+        trait Moo {
+            type Ty;
+        }
+
+        impl<T> Moo for T {
+            type Ty = Bar!();
+        }
+
+        type TayTo = Bar!();
+
+        fn main() {
+            let a: <() as Moo>::Ty;
+            let b: TayTo;
+        }
+        "#,
+        expect![[r#"
+            228..277 '{     ...yTo; }': ()
+            238..239 'a': Foo<u32, u32>
+            266..267 'b': Foo<u32, u32>
+        "#]],
+    );
+}
+
+#[test]
+fn macros_in_type_position() {
+    check_infer(
+        r#"
+        struct Foo<A, B>(A, B);
+
+        macro_rules! U32 {
+            () => { u32 };
+        }
+
+        macro_rules! Bar {
+            () => { Foo<U32!(), U32!()> };
+        }
+
+        fn main() {
+            let a: Bar!();
+        }
+        "#,
+        expect![[r#"
+            133..155 '{     ...!(); }': ()
+            143..144 'a': Foo<u32, u32>
+        "#]],
+    );
+}
+
+#[test]
+fn macros_in_type_generics() {
+    check_infer(
+        r#"
+        struct Foo<A, B>(A, B);
+
+        macro_rules! U32 {
+            () => { u32 };
+        }
+
+        macro_rules! Bar {
+            () => { Foo<U32!(), U32!()> };
+        }
+
+        trait Moo {
+            type Ty;
+        }
+
+        impl<T> Moo for T {
+            type Ty = Foo<Bar!(), Bar!()>;
+        }
+
+        type TayTo = Foo<Bar!(), U32!()>;
+
+        fn main() {
+            let a: <() as Moo>::Ty;
+            let b: TayTo;
+        }
+        "#,
+        expect![[r#"
+            254..303 '{     ...yTo; }': ()
+            264..265 'a': Foo<Foo<u32, u32>, Foo<u32, u32>>
+            292..293 'b': Foo<Foo<u32, u32>, u32>
+        "#]],
+    );
+}
+
+#[test]
+fn infinitely_recursive_macro_type() {
+    check_infer(
+        r#"
+        struct Bar<T, X>(T, X);
+
+        macro_rules! Foo {
+            () => { Foo!() }
+        }
+
+        macro_rules! U32 {
+            () => { u32 }
+        }
+
+        type A = Foo!();
+        type B = Bar<Foo!(), U32!()>;
+
+        fn main() {
+            let a: A;
+            let b: B;
+        }
+        "#,
+        expect![[r#"
+            166..197 '{     ...: B; }': ()
+            176..177 'a': {unknown}
+            190..191 'b': Bar<{unknown}, u32>
         "#]],
     );
 }

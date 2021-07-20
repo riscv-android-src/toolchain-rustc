@@ -33,8 +33,8 @@ use crate::core::compiler::{BuildConfig, BuildContext, Compilation, Context};
 use crate::core::compiler::{CompileKind, CompileMode, CompileTarget, RustcTargetData, Unit};
 use crate::core::compiler::{DefaultExecutor, Executor, UnitInterner};
 use crate::core::profiles::{Profiles, UnitFor};
-use crate::core::resolver::features::{self, FeaturesFor, RequestedFeatures};
-use crate::core::resolver::{HasDevUnits, Resolve, ResolveOpts};
+use crate::core::resolver::features::{self, CliFeatures, FeaturesFor};
+use crate::core::resolver::{HasDevUnits, Resolve};
 use crate::core::{FeatureValue, Package, PackageSet, Shell, Summary, Target};
 use crate::core::{PackageId, PackageIdSpec, SourceId, TargetKind, Workspace};
 use crate::drop_println;
@@ -59,12 +59,8 @@ use anyhow::Context as _;
 pub struct CompileOptions {
     /// Configuration information for a rustc build
     pub build_config: BuildConfig,
-    /// Extra features to build for the root package
-    pub features: Vec<String>,
-    /// Flag whether all available features should be built for the root package
-    pub all_features: bool,
-    /// Flag if the default feature should be built for the root package
-    pub no_default_features: bool,
+    /// Feature flags requested by the user.
+    pub cli_features: CliFeatures,
     /// A set of packages to build.
     pub spec: Packages,
     /// Filter to apply to the root package to select which targets will be
@@ -89,9 +85,7 @@ impl<'a> CompileOptions {
     pub fn new(config: &Config, mode: CompileMode) -> CargoResult<CompileOptions> {
         Ok(CompileOptions {
             build_config: BuildConfig::new(config, None, &[], mode)?,
-            features: Vec::new(),
-            all_features: false,
-            no_default_features: false,
+            cli_features: CliFeatures::new_all(false),
             spec: ops::Packages::Packages(Vec::new()),
             filter: CompileFilter::Default {
                 required_features_filterable: false,
@@ -334,9 +328,7 @@ pub fn create_bcx<'a, 'cfg>(
     let CompileOptions {
         ref build_config,
         ref spec,
-        ref features,
-        all_features,
-        no_default_features,
+        ref cli_features,
         ref filter,
         ref target_rustdoc_args,
         ref target_rustc_args,
@@ -372,11 +364,6 @@ pub fn create_bcx<'a, 'cfg>(
     let target_data = RustcTargetData::new(ws, &build_config.requested_kinds)?;
 
     let specs = spec.to_package_id_specs(ws)?;
-    let dev_deps = ws.require_optional_deps() || filter.need_dev_deps(build_config.mode);
-    let opts = ResolveOpts::new(
-        dev_deps,
-        RequestedFeatures::from_command_line(features, all_features, !no_default_features),
-    );
     let has_dev_units = if filter.need_dev_deps(build_config.mode) {
         HasDevUnits::Yes
     } else {
@@ -386,7 +373,7 @@ pub fn create_bcx<'a, 'cfg>(
         ws,
         &target_data,
         &build_config.requested_kinds,
-        &opts,
+        cli_features,
         &specs,
         has_dev_units,
         crate::core::resolver::features::ForceAllTargets::No,
@@ -480,11 +467,17 @@ pub fn create_bcx<'a, 'cfg>(
         })
         .collect();
 
+    // Passing `build_config.requested_kinds` instead of
+    // `explicit_host_kinds` here so that `generate_targets` can do
+    // its own special handling of `CompileKind::Host`. It will
+    // internally replace the host kind by the `explicit_host_kind`
+    // before setting as a unit.
     let mut units = generate_targets(
         ws,
         &to_builds,
         filter,
-        &explicit_host_kinds,
+        &build_config.requested_kinds,
+        explicit_host_kind,
         build_config.mode,
         &resolve,
         &workspace_resolve,
@@ -804,12 +797,13 @@ impl CompileFilter {
     }
 
     pub fn is_all_targets(&self) -> bool {
-        match *self {
+        matches!(
+            *self,
             CompileFilter::Only {
-                all_targets: true, ..
-            } => true,
-            _ => false,
-        }
+                all_targets: true,
+                ..
+            }
+        )
     }
 
     pub(crate) fn contains_glob_patterns(&self) -> bool {
@@ -854,6 +848,7 @@ fn generate_targets(
     packages: &[&Package],
     filter: &CompileFilter,
     requested_kinds: &[CompileKind],
+    explicit_host_kind: CompileKind,
     mode: CompileMode,
     resolve: &Resolve,
     workspace_resolve: &Option<Resolve>,
@@ -922,19 +917,40 @@ fn generate_targets(
             };
 
             let is_local = pkg.package_id().source_id().is_path();
-            let profile = profiles.get_profile(
-                pkg.package_id(),
-                ws.is_member(pkg),
-                is_local,
-                unit_for,
-                target_mode,
-            );
 
             // No need to worry about build-dependencies, roots are never build dependencies.
             let features_for = FeaturesFor::from_for_host(target.proc_macro());
             let features = resolved_features.activated_features(pkg.package_id(), features_for);
 
-            for kind in requested_kinds {
+            // If `--target` has not been specified, then the unit
+            // graph is built almost like if `--target $HOST` was
+            // specified. See `rebuild_unit_graph_shared` for more on
+            // why this is done. However, if the package has its own
+            // `package.target` key, then this gets used instead of
+            // `$HOST`
+            let explicit_kinds = if let Some(k) = pkg.manifest().forced_kind() {
+                vec![k]
+            } else {
+                requested_kinds
+                    .iter()
+                    .map(|kind| match kind {
+                        CompileKind::Host => {
+                            pkg.manifest().default_kind().unwrap_or(explicit_host_kind)
+                        }
+                        CompileKind::Target(t) => CompileKind::Target(*t),
+                    })
+                    .collect()
+            };
+
+            for kind in explicit_kinds.iter() {
+                let profile = profiles.get_profile(
+                    pkg.package_id(),
+                    ws.is_member(pkg),
+                    is_local,
+                    unit_for,
+                    target_mode,
+                    *kind,
+                );
                 let unit = interner.intern(
                     pkg,
                     target,

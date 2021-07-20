@@ -4,7 +4,6 @@ use std::{
     fmt,
     hash::BuildHasherDefault,
     ops::{self, RangeInclusive},
-    ptr,
 };
 
 use indexmap::IndexMap;
@@ -27,7 +26,7 @@ pub fn ancestors_at_offset(
     offset: TextSize,
 ) -> impl Iterator<Item = SyntaxNode> {
     node.token_at_offset(offset)
-        .map(|token| token.parent().ancestors())
+        .map(|token| token.ancestors())
         .kmerge_by(|node1, node2| node1.text_range().len() < node2.text_range().len())
 }
 
@@ -171,7 +170,7 @@ pub fn diff(from: &SyntaxNode, to: &SyntaxNode) -> TreeDiff {
             && lhs.text_range().len() == rhs.text_range().len()
             && match (&lhs, &rhs) {
                 (NodeOrToken::Node(lhs), NodeOrToken::Node(rhs)) => {
-                    ptr::eq(lhs.green(), rhs.green()) || lhs.text() == rhs.text()
+                    lhs == rhs || lhs.text() == rhs.text()
                 }
                 (NodeOrToken::Token(lhs), NodeOrToken::Token(rhs)) => lhs.text() == rhs.text(),
                 _ => false,
@@ -280,9 +279,10 @@ fn _insert_children(
         to_green_element(element)
     });
 
-    let mut old_children = parent.green().children().map(|it| match it {
-        NodeOrToken::Token(it) => NodeOrToken::Token(it.clone()),
-        NodeOrToken::Node(it) => NodeOrToken::Node(it.clone()),
+    let parent_green = parent.green();
+    let mut old_children = parent_green.children().map(|it| match it {
+        NodeOrToken::Token(it) => NodeOrToken::Token(it.to_owned()),
+        NodeOrToken::Node(it) => NodeOrToken::Node(it.to_owned()),
     });
 
     let new_children = match &position {
@@ -319,9 +319,10 @@ fn _replace_children(
 ) -> SyntaxNode {
     let start = position_of_child(parent, to_delete.start().clone());
     let end = position_of_child(parent, to_delete.end().clone());
-    let mut old_children = parent.green().children().map(|it| match it {
-        NodeOrToken::Token(it) => NodeOrToken::Token(it.clone()),
-        NodeOrToken::Node(it) => NodeOrToken::Node(it.clone()),
+    let parent_green = parent.green();
+    let mut old_children = parent_green.children().map(|it| match it {
+        NodeOrToken::Token(it) => NodeOrToken::Token(it.to_owned()),
+        NodeOrToken::Node(it) => NodeOrToken::Node(it.to_owned()),
     });
 
     let before = old_children.by_ref().take(start).collect::<Vec<_>>();
@@ -341,10 +342,10 @@ enum InsertPos {
 
 #[derive(Default)]
 pub struct SyntaxRewriter<'a> {
-    f: Option<Box<dyn Fn(&SyntaxElement) -> Option<SyntaxElement> + 'a>>,
     //FIXME: add debug_assertions that all elements are in fact from the same file.
     replacements: FxHashMap<SyntaxElement, Replacement>,
     insertions: IndexMap<InsertPos, Vec<SyntaxElement>>,
+    _pd: std::marker::PhantomData<&'a ()>,
 }
 
 impl fmt::Debug for SyntaxRewriter<'_> {
@@ -356,14 +357,7 @@ impl fmt::Debug for SyntaxRewriter<'_> {
     }
 }
 
-impl<'a> SyntaxRewriter<'a> {
-    pub fn from_fn(f: impl Fn(&SyntaxElement) -> Option<SyntaxElement> + 'a) -> SyntaxRewriter<'a> {
-        SyntaxRewriter {
-            f: Some(Box::new(f)),
-            replacements: FxHashMap::default(),
-            insertions: IndexMap::default(),
-        }
-    }
+impl SyntaxRewriter<'_> {
     pub fn delete<T: Clone + Into<SyntaxElement>>(&mut self, what: &T) {
         let what = what.clone().into();
         let replacement = Replacement::Delete;
@@ -469,7 +463,7 @@ impl<'a> SyntaxRewriter<'a> {
     pub fn rewrite(&self, node: &SyntaxNode) -> SyntaxNode {
         let _p = profile::span("rewrite");
 
-        if self.f.is_none() && self.replacements.is_empty() && self.insertions.is_empty() {
+        if self.replacements.is_empty() && self.insertions.is_empty() {
             return node.clone();
         }
         let green = self.rewrite_children(node);
@@ -487,19 +481,18 @@ impl<'a> SyntaxRewriter<'a> {
     /// Returns `None` when there are no replacements.
     pub fn rewrite_root(&self) -> Option<SyntaxNode> {
         let _p = profile::span("rewrite_root");
-        fn element_to_node_or_parent(element: &SyntaxElement) -> SyntaxNode {
+        fn element_to_node_or_parent(element: &SyntaxElement) -> Option<SyntaxNode> {
             match element {
-                SyntaxElement::Node(it) => it.clone(),
+                SyntaxElement::Node(it) => Some(it.clone()),
                 SyntaxElement::Token(it) => it.parent(),
             }
         }
 
-        assert!(self.f.is_none());
         self.replacements
             .keys()
-            .map(element_to_node_or_parent)
-            .chain(self.insertions.keys().map(|pos| match pos {
-                InsertPos::FirstChildOf(it) => it.clone(),
+            .filter_map(element_to_node_or_parent)
+            .chain(self.insertions.keys().filter_map(|pos| match pos {
+                InsertPos::FirstChildOf(it) => Some(it.clone()),
                 InsertPos::After(it) => element_to_node_or_parent(it),
             }))
             // If we only have one replacement/insertion, we must return its parent node, since `rewrite` does
@@ -509,10 +502,6 @@ impl<'a> SyntaxRewriter<'a> {
     }
 
     fn replacement(&self, element: &SyntaxElement) -> Option<Replacement> {
-        if let Some(f) = &self.f {
-            assert!(self.replacements.is_empty());
-            return f(element).map(Replacement::Single);
-        }
         self.replacements.get(element).cloned()
     }
 
@@ -552,7 +541,7 @@ impl<'a> SyntaxRewriter<'a> {
             };
         } else {
             match element {
-                NodeOrToken::Token(it) => acc.push(NodeOrToken::Token(it.green().clone())),
+                NodeOrToken::Token(it) => acc.push(NodeOrToken::Token(it.green().to_owned())),
                 NodeOrToken::Node(it) => {
                     acc.push(NodeOrToken::Node(self.rewrite_children(it)));
                 }
@@ -566,14 +555,13 @@ impl<'a> SyntaxRewriter<'a> {
 
 fn element_to_green(element: SyntaxElement) -> NodeOrToken<rowan::GreenNode, rowan::GreenToken> {
     match element {
-        NodeOrToken::Node(it) => NodeOrToken::Node(it.green().to_owned()),
-        NodeOrToken::Token(it) => NodeOrToken::Token(it.green().clone()),
+        NodeOrToken::Node(it) => NodeOrToken::Node(it.green()),
+        NodeOrToken::Token(it) => NodeOrToken::Token(it.green().to_owned()),
     }
 }
 
 impl ops::AddAssign for SyntaxRewriter<'_> {
     fn add_assign(&mut self, rhs: SyntaxRewriter) {
-        assert!(rhs.f.is_none());
         self.replacements.extend(rhs.replacements);
         for (pos, insertions) in rhs.insertions.into_iter() {
             match self.insertions.entry(pos) {
@@ -624,8 +612,8 @@ fn position_of_child(parent: &SyntaxNode, child: SyntaxElement) -> usize {
 
 fn to_green_element(element: SyntaxElement) -> NodeOrToken<rowan::GreenNode, rowan::GreenToken> {
     match element {
-        NodeOrToken::Node(it) => it.green().to_owned().into(),
-        NodeOrToken::Token(it) => it.green().clone().into(),
+        NodeOrToken::Node(it) => it.green().into(),
+        NodeOrToken::Token(it) => it.green().to_owned().into(),
     }
 }
 

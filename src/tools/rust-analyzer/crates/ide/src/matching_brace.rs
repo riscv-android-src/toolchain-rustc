@@ -14,6 +14,8 @@ use syntax::{
 //
 // | VS Code | **Rust Analyzer: Find matching brace**
 // |===
+//
+// image::https://user-images.githubusercontent.com/48062697/113065573-04298180-91b1-11eb-8dec-d4e2a202f304.gif[]
 pub(crate) fn matching_brace(file: &SourceFile, offset: TextSize) -> Option<TextSize> {
     const BRACES: &[SyntaxKind] =
         &[T!['{'], T!['}'], T!['['], T![']'], T!['('], T![')'], T![<], T![>], T![|], T![|]];
@@ -25,7 +27,7 @@ pub(crate) fn matching_brace(file: &SourceFile, offset: TextSize) -> Option<Text
             Some((node, idx))
         })
         .next()?;
-    let parent = brace_token.parent();
+    let parent = brace_token.parent()?;
     if brace_token.kind() == T![|] && !ast::ParamList::can_cast(parent.kind()) {
         cov_mark::hit!(pipes_not_braces);
         return None;

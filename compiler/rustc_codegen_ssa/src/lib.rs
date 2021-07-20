@@ -5,8 +5,9 @@
 #![feature(try_blocks)]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
-#![feature(or_patterns)]
+#![cfg_attr(bootstrap, feature(or_patterns))]
 #![feature(associated_type_bounds)]
+#![feature(iter_zip)]
 #![recursion_limit = "256"]
 #![feature(box_syntax)]
 
@@ -137,7 +138,6 @@ pub struct CrateInfo {
     pub native_libraries: FxHashMap<CrateNum, Vec<NativeLib>>,
     pub crate_name: FxHashMap<CrateNum, String>,
     pub used_libraries: Vec<NativeLib>,
-    pub link_args: Lrc<Vec<String>>,
     pub used_crate_source: FxHashMap<CrateNum, Lrc<CrateSource>>,
     pub used_crates_static: Vec<(CrateNum, LibSource)>,
     pub used_crates_dynamic: Vec<(CrateNum, LibSource)>,

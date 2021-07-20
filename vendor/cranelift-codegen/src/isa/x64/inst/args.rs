@@ -456,6 +456,7 @@ pub(crate) enum InstructionSet {
     Popcnt,
     Lzcnt,
     BMI1,
+    #[allow(dead_code)] // never constructed (yet).
     BMI2,
 }
 
@@ -470,6 +471,7 @@ pub enum SseOpcode {
     Andpd,
     Andnps,
     Andnpd,
+    Blendvpd,
     Comiss,
     Comisd,
     Cmpps,
@@ -758,7 +760,8 @@ impl SseOpcode {
             | SseOpcode::Palignr
             | SseOpcode::Pshufb => SSSE3,
 
-            SseOpcode::Insertps
+            SseOpcode::Blendvpd
+            | SseOpcode::Insertps
             | SseOpcode::Packusdw
             | SseOpcode::Pcmpeqq
             | SseOpcode::Pextrb
@@ -816,6 +819,7 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Andps => "andps",
             SseOpcode::Andnps => "andnps",
             SseOpcode::Andnpd => "andnpd",
+            SseOpcode::Blendvpd => "blendvpd",
             SseOpcode::Cmpps => "cmpps",
             SseOpcode::Cmppd => "cmppd",
             SseOpcode::Cmpss => "cmpss",

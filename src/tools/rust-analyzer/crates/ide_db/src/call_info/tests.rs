@@ -1,7 +1,8 @@
-use crate::RootDatabase;
 use base_db::{fixture::ChangeFixture, FilePosition};
 use expect_test::{expect, Expect};
 use test_utils::RangeOrOffset;
+
+use crate::RootDatabase;
 
 /// Creates analysis from a multi-file fixture, returns positions marked with $0.
 pub(crate) fn position(ra_fixture: &str) -> (RootDatabase, FilePosition) {
@@ -220,11 +221,11 @@ fn bar() {
 }
 "#,
         expect![[r#"
-                test
-                ------
-                fn foo(j: u32) -> u32
-                (<j: u32>)
-            "#]],
+            test
+            ------
+            fn foo(j: u32) -> u32
+            (<j: u32>)
+        "#]],
     );
 }
 
@@ -249,19 +250,19 @@ pub fn do() {
     add_one($0
 }"#,
         expect![[r##"
-                Adds one to the number given.
+            Adds one to the number given.
 
-                # Examples
+            # Examples
 
-                ```
-                let five = 5;
+            ```
+            let five = 5;
 
-                assert_eq!(6, my_crate::add_one(5));
-                ```
-                ------
-                fn add_one(x: i32) -> i32
-                (<x: i32>)
-            "##]],
+            assert_eq!(6, my_crate::add_one(5));
+            ```
+            ------
+            fn add_one(x: i32) -> i32
+            (<x: i32>)
+        "##]],
     );
 }
 
@@ -291,19 +292,19 @@ pub fn do_it() {
 }
 "#,
         expect![[r##"
-                Adds one to the number given.
+            Adds one to the number given.
 
-                # Examples
+            # Examples
 
-                ```
-                let five = 5;
+            ```
+            let five = 5;
 
-                assert_eq!(6, my_crate::add_one(5));
-                ```
-                ------
-                fn add_one(x: i32) -> i32
-                (<x: i32>)
-            "##]],
+            assert_eq!(6, my_crate::add_one(5));
+            ```
+            ------
+            fn add_one(x: i32) -> i32
+            (<x: i32>)
+        "##]],
     );
 }
 
@@ -335,13 +336,13 @@ pub fn foo(mut r: WriteHandler<()>) {
 }
 "#,
         expect![[r#"
-                Method is called when writer finishes.
+            Method is called when writer finishes.
 
-                By default this method stops actor's `Context`.
-                ------
-                fn finished(&mut self, ctx: &mut {unknown})
-                (<ctx: &mut {unknown}>)
-            "#]],
+            By default this method stops actor's `Context`.
+            ------
+            fn finished(&mut self, ctx: &mut {unknown})
+            (<ctx: &mut {unknown}>)
+        "#]],
     );
 }
 
@@ -389,11 +390,11 @@ fn main() {
 }
 "#,
         expect![[r#"
-                A cool tuple struct
-                ------
-                struct S(u32, i32)
-                (u32, <i32>)
-            "#]],
+            A cool tuple struct
+            ------
+            struct S(u32, i32)
+            (u32, <i32>)
+        "#]],
     );
 }
 
@@ -431,11 +432,11 @@ fn main() {
 }
 "#,
         expect![[r#"
-                A Variant
-                ------
-                enum E::A(i32)
-                (<i32>)
-            "#]],
+            A Variant
+            ------
+            enum E::A(i32)
+            (<i32>)
+        "#]],
     );
 }
 
@@ -519,5 +520,32 @@ fn main(f: fn(i32, f64) -> char) {
                 (i32, f64) -> char
                 (i32, <f64>)
             "#]],
+    )
+}
+
+#[test]
+fn call_info_for_unclosed_call() {
+    check(
+        r#"
+fn foo(foo: u32, bar: u32) {}
+fn main() {
+    foo($0
+}"#,
+        expect![[r#"
+            fn foo(foo: u32, bar: u32)
+            (<foo: u32>, bar: u32)
+        "#]],
+    );
+    // check with surrounding space
+    check(
+        r#"
+fn foo(foo: u32, bar: u32) {}
+fn main() {
+    foo( $0
+}"#,
+        expect![[r#"
+            fn foo(foo: u32, bar: u32)
+            (<foo: u32>, bar: u32)
+        "#]],
     )
 }

@@ -19,6 +19,8 @@ use text_edit::{TextEdit, TextEditBuilder};
 //
 // | VS Code | **Rust Analyzer: Join lines**
 // |===
+//
+// image::https://user-images.githubusercontent.com/48062697/113020661-b6922200-917a-11eb-87c4-b75acc028f11.gif[]
 pub(crate) fn join_lines(file: &SourceFile, range: TextRange) -> TextEdit {
     let range = if range.is_empty() {
         let syntax = file.syntax();
@@ -32,27 +34,33 @@ pub(crate) fn join_lines(file: &SourceFile, range: TextRange) -> TextEdit {
         range
     };
 
-    let node = match file.syntax().covering_element(range) {
-        NodeOrToken::Node(node) => node,
-        NodeOrToken::Token(token) => token.parent(),
-    };
     let mut edit = TextEdit::builder();
-    for token in node.descendants_with_tokens().filter_map(|it| it.into_token()) {
-        let range = match range.intersect(token.text_range()) {
-            Some(range) => range,
-            None => continue,
-        } - token.text_range().start();
-        let text = token.text();
-        for (pos, _) in text[range].bytes().enumerate().filter(|&(_, b)| b == b'\n') {
-            let pos: TextSize = (pos as u32).into();
-            let offset = token.text_range().start() + range.start() + pos;
-            if !edit.invalidates_offset(offset) {
-                remove_newline(&mut edit, &token, offset);
+    match file.syntax().covering_element(range) {
+        NodeOrToken::Node(node) => {
+            for token in node.descendants_with_tokens().filter_map(|it| it.into_token()) {
+                remove_newlines(&mut edit, &token, range)
             }
         }
-    }
-
+        NodeOrToken::Token(token) => remove_newlines(&mut edit, &token, range),
+    };
     edit.finish()
+}
+
+fn remove_newlines(edit: &mut TextEditBuilder, token: &SyntaxToken, range: TextRange) {
+    let intersection = match range.intersect(token.text_range()) {
+        Some(range) => range,
+        None => return,
+    };
+
+    let range = intersection - token.text_range().start();
+    let text = token.text();
+    for (pos, _) in text[range].bytes().enumerate().filter(|&(_, b)| b == b'\n') {
+        let pos: TextSize = (pos as u32).into();
+        let offset = token.text_range().start() + range.start() + pos;
+        if !edit.invalidates_offset(offset) {
+            remove_newline(edit, &token, offset);
+        }
+    }
 }
 
 fn remove_newline(edit: &mut TextEditBuilder, token: &SyntaxToken, offset: TextSize) {
@@ -80,8 +88,11 @@ fn remove_newline(edit: &mut TextEditBuilder, token: &SyntaxToken, offset: TextS
     }
 
     // The node is between two other nodes
-    let prev = token.prev_sibling_or_token().unwrap();
-    let next = token.next_sibling_or_token().unwrap();
+    let (prev, next) = match (token.prev_sibling_or_token(), token.next_sibling_or_token()) {
+        (Some(prev), Some(next)) => (prev, next),
+        _ => return,
+    };
+
     if is_trailing_comma(prev.kind(), next.kind()) {
         // Removes: trailing comma, newline (incl. surrounding whitespace)
         edit.delete(TextRange::new(prev.text_range().start(), token.text_range().end()));
@@ -148,7 +159,7 @@ fn has_comma_after(node: &SyntaxNode) -> bool {
 }
 
 fn join_single_expr_block(edit: &mut TextEditBuilder, token: &SyntaxToken) -> Option<()> {
-    let block_expr = ast::BlockExpr::cast(token.parent())?;
+    let block_expr = ast::BlockExpr::cast(token.parent()?)?;
     if !block_expr.is_standalone() {
         return None;
     }
@@ -170,7 +181,7 @@ fn join_single_expr_block(edit: &mut TextEditBuilder, token: &SyntaxToken) -> Op
 }
 
 fn join_single_use_tree(edit: &mut TextEditBuilder, token: &SyntaxToken) -> Option<()> {
-    let use_tree_list = ast::UseTreeList::cast(token.parent())?;
+    let use_tree_list = ast::UseTreeList::cast(token.parent()?)?;
     let (tree,) = use_tree_list.use_trees().collect_tuple()?;
     edit.replace(use_tree_list.syntax().text_range(), tree.syntax().text().to_string());
     Some(())
@@ -218,7 +229,7 @@ mod tests {
         let result = join_lines(&file, range);
 
         let actual = {
-            let mut actual = before.to_string();
+            let mut actual = before;
             result.apply(&mut actual);
             actual
         };
@@ -622,7 +633,7 @@ fn foo() {
         let parse = SourceFile::parse(&before);
         let result = join_lines(&parse.tree(), sel);
         let actual = {
-            let mut actual = before.to_string();
+            let mut actual = before;
             result.apply(&mut actual);
             actual
         };
@@ -818,6 +829,17 @@ fn main() {
 $0hello world
 ";
 }
+"#,
+        );
+    }
+    #[test]
+    fn join_last_line_empty() {
+        check_join_lines(
+            r#"
+fn main() {$0}
+"#,
+            r#"
+fn main() {$0}
 "#,
         );
     }

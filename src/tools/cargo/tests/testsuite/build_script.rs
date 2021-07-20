@@ -1,15 +1,14 @@
 //! Tests for build.rs scripts.
 
-use std::env;
-use std::fs;
-use std::io;
-use std::thread;
-
-use cargo::util::paths::remove_dir_all;
 use cargo_test_support::paths::CargoPathExt;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_manifest, cross_compile, is_coarse_mtime, project};
 use cargo_test_support::{rustc_host, sleep_ms, slow_cpu_multiplier, symlink_supported};
+use cargo_util::paths::remove_dir_all;
+use std::env;
+use std::fs;
+use std::io;
+use std::thread;
 
 #[cargo_test]
 fn custom_build_script_failed() {
@@ -3986,7 +3985,7 @@ fn build_script_scan_eacces() {
         .file("secrets/stuff", "")
         .build();
     let path = p.root().join("secrets");
-    fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
     // The last "Caused by" is a string from libc such as the following:
     //   Permission denied (os error 13)
     p.cargo("build")

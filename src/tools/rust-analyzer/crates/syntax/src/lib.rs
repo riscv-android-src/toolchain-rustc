@@ -29,6 +29,7 @@ mod syntax_error;
 mod parsing;
 mod validation;
 mod ptr;
+mod token_text;
 #[cfg(test)]
 mod tests;
 
@@ -38,6 +39,7 @@ pub mod ast;
 #[doc(hidden)]
 pub mod fuzz;
 pub mod utils;
+pub mod ted;
 
 use std::{marker::PhantomData, sync::Arc};
 
@@ -54,6 +56,7 @@ pub use crate::{
         SyntaxElement, SyntaxElementChildren, SyntaxNode, SyntaxNodeChildren, SyntaxToken,
         SyntaxTreeBuilder,
     },
+    token_text::TokenText,
 };
 pub use parser::{SyntaxKind, T};
 pub use rowan::{

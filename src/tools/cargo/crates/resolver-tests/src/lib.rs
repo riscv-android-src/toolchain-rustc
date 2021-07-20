@@ -1,5 +1,4 @@
-#![allow(clippy::many_single_char_names)]
-#![allow(clippy::needless_range_loop)] // false positives
+#![allow(clippy::all)]
 
 use std::cell::RefCell;
 use std::cmp::PartialEq;
@@ -123,7 +122,7 @@ pub fn resolve_with_config_raw(
     struct MyRegistry<'a> {
         list: &'a [Summary],
         used: HashSet<PackageId>,
-    };
+    }
     impl<'a> Registry for MyRegistry<'a> {
         fn query(
             &mut self,

@@ -9,7 +9,7 @@ use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
 
 use rustc_ast::{Attribute, Lit, LitKind, NestedMetaItem};
-use rustc_errors::{pluralize, struct_span_err};
+use rustc_errors::{pluralize, struct_span_err, Applicability};
 use rustc_hir as hir;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
@@ -69,49 +69,48 @@ impl CheckAttrVisitor<'tcx> {
         let mut is_valid = true;
         let attrs = self.tcx.hir().attrs(hir_id);
         for attr in attrs {
-            is_valid &= if self.tcx.sess.check_name(attr, sym::inline) {
-                self.check_inline(hir_id, attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::non_exhaustive) {
-                self.check_non_exhaustive(hir_id, attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::marker) {
-                self.check_marker(hir_id, attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::target_feature) {
-                self.check_target_feature(hir_id, attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::track_caller) {
-                self.check_track_caller(hir_id, &attr.span, attrs, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::doc) {
-                self.check_doc_attrs(attr, hir_id, target)
-            } else if self.tcx.sess.check_name(attr, sym::no_link) {
-                self.check_no_link(hir_id, &attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::export_name) {
-                self.check_export_name(hir_id, &attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::rustc_args_required_const) {
-                self.check_rustc_args_required_const(&attr, span, target, item)
-            } else if self.tcx.sess.check_name(attr, sym::rustc_layout_scalar_valid_range_start) {
-                self.check_rustc_layout_scalar_valid_range(&attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::rustc_layout_scalar_valid_range_end) {
-                self.check_rustc_layout_scalar_valid_range(&attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::allow_internal_unstable) {
-                self.check_allow_internal_unstable(hir_id, &attr, span, target, &attrs)
-            } else if self.tcx.sess.check_name(attr, sym::rustc_allow_const_fn_unstable) {
-                self.check_rustc_allow_const_fn_unstable(hir_id, &attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::naked) {
-                self.check_naked(hir_id, attr, span, target)
-            } else if self.tcx.sess.check_name(attr, sym::rustc_legacy_const_generics) {
-                self.check_rustc_legacy_const_generics(&attr, span, target, item)
-            } else {
-                // lint-only checks
-                if self.tcx.sess.check_name(attr, sym::cold) {
-                    self.check_cold(hir_id, attr, span, target);
-                } else if self.tcx.sess.check_name(attr, sym::link_name) {
-                    self.check_link_name(hir_id, attr, span, target);
-                } else if self.tcx.sess.check_name(attr, sym::link_section) {
-                    self.check_link_section(hir_id, attr, span, target);
-                } else if self.tcx.sess.check_name(attr, sym::no_mangle) {
-                    self.check_no_mangle(hir_id, attr, span, target);
+            is_valid &= match attr.name_or_empty() {
+                sym::inline => self.check_inline(hir_id, attr, span, target),
+                sym::non_exhaustive => self.check_non_exhaustive(hir_id, attr, span, target),
+                sym::marker => self.check_marker(hir_id, attr, span, target),
+                sym::target_feature => self.check_target_feature(hir_id, attr, span, target),
+                sym::track_caller => {
+                    self.check_track_caller(hir_id, &attr.span, attrs, span, target)
                 }
-                true
+                sym::doc => self.check_doc_attrs(attr, hir_id, target),
+                sym::no_link => self.check_no_link(hir_id, &attr, span, target),
+                sym::export_name => self.check_export_name(hir_id, &attr, span, target),
+                sym::rustc_args_required_const => {
+                    self.check_rustc_args_required_const(&attr, span, target, item)
+                }
+                sym::rustc_layout_scalar_valid_range_start
+                | sym::rustc_layout_scalar_valid_range_end => {
+                    self.check_rustc_layout_scalar_valid_range(&attr, span, target)
+                }
+                sym::allow_internal_unstable => {
+                    self.check_allow_internal_unstable(hir_id, &attr, span, target, &attrs)
+                }
+                sym::rustc_allow_const_fn_unstable => {
+                    self.check_rustc_allow_const_fn_unstable(hir_id, &attr, span, target)
+                }
+                sym::naked => self.check_naked(hir_id, attr, span, target),
+                sym::rustc_legacy_const_generics => {
+                    self.check_rustc_legacy_const_generics(&attr, span, target, item)
+                }
+                sym::rustc_clean
+                | sym::rustc_dirty
+                | sym::rustc_if_this_changed
+                | sym::rustc_then_this_would_need => self.check_rustc_dirty_clean(&attr),
+                _ => true,
             };
+            // lint-only checks
+            match attr.name_or_empty() {
+                sym::cold => self.check_cold(hir_id, attr, span, target),
+                sym::link_name => self.check_link_name(hir_id, attr, span, target),
+                sym::link_section => self.check_link_section(hir_id, attr, span, target),
+                sym::no_mangle => self.check_no_mangle(hir_id, attr, span, target),
+                _ => {}
+            }
         }
 
         if !is_valid {
@@ -642,10 +641,10 @@ impl CheckAttrVisitor<'tcx> {
                         | sym::masked
                         | sym::no_default_passes
                         | sym::no_inline
+                        | sym::notable_trait
                         | sym::passes
                         | sym::plugins
                         | sym::primitive
-                        | sym::spotlight
                         | sym::test => {}
 
                         _ => {
@@ -654,11 +653,23 @@ impl CheckAttrVisitor<'tcx> {
                                 hir_id,
                                 i_meta.span,
                                 |lint| {
-                                    let msg = format!(
+                                    let mut diag = lint.build(&format!(
                                         "unknown `doc` attribute `{}`",
                                         rustc_ast_pretty::pprust::path_to_string(&i_meta.path),
-                                    );
-                                    lint.build(&msg).emit();
+                                    ));
+                                    if i_meta.has_name(sym::spotlight) {
+                                        diag.note(
+                                            "`doc(spotlight)` was renamed to `doc(notable_trait)`",
+                                        );
+                                        diag.span_suggestion_short(
+                                            i_meta.span,
+                                            "use `notable_trait` instead",
+                                            String::from("notable_trait"),
+                                            Applicability::MachineApplicable,
+                                        );
+                                        diag.note("`doc(spotlight)` is now a no-op");
+                                    }
+                                    diag.emit();
                                 },
                             );
                             is_valid = false;
@@ -1012,6 +1023,20 @@ impl CheckAttrVisitor<'tcx> {
         }
     }
 
+    /// Checks that the dep-graph debugging attributes are only present when the query-dep-graph
+    /// option is passed to the compiler.
+    fn check_rustc_dirty_clean(&self, attr: &Attribute) -> bool {
+        if self.tcx.sess.opts.debugging_opts.query_dep_graph {
+            true
+        } else {
+            self.tcx
+                .sess
+                .struct_span_err(attr.span, "attribute requires -Z query-dep-graph to be enabled")
+                .emit();
+            false
+        }
+    }
+
     /// Checks if `#[link_section]` is applied to a function or static.
     fn check_link_section(&self, hir_id: HirId, attr: &Attribute, span: &Span, target: Target) {
         match target {
@@ -1084,7 +1109,7 @@ impl CheckAttrVisitor<'tcx> {
         // ```
         let hints: Vec<_> = attrs
             .iter()
-            .filter(|attr| self.tcx.sess.check_name(attr, sym::repr))
+            .filter(|attr| attr.has_name(sym::repr))
             .filter_map(|attr| attr.meta_item_list())
             .flatten()
             .collect();
@@ -1221,7 +1246,7 @@ impl CheckAttrVisitor<'tcx> {
 
     fn check_used(&self, attrs: &'hir [Attribute], target: Target) {
         for attr in attrs {
-            if self.tcx.sess.check_name(attr, sym::used) && target != Target::Static {
+            if attr.has_name(sym::used) && target != Target::Static {
                 self.tcx
                     .sess
                     .span_err(attr.span, "attribute must be applied to a `static` variable");
@@ -1423,7 +1448,7 @@ fn check_invalid_crate_level_attr(tcx: TyCtxt<'_>, attrs: &[Attribute]) {
         sym::path,
         sym::automatically_derived,
         sym::start,
-        sym::main,
+        sym::rustc_main,
     ];
 
     for attr in attrs {

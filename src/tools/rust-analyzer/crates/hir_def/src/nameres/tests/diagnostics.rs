@@ -7,6 +7,11 @@ fn check_diagnostics(ra_fixture: &str) {
     db.check_diagnostics();
 }
 
+fn check_no_diagnostics(ra_fixture: &str) {
+    let db: TestDB = TestDB::with_files(ra_fixture);
+    db.check_no_diagnostics();
+}
+
 #[test]
 fn unresolved_import() {
     check_diagnostics(
@@ -152,6 +157,83 @@ fn inactive_via_cfg_attr() {
 
           #[cfg_attr(not(never), inline, cfg(no))] fn h() {}
         //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ code is inactive due to #[cfg] directives: no is disabled
+        "#,
+    );
+}
+
+#[test]
+fn unresolved_legacy_scope_macro() {
+    check_diagnostics(
+        r#"
+        //- /lib.rs
+          macro_rules! m { () => {} }
+
+          m!();
+          m2!();
+        //^^^^^^ unresolved macro `self::m2!`
+        "#,
+    );
+}
+
+#[test]
+fn unresolved_module_scope_macro() {
+    check_diagnostics(
+        r#"
+        //- /lib.rs
+          mod mac {
+            #[macro_export]
+            macro_rules! m { () => {} }
+          }
+
+          self::m!();
+          self::m2!();
+        //^^^^^^^^^^^^ unresolved macro `self::m2!`
+        "#,
+    );
+}
+
+#[test]
+fn builtin_macro_fails_expansion() {
+    check_diagnostics(
+        r#"
+        //- /lib.rs
+          #[rustc_builtin_macro]
+          macro_rules! include { () => {} }
+
+          include!("doesntexist");
+        //^^^^^^^^^^^^^^^^^^^^^^^^ failed to load file `doesntexist`
+        "#,
+    );
+}
+
+#[test]
+fn include_macro_should_allow_empty_content() {
+    check_no_diagnostics(
+        r#"
+        //- /lib.rs
+          #[rustc_builtin_macro]
+          macro_rules! include { () => {} }
+
+          include!("bar.rs");
+        //- /bar.rs
+          // empty
+        "#,
+    );
+}
+
+#[test]
+fn good_out_dir_diagnostic() {
+    check_diagnostics(
+        r#"
+        #[rustc_builtin_macro]
+        macro_rules! include { () => {} }
+        #[rustc_builtin_macro]
+        macro_rules! env { () => {} }
+        #[rustc_builtin_macro]
+        macro_rules! concat { () => {} }
+
+        include!(concat!(env!("OUT_DIR"), "/out.rs"));
+      //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `OUT_DIR` not set, enable "run build scripts" to fix
         "#,
     );
 }

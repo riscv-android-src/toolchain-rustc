@@ -14,8 +14,7 @@ use crate::{
         MismatchedArgCount, MissingFields, MissingMatchArms, MissingOkOrSomeInTailExpr,
         MissingPatFields, RemoveThisSemicolon,
     },
-    utils::variant_data,
-    AdtId, InferenceResult, Interner, Ty, TyKind,
+    AdtId, InferenceResult, Interner, TyExt, TyKind,
 };
 
 pub(crate) use hir_def::{
@@ -44,7 +43,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
     pub(super) fn validate_body(&mut self, db: &dyn HirDatabase) {
         self.check_for_filter_map_next(db);
 
-        let body = db.body(self.owner.into());
+        let body = db.body(self.owner);
 
         for (id, expr) in body.exprs.iter() {
             if let Some((variant_def, missed_fields, true)) =
@@ -98,13 +97,13 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         missed_fields: Vec<LocalFieldId>,
     ) {
         // XXX: only look at source_map if we do have missing fields
-        let (_, source_map) = db.body_with_source_map(self.owner.into());
+        let (_, source_map) = db.body_with_source_map(self.owner);
 
         if let Ok(source_ptr) = source_map.expr_syntax(id) {
             let root = source_ptr.file_syntax(db.upcast());
             if let ast::Expr::RecordExpr(record_expr) = &source_ptr.value.to_node(&root) {
                 if let Some(_) = record_expr.record_expr_field_list() {
-                    let variant_data = variant_data(db.upcast(), variant_def);
+                    let variant_data = variant_def.variant_data(db.upcast());
                     let missed_fields = missed_fields
                         .into_iter()
                         .map(|idx| variant_data.fields()[idx].name.clone())
@@ -128,14 +127,14 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         missed_fields: Vec<LocalFieldId>,
     ) {
         // XXX: only look at source_map if we do have missing fields
-        let (_, source_map) = db.body_with_source_map(self.owner.into());
+        let (_, source_map) = db.body_with_source_map(self.owner);
 
         if let Ok(source_ptr) = source_map.pat_syntax(id) {
             if let Some(expr) = source_ptr.value.as_ref().left() {
                 let root = source_ptr.file_syntax(db.upcast());
                 if let ast::Pat::RecordPat(record_pat) = expr.to_node(&root) {
                     if let Some(_) = record_pat.record_pat_field_list() {
-                        let variant_data = variant_data(db.upcast(), variant_def);
+                        let variant_data = variant_def.variant_data(db.upcast());
                         let missed_fields = missed_fields
                             .into_iter()
                             .map(|idx| variant_data.fields()[idx].name.clone())
@@ -175,7 +174,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         };
 
         // Search function body for instances of .filter_map(..).next()
-        let body = db.body(self.owner.into());
+        let body = db.body(self.owner);
         let mut prev = None;
         for (id, expr) in body.exprs.iter() {
             if let Expr::MethodCall { receiver, .. } = expr {
@@ -192,7 +191,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
                 if function_id == *next_function_id {
                     if let Some(filter_map_id) = prev {
                         if *receiver == filter_map_id {
-                            let (_, source_map) = db.body_with_source_map(self.owner.into());
+                            let (_, source_map) = db.body_with_source_map(self.owner);
                             if let Ok(next_source_ptr) = source_map.expr_syntax(id) {
                                 self.sink.push(ReplaceFilterMapNextWithFindMap {
                                     file: next_source_ptr.file_id,
@@ -245,7 +244,8 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
                     Some(callee) => callee,
                     None => return,
                 };
-                let sig = db.callable_item_signature(callee.into()).value;
+                let sig =
+                    db.callable_item_signature(callee.into()).into_value_and_skipped_binders().0;
 
                 (sig, args)
             }
@@ -262,7 +262,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         let mut arg_count = args.len();
 
         if arg_count != param_count {
-            let (_, source_map) = db.body_with_source_map(self.owner.into());
+            let (_, source_map) = db.body_with_source_map(self.owner);
             if let Ok(source_ptr) = source_map.expr_syntax(call_id) {
                 if is_method_call {
                     param_count -= 1;
@@ -287,7 +287,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         infer: Arc<InferenceResult>,
     ) {
         let (body, source_map): (Arc<Body>, Arc<BodySourceMap>) =
-            db.body_with_source_map(self.owner.into());
+            db.body_with_source_map(self.owner);
 
         let match_expr_ty = if infer.type_of_expr[match_expr].is_unknown() {
             return;
@@ -314,7 +314,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
                 if pat_ty == match_expr_ty
                     || match_expr_ty
                         .as_reference()
-                        .map(|(match_expr_ty, _)| match_expr_ty == pat_ty)
+                        .map(|(match_expr_ty, ..)| match_expr_ty == pat_ty)
                         .unwrap_or(false)
                 {
                     // If we had a NotUsefulMatchArm diagnostic, we could
@@ -378,7 +378,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
             _ => return,
         };
 
-        let (params, required) = match mismatch.expected.interned(&Interner) {
+        let (params, required) = match mismatch.expected.kind(&Interner) {
             TyKind::Adt(AdtId(hir_def::AdtId::EnumId(enum_id)), ref parameters)
                 if *enum_id == core_result_enum =>
             {
@@ -392,8 +392,10 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
             _ => return,
         };
 
-        if params.len() > 0 && params[0] == mismatch.actual {
-            let (_, source_map) = db.body_with_source_map(self.owner.into());
+        if params.len(&Interner) > 0
+            && params.at(&Interner, 0).ty(&Interner) == Some(&mismatch.actual)
+        {
+            let (_, source_map) = db.body_with_source_map(self.owner);
 
             if let Ok(source_ptr) = source_map.expr_syntax(id) {
                 self.sink.push(MissingOkOrSomeInTailExpr {
@@ -421,11 +423,11 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
             None => return,
         };
 
-        if mismatch.actual != Ty::unit() || mismatch.expected != *possible_tail_ty {
+        if !mismatch.actual.is_unit() || mismatch.expected != *possible_tail_ty {
             return;
         }
 
-        let (_, source_map) = db.body_with_source_map(self.owner.into());
+        let (_, source_map) = db.body_with_source_map(self.owner);
 
         if let Ok(source_ptr) = source_map.expr_syntax(possible_tail_id) {
             self.sink
@@ -450,7 +452,7 @@ pub fn record_literal_missing_fields(
         return None;
     }
 
-    let variant_data = variant_data(db.upcast(), variant_def);
+    let variant_data = variant_def.variant_data(db.upcast());
 
     let specified_fields: FxHashSet<_> = fields.iter().map(|f| &f.name).collect();
     let missed_fields: Vec<LocalFieldId> = variant_data
@@ -480,7 +482,7 @@ pub fn record_pattern_missing_fields(
         return None;
     }
 
-    let variant_data = variant_data(db.upcast(), variant_def);
+    let variant_data = variant_def.variant_data(db.upcast());
 
     let specified_fields: FxHashSet<_> = fields.iter().map(|f| &f.name).collect();
     let missed_fields: Vec<LocalFieldId> = variant_data
@@ -688,6 +690,63 @@ fn main() {
   //^^^^^^^^^ Expected 1 argument, found 2
 }
 "#,
+        )
+    }
+
+    #[test]
+    fn cfgd_out_call_arguments() {
+        check_diagnostics(
+            r#"
+struct C(#[cfg(FALSE)] ());
+impl C {
+    fn new() -> Self {
+        Self(
+            #[cfg(FALSE)]
+            (),
+        )
+    }
+
+    fn method(&self) {}
+}
+
+fn main() {
+    C::new().method(#[cfg(FALSE)] 0);
+}
+            "#,
+        );
+    }
+
+    #[test]
+    fn cfgd_out_fn_params() {
+        check_diagnostics(
+            r#"
+fn foo(#[cfg(NEVER)] x: ()) {}
+
+struct S;
+
+impl S {
+    fn method(#[cfg(NEVER)] self) {}
+    fn method2(#[cfg(NEVER)] self, arg: u8) {}
+    fn method3(self, #[cfg(NEVER)] arg: u8) {}
+}
+
+extern "C" {
+    fn fixed(fixed: u8, #[cfg(NEVER)] ...);
+    fn varargs(#[cfg(not(NEVER))] ...);
+}
+
+fn main() {
+    foo();
+    S::method();
+    S::method2(0);
+    S::method3(S);
+    S.method3();
+    unsafe {
+        fixed(0);
+        varargs(1, 2, 3);
+    }
+}
+            "#,
         )
     }
 }

@@ -12,6 +12,7 @@ use hir_def::{
 };
 use hir_expand::{name::AsName, AstId, MacroDefKind};
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 use stdx::impl_from;
 use syntax::{
     ast::{self, NameOwner},
@@ -28,14 +29,19 @@ pub(super) struct SourceToDefCtx<'a, 'b> {
 }
 
 impl SourceToDefCtx<'_, '_> {
-    pub(super) fn file_to_def(&mut self, file: FileId) -> Option<ModuleId> {
+    pub(super) fn file_to_def(&mut self, file: FileId) -> SmallVec<[ModuleId; 1]> {
         let _p = profile::span("SourceBinder::to_module_def");
-        self.db.relevant_crates(file).iter().find_map(|&crate_id| {
+        let mut mods = SmallVec::new();
+        for &crate_id in self.db.relevant_crates(file).iter() {
             // FIXME: inner items
             let crate_def_map = self.db.crate_def_map(crate_id);
-            let local_id = crate_def_map.modules_for_file(file).next()?;
-            Some(crate_def_map.module_id(local_id))
-        })
+            mods.extend(
+                crate_def_map
+                    .modules_for_file(file)
+                    .map(|local_id| crate_def_map.module_id(local_id)),
+            )
+        }
+        mods
     }
 
     pub(super) fn module_to_def(&mut self, src: InFile<ast::Module>) -> Option<ModuleId> {
@@ -55,7 +61,7 @@ impl SourceToDefCtx<'_, '_> {
             Some(parent_declaration) => self.module_to_def(parent_declaration),
             None => {
                 let file_id = src.file_id.original_file(self.db.upcast());
-                self.file_to_def(file_id)
+                self.file_to_def(file_id).get(0).copied()
             }
         }?;
 
@@ -63,6 +69,12 @@ impl SourceToDefCtx<'_, '_> {
         let def_map = parent_module.def_map(self.db.upcast());
         let child_id = *def_map[parent_module.local_id].children.get(&child_name)?;
         Some(def_map.module_id(child_id))
+    }
+
+    pub(super) fn source_file_to_def(&mut self, src: InFile<ast::SourceFile>) -> Option<ModuleId> {
+        let _p = profile::span("source_file_to_def");
+        let file_id = src.file_id.original_file(self.db.upcast());
+        self.file_to_def(file_id).get(0).copied()
     }
 
     pub(super) fn trait_to_def(&mut self, src: InFile<ast::Trait>) -> Option<TraitId> {
@@ -179,16 +191,13 @@ impl SourceToDefCtx<'_, '_> {
     }
 
     // FIXME: use DynMap as well?
-    pub(super) fn macro_rules_to_def(
-        &mut self,
-        src: InFile<ast::MacroRules>,
-    ) -> Option<MacroDefId> {
-        let kind = MacroDefKind::Declarative;
-        let file_id = src.file_id.original_file(self.db.upcast());
-        let krate = self.file_to_def(file_id)?.krate();
+    pub(super) fn macro_to_def(&mut self, src: InFile<ast::Macro>) -> Option<MacroDefId> {
         let file_ast_id = self.db.ast_id_map(src.file_id).ast_id(&src.value);
-        let ast_id = Some(AstId::new(src.file_id, file_ast_id.upcast()));
-        Some(MacroDefId { krate, ast_id, kind, local_inner: false })
+        let ast_id = AstId::new(src.file_id, file_ast_id.upcast());
+        let kind = MacroDefKind::Declarative(ast_id);
+        let file_id = src.file_id.original_file(self.db.upcast());
+        let krate = self.file_to_def(file_id).get(0).copied()?.krate();
+        Some(MacroDefId { krate, kind, local_inner: false })
     }
 
     pub(super) fn find_container(&mut self, src: InFile<&SyntaxNode>) -> Option<ChildContainer> {
@@ -245,7 +254,7 @@ impl SourceToDefCtx<'_, '_> {
             return Some(res);
         }
 
-        let def = self.file_to_def(src.file_id.original_file(self.db.upcast()))?;
+        let def = self.file_to_def(src.file_id.original_file(self.db.upcast())).get(0).copied()?;
         Some(def.into())
     }
 

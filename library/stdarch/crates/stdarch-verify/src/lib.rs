@@ -1,5 +1,4 @@
-extern crate proc_macro;
-extern crate proc_macro2;
+#![deny(rust_2018_idioms)]
 #[macro_use]
 extern crate quote;
 #[macro_use]
@@ -137,12 +136,15 @@ fn to_type(t: &syn::Type) -> proc_macro2::TokenStream {
         syn::Type::Path(ref p) => match extract_path_ident(&p.path).to_string().as_ref() {
             // x86 ...
             "__m128" => quote! { &M128 },
+            "__m128bh" => quote! { &M128BH },
             "__m128d" => quote! { &M128D },
             "__m128i" => quote! { &M128I },
             "__m256" => quote! { &M256 },
+            "__m256bh" => quote! { &M256BH },
             "__m256d" => quote! { &M256D },
             "__m256i" => quote! { &M256I },
             "__m512" => quote! { &M512 },
+            "__m512bh" => quote! { &M512BH },
             "__m512d" => quote! { &M512D },
             "__m512i" => quote! { &M512I },
             "__mmask8" => quote! { &MMASK8 },
@@ -321,7 +323,7 @@ fn find_instrs(attrs: &[syn::Attribute]) -> Vec<String> {
     // TODO: should probably just reuse `Invoc` from the `assert-instr-macro`
     // crate.
     impl syn::parse::Parse for AssertInstr {
-        fn parse(content: syn::parse::ParseStream) -> syn::Result<Self> {
+        fn parse(content: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
             let input;
             parenthesized!(input in content);
             let _ = input.parse::<syn::Meta>()?;
@@ -407,7 +409,7 @@ struct RustcArgsRequiredConst {
 }
 
 impl syn::parse::Parse for RustcArgsRequiredConst {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let content;
         parenthesized!(content in input);
         let list =

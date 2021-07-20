@@ -477,6 +477,7 @@ impl<'mir, 'tcx: 'mir> ThreadManager<'mir, 'tcx> {
         if self.threads[self.active_thread].check_terminated() {
             return Ok(SchedulingAction::ExecuteDtors);
         }
+        // If we get here again and the thread is *still* terminated, there are no more dtors to run.
         if self.threads[MAIN_THREAD].state == ThreadState::Terminated {
             // The main thread terminated; stop the program.
             if self.threads.iter().any(|thread| thread.state != ThreadState::Terminated) {
@@ -490,26 +491,25 @@ impl<'mir, 'tcx: 'mir> ThreadManager<'mir, 'tcx> {
             }
             return Ok(SchedulingAction::Stop);
         }
-        // At least for `pthread_cond_timedwait` we need to report timeout when
-        // the function is called already after the specified time even if a
-        // signal is received before the thread gets scheduled. Therefore, we
-        // need to schedule all timeout callbacks before we continue regular
-        // execution.
-        //
-        // Documentation:
-        // https://pubs.opengroup.org/onlinepubs/9699919799/functions/pthread_cond_timedwait.html#
-        let potential_sleep_time =
-            self.timeout_callbacks.values().map(|info| info.call_time.get_wait_time()).min();
-        if potential_sleep_time == Some(Duration::new(0, 0)) {
-            return Ok(SchedulingAction::ExecuteTimeoutCallback);
-        }
-        // No callbacks scheduled, pick a regular thread to execute.
+        // This thread and the program can keep going.
         if self.threads[self.active_thread].state == ThreadState::Enabled
             && !self.yield_active_thread
         {
             // The currently active thread is still enabled, just continue with it.
             return Ok(SchedulingAction::ExecuteStep);
         }
+        // The active thread yielded. Let's see if there are any timeouts to take care of. We do
+        // this *before* running any other thread, to ensure that timeouts "in the past" fire before
+        // any other thread can take an action. This ensures that for `pthread_cond_timedwait`, "an
+        // error is returned if [...] the absolute time specified by abstime has already been passed
+        // at the time of the call".
+        // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/pthread_cond_timedwait.html>
+        let potential_sleep_time =
+            self.timeout_callbacks.values().map(|info| info.call_time.get_wait_time()).min();
+        if potential_sleep_time == Some(Duration::new(0, 0)) {
+            return Ok(SchedulingAction::ExecuteTimeoutCallback);
+        }
+        // No callbacks scheduled, pick a regular thread to execute.
         // We need to pick a new thread for execution.
         for (id, thread) in self.threads.iter_enumerated() {
             if thread.state == ThreadState::Enabled {
@@ -711,7 +711,17 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn run_timeout_callback(&mut self) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         let (thread, callback) =
-            this.machine.threads.get_ready_callback().expect("no callback found");
+            if let Some((thread, callback)) = this.machine.threads.get_ready_callback() {
+                (thread, callback)
+            } else {
+                // get_ready_callback can return None if the computer's clock
+                // was shifted after calling the scheduler and before the call
+                // to get_ready_callback (see issue
+                // https://github.com/rust-lang/miri/issues/1763). In this case,
+                // just do nothing, which effectively just returns to the
+                // scheduler.
+                return Ok(());
+            };
         // This back-and-forth with `set_active_thread` is here because of two
         // design decisions:
         // 1. Make the caller and not the callback responsible for changing

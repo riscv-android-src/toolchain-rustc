@@ -11,7 +11,7 @@ use syntax::{
 
 use crate::{
     generics::{GenericParams, TypeParamData, TypeParamProvenance},
-    type_ref::LifetimeRef,
+    type_ref::{LifetimeRef, TraitRef},
 };
 
 use super::*;
@@ -174,6 +174,12 @@ impl Ctx {
         let forced_vis = self.forced_visibility.take();
 
         let mut block_stack = Vec::new();
+
+        // if container itself is block, add it to the stack
+        if let Some(block) = ast::BlockExpr::cast(container.clone()) {
+            block_stack.push(self.source_ast_id_map.ast_id(&block));
+        }
+
         for event in container.preorder().skip(1) {
             match event {
                 WalkEvent::Enter(node) => {
@@ -183,7 +189,7 @@ impl Ctx {
                                 block_stack.push(self.source_ast_id_map.ast_id(&block));
                             },
                             ast::Item(item) => {
-                                // FIXME: This triggers for macro calls in expression position
+                                // FIXME: This triggers for macro calls in expression/pattern/type position
                                 let mod_items = self.lower_mod_item(&item, true);
                                 let current_block = block_stack.last();
                                 if let (Some(mod_items), Some(block)) = (mod_items, current_block) {
@@ -333,8 +339,8 @@ impl Ctx {
         let visibility = self.lower_visibility(func);
         let name = func.name()?.as_name();
 
-        let mut params = Vec::new();
         let mut has_self_param = false;
+        let start_param = self.next_param_idx();
         if let Some(param_list) = func.param_list() {
             if let Some(self_param) = param_list.self_param() {
                 let self_type = match self_param.ty() {
@@ -356,22 +362,25 @@ impl Ctx {
                         }
                     }
                 };
-                params.push(self_type);
+                let ty = Interned::new(self_type);
+                let idx = self.data().params.alloc(Param::Normal(ty));
+                self.add_attrs(idx.into(), RawAttrs::new(&self_param, &self.hygiene));
                 has_self_param = true;
             }
             for param in param_list.params() {
-                let type_ref = TypeRef::from_ast_opt(&self.body_ctx, param.ty());
-                params.push(type_ref);
+                let idx = match param.dotdotdot_token() {
+                    Some(_) => self.data().params.alloc(Param::Varargs),
+                    None => {
+                        let type_ref = TypeRef::from_ast_opt(&self.body_ctx, param.ty());
+                        let ty = Interned::new(type_ref);
+                        self.data().params.alloc(Param::Normal(ty))
+                    }
+                };
+                self.add_attrs(idx.into(), RawAttrs::new(&param, &self.hygiene));
             }
         }
-        let params = params.into_iter().map(|param| self.data().type_refs.intern(param)).collect();
-
-        let mut is_varargs = false;
-        if let Some(params) = func.param_list() {
-            if let Some(last) = params.params().last() {
-                is_varargs = last.dotdotdot_token().is_some();
-            }
-        }
+        let end_param = self.next_param_idx();
+        let params = IdRange::new(start_param..end_param);
 
         let ret_type = match func.ret_type().and_then(|rt| rt.ty()) {
             Some(type_ref) => TypeRef::from_ast(&self.body_ctx, type_ref),
@@ -386,23 +395,51 @@ impl Ctx {
             ret_type
         };
 
-        let ret_type = self.data().type_refs.intern(ret_type);
-
-        let has_body = func.body().is_some();
+        let abi = func.abi().map(|abi| {
+            // FIXME: Abi::abi() -> Option<SyntaxToken>?
+            match abi.syntax().last_token() {
+                Some(tok) if tok.kind() == SyntaxKind::STRING => {
+                    // FIXME: Better way to unescape?
+                    Interned::new_str(tok.text().trim_matches('"'))
+                }
+                _ => {
+                    // `extern` default to be `extern "C"`.
+                    Interned::new_str("C")
+                }
+            }
+        });
 
         let ast_id = self.source_ast_id_map.ast_id(func);
+
+        let mut flags = FnFlags::default();
+        if func.body().is_some() {
+            flags.bits |= FnFlags::HAS_BODY;
+        }
+        if has_self_param {
+            flags.bits |= FnFlags::HAS_SELF_PARAM;
+        }
+        if func.default_token().is_some() {
+            flags.bits |= FnFlags::IS_DEFAULT;
+        }
+        if func.const_token().is_some() {
+            flags.bits |= FnFlags::IS_CONST;
+        }
+        if func.async_token().is_some() {
+            flags.bits |= FnFlags::IS_ASYNC;
+        }
+        if func.unsafe_token().is_some() {
+            flags.bits |= FnFlags::IS_UNSAFE;
+        }
+
         let mut res = Function {
             name,
             visibility,
-            generic_params: GenericParamsId::EMPTY,
-            has_self_param,
-            has_body,
-            is_unsafe: func.unsafe_token().is_some(),
-            is_extern: false,
+            generic_params: Interned::new(GenericParams::default()),
+            abi,
             params,
-            is_varargs,
-            ret_type,
+            ret_type: Interned::new(ret_type),
             ast_id,
+            flags,
         };
         res.generic_params = self.lower_generic_params(GenericsOwner::Function(&res), func);
 
@@ -481,7 +518,9 @@ impl Ctx {
         let visibility = self.lower_visibility(trait_def);
         let generic_params =
             self.lower_generic_params_and_inner_items(GenericsOwner::Trait(trait_def), trait_def);
-        let auto = trait_def.auto_token().is_some();
+        let is_auto = trait_def.auto_token().is_some();
+        let is_unsafe = trait_def.unsafe_token().is_some();
+        let bounds = self.lower_type_bounds(trait_def);
         let items = trait_def.assoc_item_list().map(|list| {
             self.with_inherited_visibility(visibility, |this| {
                 list.assoc_items()
@@ -501,7 +540,9 @@ impl Ctx {
             name,
             visibility,
             generic_params,
-            auto,
+            is_auto,
+            is_unsafe,
+            bounds: bounds.into(),
             items: items.unwrap_or_default(),
             ast_id,
         };
@@ -511,8 +552,11 @@ impl Ctx {
     fn lower_impl(&mut self, impl_def: &ast::Impl) -> Option<FileItemTreeId<Impl>> {
         let generic_params =
             self.lower_generic_params_and_inner_items(GenericsOwner::Impl, impl_def);
-        let target_trait = impl_def.trait_().map(|tr| self.lower_type_ref(&tr));
-        let target_type = self.lower_type_ref(&impl_def.self_ty()?);
+        // FIXME: If trait lowering fails, due to a non PathType for example, we treat this impl
+        // as if it was an non-trait impl. Ideally we want to create a unique missing ref that only
+        // equals itself.
+        let target_trait = impl_def.trait_().and_then(|tr| self.lower_trait_ref(&tr));
+        let self_ty = self.lower_type_ref(&impl_def.self_ty()?);
         let is_negative = impl_def.excl_token().is_some();
 
         // We cannot use `assoc_items()` here as that does not include macro calls.
@@ -529,7 +573,7 @@ impl Ctx {
             })
             .collect();
         let ast_id = self.source_ast_id_map.ast_id(impl_def);
-        let res = Impl { generic_params, target_trait, target_type, is_negative, items, ast_id };
+        let res = Impl { generic_params, target_trait, self_ty, is_negative, items, ast_id };
         Some(id(self.data().impls.alloc(res)))
     }
 
@@ -545,7 +589,7 @@ impl Ctx {
             &self.hygiene,
             |path, _use_tree, is_glob, alias| {
                 imports.push(id(tree.imports.alloc(Import {
-                    path,
+                    path: Interned::new(path),
                     alias,
                     visibility,
                     is_glob,
@@ -574,7 +618,7 @@ impl Ctx {
     }
 
     fn lower_macro_call(&mut self, m: &ast::MacroCall) -> Option<FileItemTreeId<MacroCall>> {
-        let path = ModPath::from_src(m.path()?, &self.hygiene)?;
+        let path = Interned::new(ModPath::from_src(m.path()?, &self.hygiene)?);
         let ast_id = self.source_ast_id_map.ast_id(m);
         let res = MacroCall { path, ast_id };
         Some(id(self.data().macro_calls.alloc(res)))
@@ -608,8 +652,10 @@ impl Ctx {
                         ast::ExternItem::Fn(ast) => {
                             let func_id = self.lower_function(&ast)?;
                             let func = &mut self.data().functions[func_id.index];
-                            func.is_unsafe = is_intrinsic_fn_unsafe(&func.name);
-                            func.is_extern = true;
+                            if is_intrinsic_fn_unsafe(&func.name) {
+                                func.flags.bits |= FnFlags::IS_UNSAFE;
+                            }
+                            func.flags.bits |= FnFlags::IS_IN_EXTERN_BLOCK;
                             func_id.into()
                         }
                         ast::ExternItem::Static(ast) => {
@@ -636,7 +682,7 @@ impl Ctx {
         &mut self,
         owner: GenericsOwner<'_>,
         node: &impl ast::GenericParamsOwner,
-    ) -> GenericParamsId {
+    ) -> Interned<GenericParams> {
         // Generics are part of item headers and may contain inner items we need to collect.
         if let Some(params) = node.generic_param_list() {
             self.collect_inner_items(params.syntax());
@@ -652,16 +698,17 @@ impl Ctx {
         &mut self,
         owner: GenericsOwner<'_>,
         node: &impl ast::GenericParamsOwner,
-    ) -> GenericParamsId {
+    ) -> Interned<GenericParams> {
         let mut sm = &mut Default::default();
         let mut generics = GenericParams::default();
         match owner {
             GenericsOwner::Function(func) => {
                 generics.fill(&self.body_ctx, sm, node);
                 // lower `impl Trait` in arguments
-                for param in &*func.params {
-                    let param = self.data().type_refs.lookup(*param);
-                    generics.fill_implicit_impl_trait_args(param);
+                for id in func.params.clone() {
+                    if let Param::Normal(ty) = &self.data().params[id] {
+                        generics.fill_implicit_impl_trait_args(ty);
+                    }
                 }
             }
             GenericsOwner::Struct
@@ -692,7 +739,8 @@ impl Ctx {
             }
         }
 
-        self.data().generics.alloc(generics)
+        generics.shrink_to_fit();
+        Interned::new(generics)
     }
 
     fn lower_type_bounds(&mut self, node: &impl ast::TypeBoundsOwner) -> Vec<TypeBound> {
@@ -713,14 +761,20 @@ impl Ctx {
         self.data().vis.alloc(vis)
     }
 
-    fn lower_type_ref(&mut self, type_ref: &ast::Type) -> Idx<TypeRef> {
-        let tyref = TypeRef::from_ast(&self.body_ctx, type_ref.clone());
-        self.data().type_refs.intern(tyref)
+    fn lower_trait_ref(&mut self, trait_ref: &ast::Type) -> Option<Interned<TraitRef>> {
+        let trait_ref = TraitRef::from_ast(&self.body_ctx, trait_ref.clone())?;
+        Some(Interned::new(trait_ref))
     }
-    fn lower_type_ref_opt(&mut self, type_ref: Option<ast::Type>) -> Idx<TypeRef> {
+
+    fn lower_type_ref(&mut self, type_ref: &ast::Type) -> Interned<TypeRef> {
+        let tyref = TypeRef::from_ast(&self.body_ctx, type_ref.clone());
+        Interned::new(tyref)
+    }
+
+    fn lower_type_ref_opt(&mut self, type_ref: Option<ast::Type>) -> Interned<TypeRef> {
         match type_ref.map(|ty| self.lower_type_ref(&ty)) {
             Some(it) => it,
-            None => self.data().type_refs.intern(TypeRef::Error),
+            None => Interned::new(TypeRef::Error),
         }
     }
 
@@ -744,6 +798,11 @@ impl Ctx {
     fn next_variant_idx(&self) -> Idx<Variant> {
         Idx::from_raw(RawIdx::from(
             self.tree.data.as_ref().map_or(0, |data| data.variants.len() as u32),
+        ))
+    }
+    fn next_param_idx(&self) -> Idx<Param> {
+        Idx::from_raw(RawIdx::from(
+            self.tree.data.as_ref().map_or(0, |data| data.params.len() as u32),
         ))
     }
 }

@@ -101,6 +101,7 @@ impl RootDatabase {
     //
     // | VS Code | **Rust Analyzer: Memory Usage (Clears Database)**
     // |===
+    // image::https://user-images.githubusercontent.com/48062697/113065592-08559f00-91b1-11eb-8c96-64b88068ec02.gif[]
     pub fn per_query_memory_usage(&mut self) -> Vec<(String, Bytes)> {
         let mut acc: Vec<(String, Bytes)> = vec![];
         let sweep = SweepStrategy::default().discard_values().sweep_all_revisions();
@@ -148,9 +149,13 @@ impl RootDatabase {
             hir::db::HygieneFrameQuery
 
             // DefDatabase
-            hir::db::ItemTreeQuery
+            hir::db::FileItemTreeQuery
             hir::db::BlockDefMapQuery
             hir::db::CrateDefMapQueryQuery
+            hir::db::FieldsAttrsQuery
+            hir::db::VariantsAttrsQuery
+            hir::db::FieldsAttrsSourceMapQuery
+            hir::db::VariantsAttrsSourceMapQuery
             hir::db::StructDataQuery
             hir::db::UnionDataQuery
             hir::db::EnumDataQuery
@@ -181,6 +186,7 @@ impl RootDatabase {
             hir::db::GenericPredicatesQuery
             hir::db::GenericDefaultsQuery
             hir::db::InherentImplsInCrateQuery
+            hir::db::TraitEnvironmentQuery
             hir::db::TraitImplsInCrateQuery
             hir::db::TraitImplsInDepsQuery
             hir::db::AssociatedTyDataQuery
@@ -195,7 +201,7 @@ impl RootDatabase {
             hir::db::InternImplTraitIdQuery
             hir::db::InternClosureQuery
             hir::db::AssociatedTyValueQuery
-            hir::db::TraitSolveQuery
+            hir::db::TraitSolveQueryQuery
 
             // SymbolsDatabase
             crate::symbol_index::FileSymbolsQuery

@@ -1,4 +1,4 @@
-use super::pat::{GateOr, RecoverComma, PARAM_EXPECTED};
+use super::pat::{RecoverComma, PARAM_EXPECTED};
 use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
 use super::{AttrWrapper, BlockMode, ForceCollect, Parser, PathStyle, Restrictions, TokenType};
 use super::{SemiColonMode, SeqSep, TokenExpectType, TrailingToken};
@@ -92,7 +92,22 @@ impl<'a> Parser<'a> {
         self.parse_expr_res(Restrictions::empty(), None)
     }
 
-    pub(super) fn parse_anon_const_expr(&mut self) -> PResult<'a, AnonConst> {
+    /// Parses an expression, forcing tokens to be collected
+    pub fn parse_expr_force_collect(&mut self) -> PResult<'a, P<Expr>> {
+        // If we have outer attributes, then the call to `collect_tokens_trailing_token`
+        // will be made for us.
+        if matches!(self.token.kind, TokenKind::Pound | TokenKind::DocComment(..)) {
+            self.parse_expr()
+        } else {
+            // If we don't have outer attributes, then we need to ensure
+            // that collection happens by using `collect_tokens_no_attrs`.
+            // Expression don't support custom inner attributes, so `parse_expr`
+            // will never try to collect tokens if we don't have outer attributes.
+            self.collect_tokens_no_attrs(|this| this.parse_expr())
+        }
+    }
+
+    pub fn parse_anon_const_expr(&mut self) -> PResult<'a, AnonConst> {
         self.parse_expr().map(|value| AnonConst { id: DUMMY_NODE_ID, value })
     }
 
@@ -1803,7 +1818,7 @@ impl<'a> Parser<'a> {
     /// The `let` token has already been eaten.
     fn parse_let_expr(&mut self, attrs: AttrVec) -> PResult<'a, P<Expr>> {
         let lo = self.prev_token.span;
-        let pat = self.parse_pat_allow_top_alt(None, GateOr::No, RecoverComma::Yes)?;
+        let pat = self.parse_pat_allow_top_alt(None, RecoverComma::Yes)?;
         self.expect(&token::Eq)?;
         let expr = self.with_res(self.restrictions | Restrictions::NO_STRUCT_LITERAL, |this| {
             this.parse_assoc_expr_with(1 + prec_let_scrutinee_needs_par(), None.into())
@@ -1866,7 +1881,7 @@ impl<'a> Parser<'a> {
             _ => None,
         };
 
-        let pat = self.parse_pat_allow_top_alt(None, GateOr::Yes, RecoverComma::Yes)?;
+        let pat = self.parse_pat_allow_top_alt(None, RecoverComma::Yes)?;
         if !self.eat_keyword(kw::In) {
             self.error_missing_in_for_loop();
         }
@@ -2073,7 +2088,7 @@ impl<'a> Parser<'a> {
         let attrs = self.parse_outer_attributes()?;
         self.collect_tokens_trailing_token(attrs, ForceCollect::No, |this, attrs| {
             let lo = this.token.span;
-            let pat = this.parse_pat_allow_top_alt(None, GateOr::No, RecoverComma::Yes)?;
+            let pat = this.parse_pat_allow_top_alt(None, RecoverComma::Yes)?;
             let guard = if this.eat_keyword(kw::If) {
                 let if_span = this.prev_token.span;
                 let cond = this.parse_expr()?;
@@ -2566,19 +2581,17 @@ impl<'a> Parser<'a> {
         attrs: AttrWrapper,
         f: impl FnOnce(&mut Self, Vec<ast::Attribute>) -> PResult<'a, P<Expr>>,
     ) -> PResult<'a, P<Expr>> {
-        // FIXME - come up with a nice way to properly forward `ForceCollect`from
-        // the nonterminal parsing code. TThis approach iscorrect, but will cause
-        // us to unnecessarily capture tokens for exprs that have only builtin
-        // attributes. Revisit this before #![feature(stmt_expr_attributes)] is stabilized
-        let force_collect = if attrs.is_empty() { ForceCollect::No } else { ForceCollect::Yes };
-        self.collect_tokens_trailing_token(attrs, force_collect, |this, attrs| {
+        self.collect_tokens_trailing_token(attrs, ForceCollect::No, |this, attrs| {
             let res = f(this, attrs)?;
             let trailing = if this.restrictions.contains(Restrictions::STMT_EXPR)
                 && this.token.kind == token::Semi
             {
                 TrailingToken::Semi
             } else {
-                TrailingToken::None
+                // FIXME - pass this through from the place where we know
+                // we need a comma, rather than assuming that `#[attr] expr,`
+                // always captures a trailing comma
+                TrailingToken::MaybeComma
             };
             Ok((res, trailing))
         })

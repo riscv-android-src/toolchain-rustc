@@ -12,10 +12,10 @@ use crate::ty::print::{FmtPrinter, Printer};
 use crate::ty::subst::{Subst, SubstsRef};
 use crate::ty::{self, List, Ty, TyCtxt};
 use crate::ty::{AdtDef, InstanceDef, Region, ScalarInt, UserTypeAnnotationIndex};
-use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, Namespace};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_hir::{self, GeneratorKind};
+use rustc_hir::{self as hir, HirId};
 use rustc_target::abi::{Size, VariantIdx};
 
 use polonius_engine::Atom;
@@ -377,24 +377,6 @@ impl<'tcx> Body<'tcx> {
         } else {
             LocalKind::Temp
         }
-    }
-
-    /// Returns an iterator over all temporaries.
-    #[inline]
-    pub fn temps_iter<'a>(&'a self) -> impl Iterator<Item = Local> + 'a {
-        (self.arg_count + 1..self.local_decls.len()).filter_map(move |index| {
-            let local = Local::new(index);
-            if self.local_decls[local].is_user_variable() { None } else { Some(local) }
-        })
-    }
-
-    /// Returns an iterator over all user-declared locals.
-    #[inline]
-    pub fn vars_iter<'a>(&'a self) -> impl Iterator<Item = Local> + 'a {
-        (self.arg_count + 1..self.local_decls.len()).filter_map(move |index| {
-            let local = Local::new(index);
-            self.local_decls[local].is_user_variable().then_some(local)
-        })
     }
 
     /// Returns an iterator over all user-declared mutable locals.
@@ -1231,7 +1213,7 @@ pub enum InlineAsmOperand<'tcx> {
         out_place: Option<Place<'tcx>>,
     },
     Const {
-        value: Operand<'tcx>,
+        value: Box<Constant<'tcx>>,
     },
     SymFn {
         value: Box<Constant<'tcx>>,
@@ -1500,7 +1482,7 @@ pub enum StatementKind<'tcx> {
     ///
     /// Note that this also is emitted for regular `let` bindings to ensure that locals that are
     /// never accessed still get some sanity checks for, e.g., `let x: ! = ..;`
-    FakeRead(FakeReadCause, Box<Place<'tcx>>),
+    FakeRead(Box<(FakeReadCause, Place<'tcx>)>),
 
     /// Write the discriminant for a variant to the enum Place.
     SetDiscriminant { place: Box<Place<'tcx>>, variant_index: VariantIdx },
@@ -1537,9 +1519,10 @@ pub enum StatementKind<'tcx> {
     AscribeUserType(Box<(Place<'tcx>, UserTypeProjection)>, ty::Variance),
 
     /// Marks the start of a "coverage region", injected with '-Zinstrument-coverage'. A
-    /// `CoverageInfo` statement carries metadata about the coverage region, used to inject a coverage
-    /// map into the binary. The `Counter` kind also generates executable code, to increment a
-    /// counter varible at runtime, each time the code region is executed.
+    /// `Coverage` statement carries metadata about the coverage region, used to inject a coverage
+    /// map into the binary. If `Coverage::kind` is a `Counter`, the statement also generates
+    /// executable code, to increment a counter variable at runtime, each time the code region is
+    /// executed.
     Coverage(Box<Coverage>),
 
     /// Denotes a call to the intrinsic function copy_overlapping, where `src_dst` denotes the
@@ -1592,7 +1575,12 @@ pub enum FakeReadCause {
 
     /// `let x: !; match x {}` doesn't generate any read of x so we need to
     /// generate a read of x to check that it is initialized and safe.
-    ForMatchedPlace,
+    ///
+    /// If a closure pattern matches a Place starting with an Upvar, then we introduce a
+    /// FakeRead for that Place outside the closure, in such a case this option would be
+    /// Some(closure_def_id).
+    /// Otherwise, the value of the optional DefId will be None.
+    ForMatchedPlace(Option<DefId>),
 
     /// A fake read of the RefWithinGuard version of a bind-by-value variable
     /// in a match guard to ensure that it's value hasn't change by the time
@@ -1611,7 +1599,12 @@ pub enum FakeReadCause {
     /// but in some cases it can affect the borrow checker, as in #53695.
     /// Therefore, we insert a "fake read" here to ensure that we get
     /// appropriate errors.
-    ForLet,
+    ///
+    /// If a closure pattern matches a Place starting with an Upvar, then we introduce a
+    /// FakeRead for that Place outside the closure, in such a case this option would be
+    /// Some(closure_def_id).
+    /// Otherwise, the value of the optional DefId will be None.
+    ForLet(Option<DefId>),
 
     /// If we have an index expression like
     ///
@@ -1635,7 +1628,9 @@ impl Debug for Statement<'_> {
         use self::StatementKind::*;
         match self.kind {
             Assign(box (ref place, ref rv)) => write!(fmt, "{:?} = {:?}", place, rv),
-            FakeRead(ref cause, ref place) => write!(fmt, "FakeRead({:?}, {:?})", cause, place),
+            FakeRead(box (ref cause, ref place)) => {
+                write!(fmt, "FakeRead({:?}, {:?})", cause, place)
+            }
             Retag(ref kind, ref place) => write!(
                 fmt,
                 "Retag({}{:?})",
@@ -1950,6 +1945,29 @@ rustc_index::newtype_index! {
         derive [HashStable]
         DEBUG_FORMAT = "scope[{}]",
         const OUTERMOST_SOURCE_SCOPE = 0,
+    }
+}
+
+impl SourceScope {
+    /// Finds the original HirId this MIR item came from.
+    /// This is necessary after MIR optimizations, as otherwise we get a HirId
+    /// from the function that was inlined instead of the function call site.
+    pub fn lint_root(
+        self,
+        source_scopes: &IndexVec<SourceScope, SourceScopeData<'tcx>>,
+    ) -> Option<HirId> {
+        let mut data = &source_scopes[self];
+        // FIXME(oli-obk): we should be able to just walk the `inlined_parent_scope`, but it
+        // does not work as I thought it would. Needs more investigation and documentation.
+        while data.inlined.is_some() {
+            trace!(?data);
+            data = &source_scopes[data.parent_scope.unwrap()];
+        }
+        trace!(?data);
+        match &data.local_data {
+            ClearCrossCrate::Set(data) => Some(data.lint_root),
+            ClearCrossCrate::Clear => None,
+        }
     }
 }
 
@@ -2328,7 +2346,7 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                             CtorKind::Fn => fmt_tuple(fmt, &name),
                             CtorKind::Fictive => {
                                 let mut struct_fmt = fmt.debug_struct(&name);
-                                for (field, place) in variant_def.fields.iter().zip(places) {
+                                for (field, place) in iter::zip(&variant_def.fields, places) {
                                     struct_fmt.field(&field.ident.as_str(), place);
                                 }
                                 struct_fmt.finish()
@@ -2352,7 +2370,7 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                             let mut struct_fmt = fmt.debug_struct(&name);
 
                             if let Some(upvars) = tcx.upvars_mentioned(def_id) {
-                                for (&var_id, place) in upvars.keys().zip(places) {
+                                for (&var_id, place) in iter::zip(upvars.keys(), places) {
                                     let var_name = tcx.hir().name(var_id);
                                     struct_fmt.field(&var_name.as_str(), place);
                                 }
@@ -2371,7 +2389,7 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                             let mut struct_fmt = fmt.debug_struct(&name);
 
                             if let Some(upvars) = tcx.upvars_mentioned(def_id) {
-                                for (&var_id, place) in upvars.keys().zip(places) {
+                                for (&var_id, place) in iter::zip(upvars.keys(), places) {
                                     let var_name = tcx.hir().name(var_id);
                                     struct_fmt.field(&var_name.as_str(), place);
                                 }
@@ -2409,7 +2427,8 @@ pub struct Constant<'tcx> {
     pub literal: ConstantKind<'tcx>,
 }
 
-#[derive(Clone, Copy, PartialEq, PartialOrd, TyEncodable, TyDecodable, Hash, HashStable, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, TyEncodable, TyDecodable, Hash, HashStable, Debug)]
+#[derive(Lift)]
 pub enum ConstantKind<'tcx> {
     /// This constant came from the type system
     Ty(&'tcx ty::Const<'tcx>),
@@ -2708,7 +2727,13 @@ impl<'tcx> Display for Constant<'tcx> {
             ty::FnDef(..) => {}
             _ => write!(fmt, "const ")?,
         }
-        match self.literal {
+        Display::fmt(&self.literal, fmt)
+    }
+}
+
+impl<'tcx> Display for ConstantKind<'tcx> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> fmt::Result {
+        match *self {
             ConstantKind::Ty(c) => pretty_print_const(c, fmt, true),
             ConstantKind::Val(val, ty) => pretty_print_const_value(val, ty, fmt, true),
         }

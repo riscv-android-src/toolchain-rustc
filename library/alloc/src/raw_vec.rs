@@ -53,17 +53,11 @@ pub struct RawVec<T, A: Allocator = Global> {
 }
 
 impl<T> RawVec<T, Global> {
-    /// HACK(Centril): This exists because `#[unstable]` `const fn`s needn't conform
-    /// to `min_const_fn` and so they cannot be called in `min_const_fn`s either.
+    /// HACK(Centril): This exists because stable `const fn` can only call stable `const fn`, so
+    /// they cannot call `Self::new()`.
     ///
-    /// If you change `RawVec<T>::new` or dependencies, please take care to not
-    /// introduce anything that would truly violate `min_const_fn`.
-    ///
-    /// NOTE: We could avoid this hack and check conformance with some
-    /// `#[rustc_force_min_const_fn]` attribute which requires conformance
-    /// with `min_const_fn` but does not necessarily allow calling it in
-    /// `stable(...) const fn` / user code not enabling `foo` when
-    /// `#[rustc_const_unstable(feature = "foo", issue = "01234")]` is present.
+    /// If you change `RawVec<T>::new` or dependencies, please take care to not introduce anything
+    /// that would truly const-call something unstable.
     pub const NEW: Self = Self::new();
 
     /// Creates the biggest possible `RawVec` (on the system heap)
@@ -315,8 +309,24 @@ impl<T, A: Allocator> RawVec<T, A> {
     /// #   vector.push_all(&[1, 3, 5, 7, 9]);
     /// # }
     /// ```
+    #[inline]
     pub fn reserve(&mut self, len: usize, additional: usize) {
-        handle_reserve(self.try_reserve(len, additional));
+        // Callers expect this function to be very cheap when there is already sufficient capacity.
+        // Therefore, we move all the resizing and error-handling logic from grow_amortized and
+        // handle_reserve behind a call, while making sure that the this function is likely to be
+        // inlined as just a comparison and a call if the comparison fails.
+        #[cold]
+        fn do_reserve_and_handle<T, A: Allocator>(
+            slf: &mut RawVec<T, A>,
+            len: usize,
+            additional: usize,
+        ) {
+            handle_reserve(slf.grow_amortized(len, additional));
+        }
+
+        if self.needs_to_grow(len, additional) {
+            do_reserve_and_handle(self, len, additional);
+        }
     }
 
     /// The same as `reserve`, but returns on errors instead of panicking or aborting.

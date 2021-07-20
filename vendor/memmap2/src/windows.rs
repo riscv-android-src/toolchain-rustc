@@ -31,8 +31,12 @@ const SECTION_MAP_READ: DWORD = 0x0004;
 const SECTION_MAP_EXECUTE: DWORD = 0x0008;
 const SECTION_EXTEND_SIZE: DWORD = 0x0010;
 const SECTION_MAP_EXECUTE_EXPLICIT: DWORD = 0x0020;
-const SECTION_ALL_ACCESS: DWORD = STANDARD_RIGHTS_REQUIRED | SECTION_QUERY
-    | SECTION_MAP_WRITE | SECTION_MAP_READ | SECTION_MAP_EXECUTE | SECTION_EXTEND_SIZE;
+const SECTION_ALL_ACCESS: DWORD = STANDARD_RIGHTS_REQUIRED
+    | SECTION_QUERY
+    | SECTION_MAP_WRITE
+    | SECTION_MAP_READ
+    | SECTION_MAP_EXECUTE
+    | SECTION_EXTEND_SIZE;
 
 const PAGE_READONLY: DWORD = 0x02;
 const PAGE_READWRITE: DWORD = 0x04;
@@ -82,9 +86,7 @@ struct SYSTEM_INFO {
 }
 
 extern "system" {
-    fn CloseHandle(
-        hObject: HANDLE,
-    ) -> BOOL;
+    fn CloseHandle(hObject: HANDLE) -> BOOL;
 
     fn CreateFileMappingW(
         hFile: HANDLE,
@@ -95,14 +97,9 @@ extern "system" {
         lpName: LPCWSTR,
     ) -> HANDLE;
 
-    fn FlushViewOfFile(
-        lpBaseAddress: LPCVOID,
-        dwNumberOfBytesToFlush: SIZE_T,
-    ) -> BOOL;
+    fn FlushViewOfFile(lpBaseAddress: LPCVOID, dwNumberOfBytesToFlush: SIZE_T) -> BOOL;
 
-    fn UnmapViewOfFile(
-        lpBaseAddress: LPCVOID,
-    ) -> BOOL;
+    fn UnmapViewOfFile(lpBaseAddress: LPCVOID) -> BOOL;
 
     fn MapViewOfFile(
         hFileMappingObject: HANDLE,
@@ -119,9 +116,7 @@ extern "system" {
         lpflOldProtect: PDWORD,
     ) -> BOOL;
 
-    fn GetSystemInfo(
-        lpSystemInfo: LPSYSTEM_INFO,
-    );
+    fn GetSystemInfo(lpSystemInfo: LPSYSTEM_INFO);
 }
 
 pub struct MmapInner {
@@ -156,7 +151,7 @@ impl MmapInner {
                 0,
                 ptr::null(),
             );
-            if handle == ptr::null_mut() {
+            if handle.is_null() {
                 return Err(io::Error::last_os_error());
             }
 
@@ -169,20 +164,20 @@ impl MmapInner {
             );
             CloseHandle(handle);
 
-            if ptr == ptr::null_mut() {
+            if ptr.is_null() {
                 Err(io::Error::last_os_error())
             } else {
                 Ok(MmapInner {
                     file: Some(file.try_clone()?),
                     ptr: ptr.offset(alignment as isize),
                     len: len as usize,
-                    copy: copy,
+                    copy,
                 })
             }
         }
     }
 
-    pub fn map(len: usize, file: &File, offset: u64) -> io::Result<MmapInner> {
+    pub fn map(len: usize, file: &File, offset: u64, _populate: bool) -> io::Result<MmapInner> {
         let write = protection_supported(file.as_raw_handle(), PAGE_READWRITE);
         let exec = protection_supported(file.as_raw_handle(), PAGE_EXECUTE_READ);
         let mut access = FILE_MAP_READ;
@@ -209,7 +204,12 @@ impl MmapInner {
         Ok(inner)
     }
 
-    pub fn map_exec(len: usize, file: &File, offset: u64) -> io::Result<MmapInner> {
+    pub fn map_exec(
+        len: usize,
+        file: &File,
+        offset: u64,
+        _populate: bool,
+    ) -> io::Result<MmapInner> {
         let write = protection_supported(file.as_raw_handle(), PAGE_READWRITE);
         let mut access = FILE_MAP_READ | FILE_MAP_EXECUTE;
         let protection = if write {
@@ -226,7 +226,7 @@ impl MmapInner {
         Ok(inner)
     }
 
-    pub fn map_mut(len: usize, file: &File, offset: u64) -> io::Result<MmapInner> {
+    pub fn map_mut(len: usize, file: &File, offset: u64, _populate: bool) -> io::Result<MmapInner> {
         let exec = protection_supported(file.as_raw_handle(), PAGE_EXECUTE_READ);
         let mut access = FILE_MAP_READ | FILE_MAP_WRITE;
         let protection = if exec {
@@ -243,7 +243,12 @@ impl MmapInner {
         Ok(inner)
     }
 
-    pub fn map_copy(len: usize, file: &File, offset: u64) -> io::Result<MmapInner> {
+    pub fn map_copy(
+        len: usize,
+        file: &File,
+        offset: u64,
+        _populate: bool,
+    ) -> io::Result<MmapInner> {
         let exec = protection_supported(file.as_raw_handle(), PAGE_EXECUTE_READWRITE);
         let mut access = FILE_MAP_COPY;
         let protection = if exec {
@@ -260,7 +265,12 @@ impl MmapInner {
         Ok(inner)
     }
 
-    pub fn map_copy_read_only(len: usize, file: &File, offset: u64) -> io::Result<MmapInner> {
+    pub fn map_copy_read_only(
+        len: usize,
+        file: &File,
+        offset: u64,
+        _populate: bool,
+    ) -> io::Result<MmapInner> {
         let write = protection_supported(file.as_raw_handle(), PAGE_READWRITE);
         let exec = protection_supported(file.as_raw_handle(), PAGE_EXECUTE_READ);
         let mut access = FILE_MAP_COPY;
@@ -293,14 +303,14 @@ impl MmapInner {
                 (len & 0xffffffff) as DWORD,
                 ptr::null(),
             );
-            if handle == ptr::null_mut() {
+            if handle.is_null() {
                 return Err(io::Error::last_os_error());
             }
             let access = FILE_MAP_ALL_ACCESS | FILE_MAP_EXECUTE;
             let ptr = MapViewOfFile(handle, access, 0, 0, len as SIZE_T);
             CloseHandle(handle);
 
-            if ptr == ptr::null_mut() {
+            if ptr.is_null() {
                 return Err(io::Error::last_os_error());
             }
 
@@ -309,7 +319,7 @@ impl MmapInner {
             if result != 0 {
                 Ok(MmapInner {
                     file: None,
-                    ptr: ptr,
+                    ptr,
                     len: len as usize,
                     copy: false,
                 })
@@ -328,7 +338,7 @@ impl MmapInner {
     }
 
     pub fn flush_async(&self, offset: usize, len: usize) -> io::Result<()> {
-        let result = unsafe { FlushViewOfFile(self.ptr.offset(offset as isize), len as SIZE_T) };
+        let result = unsafe { FlushViewOfFile(self.ptr.add(offset), len as SIZE_T) };
         if result != 0 {
             Ok(())
         } else {
@@ -409,7 +419,7 @@ unsafe impl Send for MmapInner {}
 fn protection_supported(handle: RawHandle, protection: DWORD) -> bool {
     unsafe {
         let handle = CreateFileMappingW(handle, ptr::null_mut(), protection, 0, 0, ptr::null());
-        if handle == ptr::null_mut() {
+        if handle.is_null() {
             return false;
         }
         CloseHandle(handle);
@@ -421,6 +431,6 @@ fn allocation_granularity() -> usize {
     unsafe {
         let mut info = mem::zeroed();
         GetSystemInfo(&mut info);
-        return info.dwAllocationGranularity as usize;
+        info.dwAllocationGranularity as usize
     }
 }

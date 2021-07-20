@@ -1,13 +1,17 @@
 //! Defines hir-level representation of visibility (e.g. `pub` and `pub(crate)`).
 
+use std::sync::Arc;
+
 use hir_expand::{hygiene::Hygiene, InFile};
+use la_arena::ArenaMap;
 use syntax::ast;
 
 use crate::{
     db::DefDatabase,
     nameres::DefMap,
     path::{ModPath, PathKind},
-    ModuleId,
+    resolver::HasResolver,
+    FunctionId, HasModule, LocalFieldId, ModuleId, VariantId,
 };
 
 /// Visibility of an item, not yet resolved.
@@ -21,7 +25,7 @@ pub enum RawVisibility {
 }
 
 impl RawVisibility {
-    pub(crate) const fn private() -> RawVisibility {
+    pub(crate) fn private() -> RawVisibility {
         RawVisibility::Module(ModPath::from_kind(PathKind::Super(0)))
     }
 
@@ -119,10 +123,18 @@ impl Visibility {
         def_map: &DefMap,
         mut from_module: crate::LocalModuleId,
     ) -> bool {
-        let to_module = match self {
+        let mut to_module = match self {
             Visibility::Module(m) => m,
             Visibility::Public => return true,
         };
+
+        // `to_module` might be the root module of a block expression. Those have the same
+        // visibility as the containing module (even though no items are directly nameable from
+        // there, getting this right is important for method resolution).
+        // In that case, we adjust the visibility of `to_module` to point to the containing module.
+        if to_module.is_block_root(db) {
+            to_module = to_module.containing_module(db).unwrap();
+        }
 
         // from_module needs to be a descendant of to_module
         let mut def_map = def_map;
@@ -189,4 +201,30 @@ impl Visibility {
             }
         }
     }
+}
+
+/// Resolve visibility of all specific fields of a struct or union variant.
+pub(crate) fn field_visibilities_query(
+    db: &dyn DefDatabase,
+    variant_id: VariantId,
+) -> Arc<ArenaMap<LocalFieldId, Visibility>> {
+    let var_data = match variant_id {
+        VariantId::StructId(it) => db.struct_data(it).variant_data.clone(),
+        VariantId::UnionId(it) => db.union_data(it).variant_data.clone(),
+        VariantId::EnumVariantId(it) => {
+            db.enum_data(it.parent).variants[it.local_id].variant_data.clone()
+        }
+    };
+    let resolver = variant_id.module(db).resolver(db);
+    let mut res = ArenaMap::default();
+    for (field_id, field_data) in var_data.fields().iter() {
+        res.insert(field_id, field_data.visibility.resolve(db, &resolver))
+    }
+    Arc::new(res)
+}
+
+/// Resolve visibility of a function.
+pub(crate) fn function_visibility_query(db: &dyn DefDatabase, def: FunctionId) -> Visibility {
+    let resolver = def.resolver(db);
+    db.function_data(def).visibility.resolve(db, &resolver)
 }

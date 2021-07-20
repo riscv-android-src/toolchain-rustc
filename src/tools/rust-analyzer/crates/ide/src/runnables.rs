@@ -2,20 +2,18 @@ use std::fmt;
 
 use ast::NameOwner;
 use cfg::CfgExpr;
+use either::Either;
 use hir::{AsAssocItem, HasAttrs, HasSource, HirDisplay, Semantics};
 use ide_assists::utils::test_related_attribute;
 use ide_db::{
     base_db::{FilePosition, FileRange},
-    defs::Definition,
+    helpers::visit_file_defs,
     search::SearchScope,
     RootDatabase, SymbolKind,
 };
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
-use syntax::{
-    ast::{self, AstNode, AttrsOwner},
-    match_ast, SyntaxNode,
-};
+use syntax::ast::{self, AstNode, AttrsOwner};
 
 use crate::{
     display::{ToNav, TryToNav},
@@ -100,15 +98,30 @@ impl Runnable {
 //
 // | VS Code | **Rust Analyzer: Run**
 // |===
+// image::https://user-images.githubusercontent.com/48062697/113065583-055aae80-91b1-11eb-958f-d67efcaf6a2f.gif[]
 pub(crate) fn runnables(db: &RootDatabase, file_id: FileId) -> Vec<Runnable> {
     let sema = Semantics::new(db);
-    let module = match sema.to_module_def(file_id) {
-        None => return Vec::new(),
-        Some(it) => it,
-    };
 
     let mut res = Vec::new();
-    runnables_mod(&sema, &mut res, module);
+    visit_file_defs(&sema, file_id, &mut |def| match def {
+        Either::Left(def) => {
+            let runnable = match def {
+                hir::ModuleDef::Module(it) => runnable_mod(&sema, it),
+                hir::ModuleDef::Function(it) => runnable_fn(&sema, it),
+                _ => None,
+            };
+            res.extend(runnable.or_else(|| module_def_doctest(&sema, def)))
+        }
+        Either::Right(impl_) => {
+            res.extend(impl_.items(db).into_iter().filter_map(|assoc| match assoc {
+                hir::AssocItem::Function(it) => {
+                    runnable_fn(&sema, it).or_else(|| module_def_doctest(&sema, it.into()))
+                }
+                hir::AssocItem::Const(it) => module_def_doctest(&sema, it.into()),
+                hir::AssocItem::TypeAlias(it) => module_def_doctest(&sema, it.into()),
+            }))
+        }
+    });
     res
 }
 
@@ -151,8 +164,7 @@ fn find_related_tests(
             let functions = refs.iter().filter_map(|(range, _)| {
                 let token = file.token_at_offset(range.start()).next()?;
                 let token = sema.descend_into_macros(token);
-                let syntax = token.parent();
-                syntax.ancestors().find_map(ast::Fn::cast)
+                token.ancestors().find_map(ast::Fn::cast)
             });
 
             for fn_def in functions {
@@ -211,44 +223,13 @@ fn parent_test_module(sema: &Semantics<RootDatabase>, fn_def: &ast::Fn) -> Optio
     })
 }
 
-fn runnables_mod(sema: &Semantics<RootDatabase>, acc: &mut Vec<Runnable>, module: hir::Module) {
-    acc.extend(module.declarations(sema.db).into_iter().filter_map(|def| {
-        let runnable = match def {
-            hir::ModuleDef::Module(it) => runnable_mod(&sema, it),
-            hir::ModuleDef::Function(it) => runnable_fn(&sema, it),
-            _ => None,
-        };
-        runnable.or_else(|| module_def_doctest(&sema, def))
-    }));
-
-    acc.extend(module.impl_defs(sema.db).into_iter().flat_map(|it| it.items(sema.db)).filter_map(
-        |def| match def {
-            hir::AssocItem::Function(it) => {
-                runnable_fn(&sema, it).or_else(|| module_def_doctest(&sema, it.into()))
-            }
-            hir::AssocItem::Const(it) => module_def_doctest(&sema, it.into()),
-            hir::AssocItem::TypeAlias(it) => module_def_doctest(&sema, it.into()),
-        },
-    ));
-
-    for def in module.declarations(sema.db) {
-        if let hir::ModuleDef::Module(submodule) = def {
-            match submodule.definition_source(sema.db).value {
-                hir::ModuleSource::Module(_) => runnables_mod(sema, acc, submodule),
-                hir::ModuleSource::SourceFile(_) => {
-                    cov_mark::hit!(dont_recurse_in_outline_submodules)
-                }
-                hir::ModuleSource::BlockExpr(_) => {} // inner items aren't runnable
-            }
-        }
-    }
-}
-
 pub(crate) fn runnable_fn(sema: &Semantics<RootDatabase>, def: hir::Function) -> Option<Runnable> {
     let func = def.source(sema.db)?;
     let name_string = def.name(sema.db).to_string();
 
-    let kind = if name_string == "main" {
+    let root = def.krate(sema.db)?.root_module(sema.db);
+
+    let kind = if name_string == "main" && def.module(sema.db) == root {
         RunnableKind::Bin
     } else {
         let canonical_path = {
@@ -289,28 +270,6 @@ pub(crate) fn runnable_mod(sema: &Semantics<RootDatabase>, def: hir::Module) -> 
     Some(Runnable { nav, kind: RunnableKind::TestMod { path }, cfg })
 }
 
-// FIXME: figure out a proper API here.
-pub(crate) fn doc_owner_to_def(
-    sema: &Semantics<RootDatabase>,
-    item: SyntaxNode,
-) -> Option<Definition> {
-    let res: hir::ModuleDef = match_ast! {
-        match item {
-            ast::SourceFile(_it) => sema.scope(&item).module()?.into(),
-            ast::Fn(it) => sema.to_def(&it)?.into(),
-            ast::Struct(it) => sema.to_def(&it)?.into(),
-            ast::Enum(it) => sema.to_def(&it)?.into(),
-            ast::Union(it) => sema.to_def(&it)?.into(),
-            ast::Trait(it) => sema.to_def(&it)?.into(),
-            ast::Const(it) => sema.to_def(&it)?.into(),
-            ast::Static(it) => sema.to_def(&it)?.into(),
-            ast::TypeAlias(it) => sema.to_def(&it)?.into(),
-            _ => return None,
-        }
-    };
-    Some(Definition::ModuleDef(res))
-}
-
 fn module_def_doctest(sema: &Semantics<RootDatabase>, def: hir::ModuleDef) -> Option<Runnable> {
     let attrs = match def {
         hir::ModuleDef::Module(it) => it.attrs(sema.db),
@@ -340,7 +299,7 @@ fn module_def_doctest(sema: &Semantics<RootDatabase>, def: hir::ModuleDef) -> Op
             // FIXME: this also looks very wrong
             if let Some(assoc_def) = assoc_def {
                 if let hir::AssocItemContainer::Impl(imp) = assoc_def.container(sema.db) {
-                    let ty = imp.target_ty(sema.db);
+                    let ty = imp.self_ty(sema.db);
                     if let Some(adt) = ty.as_adt() {
                         let name = adt.name(sema.db);
                         let idx = path.rfind(':').map_or(0, |idx| idx + 1);
@@ -488,6 +447,10 @@ fn test_foo() {}
 
 #[bench]
 fn bench() {}
+
+mod not_a_root {
+    fn main() {}
+}
 "#,
             &[&BIN, &TEST, &TEST, &BENCH],
             expect![[r#"
@@ -594,6 +557,20 @@ fn should_have_runnable_1() {}
 /// ```
 fn should_have_runnable_2() {}
 
+/**
+```rust
+let z = 55;
+```
+*/
+fn should_have_no_runnable_3() {}
+
+/**
+    ```rust
+    let z = 55;
+    ```
+*/
+fn should_have_no_runnable_4() {}
+
 /// ```no_run
 /// let z = 55;
 /// ```
@@ -634,7 +611,7 @@ fn should_have_no_runnable_6() {}
 struct StructWithRunnable(String);
 
 "#,
-            &[&BIN, &DOCTEST, &DOCTEST, &DOCTEST, &DOCTEST],
+            &[&BIN, &DOCTEST, &DOCTEST, &DOCTEST, &DOCTEST, &DOCTEST, &DOCTEST],
             expect![[r#"
                 [
                     Runnable {
@@ -700,7 +677,37 @@ struct StructWithRunnable(String);
                             file_id: FileId(
                                 0,
                             ),
-                            full_range: 756..821,
+                            full_range: 256..320,
+                            name: "should_have_no_runnable_3",
+                        },
+                        kind: DocTest {
+                            test_id: Path(
+                                "should_have_no_runnable_3",
+                            ),
+                        },
+                        cfg: None,
+                    },
+                    Runnable {
+                        nav: NavigationTarget {
+                            file_id: FileId(
+                                0,
+                            ),
+                            full_range: 322..398,
+                            name: "should_have_no_runnable_4",
+                        },
+                        kind: DocTest {
+                            test_id: Path(
+                                "should_have_no_runnable_4",
+                            ),
+                        },
+                        cfg: None,
+                    },
+                    Runnable {
+                        nav: NavigationTarget {
+                            file_id: FileId(
+                                0,
+                            ),
+                            full_range: 900..965,
                             name: "StructWithRunnable",
                         },
                         kind: DocTest {
@@ -1178,7 +1185,6 @@ mod tests {
 
     #[test]
     fn dont_recurse_in_outline_submodules() {
-        cov_mark::check!(dont_recurse_in_outline_submodules);
         check(
             r#"
 //- /lib.rs

@@ -977,6 +977,7 @@ fn left_trim_comment_line<'a>(line: &'a str, style: &CommentStyle<'_>) -> (&'a s
 
 pub(crate) trait FindUncommented {
     fn find_uncommented(&self, pat: &str) -> Option<usize>;
+    fn find_last_uncommented(&self, pat: &str) -> Option<usize>;
 }
 
 impl FindUncommented for str {
@@ -1000,6 +1001,19 @@ impl FindUncommented for str {
         match needle_iter.next() {
             Some(_) => None,
             None => Some(self.len() - pat.len()),
+        }
+    }
+
+    fn find_last_uncommented(&self, pat: &str) -> Option<usize> {
+        if let Some(left) = self.find_uncommented(pat) {
+            let mut result = left;
+            // add 1 to use find_last_uncommented for &str after pat
+            while let Some(next) = self[(result + 1)..].find_last_uncommented(pat) {
+                result += next + 1;
+            }
+            Some(result)
+        } else {
+            None
         }
     }
 }
@@ -1297,6 +1311,9 @@ where
                 char_kind = FullCodeCharKind::InStringCommented;
                 if chr == '"' {
                     CharClassesStatus::BlockComment(deepness)
+                } else if chr == '*' && self.base.peek().map(RichChar::get_char) == Some('/') {
+                    char_kind = FullCodeCharKind::InComment;
+                    CharClassesStatus::BlockCommentClosing(deepness - 1)
                 } else {
                     CharClassesStatus::StringInBlockComment(deepness)
                 }
@@ -1674,7 +1691,8 @@ fn remove_comment_header(comment: &str) -> &str {
     } else {
         assert!(
             comment.starts_with("/*"),
-            format!("string '{}' is not a comment", comment)
+            "string '{}' is not a comment",
+            comment
         );
         &comment[2..comment.len() - 2]
     }

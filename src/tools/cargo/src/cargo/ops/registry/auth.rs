@@ -1,9 +1,9 @@
 //! Registry authentication support.
 
 use crate::sources::CRATES_IO_REGISTRY;
-use crate::util::{config, process_error, CargoResult, CargoResultExt, Config};
-use anyhow::bail;
-use anyhow::format_err;
+use crate::util::{config, CargoResult, Config};
+use anyhow::{bail, format_err, Context as _};
+use cargo_util::ProcessError;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -134,7 +134,7 @@ fn run_command(
         }
         Action::Erase => {}
     }
-    let mut child = cmd.spawn().chain_err(|| {
+    let mut child = cmd.spawn().with_context(|| {
         let verb = match action {
             Action::Get => "fetch",
             Action::Store(_) => "store",
@@ -157,7 +157,7 @@ fn run_command(
                 .as_mut()
                 .unwrap()
                 .read_to_string(&mut buffer)
-                .chain_err(|| {
+                .with_context(|| {
                     format!(
                         "failed to read token from registry credential process `{}`",
                         exe.display()
@@ -176,7 +176,7 @@ fn run_command(
             token = Some(buffer);
         }
         Action::Store(token) => {
-            writeln!(child.stdin.as_ref().unwrap(), "{}", token).chain_err(|| {
+            writeln!(child.stdin.as_ref().unwrap(), "{}", token).with_context(|| {
                 format!(
                     "failed to send token to registry credential process `{}`",
                     exe.display()
@@ -185,7 +185,7 @@ fn run_command(
         }
         Action::Erase => {}
     }
-    let status = child.wait().chain_err(|| {
+    let status = child.wait().with_context(|| {
         format!(
             "registry credential process `{}` exit failure",
             exe.display()
@@ -197,7 +197,7 @@ fn run_command(
             Action::Store(_) => "failed to store token to registry",
             Action::Erase => "failed to erase token from registry",
         };
-        return Err(process_error(
+        return Err(ProcessError::new(
             &format!(
                 "registry credential process `{}` {} `{}`",
                 exe.display(),

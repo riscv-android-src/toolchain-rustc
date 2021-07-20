@@ -40,6 +40,14 @@ fn block_def_map_at(ra_fixture: &str) -> String {
     module.def_map(&db).dump(&db)
 }
 
+fn check_block_scopes_at(ra_fixture: &str, expect: Expect) {
+    let (db, position) = crate::test_db::TestDB::with_position(ra_fixture);
+
+    let module = db.module_at_position(position);
+    let actual = module.def_map(&db).dump_block_scopes(&db);
+    expect.assert_eq(&actual);
+}
+
 fn check_at(ra_fixture: &str, expect: Expect) {
     let actual = block_def_map_at(ra_fixture);
     expect.assert_eq(&actual);
@@ -137,13 +145,13 @@ fn f() {
     include!(invalid);
   //^^^^^^^^^^^^^^^^^ could not convert tokens
     include!("does not exist");
-  //^^^^^^^^^^^^^^^^^^^^^^^^^^ could not convert tokens
+  //^^^^^^^^^^^^^^^^^^^^^^^^^^ failed to load file `does not exist`
 
     env!(invalid);
   //^^^^^^^^^^^^^ could not convert tokens
 
     env!("OUT_DIR");
-  //^^^^^^^^^^^^^^^ `OUT_DIR` not set, enable "load out dirs from check" to fix
+  //^^^^^^^^^^^^^^^ `OUT_DIR` not set, enable "run build scripts" to fix
 
     compile_error!("compile_error works");
   //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ compile_error works
@@ -169,6 +177,18 @@ fn f() {
 
     m!(hi);
   //^^^^^^ leftover tokens
+}
+      "#,
+    );
+}
+
+#[test]
+fn unresolved_macro_diag() {
+    check_diagnostics(
+        r#"
+fn f() {
+    m!();
+  //^^^^ unresolved macro `m!`
 }
       "#,
     );

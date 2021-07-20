@@ -1,13 +1,13 @@
-#![doc(include = "core_arch_docs.md")]
+#![doc = include_str!("core_arch_docs.md")]
 #![allow(improper_ctypes_definitions)]
 #![allow(dead_code)]
 #![allow(unused_features)]
-#![allow(incomplete_features)]
+#![deny(rust_2018_idioms)]
 #![feature(
+    asm,
     const_fn,
     const_fn_union,
     const_fn_transmute,
-    const_generics,
     custom_inner_attributes,
     link_llvm_intrinsics,
     platform_intrinsics,
@@ -37,7 +37,8 @@
     f16c_target_feature,
     external_doc,
     allow_internal_unstable,
-    decl_macro
+    decl_macro,
+    extended_key_value_attributes
 )]
 #![cfg_attr(test, feature(test, abi_vectorcall))]
 #![cfg_attr(all(test, target_arch = "wasm32"), feature(wasm_simd))]
@@ -69,9 +70,6 @@ extern crate std;
 #[cfg(test)]
 #[macro_use]
 extern crate std_detect;
-#[cfg(test)]
-extern crate stdarch_test;
-
 #[path = "mod.rs"]
 mod core_arch;
 

@@ -48,7 +48,7 @@ pub(crate) fn expand_glob_import(acc: &mut Assists, ctx: &AssistContext) -> Opti
         _ => return None,
     };
 
-    let current_scope = ctx.sema.scope(&star.parent());
+    let current_scope = ctx.sema.scope(&star.parent()?);
     let current_module = current_scope.module()?;
 
     let refs_in_target = find_refs_in_mod(ctx, target_module, Some(current_module))?;
@@ -73,8 +73,8 @@ fn find_parent_and_path(
 ) -> Option<(Either<ast::UseTree, ast::UseTreeList>, ast::Path)> {
     return star.ancestors().find_map(|n| {
         find_use_tree_list(n.clone())
-            .and_then(|(u, p)| Some((Either::Right(u), p)))
-            .or_else(|| find_use_tree(n).and_then(|(u, p)| Some((Either::Left(u), p))))
+            .map(|(u, p)| (Either::Right(u), p))
+            .or_else(|| find_use_tree(n).map(|(u, p)| (Either::Left(u), p)))
     });
 
     fn find_use_tree_list(n: SyntaxNode) -> Option<(ast::UseTreeList, ast::Path)> {
@@ -136,18 +136,13 @@ impl Refs {
                 .into_iter()
                 .filter(|r| {
                     if let Def::ModuleDef(ModuleDef::Trait(tr)) = r.def {
-                        if tr
-                            .items(ctx.db())
-                            .into_iter()
-                            .find(|ai| {
-                                if let AssocItem::Function(f) = *ai {
-                                    Def::ModuleDef(ModuleDef::Function(f)).is_referenced_in(ctx)
-                                } else {
-                                    false
-                                }
-                            })
-                            .is_some()
-                        {
+                        if tr.items(ctx.db()).into_iter().any(|ai| {
+                            if let AssocItem::Function(f) = ai {
+                                Def::ModuleDef(ModuleDef::Function(f)).is_referenced_in(ctx)
+                            } else {
+                                false
+                            }
+                        }) {
                             return true;
                         }
                     }

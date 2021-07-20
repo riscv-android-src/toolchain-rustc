@@ -293,6 +293,10 @@ mod util;
 
 const DEFAULT_BUF_SIZE: usize = crate::sys_common::io::DEFAULT_BUF_SIZE;
 
+pub(crate) fn cleanup() {
+    stdio::cleanup()
+}
+
 struct Guard<'a> {
     buf: &'a mut Vec<u8>,
     len: usize,
@@ -333,7 +337,7 @@ where
         let ret = f(g.buf);
         if str::from_utf8(&g.buf[g.len..]).is_err() {
             ret.and_then(|_| {
-                Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8"))
+                Err(Error::new_const(ErrorKind::InvalidData, &"stream did not contain valid UTF-8"))
             })
         } else {
             g.len = g.buf.len();
@@ -429,7 +433,7 @@ pub(crate) fn default_read_exact<R: Read + ?Sized>(this: &mut R, mut buf: &mut [
         }
     }
     if !buf.is_empty() {
-        Err(Error::new(ErrorKind::UnexpectedEof, "failed to fill whole buffer"))
+        Err(Error::new_const(ErrorKind::UnexpectedEof, &"failed to fill whole buffer"))
     } else {
         Ok(())
     }
@@ -505,7 +509,8 @@ pub(crate) fn default_read_exact<R: Read + ?Sized>(this: &mut R, mut buf: &mut [
 /// [`std::io`]: self
 /// [`File`]: crate::fs::File
 #[stable(feature = "rust1", since = "1.0.0")]
-#[doc(spotlight)]
+#[cfg_attr(bootstrap, doc(spotlight))]
+#[cfg_attr(not(bootstrap), doc(notable_trait))]
 pub trait Read {
     /// Pull some bytes from this source into the specified buffer, returning
     /// how many bytes were read.
@@ -1296,7 +1301,8 @@ impl Initializer {
 ///
 /// [`write_all`]: Write::write_all
 #[stable(feature = "rust1", since = "1.0.0")]
-#[doc(spotlight)]
+#[cfg_attr(bootstrap, doc(spotlight))]
+#[cfg_attr(not(bootstrap), doc(notable_trait))]
 pub trait Write {
     /// Write a buffer into this writer, returning how many bytes were written.
     ///
@@ -1437,7 +1443,10 @@ pub trait Write {
         while !buf.is_empty() {
             match self.write(buf) {
                 Ok(0) => {
-                    return Err(Error::new(ErrorKind::WriteZero, "failed to write whole buffer"));
+                    return Err(Error::new_const(
+                        ErrorKind::WriteZero,
+                        &"failed to write whole buffer",
+                    ));
                 }
                 Ok(n) => buf = &buf[n..],
                 Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
@@ -1502,7 +1511,10 @@ pub trait Write {
         while !bufs.is_empty() {
             match self.write_vectored(bufs) {
                 Ok(0) => {
-                    return Err(Error::new(ErrorKind::WriteZero, "failed to write whole buffer"));
+                    return Err(Error::new_const(
+                        ErrorKind::WriteZero,
+                        &"failed to write whole buffer",
+                    ));
                 }
                 Ok(n) => bufs = IoSlice::advance(bufs, n),
                 Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
@@ -1576,7 +1588,7 @@ pub trait Write {
                 if output.error.is_err() {
                     output.error
                 } else {
-                    Err(Error::new(ErrorKind::Other, "formatter error"))
+                    Err(Error::new_const(ErrorKind::Other, &"formatter error"))
                 }
             }
         }
@@ -2108,6 +2120,7 @@ pub trait BufRead: Read {
 ///
 /// [`chain`]: Read::chain
 #[stable(feature = "rust1", since = "1.0.0")]
+#[derive(Debug)]
 pub struct Chain<T, U> {
     first: T,
     second: U,
@@ -2186,13 +2199,6 @@ impl<T, U> Chain<T, U> {
     #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
     pub fn get_mut(&mut self) -> (&mut T, &mut U) {
         (&mut self.first, &mut self.second)
-    }
-}
-
-#[stable(feature = "std_debug", since = "1.16.0")]
-impl<T: fmt::Debug, U: fmt::Debug> fmt::Debug for Chain<T, U> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Chain").field("t", &self.first).field("u", &self.second).finish()
     }
 }
 

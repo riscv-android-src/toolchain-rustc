@@ -15,7 +15,13 @@
 
 ## unreleased
 
+## 5.0.0-pre.7 (2021-04-15)
 
+- FIX: Display proper error message when reaching inotify limits on linux [#285]
+- FIX: Fix leaks on Windows [#298]
+
+[#285]: https://github.com/notify-rs/notify/pull/285
+[#298]: https://github.com/notify-rs/notify/pull/298
 
 ## 5.0.0-pre.6 (2021-02-20)
 
@@ -23,7 +29,7 @@
 
 [#281]: https://github.com/notify-rs/notify/pull/281
 
-## 5.0.0-pre.5 (2020-01-28)
+## 5.0.0-pre.5 (2021-01-28)
 
 - RUSTC: Push the minimum version to 1.47.0 [#280]
 - DEPS: Update `inotify` to 0.9 [#280]

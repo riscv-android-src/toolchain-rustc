@@ -340,7 +340,6 @@ fn main() {}
                 }
               ]
             },
-            "isPreferred": false,
             "kind": "quickfix",
             "title": "Create module"
         }]),
@@ -411,7 +410,6 @@ fn main() {{}}
                 }
               ]
             },
-            "isPreferred": false,
             "kind": "quickfix",
             "title": "Create module"
         }]),
@@ -712,6 +710,10 @@ pub fn foo(_input: TokenStream) -> TokenStream {
     // We hard code the output here for preventing to use any deps
     let mut res = TokenStream::new();
 
+    // ill behaved proc-macro will use the stdout
+    // we should ignore it
+    println!("I am bad guy");
+
     // impl Bar for Foo { fn bar() {} }
     let mut tokens = vec![t!("impl"), t!("Bar"), t!("for"), t!("Foo")];
     let mut fn_stream = TokenStream::new();
@@ -838,9 +840,7 @@ fn main() {}
                 new_uri: base_path.join("src/from_mod/foo.rs").to_str().unwrap().to_string(),
             }],
         },
-        json!({
-          "documentChanges": []
-        }),
+        json!(null),
     );
 
     //rename file from foo.rs to mod.rs
@@ -851,9 +851,7 @@ fn main() {}
                 new_uri: base_path.join("src/to_mod/mod.rs").to_str().unwrap().to_string(),
             }],
         },
-        json!({
-          "documentChanges": []
-        }),
+        json!(null),
     );
 
     //rename same level file

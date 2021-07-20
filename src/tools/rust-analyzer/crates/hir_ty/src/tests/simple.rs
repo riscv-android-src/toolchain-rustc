@@ -1103,7 +1103,7 @@ fn infer_inherent_method() {
 
         mod b {
             impl super::A {
-                fn bar(&self, x: u64) -> i64 {}
+                pub fn bar(&self, x: u64) -> i64 {}
             }
         }
 
@@ -1117,21 +1117,21 @@ fn infer_inherent_method() {
             31..35 'self': A
             37..38 'x': u32
             52..54 '{}': ()
-            102..106 'self': &A
-            108..109 'x': u64
-            123..125 '{}': ()
-            143..144 'a': A
-            149..197 '{     ...(1); }': ()
-            155..156 'a': A
-            155..163 'a.foo(1)': i32
-            161..162 '1': u32
-            169..180 '(&a).bar(1)': i64
-            170..172 '&a': &A
-            171..172 'a': A
-            178..179 '1': u64
-            186..187 'a': A
-            186..194 'a.bar(1)': i64
-            192..193 '1': u64
+            106..110 'self': &A
+            112..113 'x': u64
+            127..129 '{}': ()
+            147..148 'a': A
+            153..201 '{     ...(1); }': ()
+            159..160 'a': A
+            159..167 'a.foo(1)': i32
+            165..166 '1': u32
+            173..184 '(&a).bar(1)': i64
+            174..176 '&a': &A
+            175..176 'a': A
+            182..183 '1': u64
+            190..191 'a': A
+            190..198 'a.bar(1)': i64
+            196..197 '1': u64
         "#]],
     );
 }
@@ -1757,6 +1757,24 @@ struct Foo;
 impl i32 { fn foo(&self) -> Foo { Foo } }
 
 fn main() {
+    let x: i32 = i32;
+    x.foo();
+        //^ Foo
+}"#,
+    );
+}
+
+#[test]
+fn shadowing_primitive_with_inner_items() {
+    check_types(
+        r#"
+struct i32;
+struct Foo;
+
+impl i32 { fn foo(&self) -> Foo { Foo } }
+
+fn main() {
+    fn inner() {}
     let x: i32 = i32;
     x.foo();
         //^ Foo
@@ -2542,6 +2560,58 @@ fn test() {
             680..690 'box [1i32]': Box<[i32; _], Global>
             684..690 '[1i32]': [i32; _]
             685..689 '1i32': i32
+        "#]],
+    )
+}
+
+#[test]
+fn cfgd_out_assoc_items() {
+    check_types(
+        r#"
+struct S;
+
+impl S {
+    #[cfg(FALSE)]
+    const C: S = S;
+}
+
+fn f() {
+    S::C;
+  //^^^^ {unknown}
+}
+    "#,
+    )
+}
+
+#[test]
+fn infer_type_alias_variant() {
+    check_infer(
+        r#"
+type Qux = Foo;
+enum Foo {
+    Bar(i32),
+    Baz { baz: f32 }
+}
+
+fn f() {
+    match Foo::Bar(3) {
+        Qux::Bar(bar) => (),
+        Qux::Baz { baz } => (),
+    }
+}
+    "#,
+        expect![[r#"
+            72..166 '{     ...   } }': ()
+            78..164 'match ...     }': ()
+            84..92 'Foo::Bar': Bar(i32) -> Foo
+            84..95 'Foo::Bar(3)': Foo
+            93..94 '3': i32
+            106..119 'Qux::Bar(bar)': Foo
+            115..118 'bar': i32
+            123..125 '()': ()
+            135..151 'Qux::B... baz }': Foo
+            146..149 'baz': f32
+            155..157 '()': ()
         "#]],
     )
 }

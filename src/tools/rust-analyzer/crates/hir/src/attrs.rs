@@ -1,6 +1,6 @@
 //! Attributes & documentation for hir types.
 use hir_def::{
-    attr::{Attrs, Documentation},
+    attr::{AttrsWithOwner, Documentation},
     path::ModPath,
     per_ns::PerNs,
     resolver::HasResolver,
@@ -11,12 +11,12 @@ use hir_ty::db::HirDatabase;
 use syntax::ast;
 
 use crate::{
-    Adt, Const, ConstParam, Enum, Field, Function, GenericParam, LifetimeParam, MacroDef, Module,
-    ModuleDef, Static, Struct, Trait, TypeAlias, TypeParam, Union, Variant,
+    Adt, Const, ConstParam, Enum, Field, Function, GenericParam, Impl, LifetimeParam, MacroDef,
+    Module, ModuleDef, Static, Struct, Trait, TypeAlias, TypeParam, Union, Variant,
 };
 
 pub trait HasAttrs {
-    fn attrs(self, db: &dyn HirDatabase) -> Attrs;
+    fn attrs(self, db: &dyn HirDatabase) -> AttrsWithOwner;
     fn docs(self, db: &dyn HirDatabase) -> Option<Documentation>;
     fn resolve_doc_path(
         self,
@@ -36,7 +36,7 @@ pub enum Namespace {
 macro_rules! impl_has_attrs {
     ($(($def:ident, $def_id:ident),)*) => {$(
         impl HasAttrs for $def {
-            fn attrs(self, db: &dyn HirDatabase) -> Attrs {
+            fn attrs(self, db: &dyn HirDatabase) -> AttrsWithOwner {
                 let def = AttrDefId::$def_id(self.into());
                 db.attrs(def)
             }
@@ -64,12 +64,13 @@ impl_has_attrs![
     (Adt, AdtId),
     (Module, ModuleId),
     (GenericParam, GenericParamId),
+    (Impl, ImplId),
 ];
 
 macro_rules! impl_has_attrs_enum {
     ($($variant:ident),* for $enum:ident) => {$(
         impl HasAttrs for $variant {
-            fn attrs(self, db: &dyn HirDatabase) -> Attrs {
+            fn attrs(self, db: &dyn HirDatabase) -> AttrsWithOwner {
                 $enum::$variant(self).attrs(db)
             }
             fn docs(self, db: &dyn HirDatabase) -> Option<Documentation> {
@@ -124,5 +125,5 @@ fn resolve_doc_path(
         Some(Namespace::Macros) => return None,
         None => resolved.iter_items().find_map(|it| it.as_module_def_id())?,
     };
-    Some(def.into())
+    Some(def)
 }

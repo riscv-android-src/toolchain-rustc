@@ -1,4 +1,5 @@
 use super::*;
+use crate::nameres::proc_macro::{ProcMacroDef, ProcMacroKind};
 
 #[test]
 fn macro_rules_are_globally_visible() {
@@ -712,6 +713,27 @@ b! { static = #[] ();}
 }
 
 #[test]
+fn macros_defining_macros() {
+    check(
+        r#"
+macro_rules! item {
+    ($item:item) => { $item }
+}
+
+item! {
+    macro_rules! indirect_macro { () => { struct S {} } }
+}
+
+indirect_macro!();
+    "#,
+        expect![[r#"
+            crate
+            S: t
+        "#]],
+    );
+}
+
+#[test]
 fn resolves_proc_macros() {
     check(
         r"
@@ -787,6 +809,49 @@ fn proc_macro_censoring() {
             DummyTrait: m
             attribute_macro: m
             function_like_macro: m
+        "#]],
+    );
+}
+
+#[test]
+fn collects_derive_helpers() {
+    let def_map = compute_crate_def_map(
+        r"
+        struct TokenStream;
+
+        #[proc_macro_derive(AnotherTrait, attributes(helper_attr))]
+        pub fn derive_macro_2(_item: TokenStream) -> TokenStream {
+            TokenStream
+        }
+        ",
+    );
+
+    assert_eq!(def_map.exported_proc_macros.len(), 1);
+    match def_map.exported_proc_macros.values().next() {
+        Some(ProcMacroDef { kind: ProcMacroKind::CustomDerive { helpers }, .. }) => {
+            match &**helpers {
+                [attr] => assert_eq!(attr.to_string(), "helper_attr"),
+                _ => unreachable!(),
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn resolve_macro_def() {
+    check(
+        r#"
+//- /lib.rs
+pub macro structs($($i:ident),*) {
+    $(struct $i { field: u32 } )*
+}
+structs!(Foo);
+"#,
+        expect![[r#"
+            crate
+            Foo: t
+            structs: m
         "#]],
     );
 }

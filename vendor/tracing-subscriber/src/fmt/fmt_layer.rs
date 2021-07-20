@@ -8,7 +8,7 @@ use format::{FmtSpan, TimingDisplay};
 use std::{any::TypeId, cell::RefCell, fmt, io, marker::PhantomData, ops::Deref, time::Instant};
 use tracing_core::{
     field,
-    span::{Attributes, Id, Record},
+    span::{Attributes, Current, Id, Record},
     Event, Metadata, Subscriber,
 };
 
@@ -259,17 +259,32 @@ where
     /// - `FmtSpan::NONE`: No events will be synthesized when spans are
     ///    created, entered, exited, or closed. Data from spans will still be
     ///    included as the context for formatted events. This is the default.
-    /// - `FmtSpan::ACTIVE`: Events will be synthesized when spans are entered
-    ///    or exited.
+    /// - `FmtSpan::NEW`: An event will be synthesized when spans are created.
+    /// - `FmtSpan::ENTER`: An event will be synthesized when spans are entered.
+    /// - `FmtSpan::EXIT`: An event will be synthesized when spans are exited.
     /// - `FmtSpan::CLOSE`: An event will be synthesized when a span closes. If
     ///    [timestamps are enabled][time] for this formatter, the generated
     ///    event will contain fields with the span's _busy time_ (the total
     ///    time for which it was entered) and _idle time_ (the total time that
     ///    the span existed but was not entered).
+    /// - `FmtSpan::ACTIVE`: Events will be synthesized when spans are entered
+    ///    or exited.
     /// - `FmtSpan::FULL`: Events will be synthesized whenever a span is
     ///    created, entered, exited, or closed. If timestamps are enabled, the
     ///    close event will contain the span's busy and idle time, as
     ///    described above.
+    ///
+    /// The options can be enabled in any combination. For instance, the following
+    /// will synthesize events whenever spans are created and closed:
+    ///
+    /// ```rust
+    /// use tracing_subscriber::fmt;
+    /// use tracing_subscriber::fmt::format::FmtSpan;
+    ///
+    /// let subscriber = fmt()
+    ///     .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+    ///     .finish();
+    /// ```
     ///
     /// Note that the generated events will only be part of the log output by
     /// this formatter; they will not be recorded by other `Subscriber`s or by
@@ -279,11 +294,8 @@ where
     /// [time]: #method.without_time
     pub fn with_span_events(self, kind: FmtSpan) -> Self {
         Layer {
-            fmt_event: self.fmt_event,
-            fmt_fields: self.fmt_fields,
             fmt_span: self.fmt_span.with_kind(kind),
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 
@@ -293,10 +305,7 @@ where
     pub fn with_ansi(self, ansi: bool) -> Layer<S, N, format::Format<L, T>, W> {
         Layer {
             fmt_event: self.fmt_event.with_ansi(ansi),
-            fmt_fields: self.fmt_fields,
-            fmt_span: self.fmt_span,
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 
@@ -304,10 +313,7 @@ where
     pub fn with_target(self, display_target: bool) -> Layer<S, N, format::Format<L, T>, W> {
         Layer {
             fmt_event: self.fmt_event.with_target(display_target),
-            fmt_fields: self.fmt_fields,
-            fmt_span: self.fmt_span,
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 
@@ -315,10 +321,7 @@ where
     pub fn with_level(self, display_level: bool) -> Layer<S, N, format::Format<L, T>, W> {
         Layer {
             fmt_event: self.fmt_event.with_level(display_level),
-            fmt_fields: self.fmt_fields,
-            fmt_span: self.fmt_span,
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 
@@ -329,10 +332,7 @@ where
     pub fn with_thread_ids(self, display_thread_ids: bool) -> Layer<S, N, format::Format<L, T>, W> {
         Layer {
             fmt_event: self.fmt_event.with_thread_ids(display_thread_ids),
-            fmt_fields: self.fmt_fields,
-            fmt_span: self.fmt_span,
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 
@@ -346,10 +346,7 @@ where
     ) -> Layer<S, N, format::Format<L, T>, W> {
         Layer {
             fmt_event: self.fmt_event.with_thread_names(display_thread_names),
-            fmt_fields: self.fmt_fields,
-            fmt_span: self.fmt_span,
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 
@@ -422,9 +419,7 @@ impl<S, T, W> Layer<S, format::JsonFields, format::Format<format::Json, T>, W> {
         Layer {
             fmt_event: self.fmt_event.flatten_event(flatten_event),
             fmt_fields: format::JsonFields::new(),
-            fmt_span: self.fmt_span,
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 
@@ -439,9 +434,7 @@ impl<S, T, W> Layer<S, format::JsonFields, format::Format<format::Json, T>, W> {
         Layer {
             fmt_event: self.fmt_event.with_current_span(display_current_span),
             fmt_fields: format::JsonFields::new(),
-            fmt_span: self.fmt_span,
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 
@@ -456,9 +449,7 @@ impl<S, T, W> Layer<S, format::JsonFields, format::Format<format::Json, T>, W> {
         Layer {
             fmt_event: self.fmt_event.with_span_list(display_span_list),
             fmt_fields: format::JsonFields::new(),
-            fmt_span: self.fmt_span,
-            make_writer: self.make_writer,
-            _inner: self._inner,
+            ..self
         }
     }
 }
@@ -651,7 +642,7 @@ where
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
-        if self.fmt_span.trace_active() || self.fmt_span.trace_close() && self.fmt_span.fmt_timing {
+        if self.fmt_span.trace_enter() || self.fmt_span.trace_close() && self.fmt_span.fmt_timing {
             let span = ctx.span(id).expect("Span not found, this is a bug");
             let mut extensions = span.extensions_mut();
             if let Some(timings) = extensions.get_mut::<Timings>() {
@@ -660,7 +651,7 @@ where
                 timings.last = now;
             }
 
-            if self.fmt_span.trace_active() {
+            if self.fmt_span.trace_enter() {
                 with_event_from_span!(id, span, "message" = "enter", |event| {
                     drop(extensions);
                     drop(span);
@@ -671,7 +662,7 @@ where
     }
 
     fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
-        if self.fmt_span.trace_active() || self.fmt_span.trace_close() && self.fmt_span.fmt_timing {
+        if self.fmt_span.trace_exit() || self.fmt_span.trace_close() && self.fmt_span.fmt_timing {
             let span = ctx.span(id).expect("Span not found, this is a bug");
             let mut extensions = span.extensions_mut();
             if let Some(timings) = extensions.get_mut::<Timings>() {
@@ -680,7 +671,7 @@ where
                 timings.last = now;
             }
 
-            if self.fmt_span.trace_active() {
+            if self.fmt_span.trace_exit() {
                 with_event_from_span!(id, span, "message" = "exit", |event| {
                     drop(extensions);
                     drop(span);
@@ -878,6 +869,11 @@ where
         S: for<'lookup> LookupSpan<'lookup>,
     {
         self.ctx.scope()
+    }
+
+    /// Returns the current span for this formatter.
+    pub fn current_span(&self) -> Current {
+        self.ctx.current_span()
     }
 
     /// Returns the [field formatter] configured by the subscriber invoking

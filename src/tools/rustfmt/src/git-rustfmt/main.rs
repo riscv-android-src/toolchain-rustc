@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
-use env_logger;
 use getopts::{Matches, Options};
 use rustfmt_nightly as rustfmt;
 
@@ -127,7 +126,6 @@ fn make_opts() -> Options {
 struct Config {
     commits: String,
     uncommitted: bool,
-    check: bool,
 }
 
 impl Config {
@@ -146,11 +144,9 @@ impl Config {
         let mut config = Config {
             commits: "1".to_owned(),
             uncommitted: false,
-            check: false,
         };
 
         if matches.opt_present("c") {
-            config.check = true;
             unimplemented!();
         }
 

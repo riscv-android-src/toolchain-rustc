@@ -1065,7 +1065,6 @@ impl FusedIterator for Ancestors<'_> {}
 /// ```
 ///
 /// Which method works best depends on what kind of situation you're in.
-#[derive(Clone)]
 #[cfg_attr(not(test), rustc_diagnostic_item = "PathBuf")]
 #[stable(feature = "rust1", since = "1.0.0")]
 // FIXME:
@@ -1406,6 +1405,19 @@ impl PathBuf {
     }
 }
 
+#[stable(feature = "rust1", since = "1.0.0")]
+impl Clone for PathBuf {
+    #[inline]
+    fn clone(&self) -> Self {
+        PathBuf { inner: self.inner.clone() }
+    }
+
+    #[inline]
+    fn clone_from(&mut self, source: &Self) {
+        self.inner.clone_from(&source.inner)
+    }
+}
+
 #[stable(feature = "box_from_path", since = "1.17.0")]
 impl From<&Path> for Box<Path> {
     fn from(path: &Path) -> Box<Path> {
@@ -1467,7 +1479,7 @@ impl<T: ?Sized + AsRef<OsStr>> From<&T> for PathBuf {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl From<OsString> for PathBuf {
-    /// Converts a `OsString` into a `PathBuf`
+    /// Converts an [`OsString`] into a [`PathBuf`]
     ///
     /// This conversion does not allocate or copy memory.
     #[inline]
@@ -1478,7 +1490,7 @@ impl From<OsString> for PathBuf {
 
 #[stable(feature = "from_path_buf_for_os_string", since = "1.14.0")]
 impl From<PathBuf> for OsString {
-    /// Converts a `PathBuf` into a `OsString`
+    /// Converts a [`PathBuf`] into an [`OsString`]
     ///
     /// This conversion does not allocate or copy memory.
     #[inline]
@@ -1489,7 +1501,7 @@ impl From<PathBuf> for OsString {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl From<String> for PathBuf {
-    /// Converts a `String` into a `PathBuf`
+    /// Converts a [`String`] into a [`PathBuf`]
     ///
     /// This conversion does not allocate or copy memory.
     #[inline]
@@ -1595,7 +1607,7 @@ impl<'a> From<Cow<'a, Path>> for PathBuf {
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
 impl From<PathBuf> for Arc<Path> {
-    /// Converts a `PathBuf` into an `Arc` by moving the `PathBuf` data into a new `Arc` buffer.
+    /// Converts a [`PathBuf`] into an [`Arc`] by moving the [`PathBuf`] data into a new [`Arc`] buffer.
     #[inline]
     fn from(s: PathBuf) -> Arc<Path> {
         let arc: Arc<OsStr> = Arc::from(s.into_os_string());
@@ -1605,7 +1617,7 @@ impl From<PathBuf> for Arc<Path> {
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
 impl From<&Path> for Arc<Path> {
-    /// Converts a `Path` into an `Arc` by copying the `Path` data into a new `Arc` buffer.
+    /// Converts a [`Path`] into an [`Arc`] by copying the [`Path`] data into a new [`Arc`] buffer.
     #[inline]
     fn from(s: &Path) -> Arc<Path> {
         let arc: Arc<OsStr> = Arc::from(s.as_os_str());
@@ -1615,7 +1627,7 @@ impl From<&Path> for Arc<Path> {
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
 impl From<PathBuf> for Rc<Path> {
-    /// Converts a `PathBuf` into an `Rc` by moving the `PathBuf` data into a new `Rc` buffer.
+    /// Converts a [`PathBuf`] into an [`Rc`] by moving the [`PathBuf`] data into a new `Rc` buffer.
     #[inline]
     fn from(s: PathBuf) -> Rc<Path> {
         let rc: Rc<OsStr> = Rc::from(s.into_os_string());
@@ -1625,7 +1637,7 @@ impl From<PathBuf> for Rc<Path> {
 
 #[stable(feature = "shared_from_slice2", since = "1.24.0")]
 impl From<&Path> for Rc<Path> {
-    /// Converts a `Path` into an `Rc` by copying the `Path` data into a new `Rc` buffer.
+    /// Converts a [`Path`] into an [`Rc`] by copying the [`Path`] data into a new `Rc` buffer.
     #[inline]
     fn from(s: &Path) -> Rc<Path> {
         let rc: Rc<OsStr> = Rc::from(s.as_os_str());

@@ -6,10 +6,11 @@ use std::{cell::RefCell, fmt, iter::successors};
 
 use base_db::{FileId, FileRange};
 use hir_def::{
+    body,
     resolver::{self, HasResolver, Resolver, TypeNs},
     AsMacroCall, FunctionId, TraitId, VariantId,
 };
-use hir_expand::{hygiene::Hygiene, name::AsName, ExpansionInfo};
+use hir_expand::{name::AsName, ExpansionInfo};
 use hir_ty::associated_type_shorthand_candidates;
 use itertools::Itertools;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -76,9 +77,11 @@ impl PathResolution {
     pub fn assoc_type_shorthand_candidates<R>(
         &self,
         db: &dyn HirDatabase,
-        mut cb: impl FnMut(TypeAlias) -> Option<R>,
+        mut cb: impl FnMut(&Name, TypeAlias) -> Option<R>,
     ) -> Option<R> {
-        associated_type_shorthand_candidates(db, self.in_type_ns()?, |_, _, id| cb(id.into()))
+        associated_type_shorthand_candidates(db, self.in_type_ns()?, |name, _, id| {
+            cb(name, id.into())
+        })
     }
 }
 
@@ -143,6 +146,12 @@ impl<'db, DB: HirDatabase> Semantics<'db, DB> {
         self.imp.diagnostics_display_range(diagnostics)
     }
 
+    pub fn token_ancestors_with_macros(
+        &self,
+        token: SyntaxToken,
+    ) -> impl Iterator<Item = SyntaxNode> + '_ {
+        token.parent().into_iter().flat_map(move |it| self.ancestors_with_macros(it))
+    }
     pub fn ancestors_with_macros(&self, node: SyntaxNode) -> impl Iterator<Item = SyntaxNode> + '_ {
         self.imp.ancestors_with_macros(node)
     }
@@ -259,6 +268,10 @@ impl<'db, DB: HirDatabase> Semantics<'db, DB> {
     }
 
     pub fn to_module_def(&self, file: FileId) -> Option<Module> {
+        self.imp.to_module_def(file).next()
+    }
+
+    pub fn to_module_defs(&self, file: FileId) -> impl Iterator<Item = Module> {
         self.imp.to_module_def(file)
     }
 
@@ -266,8 +279,8 @@ impl<'db, DB: HirDatabase> Semantics<'db, DB> {
         self.imp.scope(node)
     }
 
-    pub fn scope_at_offset(&self, node: &SyntaxNode, offset: TextSize) -> SemanticsScope<'db> {
-        self.imp.scope_at_offset(node, offset)
+    pub fn scope_at_offset(&self, token: &SyntaxToken, offset: TextSize) -> SemanticsScope<'db> {
+        self.imp.scope_at_offset(&token.parent().unwrap(), offset)
     }
 
     pub fn scope_for_def(&self, def: Trait) -> SemanticsScope<'db> {
@@ -337,7 +350,10 @@ impl<'db> SemanticsImpl<'db> {
 
     fn descend_into_macros(&self, token: SyntaxToken) -> SyntaxToken {
         let _p = profile::span("descend_into_macros");
-        let parent = token.parent();
+        let parent = match token.parent() {
+            Some(it) => it,
+            None => return token,
+        };
         let sa = self.analyze(&parent);
 
         let token = successors(Some(InFile::new(sa.file_id, token)), |token| {
@@ -356,7 +372,9 @@ impl<'db> SemanticsImpl<'db> {
                 .as_ref()?
                 .map_token_down(token.as_ref())?;
 
-            self.cache(find_root(&token.value.parent()), token.file_id);
+            if let Some(parent) = token.value.parent() {
+                self.cache(find_root(&parent), token.file_id);
+            }
 
             Some(token)
         })
@@ -374,7 +392,7 @@ impl<'db> SemanticsImpl<'db> {
         // Handle macro token cases
         node.token_at_offset(offset)
             .map(|token| self.descend_into_macros(token))
-            .map(|it| self.ancestors_with_macros(it.parent()))
+            .map(|it| self.token_ancestors_with_macros(it))
             .flatten()
     }
 
@@ -390,6 +408,13 @@ impl<'db> SemanticsImpl<'db> {
         src.with_value(&node).original_file_range(self.db.upcast())
     }
 
+    fn token_ancestors_with_macros(
+        &self,
+        token: SyntaxToken,
+    ) -> impl Iterator<Item = SyntaxNode> + '_ {
+        token.parent().into_iter().flat_map(move |parent| self.ancestors_with_macros(parent))
+    }
+
     fn ancestors_with_macros(&self, node: SyntaxNode) -> impl Iterator<Item = SyntaxNode> + '_ {
         let node = self.find_file(node);
         node.ancestors_with_macros(self.db.upcast()).map(|it| it.value)
@@ -401,7 +426,7 @@ impl<'db> SemanticsImpl<'db> {
         offset: TextSize,
     ) -> impl Iterator<Item = SyntaxNode> + '_ {
         node.token_at_offset(offset)
-            .map(|token| self.ancestors_with_macros(token.parent()))
+            .map(|token| self.token_ancestors_with_macros(token))
             .kmerge_by(|node1, node2| node1.text_range().len() < node2.text_range().len())
     }
 
@@ -423,7 +448,7 @@ impl<'db> SemanticsImpl<'db> {
                 }
             };
             gpl.lifetime_params()
-                .find(|tp| tp.lifetime().as_ref().map(|lt| lt.text()) == Some(text))
+                .find(|tp| tp.lifetime().as_ref().map(|lt| lt.text()).as_ref() == Some(&text))
         })?;
         let src = self.find_file(lifetime_param.syntax().clone()).with_value(lifetime_param);
         ToDef::to_def(self, src)
@@ -470,9 +495,9 @@ impl<'db> SemanticsImpl<'db> {
     fn resolve_method_call_as_callable(&self, call: &ast::MethodCallExpr) -> Option<Callable> {
         // FIXME: this erases Substs
         let func = self.resolve_method_call(call)?;
-        let ty = self.db.value_ty(func.into());
+        let (ty, _) = self.db.value_ty(func.into()).into_value_and_skipped_binders();
         let resolver = self.analyze(call.syntax()).resolver;
-        let ty = Type::new_with_resolver(self.db, &resolver, ty.value)?;
+        let ty = Type::new_with_resolver(self.db, &resolver, ty)?;
         let mut res = ty.as_callable(self.db)?;
         res.is_bound_method = true;
         Some(res)
@@ -537,8 +562,8 @@ impl<'db> SemanticsImpl<'db> {
         f(&mut ctx)
     }
 
-    fn to_module_def(&self, file: FileId) -> Option<Module> {
-        self.with_ctx(|ctx| ctx.file_to_def(file)).map(Module::from)
+    fn to_module_def(&self, file: FileId) -> impl Iterator<Item = Module> {
+        self.with_ctx(|ctx| ctx.file_to_def(file)).into_iter().map(Module::from)
     }
 
     fn scope(&self, node: &SyntaxNode) -> SemanticsScope<'db> {
@@ -552,7 +577,7 @@ impl<'db> SemanticsImpl<'db> {
     }
 
     fn scope_for_def(&self, def: Trait) -> SemanticsScope<'db> {
-        let file_id = self.db.lookup_intern_trait(def.id).id.file_id;
+        let file_id = self.db.lookup_intern_trait(def.id).id.file_id();
         let resolver = def.id.resolver(self.db.upcast());
         SemanticsScope { db: self.db, file_id, resolver }
     }
@@ -730,6 +755,7 @@ macro_rules! to_def_impls {
 
 to_def_impls![
     (crate::Module, ast::Module, module_to_def),
+    (crate::Module, ast::SourceFile, source_file_to_def),
     (crate::Struct, ast::Struct, struct_to_def),
     (crate::Enum, ast::Enum, enum_to_def),
     (crate::Union, ast::Union, union_to_def),
@@ -745,7 +771,7 @@ to_def_impls![
     (crate::TypeParam, ast::TypeParam, type_param_to_def),
     (crate::LifetimeParam, ast::LifetimeParam, lifetime_param_to_def),
     (crate::ConstParam, ast::ConstParam, const_param_to_def),
-    (crate::MacroDef, ast::MacroRules, macro_rules_to_def),
+    (crate::MacroDef, ast::Macro, macro_to_def),
     (crate::Local, ast::IdentPat, bind_pat_to_def),
     (crate::Local, ast::SelfParam, self_param_to_def),
     (crate::Label, ast::Label, label_to_def),
@@ -813,8 +839,12 @@ impl<'a> SemanticsScope<'a> {
                 resolver::ScopeDef::AdtSelfType(it) => ScopeDef::AdtSelfType(it.into()),
                 resolver::ScopeDef::GenericParam(id) => ScopeDef::GenericParam(id.into()),
                 resolver::ScopeDef::Local(pat_id) => {
-                    let parent = resolver.body_owner().unwrap().into();
+                    let parent = resolver.body_owner().unwrap();
                     ScopeDef::Local(Local { parent, pat_id })
+                }
+                resolver::ScopeDef::Label(label_id) => {
+                    let parent = resolver.body_owner().unwrap();
+                    ScopeDef::Label(Label { parent, label_id })
                 }
             };
             f(name, def)
@@ -824,8 +854,8 @@ impl<'a> SemanticsScope<'a> {
     /// Resolve a path as-if it was written at the given scope. This is
     /// necessary a heuristic, as it doesn't take hygiene into account.
     pub fn speculative_resolve(&self, path: &ast::Path) -> Option<PathResolution> {
-        let hygiene = Hygiene::new(self.db.upcast(), self.file_id);
-        let path = Path::from_src(path.clone(), &hygiene)?;
+        let ctx = body::LowerCtx::new(self.db.upcast(), self.file_id);
+        let path = Path::from_src(path.clone(), &ctx)?;
         resolve_hir_path(self.db, &self.resolver, &path)
     }
 }

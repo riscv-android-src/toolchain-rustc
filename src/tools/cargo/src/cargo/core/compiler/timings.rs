@@ -8,7 +8,9 @@ use crate::core::compiler::BuildContext;
 use crate::core::PackageId;
 use crate::util::cpu::State;
 use crate::util::machine_message::{self, Message};
-use crate::util::{paths, CargoResult, CargoResultExt, Config};
+use crate::util::{CargoResult, Config};
+use anyhow::Context as _;
+use cargo_util::paths;
 use std::collections::HashMap;
 use std::io::{BufWriter, Write};
 use std::time::{Duration, Instant, SystemTime};
@@ -323,7 +325,7 @@ impl<'cfg> Timings<'cfg> {
             .sort_unstable_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
         if self.report_html {
             self.report_html(bcx, error)
-                .chain_err(|| "failed to save timing report")?;
+                .with_context(|| "failed to save timing report")?;
         }
         Ok(())
     }

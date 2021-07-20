@@ -18,7 +18,7 @@
 
 pub mod alloc;
 pub mod args;
-#[path = "../unsupported/cmath.rs"]
+#[path = "../unix/cmath.rs"]
 pub mod cmath;
 pub mod env;
 #[path = "../unsupported/fs.rs"]
@@ -35,8 +35,6 @@ pub mod path;
 pub mod pipe;
 #[path = "../unsupported/process.rs"]
 pub mod process;
-#[path = "../unsupported/stack_overflow.rs"]
-pub mod stack_overflow;
 #[path = "../unsupported/stdio.rs"]
 pub mod stdio;
 pub mod thread;

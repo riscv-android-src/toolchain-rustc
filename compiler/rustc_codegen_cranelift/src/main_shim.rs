@@ -1,3 +1,4 @@
+use cranelift_codegen::binemit::{NullStackMapSink, NullTrapSink};
 use rustc_hir::LangItem;
 use rustc_session::config::EntryFnType;
 
@@ -12,7 +13,7 @@ pub(crate) fn maybe_create_entry_wrapper(
 ) {
     let (main_def_id, use_start_lang_item) = match tcx.entry_fn(LOCAL_CRATE) {
         Some((def_id, entry_ty)) => (
-            def_id.to_def_id(),
+            def_id,
             match entry_ty {
                 EntryFnType::Main => true,
                 EntryFnType::Start => false,
@@ -100,12 +101,8 @@ pub(crate) fn maybe_create_entry_wrapper(
             bcx.seal_all_blocks();
             bcx.finalize();
         }
-        m.define_function(
-            cmain_func_id,
-            &mut ctx,
-            &mut cranelift_codegen::binemit::NullTrapSink {},
-        )
-        .unwrap();
+        m.define_function(cmain_func_id, &mut ctx, &mut NullTrapSink {}, &mut NullStackMapSink {})
+            .unwrap();
         unwind_context.add_function(cmain_func_id, &ctx, m.isa());
     }
 }

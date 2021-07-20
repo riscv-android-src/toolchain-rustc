@@ -193,7 +193,7 @@ https://github.blog/2015-06-08-how-to-undo-almost-anything-with-git/#redo-after-
     }
 }
 
-fn deny_clippy(path: &PathBuf, text: &String) {
+fn deny_clippy(path: &Path, text: &str) {
     let ignore = &[
         // The documentation in string literals may contain anything for its own purposes
         "ide_completion/src/generated_lint_completions.rs",
@@ -224,7 +224,7 @@ Apache-2.0 OR BSL-1.0
 Apache-2.0 OR MIT
 Apache-2.0/MIT
 BSD-3-Clause
-CC0-1.0
+CC0-1.0 OR Artistic-2.0
 ISC
 MIT
 MIT / Apache-2.0

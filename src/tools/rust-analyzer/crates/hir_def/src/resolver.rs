@@ -12,8 +12,9 @@ use crate::{
     body::scope::{ExprScopes, ScopeId},
     builtin_type::BuiltinType,
     db::DefDatabase,
-    expr::{ExprId, PatId},
+    expr::{ExprId, LabelId, PatId},
     generics::GenericParams,
+    intern::Interned,
     item_scope::{BuiltinShadowMode, BUILTIN_SCOPE},
     nameres::DefMap,
     path::{ModPath, PathKind},
@@ -50,7 +51,7 @@ enum Scope {
     /// All the items and imported names of a module
     ModuleScope(ModuleItemMap),
     /// Brings the generic parameters of an item into scope
-    GenericParams { def: GenericDefId, params: Arc<GenericParams> },
+    GenericParams { def: GenericDefId, params: Interned<GenericParams> },
     /// Brings `Self` in `impl` block into scope
     ImplDefScope(ImplId),
     /// Brings `Self` in enum, struct and union definitions into scope
@@ -409,6 +410,7 @@ pub enum ScopeDef {
     AdtSelfType(AdtId),
     GenericParam(GenericParamId),
     Local(PatId),
+    Label(LabelId),
 }
 
 impl Scope {
@@ -470,6 +472,9 @@ impl Scope {
                 f(name![Self], ScopeDef::AdtSelfType(*i));
             }
             Scope::ExprScope(scope) => {
+                if let Some((label, name)) = scope.expr_scopes.label(scope.scope_id) {
+                    f(name, ScopeDef::Label(label))
+                }
                 scope.expr_scopes.entries(scope.scope_id).iter().for_each(|e| {
                     f(e.name().clone(), ScopeDef::Local(e.pat()));
                 });
@@ -544,7 +549,7 @@ impl ModuleItemMap {
         path: &ModPath,
     ) -> Option<ResolveValueResult> {
         let (module_def, idx) =
-            self.def_map.resolve_path(db, self.module_id, &path, BuiltinShadowMode::Other);
+            self.def_map.resolve_path_locally(db, self.module_id, &path, BuiltinShadowMode::Other);
         match idx {
             None => {
                 let value = to_value_ns(module_def)?;
@@ -574,7 +579,7 @@ impl ModuleItemMap {
         path: &ModPath,
     ) -> Option<(TypeNs, Option<usize>)> {
         let (module_def, idx) =
-            self.def_map.resolve_path(db, self.module_id, &path, BuiltinShadowMode::Other);
+            self.def_map.resolve_path_locally(db, self.module_id, &path, BuiltinShadowMode::Other);
         let res = to_type_ns(module_def)?;
         Some((res, idx))
     }
@@ -623,8 +628,18 @@ pub trait HasResolver: Copy {
 
 impl HasResolver for ModuleId {
     fn resolver(self, db: &dyn DefDatabase) -> Resolver {
-        let def_map = self.def_map(db);
-        Resolver::default().push_module_scope(def_map, self.local_id)
+        let mut def_map = self.def_map(db);
+        let mut modules = Vec::new();
+        modules.push((def_map.clone(), self.local_id));
+        while let Some(parent) = def_map.parent() {
+            def_map = parent.def_map(db);
+            modules.push((def_map.clone(), parent.local_id));
+        }
+        let mut resolver = Resolver::default();
+        for (def_map, module) in modules.into_iter().rev() {
+            resolver = resolver.push_module_scope(def_map, module);
+        }
+        resolver
     }
 }
 

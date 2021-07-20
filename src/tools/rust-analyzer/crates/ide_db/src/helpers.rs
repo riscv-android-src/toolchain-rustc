@@ -1,7 +1,13 @@
 //! A module with ide helpers for high-level ide features.
-pub mod insert_use;
 pub mod import_assets;
+pub mod insert_use;
+pub mod merge_imports;
+pub mod rust_doc;
 
+use std::collections::VecDeque;
+
+use base_db::FileId;
+use either::Either;
 use hir::{Crate, Enum, ItemInNs, MacroDef, Module, ModuleDef, Name, ScopeDef, Semantics, Trait};
 use syntax::ast::{self, make};
 
@@ -39,6 +45,30 @@ pub fn mod_path_to_ast(path: &hir::ModPath) -> ast::Path {
     make::path_from_segments(segments, is_abs)
 }
 
+/// Iterates all `ModuleDef`s and `Impl` blocks of the given file.
+pub fn visit_file_defs(
+    sema: &Semantics<RootDatabase>,
+    file_id: FileId,
+    cb: &mut dyn FnMut(Either<hir::ModuleDef, hir::Impl>),
+) {
+    let db = sema.db;
+    let module = match sema.to_module_def(file_id) {
+        Some(it) => it,
+        None => return,
+    };
+    let mut defs: VecDeque<_> = module.declarations(db).into();
+    while let Some(def) = defs.pop_front() {
+        if let ModuleDef::Module(submodule) = def {
+            if let hir::ModuleSource::Module(_) = submodule.definition_source(db).value {
+                defs.extend(submodule.declarations(db));
+                submodule.impl_defs(db).into_iter().for_each(|impl_| cb(Either::Right(impl_)));
+            }
+        }
+        cb(Either::Left(def));
+    }
+    module.impl_defs(db).into_iter().for_each(|impl_| cb(Either::Right(impl_)));
+}
+
 /// Helps with finding well-know things inside the standard library. This is
 /// somewhat similar to the known paths infra inside hir, but it different; We
 /// want to make sure that IDE specific paths don't become interesting inside
@@ -65,6 +95,10 @@ impl FamousDefs<'_, '_> {
         self.find_trait("core:convert:From")
     }
 
+    pub fn core_convert_Into(&self) -> Option<Trait> {
+        self.find_trait("core:convert:Into")
+    }
+
     pub fn core_option_Option(&self) -> Option<Enum> {
         self.find_enum("core:option:Option")
     }
@@ -79,6 +113,10 @@ impl FamousDefs<'_, '_> {
 
     pub fn core_iter(&self) -> Option<Module> {
         self.find_module("core:iter")
+    }
+
+    pub fn core_ops_Deref(&self) -> Option<Trait> {
+        self.find_trait("core:ops:Deref")
     }
 
     fn find_trait(&self, path: &str) -> Option<Trait> {

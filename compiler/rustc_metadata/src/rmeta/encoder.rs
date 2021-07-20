@@ -1,7 +1,6 @@
 use crate::rmeta::table::{FixedSizeEncoding, TableBuilder};
 use crate::rmeta::*;
 
-use rustc_data_structures::fingerprint::{Fingerprint, FingerprintEncoder};
 use rustc_data_structures::fx::{FxHashMap, FxIndexSet};
 use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_data_structures::sync::{join, par_iter, Lrc, ParallelIterator};
@@ -116,6 +115,7 @@ impl<'a, 'tcx> Encoder for EncodeContext<'a, 'tcx> {
         emit_f32(f32);
         emit_char(char);
         emit_str(&str);
+        emit_raw_bytes(&[u8]);
     }
 }
 
@@ -184,11 +184,48 @@ impl<'a, 'tcx> Encodable<EncodeContext<'a, 'tcx>> for ExpnId {
 
 impl<'a, 'tcx> Encodable<EncodeContext<'a, 'tcx>> for Span {
     fn encode(&self, s: &mut EncodeContext<'a, 'tcx>) -> opaque::EncodeResult {
-        if *self == rustc_span::DUMMY_SP {
-            return TAG_INVALID_SPAN.encode(s);
+        let span = self.data();
+
+        // Don't serialize any `SyntaxContext`s from a proc-macro crate,
+        // since we don't load proc-macro dependencies during serialization.
+        // This means that any hygiene information from macros used *within*
+        // a proc-macro crate (e.g. invoking a macro that expands to a proc-macro
+        // definition) will be lost.
+        //
+        // This can show up in two ways:
+        //
+        // 1. Any hygiene information associated with identifier of
+        // a proc macro (e.g. `#[proc_macro] pub fn $name`) will be lost.
+        // Since proc-macros can only be invoked from a different crate,
+        // real code should never need to care about this.
+        //
+        // 2. Using `Span::def_site` or `Span::mixed_site` will not
+        // include any hygiene information associated with the definition
+        // site. This means that a proc-macro cannot emit a `$crate`
+        // identifier which resolves to one of its dependencies,
+        // which also should never come up in practice.
+        //
+        // Additionally, this affects `Span::parent`, and any other
+        // span inspection APIs that would otherwise allow traversing
+        // the `SyntaxContexts` associated with a span.
+        //
+        // None of these user-visible effects should result in any
+        // cross-crate inconsistencies (getting one behavior in the same
+        // crate, and a different behavior in another crate) due to the
+        // limited surface that proc-macros can expose.
+        //
+        // IMPORTANT: If this is ever changed, be sure to update
+        // `rustc_span::hygiene::raw_encode_expn_id` to handle
+        // encoding `ExpnData` for proc-macro crates.
+        if s.is_proc_macro {
+            SyntaxContext::root().encode(s)?;
+        } else {
+            span.ctxt.encode(s)?;
         }
 
-        let span = self.data();
+        if self.is_dummy() {
+            return TAG_PARTIAL_SPAN.encode(s);
+        }
 
         // The Span infrastructure should make sure that this invariant holds:
         debug_assert!(span.lo <= span.hi);
@@ -203,7 +240,7 @@ impl<'a, 'tcx> Encodable<EncodeContext<'a, 'tcx>> for Span {
         if !s.source_file_cache.0.contains(span.hi) {
             // Unfortunately, macro expansion still sometimes generates Spans
             // that malformed in this way.
-            return TAG_INVALID_SPAN.encode(s);
+            return TAG_PARTIAL_SPAN.encode(s);
         }
 
         let source_files = s.required_source_files.as_mut().expect("Already encoded SourceMap!");
@@ -259,43 +296,6 @@ impl<'a, 'tcx> Encodable<EncodeContext<'a, 'tcx>> for Span {
         let len = hi - lo;
         len.encode(s)?;
 
-        // Don't serialize any `SyntaxContext`s from a proc-macro crate,
-        // since we don't load proc-macro dependencies during serialization.
-        // This means that any hygiene information from macros used *within*
-        // a proc-macro crate (e.g. invoking a macro that expands to a proc-macro
-        // definition) will be lost.
-        //
-        // This can show up in two ways:
-        //
-        // 1. Any hygiene information associated with identifier of
-        // a proc macro (e.g. `#[proc_macro] pub fn $name`) will be lost.
-        // Since proc-macros can only be invoked from a different crate,
-        // real code should never need to care about this.
-        //
-        // 2. Using `Span::def_site` or `Span::mixed_site` will not
-        // include any hygiene information associated with the definition
-        // site. This means that a proc-macro cannot emit a `$crate`
-        // identifier which resolves to one of its dependencies,
-        // which also should never come up in practice.
-        //
-        // Additionally, this affects `Span::parent`, and any other
-        // span inspection APIs that would otherwise allow traversing
-        // the `SyntaxContexts` associated with a span.
-        //
-        // None of these user-visible effects should result in any
-        // cross-crate inconsistencies (getting one behavior in the same
-        // crate, and a different behavior in another crate) due to the
-        // limited surface that proc-macros can expose.
-        //
-        // IMPORTANT: If this is ever changed, be sure to update
-        // `rustc_span::hygiene::raw_encode_expn_id` to handle
-        // encoding `ExpnData` for proc-macro crates.
-        if s.is_proc_macro {
-            SyntaxContext::root().encode(s)?;
-        } else {
-            span.ctxt.encode(s)?;
-        }
-
         if tag == TAG_VALID_SPAN_FOREIGN {
             // This needs to be two lines to avoid holding the `s.source_file_cache`
             // while calling `cnum.encode(s)`
@@ -304,12 +304,6 @@ impl<'a, 'tcx> Encodable<EncodeContext<'a, 'tcx>> for Span {
         }
 
         Ok(())
-    }
-}
-
-impl<'a, 'tcx> FingerprintEncoder for EncodeContext<'a, 'tcx> {
-    fn encode_fingerprint(&mut self, f: &Fingerprint) -> Result<(), Self::Error> {
-        self.opaque.encode_fingerprint(f)
     }
 }
 
@@ -433,7 +427,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
 
     fn encode_info_for_items(&mut self) {
         let krate = self.tcx.hir().krate();
-        self.encode_info_for_mod(CRATE_DEF_ID, &krate.item.module);
+        self.encode_info_for_mod(CRATE_DEF_ID, &krate.item);
 
         // Proc-macro crates only export proc-macro items, which are looked
         // up using `proc_macro_data`
@@ -1428,6 +1422,7 @@ impl EncodeContext<'a, 'tcx> {
                     paren_sugar: trait_def.paren_sugar,
                     has_auto_impl: self.tcx.trait_is_auto(def_id),
                     is_marker: trait_def.is_marker,
+                    skip_array_during_method_dispatch: trait_def.skip_array_during_method_dispatch,
                     specialization_kind: trait_def.specialization_kind,
                 };
 
@@ -1882,13 +1877,12 @@ impl EncodeContext<'a, 'tcx> {
                         default.is_some(),
                     );
                 }
-                GenericParamKind::Const { .. } => {
-                    self.encode_info_for_generic_param(
-                        def_id.to_def_id(),
-                        EntryKind::ConstParam,
-                        true,
-                    );
-                    // FIXME(const_generics_defaults)
+                GenericParamKind::Const { ref default, .. } => {
+                    let def_id = def_id.to_def_id();
+                    self.encode_info_for_generic_param(def_id, EntryKind::ConstParam, true);
+                    if default.is_some() {
+                        record!(self.tables.const_defaults[def_id] <- self.tcx.const_param_default(def_id))
+                    }
                 }
             }
         }
@@ -2064,10 +2058,10 @@ pub(super) fn encode_metadata(tcx: TyCtxt<'_>) -> EncodedMetadata {
 
 fn encode_metadata_impl(tcx: TyCtxt<'_>) -> EncodedMetadata {
     let mut encoder = opaque::Encoder::new(vec![]);
-    encoder.emit_raw_bytes(METADATA_HEADER);
+    encoder.emit_raw_bytes(METADATA_HEADER).unwrap();
 
     // Will be filled with the root position after encoding everything.
-    encoder.emit_raw_bytes(&[0, 0, 0, 0]);
+    encoder.emit_raw_bytes(&[0, 0, 0, 0]).unwrap();
 
     let source_map_files = tcx.sess.source_map().files();
     let source_file_cache = (source_map_files[0].clone(), 0);

@@ -1,5 +1,5 @@
 use core::fmt;
-use core::iter::FusedIterator;
+use core::iter::{FusedIterator, TrustedLen};
 
 use super::VecDeque;
 
@@ -55,3 +55,6 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 
 #[stable(feature = "fused", since = "1.26.0")]
 impl<T> FusedIterator for IntoIter<T> {}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<T> TrustedLen for IntoIter<T> {}

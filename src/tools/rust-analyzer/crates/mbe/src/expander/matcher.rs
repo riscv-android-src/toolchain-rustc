@@ -304,7 +304,7 @@ impl BindingsBuilder {
         link_nodes: &'a Vec<LinkNode<Rc<BindingKind>>>,
         nodes: &mut Vec<&'a Rc<BindingKind>>,
     ) {
-        link_nodes.into_iter().for_each(|it| match it {
+        link_nodes.iter().for_each(|it| match it {
             LinkNode::Node(it) => nodes.push(it),
             LinkNode::Parent { idx, len } => self.collect_nodes_ref(*idx, *len, nodes),
         });
@@ -540,7 +540,7 @@ fn match_loop(pattern: &MetaTemplate, src: &tt::Subtree) -> Match {
     let mut src = TtIter::new(src);
     let mut stack: SmallVec<[TtIter; 1]> = SmallVec::new();
     let mut res = Match::default();
-    let mut error_reover_item = None;
+    let mut error_recover_item = None;
 
     let mut bindings_builder = BindingsBuilder::default();
 
@@ -579,9 +579,9 @@ fn match_loop(pattern: &MetaTemplate, src: &tt::Subtree) -> Match {
         stdx::always!(cur_items.is_empty());
 
         if error_items.len() > 0 {
-            error_reover_item = error_items.pop().map(|it| it.bindings);
+            error_recover_item = error_items.pop().map(|it| it.bindings);
         } else if eof_items.len() > 0 {
-            error_reover_item = Some(eof_items[0].bindings.clone());
+            error_recover_item = Some(eof_items[0].bindings.clone());
         }
 
         // We need to do some post processing after the `match_loop_inner`.
@@ -594,8 +594,8 @@ fn match_loop(pattern: &MetaTemplate, src: &tt::Subtree) -> Match {
                 res.bindings = bindings_builder.build(&eof_items[0].bindings);
             } else {
                 // Error recovery
-                if error_reover_item.is_some() {
-                    res.bindings = bindings_builder.build(&error_reover_item.unwrap());
+                if let Some(item) = error_recover_item {
+                    res.bindings = bindings_builder.build(&item);
                 }
                 res.add_err(ExpandError::UnexpectedToken);
             }
@@ -618,7 +618,7 @@ fn match_loop(pattern: &MetaTemplate, src: &tt::Subtree) -> Match {
             }
             res.add_err(err!("leftover tokens"));
 
-            if let Some(error_reover_item) = error_reover_item {
+            if let Some(error_reover_item) = error_recover_item {
                 res.bindings = bindings_builder.build(&error_reover_item);
             }
             return res;
@@ -713,16 +713,15 @@ fn match_meta_var(kind: &str, input: &mut TtIter) -> ExpandResult<Option<Fragmen
                     .map(|ident| Some(tt::Leaf::from(ident.clone()).into()))
                     .map_err(|()| err!("expected ident")),
                 "tt" => input.expect_tt().map(Some).map_err(|()| err!()),
-                "lifetime" => input
-                    .expect_lifetime()
-                    .map(|tt| Some(tt))
-                    .map_err(|()| err!("expected lifetime")),
+                "lifetime" => {
+                    input.expect_lifetime().map(Some).map_err(|()| err!("expected lifetime"))
+                }
                 "literal" => {
                     let neg = input.eat_char('-');
                     input
                         .expect_literal()
                         .map(|literal| {
-                            let lit = tt::Leaf::from(literal.clone());
+                            let lit = literal.clone();
                             match neg {
                                 None => Some(lit.into()),
                                 Some(neg) => Some(tt::TokenTree::Subtree(tt::Subtree {
@@ -762,7 +761,7 @@ impl<'a> TtIter<'a> {
     fn expect_separator(&mut self, separator: &Separator, idx: usize) -> bool {
         let mut fork = self.clone();
         let ok = match separator {
-            Separator::Ident(lhs) if idx == 0 => match fork.expect_ident() {
+            Separator::Ident(lhs) if idx == 0 => match fork.expect_ident_or_underscore() {
                 Ok(rhs) => rhs.text == lhs.text,
                 _ => false,
             },
@@ -852,7 +851,7 @@ impl<'a> TtIter<'a> {
         if punct.char != '\'' {
             return Err(());
         }
-        let ident = self.expect_ident()?;
+        let ident = self.expect_ident_or_underscore()?;
 
         Ok(tt::Subtree {
             delimiter: None,

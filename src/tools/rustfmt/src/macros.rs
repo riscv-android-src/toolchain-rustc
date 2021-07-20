@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use rustc_ast::token::{BinOpToken, DelimToken, Token, TokenKind};
-use rustc_ast::tokenstream::{Cursor, LazyTokenStream, TokenStream, TokenTree};
+use rustc_ast::tokenstream::{Cursor, Spacing, TokenStream, TokenTree};
 use rustc_ast::{ast, ptr};
 use rustc_ast_pretty::pprust;
 use rustc_parse::parser::{ForceCollect, Parser};
@@ -132,7 +132,7 @@ fn parse_macro_arg<'a, 'b: 'a>(parser: &'a mut Parser<'b>) -> Option<MacroArg> {
     );
     parse_macro_arg!(
         Pat,
-        |parser: &mut rustc_parse::parser::Parser<'b>| parser.parse_pat(None),
+        |parser: &mut rustc_parse::parser::Parser<'b>| parser.parse_pat_no_top_alt(None),
         |x: ptr::P<ast::Pat>| Some(x)
     );
     // `parse_item` returns `Option<ptr::P<ast::Item>>`.
@@ -382,7 +382,7 @@ fn rewrite_macro_inner(
                     arg_vec.iter(),
                     shape,
                     mac.span(),
-                    context.config.width_heuristics().fn_call_width,
+                    context.config.fn_call_width(),
                     if trailing_comma {
                         Some(SeparatorTactic::Always)
                     } else {
@@ -1212,7 +1212,7 @@ pub(crate) fn convert_try_mac(
             kind: ast::ExprKind::Try(parser.parse_expr().ok()?),
             span: mac.span(), // incorrect span, but shouldn't matter too much
             attrs: ast::AttrVec::new(),
-            tokens: Some(LazyTokenStream::new(ts)),
+            tokens: None,
         })
     } else {
         None
@@ -1259,7 +1259,7 @@ impl MacroParser {
             TokenTree::Token(..) => return None,
             TokenTree::Delimited(delimited_span, d, _) => (delimited_span.open.lo(), d),
         };
-        let args = tok.joint();
+        let args = TokenStream::new(vec![(tok, Spacing::Joint)]);
         match self.toks.next()? {
             TokenTree::Token(Token {
                 kind: TokenKind::FatArrow,

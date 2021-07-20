@@ -1,30 +1,30 @@
 //! Various extension methods to ast Nodes, which are hard to code-generate.
 //! Extensions for various expressions live in a sibling `expr_extensions` module.
 
-use std::fmt;
+use std::{fmt, iter::successors};
 
 use itertools::Itertools;
 use parser::SyntaxKind;
 
 use crate::{
     ast::{self, support, AstNode, AstToken, AttrsOwner, NameOwner, SyntaxNode},
-    SmolStr, SyntaxElement, SyntaxToken, T,
+    SmolStr, SyntaxElement, SyntaxToken, TokenText, T,
 };
 
 impl ast::Lifetime {
-    pub fn text(&self) -> &str {
+    pub fn text(&self) -> TokenText {
         text_of_first_token(self.syntax())
     }
 }
 
 impl ast::Name {
-    pub fn text(&self) -> &str {
+    pub fn text(&self) -> TokenText {
         text_of_first_token(self.syntax())
     }
 }
 
 impl ast::NameRef {
-    pub fn text(&self) -> &str {
+    pub fn text(&self) -> TokenText {
         text_of_first_token(self.syntax())
     }
 
@@ -33,10 +33,14 @@ impl ast::NameRef {
     }
 }
 
-fn text_of_first_token(node: &SyntaxNode) -> &str {
-    node.green().children().next().and_then(|it| it.into_token()).unwrap().text()
+fn text_of_first_token(node: &SyntaxNode) -> TokenText {
+    let first_token =
+        node.green().children().next().and_then(|it| it.into_token()).unwrap().to_owned();
+
+    TokenText(first_token)
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Macro {
     MacroRules(ast::MacroRules),
     MacroDef(ast::MacroDef),
@@ -56,10 +60,7 @@ impl From<ast::MacroDef> for Macro {
 
 impl AstNode for Macro {
     fn can_cast(kind: SyntaxKind) -> bool {
-        match kind {
-            SyntaxKind::MACRO_RULES | SyntaxKind::MACRO_DEF => true,
-            _ => false,
-        }
+        matches!(kind, SyntaxKind::MACRO_RULES | SyntaxKind::MACRO_DEF)
     }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         let res = match syntax.kind() {
@@ -88,10 +89,52 @@ impl NameOwner for Macro {
 
 impl AttrsOwner for Macro {}
 
+/// Basically an owned `dyn AttrsOwner` without extra boxing.
+pub struct AttrsOwnerNode {
+    node: SyntaxNode,
+}
+
+impl AttrsOwnerNode {
+    pub fn new<N: AttrsOwner>(node: N) -> Self {
+        AttrsOwnerNode { node: node.syntax().clone() }
+    }
+}
+
+impl AttrsOwner for AttrsOwnerNode {}
+impl AstNode for AttrsOwnerNode {
+    fn can_cast(_: SyntaxKind) -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+    fn cast(_: SyntaxNode) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.node
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttrKind {
     Inner,
     Outer,
+}
+
+impl AttrKind {
+    /// Returns `true` if the attr_kind is [`Inner`].
+    pub fn is_inner(&self) -> bool {
+        matches!(self, Self::Inner)
+    }
+
+    /// Returns `true` if the attr_kind is [`Outer`].
+    pub fn is_outer(&self) -> bool {
+        matches!(self, Self::Outer)
+    }
 }
 
 impl ast::Attr {
@@ -105,16 +148,6 @@ impl ast::Attr {
     pub fn as_simple_call(&self) -> Option<(SmolStr, ast::TokenTree)> {
         let tt = self.token_tree()?;
         Some((self.simple_name()?, tt))
-    }
-
-    pub fn as_simple_key_value(&self) -> Option<(SmolStr, SmolStr)> {
-        let lit = self.literal()?;
-        let key = self.simple_name()?;
-        let value_token = lit.syntax().first_token()?;
-
-        let value: SmolStr = ast::String::cast(value_token)?.value()?.into();
-
-        Some((key, value))
     }
 
     pub fn simple_name(&self) -> Option<SmolStr> {
@@ -203,6 +236,26 @@ impl ast::Path {
             Some(_) => None,
             None => self.segment(),
         }
+    }
+
+    pub fn first_qualifier_or_self(&self) -> ast::Path {
+        successors(Some(self.clone()), ast::Path::qualifier).last().unwrap()
+    }
+
+    pub fn first_segment(&self) -> Option<ast::PathSegment> {
+        self.first_qualifier_or_self().segment()
+    }
+
+    pub fn segments(&self) -> impl Iterator<Item = ast::PathSegment> + Clone {
+        // cant make use of SyntaxNode::siblings, because the returned Iterator is not clone
+        successors(self.first_segment(), |p| {
+            p.parent_path().parent_path().and_then(|p| p.segment())
+        })
+    }
+}
+impl ast::UseTree {
+    pub fn is_simple_path(&self) -> bool {
+        self.use_tree_list().is_none() && self.star_token().is_none()
     }
 }
 
@@ -358,6 +411,15 @@ impl fmt::Display for NameOrNameRef {
     }
 }
 
+impl NameOrNameRef {
+    pub fn text(&self) -> TokenText {
+        match self {
+            NameOrNameRef::Name(name) => name.text(),
+            NameOrNameRef::NameRef(name_ref) => name_ref.text(),
+        }
+    }
+}
+
 impl ast::RecordPatField {
     pub fn for_field_name_ref(field_name: &ast::NameRef) -> Option<ast::RecordPatField> {
         let candidate = field_name.syntax().parent().and_then(ast::RecordPatField::cast)?;
@@ -431,10 +493,8 @@ impl ast::FieldExpr {
     pub fn field_access(&self) -> Option<FieldKind> {
         if let Some(nr) = self.name_ref() {
             Some(FieldKind::Name(nr))
-        } else if let Some(tok) = self.index_token() {
-            Some(FieldKind::Index(tok))
         } else {
-            None
+            self.index_token().map(FieldKind::Index)
         }
     }
 }
@@ -451,16 +511,10 @@ impl ast::SlicePat {
         let prefix = args
             .peeking_take_while(|p| match p {
                 ast::Pat::RestPat(_) => false,
-                ast::Pat::IdentPat(bp) => match bp.pat() {
-                    Some(ast::Pat::RestPat(_)) => false,
-                    _ => true,
-                },
+                ast::Pat::IdentPat(bp) => !matches!(bp.pat(), Some(ast::Pat::RestPat(_))),
                 ast::Pat::RefPat(rp) => match rp.pat() {
                     Some(ast::Pat::RestPat(_)) => false,
-                    Some(ast::Pat::IdentPat(bp)) => match bp.pat() {
-                        Some(ast::Pat::RestPat(_)) => false,
-                        _ => true,
-                    },
+                    Some(ast::Pat::IdentPat(bp)) => !matches!(bp.pat(), Some(ast::Pat::RestPat(_))),
                     _ => true,
                 },
                 _ => true,

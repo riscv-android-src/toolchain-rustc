@@ -13,16 +13,16 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_data_structures"
-version = "705.0.0"
+version = "718.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_data_structures` in the rust-lang/rust repository from commit 37d067f5d71331d909102d142ecc50f577e07ae4 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_data_structures` in the rust-lang/rust repository from commit e10cbc33c1fd2fcd446cab5cdcc57332d154721c The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
 [lib]
 doctest = false
 [dependencies.arrayvec]
-version = "0.5.1"
+version = "0.7"
 default-features = false
 
 [dependencies.bitflags]
@@ -32,7 +32,7 @@ version = "1.2.1"
 version = "0.1.2"
 
 [dependencies.crossbeam-utils]
-version = "0.7"
+version = "0.8"
 features = ["nightly"]
 
 [dependencies.ena]
@@ -49,41 +49,40 @@ package = "jobserver"
 version = "0.2"
 
 [dependencies.measureme]
-version = "9.0.0"
+version = "9.1.0"
 
 [dependencies.parking_lot]
 version = "0.11"
-features = ["nightly"]
 
 [dependencies.rayon]
-version = "0.3.0"
+version = "0.3.1"
 package = "rustc-rayon"
 
 [dependencies.rayon-core]
-version = "0.3.0"
+version = "0.3.1"
 package = "rustc-rayon-core"
 
 [dependencies.rustc-hash]
 version = "1.1.0"
 
 [dependencies.rustc_graphviz]
-version = "705.0.0"
+version = "718.0.0"
 package = "rustc-ap-rustc_graphviz"
 
 [dependencies.rustc_index]
-version = "705.0.0"
+version = "718.0.0"
 package = "rustc-ap-rustc_index"
 
 [dependencies.rustc_macros]
-version = "705.0.0"
+version = "718.0.0"
 package = "rustc-ap-rustc_macros"
 
 [dependencies.rustc_serialize]
-version = "705.0.0"
+version = "718.0.0"
 package = "rustc-ap-rustc_serialize"
 
 [dependencies.smallvec]
-version = "1.0"
+version = "1.6.1"
 features = ["union", "may_dangle"]
 
 [dependencies.stable_deref_trait]
@@ -93,10 +92,12 @@ version = "1.0.0"
 version = "0.1.12"
 
 [dependencies.tempfile]
-version = "3.0.5"
+version = "3.2"
 
 [dependencies.tracing]
 version = "0.1"
+[target."cfg(not(target_arch = \"wasm32\"))".dependencies.memmap2]
+version = "0.2.1"
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3"
 features = ["fileapi", "psapi"]

@@ -2,7 +2,7 @@
 
 use crate::{
     fmt,
-    iter::{ExactSizeIterator, FusedIterator, TrustedLen},
+    iter::{self, ExactSizeIterator, FusedIterator, TrustedLen},
     mem::{self, MaybeUninit},
     ops::Range,
     ptr,
@@ -192,7 +192,7 @@ impl<T: Clone, const N: usize> Clone for IntoIter<T, N> {
         let mut new = Self { data: MaybeUninit::uninit_array(), alive: 0..0 };
 
         // Clone all alive elements.
-        for (src, dst) in self.as_slice().iter().zip(&mut new.data) {
+        for (src, dst) in iter::zip(self.as_slice(), &mut new.data) {
             // Write a clone into the new array, then update its alive range.
             // If cloning panics, we'll correctly drop the previous items.
             dst.write(src.clone());

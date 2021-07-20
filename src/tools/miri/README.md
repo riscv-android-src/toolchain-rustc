@@ -6,7 +6,7 @@
 [actions-url]: https://github.com/rust-lang/miri/actions
 
 An experimental interpreter for [Rust][rust]'s
-[mid-level intermediate representation][mir] (MIR).  It can run binaries and
+[mid-level intermediate representation][mir] (MIR). It can run binaries and
 test suites of cargo projects and detect certain classes of
 [undefined behavior](https://doc.rust-lang.org/reference/behavior-considered-undefined.html),
 for example:
@@ -32,7 +32,7 @@ big-endian systems. See
 [cross-interpretation](#cross-interpretation-running-for-different-targets)
 below.
 
-Miri has already discovered some [real-world bugs](#bugs-found-by-miri).  If you
+Miri has already discovered some [real-world bugs](#bugs-found-by-miri). If you
 found a bug with Miri, we'd appreciate if you tell us and we'll add it to the
 list!
 
@@ -41,7 +41,7 @@ in your program, and cannot run all programs:
 
 * There are still plenty of open questions around the basic invariants for some
   types and when these invariants even have to hold. Miri tries to avoid false
-  positives here, so if you program runs fine in Miri right now that is by no
+  positives here, so if your program runs fine in Miri right now that is by no
   means a guarantee that it is UB-free when these questions get answered.
 
     In particular, Miri does currently not check that integers/floats are
@@ -83,31 +83,32 @@ determine a nightly version that comes with Miri and install that using
 
 Now you can run your project in Miri:
 
-1. Run `cargo clean` to eliminate any cached dependencies.  Miri needs your
+1. Run `cargo clean` to eliminate any cached dependencies. Miri needs your
    dependencies to be compiled the right way, that would not happen if they have
    previously already been compiled.
 2. To run all tests in your project through Miri, use `cargo miri test`.
 3. If you have a binary project, you can run it through Miri using `cargo miri run`.
 
 The first time you run Miri, it will perform some extra setup and install some
-dependencies.  It will ask you for confirmation before installing anything.
+dependencies. It will ask you for confirmation before installing anything.
 
-`cargo miri run/test` supports the exact same flags as `cargo run/test`.  You
-can pass arguments to Miri via `MIRIFLAGS`. For example,
+`cargo miri run/test` supports the exact same flags as `cargo run/test`. For
+example, `cargo miri test filter` only runs the tests containing `filter` in
+their name.
+
+You can pass arguments to Miri via `MIRIFLAGS`. For example,
 `MIRIFLAGS="-Zmiri-disable-stacked-borrows" cargo miri run` runs the program
 without checking the aliasing of references.
 
-When compiling code via `cargo miri`, the `cfg(miri)` config flag is set.  You
-can use this to ignore test cases that fail under Miri because they do things
-Miri does not support:
+When compiling code via `cargo miri`, the `cfg(miri)` config flag is set for code
+that will be interpret under Miri. You can use this to ignore test cases that fail
+under Miri because they do things Miri does not support:
 
 ```rust
 #[test]
 #[cfg_attr(miri, ignore)]
 fn does_not_work_on_miri() {
-    std::thread::spawn(|| println!("Hello Thread!"))
-        .join()
-        .unwrap();
+    tokio::run(futures::future::ok::<_, ()>(()));
 }
 ```
 
@@ -126,11 +127,11 @@ error: unsupported operation: can't call foreign function: bind
 Miri can not only run a binary or test suite for your host target, it can also
 perform cross-interpretation for arbitrary foreign targets: `cargo miri run
 --target x86_64-unknown-linux-gnu` will run your program as if it was a Linux
-program, no matter your host OS.  This is particularly useful if you are using
+program, no matter your host OS. This is particularly useful if you are using
 Windows, as the Linux target is much better supported than Windows targets.
 
 You can also use this to test platforms with different properties than your host
-platform.  For example `cargo miri test --target mips64-unknown-linux-gnuabi64`
+platform. For example `cargo miri test --target mips64-unknown-linux-gnuabi64`
 will run your test suite on a big-endian target, which is useful for testing
 endian-sensitive code.
 
@@ -252,9 +253,11 @@ environment variable:
 * `-Zmiri-track-raw-pointers` makes Stacked Borrows track a pointer tag even for
   raw pointers. This can make valid code fail to pass the checks, but also can
   help identify latent aliasing issues in code that Miri accepts by default. You
-  can recognize false positives by "<untagged>" occurring in the message -- this
+  can recognize false positives by `<untagged>` occurring in the message -- this
   indicates a pointer that was cast from an integer, so Miri was unable to track
-  this pointer.
+  this pointer. Note that it is not currently guaranteed that code that works
+  with `-Zmiri-track-raw-pointers` also works without
+  `-Zmiri-track-raw-pointers`, but for the vast majority of code, this will be the case.
 
 Some native rustc `-Z` flags are also very relevant for Miri:
 
@@ -280,14 +283,21 @@ Moreover, Miri recognizes some environment variables:
   architecture to test against.  `miri` and `cargo miri` accept the `--target`
   flag for the same purpose.
 
-The following environment variables are internal, but used to communicate between
-different Miri binaries, and as such worth documenting:
+The following environment variables are *internal* and must not be used by
+anyone but Miri itself. They are used to communicate between different Miri
+binaries, and as such worth documenting:
 
-* `MIRI_BE_RUSTC` when set to any value tells the Miri driver to actually not
-  interpret the code but compile it like rustc would. This is useful to be sure
-  that the compiled `rlib`s are compatible with Miri.
-  When set while running `cargo-miri`, it indicates that we are part of a sysroot
-  build (for which some crates need special treatment).
+* `MIRI_BE_RUSTC` can be set to `host` or `target`. It tells the Miri driver to
+  actually not interpret the code but compile it like rustc would. With `target`, Miri sets
+  some compiler flags to prepare the code for interpretation; with `host`, this is not done.
+  This environment variable is useful to be sure that the compiled `rlib`s are compatible
+  with Miri.
+* `MIRI_CALLED_FROM_XARGO` is set during the Miri-induced `xargo` sysroot build,
+  which will re-invoke `cargo-miri` as the `rustc` to use for this build.
+* `MIRI_CALLED_FROM_RUSTDOC` when set to any value tells `cargo-miri` that it is
+  running as a child process of `rustdoc`, which invokes it twice for each doc-test
+  and requires special treatment, most notably a check-only build before interpretation.
+  This is set by `cargo-miri` itself when running as a `rustdoc`-wrapper.
 * `MIRI_CWD` when set to any value tells the Miri driver to change to the given
   directory after loading all the source files, but before commencing
   interpretation. This is useful if the interpreted program wants a different
@@ -406,6 +416,7 @@ Definite bugs found:
 * [TiKV constructing out-of-bounds pointers (and overlapping mutable references)](https://github.com/tikv/tikv/pull/7751)
 * [`encoding_rs` doing out-of-bounds pointer arithmetic](https://github.com/hsivonen/encoding_rs/pull/53)
 * [TiKV using `Vec::from_raw_parts` incorrectly](https://github.com/tikv/agatedb/pull/24)
+* Incorrect doctests for [`AtomicPtr`](https://github.com/rust-lang/rust/pull/84052) and [`Box::from_raw_in`](https://github.com/rust-lang/rust/pull/84053)
 
 Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows is currently just an experiment):
 
