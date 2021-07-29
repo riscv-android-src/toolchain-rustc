@@ -30,6 +30,7 @@ smallvec = "1.4.2"
 # See the `src/tools/rustc-workspace-hack/README.md` file in `rust-lang/rust`
 # for more information.
 rustc-workspace-hack = "1.0.0"
+measureme = "9.1.2"
 
 # Enable some feature flags that dev-dependencies need but dependencies
 # do not.  This makes `./miri install` after `./miri build` faster.
@@ -45,3 +46,7 @@ colored = "2"
 # This crate uses #[feature(rustc_private)]. 
 # See https://github.com/rust-analyzer/rust-analyzer/pull/7891
 rustc_private = true
+
+[[test]]
+name = "compiletest"
+harness = false

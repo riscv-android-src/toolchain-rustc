@@ -70,11 +70,11 @@ use crate::core::dependency::Dependency;
 use crate::core::{PackageId, SourceId, Summary};
 use crate::sources::registry::{RegistryData, RegistryPackage, INDEX_V_MAX};
 use crate::util::interning::InternedString;
-use crate::util::{internal, CargoResult, Config, Filesystem, ToSemver};
+use crate::util::{internal, CargoResult, Config, Filesystem, OptVersionReq, ToSemver};
 use anyhow::bail;
-use cargo_util::paths;
+use cargo_util::{paths, registry::make_dep_path};
 use log::{debug, info};
-use semver::{Version, VersionReq};
+use semver::Version;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fs;
@@ -264,7 +264,7 @@ impl<'cfg> RegistryIndex<'cfg> {
 
     /// Returns the hash listed for a specified `PackageId`.
     pub fn hash(&mut self, pkg: PackageId, load: &mut dyn RegistryData) -> CargoResult<&str> {
-        let req = VersionReq::exact(pkg.version());
+        let req = OptVersionReq::exact(pkg.version());
         let summary = self
             .summaries(pkg.name(), &req, load)?
             .next()
@@ -285,7 +285,7 @@ impl<'cfg> RegistryIndex<'cfg> {
     pub fn summaries<'a, 'b>(
         &'a mut self,
         name: InternedString,
-        req: &'b VersionReq,
+        req: &'b OptVersionReq,
         load: &mut dyn RegistryData,
     ) -> CargoResult<impl Iterator<Item = &'a IndexSummary> + 'b>
     where
@@ -373,12 +373,7 @@ impl<'cfg> RegistryIndex<'cfg> {
             .chars()
             .flat_map(|c| c.to_lowercase())
             .collect::<String>();
-        let raw_path = match fs_name.len() {
-            1 => format!("1/{}", fs_name),
-            2 => format!("2/{}", fs_name),
-            3 => format!("3/{}/{}", &fs_name[..1], fs_name),
-            _ => format!("{}/{}/{}", &fs_name[0..2], &fs_name[2..4], fs_name),
-        };
+        let raw_path = make_dep_path(&fs_name, false);
 
         // Attempt to handle misspellings by searching for a chain of related
         // names to the original `raw_path` name. Only return summaries
@@ -489,7 +484,7 @@ impl<'cfg> RegistryIndex<'cfg> {
     }
 
     pub fn is_yanked(&mut self, pkg: PackageId, load: &mut dyn RegistryData) -> CargoResult<bool> {
-        let req = VersionReq::exact(pkg.version());
+        let req = OptVersionReq::exact(pkg.version());
         let found = self
             .summaries(pkg.name(), &req, load)?
             .any(|summary| summary.yanked);
@@ -692,8 +687,16 @@ impl Summaries {
 // * `2`: Added the "index format version" field so that if the index format
 //   changes, different versions of cargo won't get confused reading each
 //   other's caches.
+// * `3`: Bumped the version to work around a issue where multiple versions of
+//   a package were published that differ only by semver metadata. For
+//   example, openssl-src 110.0.0 and 110.0.0+1.1.0f. Previously, the cache
+//   would be incorrectly populated with two entries, both 110.0.0. After
+//   this, the metadata will be correctly included. This isn't really a format
+//   change, just a version bump to clear the incorrect cache entries. Note:
+//   the index shouldn't allow these, but unfortunately crates.io doesn't
+//   check it.
 
-const CURRENT_CACHE_VERSION: u8 = 2;
+const CURRENT_CACHE_VERSION: u8 = 3;
 
 impl<'a> SummariesCache<'a> {
     fn parse(data: &'a [u8], last_index_update: &str) -> CargoResult<SummariesCache<'a>> {

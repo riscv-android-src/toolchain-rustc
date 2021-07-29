@@ -285,6 +285,9 @@ pub struct Cmd {
     ignore_status: bool,
     echo_cmd: bool,
     secret: bool,
+    env_changes: Vec<EnvChange>,
+    ignore_stdout: bool,
+    ignore_stderr: bool,
 }
 
 impl fmt::Display for Cmd {
@@ -327,6 +330,9 @@ impl Cmd {
             ignore_status: false,
             echo_cmd: true,
             secret: false,
+            env_changes: vec![],
+            ignore_stdout: false,
+            ignore_stderr: false,
         }
     }
 
@@ -348,6 +354,70 @@ impl Cmd {
 
     fn _arg(&mut self, arg: &OsStr) {
         self.args.push(arg.to_owned())
+    }
+
+    /// Equivalent to [`std::process::Command::env`].
+    pub fn env<K, V>(mut self, key: K, val: V) -> Cmd
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self._env_set(key.as_ref(), val.as_ref());
+        self
+    }
+
+    fn _env_set(&mut self, key: &OsStr, val: &OsStr) {
+        self.env_changes.push(EnvChange::Set(key.to_owned(), val.to_owned()));
+    }
+
+    /// Equivalent to [`std::process::Command::envs`].
+    ///
+    /// Note: This does not replace the child process's environment, unless you
+    /// call [`Cmd::env_clear`] first.
+    pub fn envs<I, K, V>(mut self, vars: I) -> Cmd
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        vars.into_iter().for_each(|(k, v)| self._env_set(k.as_ref(), v.as_ref()));
+        self
+    }
+
+    /// Equivalent to [`std::process::Command::env_remove`].
+    pub fn env_remove<K>(mut self, key: K) -> Cmd
+    where
+        K: AsRef<OsStr>,
+    {
+        self._env_remove(key.as_ref());
+        self
+    }
+
+    fn _env_remove(&mut self, key: &OsStr) {
+        self.env_changes.push(EnvChange::Remove(key.to_owned()));
+    }
+
+    /// Equivalent to [`std::process::Command::env_clear`].
+    ///
+    /// Note that on Windows some environmental variables are required for
+    /// process spawning. See https://github.com/rust-lang/rust/issues/31259.
+    pub fn env_clear(mut self) -> Cmd {
+        self.env_changes.push(EnvChange::Clear);
+        self
+    }
+
+    /// Returns a `Cmd` that will ignore the stdout stream. This is equivalent of
+    /// attaching stdout to `/dev/null`.
+    pub fn ignore_stdout(mut self) -> Cmd {
+        self.ignore_stdout = true;
+        self
+    }
+
+    /// Returns a `Cmd` that will ignore the stderr stream. This is equivalent of
+    /// attaching stderr to `/dev/null`.
+    pub fn ignore_stderr(mut self) -> Cmd {
+        self.ignore_stderr = true;
+        self
     }
 
     #[doc(hidden)]
@@ -412,7 +482,7 @@ impl Cmd {
     pub fn run(self) -> Result<()> {
         let _guard = gsl::read();
         if self.echo_cmd {
-            println!("$ {}", self);
+            eprintln!("$ {}", self);
         }
         match self.command().status() {
             Ok(status) if status.success() || self.ignore_status => Ok(()),
@@ -446,14 +516,22 @@ impl Cmd {
     fn output_impl(&self, read_stdout: bool, read_stderr: bool) -> io::Result<Output> {
         let mut child = {
             let _guard = gsl::read();
-            self.command()
-                .stdin(match &self.stdin_contents {
-                    Some(_) => Stdio::piped(),
-                    None => Stdio::null(),
-                })
-                .stdout(if read_stdout { Stdio::piped() } else { Stdio::inherit() })
-                .stderr(if read_stderr { Stdio::piped() } else { Stdio::inherit() })
-                .spawn()?
+            let mut command = self.command();
+
+            command.stdin(match &self.stdin_contents {
+                Some(_) => Stdio::piped(),
+                None => Stdio::null(),
+            });
+
+            if !self.ignore_stdout {
+                command.stdout(if read_stdout { Stdio::piped() } else { Stdio::inherit() });
+            }
+
+            if !self.ignore_stderr {
+                command.stderr(if read_stderr { Stdio::piped() } else { Stdio::inherit() });
+            }
+
+            command.spawn()?
         };
 
         if let Some(stdin_contents) = &self.stdin_contents {
@@ -467,6 +545,34 @@ impl Cmd {
     fn command(&self) -> std::process::Command {
         let mut res = std::process::Command::new(&self.args[0]);
         res.args(&self.args[1..]);
+        self.apply_env(&mut res);
+        if self.ignore_stdout {
+            res.stdout(Stdio::null());
+        }
+        if self.ignore_stderr {
+            res.stderr(Stdio::null());
+        }
         res
     }
+
+    fn apply_env(&self, cmd: &mut std::process::Command) {
+        for change in &self.env_changes {
+            match change {
+                EnvChange::Clear => cmd.env_clear(),
+                EnvChange::Remove(key) => cmd.env_remove(key),
+                EnvChange::Set(key, val) => cmd.env(key, val),
+            };
+        }
+    }
+}
+
+// We just store a list of functions to call on the `Command` — the alternative
+// would require mirroring the logic that `std::process::Command` (or rather
+// `sys_common::CommandEnvs`) uses, which is moderately complex, involves
+// special-casing `PATH`, and plausbly could change.
+#[derive(Debug)]
+enum EnvChange {
+    Set(OsString, OsString),
+    Remove(OsString),
+    Clear,
 }

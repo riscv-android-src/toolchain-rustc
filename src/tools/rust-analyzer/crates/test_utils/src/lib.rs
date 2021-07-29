@@ -17,7 +17,7 @@ use std::{
 };
 
 use profile::StopWatch;
-use stdx::{is_ci, lines_with_ends};
+use stdx::is_ci;
 use text_size::{TextRange, TextSize};
 
 pub use dissimilar::diff as __diff;
@@ -94,6 +94,21 @@ fn try_extract_range(text: &str) -> Option<(TextRange, String)> {
 pub enum RangeOrOffset {
     Range(TextRange),
     Offset(TextSize),
+}
+
+impl RangeOrOffset {
+    pub fn expect_offset(self) -> TextSize {
+        match self {
+            RangeOrOffset::Offset(it) => it,
+            RangeOrOffset::Range(_) => panic!("expected an offset but got a range instead"),
+        }
+    }
+    pub fn expect_range(self) -> TextRange {
+        match self {
+            RangeOrOffset::Range(it) => it,
+            RangeOrOffset::Offset(_) => panic!("expected a range but got an offset"),
+        }
+    }
 }
 
 impl From<RangeOrOffset> for TextRange {
@@ -181,7 +196,7 @@ pub fn extract_annotations(text: &str) -> Vec<(TextRange, String)> {
     let mut prev_line_start: Option<TextSize> = None;
     let mut line_start: TextSize = 0.into();
     let mut prev_line_annotations: Vec<(TextSize, usize)> = Vec::new();
-    for line in lines_with_ends(text) {
+    for line in text.split_inclusive('\n') {
         let mut this_line_annotations = Vec::new();
         if let Some(idx) = line.find("//") {
             let annotation_offset = TextSize::of(&line[..idx + "//".len()]);
@@ -223,14 +238,9 @@ fn extract_line_annotations(mut line: &str) -> Vec<LineAnnotation> {
     let mut res = Vec::new();
     let mut offset: TextSize = 0.into();
     let marker: fn(char) -> bool = if line.contains('^') { |c| c == '^' } else { |c| c == '|' };
-    loop {
-        match line.find(marker) {
-            Some(idx) => {
-                offset += TextSize::try_from(idx).unwrap();
-                line = &line[idx..];
-            }
-            None => break,
-        };
+    while let Some(idx) = line.find(marker) {
+        offset += TextSize::try_from(idx).unwrap();
+        line = &line[idx..];
 
         let mut len = line.chars().take_while(|&it| it == '^').count();
         let mut continuation = false;

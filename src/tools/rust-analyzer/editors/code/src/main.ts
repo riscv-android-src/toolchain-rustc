@@ -6,8 +6,8 @@ import { promises as fs, PathLike } from "fs";
 import * as commands from './commands';
 import { activateInlayHints } from './inlay_hints';
 import { Ctx } from './ctx';
-import { Config, NIGHTLY_TAG } from './config';
-import { log, assert, isValidExecutable } from './util';
+import { Config } from './config';
+import { log, assert, isValidExecutable, isRustDocument } from './util';
 import { PersistentState } from './persistent_state';
 import { fetchRelease, download } from './net';
 import { activateTaskProvider } from './tasks';
@@ -28,6 +28,51 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 async function tryActivate(context: vscode.ExtensionContext) {
+    const config = new Config(context);
+    const state = new PersistentState(context.globalState);
+    const serverPath = await bootstrap(config, state).catch(err => {
+        let message = "bootstrap error. ";
+
+        if (err.code === "EBUSY" || err.code === "ETXTBSY" || err.code === "EPERM") {
+            message += "Other vscode windows might be using rust-analyzer, ";
+            message += "you should close them and reload this window to retry. ";
+        }
+
+        message += 'See the logs in "OUTPUT > Rust Analyzer Client" (should open automatically). ';
+        message += 'To enable verbose logs use { "rust-analyzer.trace.extension": true }';
+
+        log.error("Bootstrap error", err);
+        throw new Error(message);
+    });
+
+    if ((vscode.workspace.workspaceFolders || []).length === 0) {
+        const rustDocuments = vscode.workspace.textDocuments.filter(document => isRustDocument(document));
+        if (rustDocuments.length > 0) {
+            ctx = await Ctx.create(config, context, serverPath, { kind: 'Detached Files', files: rustDocuments });
+        } else {
+            throw new Error("no rust files are opened");
+        }
+    } else {
+        // Note: we try to start the server before we activate type hints so that it
+        // registers its `onDidChangeDocument` handler before us.
+        //
+        // This a horribly, horribly wrong way to deal with this problem.
+        ctx = await Ctx.create(config, context, serverPath, { kind: "Workspace Folder" });
+        ctx.pushCleanup(activateTaskProvider(ctx.config));
+    }
+    await initCommonContext(context, ctx);
+
+    activateInlayHints(ctx);
+    warnAboutExtensionConflicts();
+
+    vscode.workspace.onDidChangeConfiguration(
+        _ => ctx?.client?.sendNotification('workspace/didChangeConfiguration', { settings: "" }),
+        null,
+        ctx.subscriptions,
+    );
+}
+
+async function initCommonContext(context: vscode.ExtensionContext, ctx: Ctx) {
     // Register a "dumb" onEnter command for the case where server fails to
     // start.
     //
@@ -47,34 +92,6 @@ async function tryActivate(context: vscode.ExtensionContext) {
         () => vscode.commands.executeCommand('default:type', { text: '\n' }),
     );
     context.subscriptions.push(defaultOnEnter);
-
-    const config = new Config(context);
-    const state = new PersistentState(context.globalState);
-    const serverPath = await bootstrap(config, state).catch(err => {
-        let message = "bootstrap error. ";
-
-        if (err.code === "EBUSY" || err.code === "ETXTBSY" || err.code === "EPERM") {
-            message += "Other vscode windows might be using rust-analyzer, ";
-            message += "you should close them and reload this window to retry. ";
-        }
-
-        message += 'See the logs in "OUTPUT > Rust Analyzer Client" (should open automatically). ';
-        message += 'To enable verbose logs use { "rust-analyzer.trace.extension": true }';
-
-        log.error("Bootstrap error", err);
-        throw new Error(message);
-    });
-
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder === undefined) {
-        throw new Error("no folder is opened");
-    }
-
-    // Note: we try to start the server before we activate type hints so that it
-    // registers its `onDidChangeDocument` handler before us.
-    //
-    // This a horribly, horribly wrong way to deal with this problem.
-    ctx = await Ctx.create(config, context, serverPath, workspaceFolder.uri.fsPath);
 
     await setContextValue(RUST_PROJECT_CONTEXT_NAME, true);
 
@@ -106,6 +123,8 @@ async function tryActivate(context: vscode.ExtensionContext) {
     ctx.registerCommand('parentModule', commands.parentModule);
     ctx.registerCommand('syntaxTree', commands.syntaxTree);
     ctx.registerCommand('viewHir', commands.viewHir);
+    ctx.registerCommand('viewItemTree', commands.viewItemTree);
+    ctx.registerCommand('viewCrateGraph', commands.viewCrateGraph);
     ctx.registerCommand('expandMacro', commands.expandMacro);
     ctx.registerCommand('run', commands.run);
     ctx.registerCommand('copyRunCommandLine', commands.copyRunCommandLine);
@@ -132,17 +151,6 @@ async function tryActivate(context: vscode.ExtensionContext) {
     ctx.registerCommand('resolveCodeAction', commands.resolveCodeAction);
     ctx.registerCommand('applyActionGroup', commands.applyActionGroup);
     ctx.registerCommand('gotoLocation', commands.gotoLocation);
-
-    ctx.pushCleanup(activateTaskProvider(workspaceFolder, ctx.config));
-
-    activateInlayHints(ctx);
-    warnAboutExtensionConflicts();
-
-    vscode.workspace.onDidChangeConfiguration(
-        _ => ctx?.client?.sendNotification('workspace/didChangeConfiguration', { settings: "" }),
-        null,
-        ctx.subscriptions,
-    );
 }
 
 export async function deactivate() {
@@ -154,16 +162,18 @@ export async function deactivate() {
 async function bootstrap(config: Config, state: PersistentState): Promise<string> {
     await fs.mkdir(config.globalStoragePath, { recursive: true });
 
+    if (!config.currentExtensionIsNightly) {
+        await state.updateNightlyReleaseId(undefined);
+    }
     await bootstrapExtension(config, state);
     const path = await bootstrapServer(config, state);
-
     return path;
 }
 
 async function bootstrapExtension(config: Config, state: PersistentState): Promise<void> {
     if (config.package.releaseTag === null) return;
     if (config.channel === "stable") {
-        if (config.package.releaseTag === NIGHTLY_TAG) {
+        if (config.currentExtensionIsNightly) {
             void vscode.window.showWarningMessage(
                 `You are running a nightly version of rust-analyzer extension. ` +
                 `To switch to stable, uninstall the extension and re-install it from the marketplace`
@@ -174,27 +184,34 @@ async function bootstrapExtension(config: Config, state: PersistentState): Promi
     if (serverPath(config)) return;
 
     const now = Date.now();
-    if (config.package.releaseTag === NIGHTLY_TAG) {
+    const isInitialNightlyDownload = state.nightlyReleaseId === undefined;
+    if (config.currentExtensionIsNightly) {
         // Check if we should poll github api for the new nightly version
         // if we haven't done it during the past hour
         const lastCheck = state.lastCheck;
 
         const anHour = 60 * 60 * 1000;
-        const shouldCheckForNewNightly = state.releaseId === undefined || (now - (lastCheck ?? 0)) > anHour;
+        const shouldCheckForNewNightly = isInitialNightlyDownload || (now - (lastCheck ?? 0)) > anHour;
 
         if (!shouldCheckForNewNightly) return;
     }
 
-    const release = await downloadWithRetryDialog(state, async () => {
+    const latestNightlyRelease = await downloadWithRetryDialog(state, async () => {
         return await fetchRelease("nightly", state.githubToken, config.httpProxy);
     }).catch(async (e) => {
         log.error(e);
-        if (state.releaseId === undefined) { // Show error only for the initial download
-            await vscode.window.showErrorMessage(`Failed to download rust-analyzer nightly ${e}`);
+        if (isInitialNightlyDownload) {
+            await vscode.window.showErrorMessage(`Failed to download rust-analyzer nightly: ${e}`);
         }
-        return undefined;
+        return;
     });
-    if (release === undefined || release.id === state.releaseId) return;
+    if (latestNightlyRelease === undefined) {
+        if (isInitialNightlyDownload) {
+            await vscode.window.showErrorMessage("Failed to download rust-analyzer nightly: empty release contents returned");
+        }
+        return;
+    }
+    if (config.currentExtensionIsNightly && latestNightlyRelease.id === state.nightlyReleaseId) return;
 
     const userResponse = await vscode.window.showInformationMessage(
         "New version of rust-analyzer (nightly) is available (requires reload).",
@@ -202,8 +219,8 @@ async function bootstrapExtension(config: Config, state: PersistentState): Promi
     );
     if (userResponse !== "Update") return;
 
-    const artifact = release.assets.find(artifact => artifact.name === "rust-analyzer.vsix");
-    assert(!!artifact, `Bad release: ${JSON.stringify(release)}`);
+    const artifact = latestNightlyRelease.assets.find(artifact => artifact.name === "rust-analyzer.vsix");
+    assert(!!artifact, `Bad release: ${JSON.stringify(latestNightlyRelease)}`);
 
     const dest = path.join(config.globalStoragePath, "rust-analyzer.vsix");
 
@@ -219,7 +236,7 @@ async function bootstrapExtension(config: Config, state: PersistentState): Promi
     await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(dest));
     await fs.unlink(dest);
 
-    await state.updateReleaseId(release.id);
+    await state.updateNightlyReleaseId(latestNightlyRelease.id);
     await state.updateLastCheck(now);
     await vscode.commands.executeCommand("workbench.action.reloadWindow");
 }

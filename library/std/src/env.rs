@@ -61,6 +61,7 @@ pub fn current_dir() -> io::Result<PathBuf> {
 /// assert!(env::set_current_dir(&root).is_ok());
 /// println!("Successfully changed working directory to {}!", root.display());
 /// ```
+#[doc(alias = "chdir")]
 #[stable(feature = "env", since = "1.0.0")]
 pub fn set_current_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
     os_imp::chdir(path.as_ref())
@@ -323,13 +324,13 @@ impl Error for VarError {
 /// assert_eq!(env::var(key), Ok("VALUE".to_string()));
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(k: K, v: V) {
-    _set_var(k.as_ref(), v.as_ref())
+pub fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
+    _set_var(key.as_ref(), value.as_ref())
 }
 
-fn _set_var(k: &OsStr, v: &OsStr) {
-    os_imp::setenv(k, v).unwrap_or_else(|e| {
-        panic!("failed to set environment variable `{:?}` to `{:?}`: {}", k, v, e)
+fn _set_var(key: &OsStr, value: &OsStr) {
+    os_imp::setenv(key, value).unwrap_or_else(|e| {
+        panic!("failed to set environment variable `{:?}` to `{:?}`: {}", key, value, e)
     })
 }
 
@@ -365,13 +366,13 @@ fn _set_var(k: &OsStr, v: &OsStr) {
 /// assert!(env::var(key).is_err());
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn remove_var<K: AsRef<OsStr>>(k: K) {
-    _remove_var(k.as_ref())
+pub fn remove_var<K: AsRef<OsStr>>(key: K) {
+    _remove_var(key.as_ref())
 }
 
-fn _remove_var(k: &OsStr) {
-    os_imp::unsetenv(k)
-        .unwrap_or_else(|e| panic!("failed to remove environment variable `{:?}`: {}", k, e))
+fn _remove_var(key: &OsStr) {
+    os_imp::unsetenv(key)
+        .unwrap_or_else(|e| panic!("failed to remove environment variable `{:?}`: {}", key, e))
 }
 
 /// An iterator that splits an environment variable into paths according to

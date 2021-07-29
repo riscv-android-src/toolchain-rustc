@@ -9,10 +9,10 @@ use hir_def::{
     resolver::{resolver_for_expr, ResolveValueResult, ValueNs},
     DefWithBodyId,
 };
-use hir_expand::diagnostics::DiagnosticSink;
 
 use crate::{
-    db::HirDatabase, diagnostics::MissingUnsafe, InferenceResult, Interner, TyExt, TyKind,
+    db::HirDatabase, diagnostics::MissingUnsafe, diagnostics_sink::DiagnosticSink, InferenceResult,
+    Interner, TyExt, TyKind,
 };
 
 pub(super) struct UnsafeValidator<'a, 'b: 'a> {
@@ -105,7 +105,7 @@ fn walk_unsafe(
         Expr::MethodCall { .. } => {
             if infer
                 .method_resolution(current)
-                .map(|func| db.function_data(func).is_unsafe())
+                .map(|(func, _)| db.function_data(func).is_unsafe())
                 .unwrap_or(false)
             {
                 unsafe_exprs.push(UnsafeExpr { expr: current, inside_unsafe_block });

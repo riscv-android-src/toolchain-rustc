@@ -148,7 +148,7 @@ impl<'tcx> Queries<'tcx> {
                 self.compiler.register_lints.as_deref().unwrap_or_else(|| empty),
                 krate,
                 &crate_name,
-            );
+            )?;
 
             // Compute the dependency graph (in the background). We want to do
             // this as early as possible, to give the DepGraph maximum time to
@@ -157,7 +157,7 @@ impl<'tcx> Queries<'tcx> {
             // called, which happens within passes::register_plugins().
             self.dep_graph_future().ok();
 
-            result
+            Ok(result)
         })
     }
 
@@ -245,8 +245,7 @@ impl<'tcx> Queries<'tcx> {
         self.prepare_outputs.compute(|| {
             let expansion_result = self.expansion()?;
             let (krate, boxed_resolver, _) = &*expansion_result.peek();
-            let crate_name = self.crate_name()?;
-            let crate_name = crate_name.peek();
+            let crate_name = self.crate_name()?.peek();
             passes::prepare_outputs(
                 self.session(),
                 self.compiler,
@@ -285,7 +284,7 @@ impl<'tcx> Queries<'tcx> {
         self.ongoing_codegen.compute(|| {
             let outputs = self.prepare_outputs()?;
             self.global_ctxt()?.peek_mut().enter(|tcx| {
-                tcx.analysis(LOCAL_CRATE).ok();
+                tcx.analysis(()).ok();
 
                 // Don't do code generation if there were any errors
                 self.session().compile_status()?;
@@ -302,7 +301,7 @@ impl<'tcx> Queries<'tcx> {
     /// to write UI tests that actually test that compilation succeeds without reporting
     /// an error.
     fn check_for_rustc_errors_attr(tcx: TyCtxt<'_>) {
-        let def_id = match tcx.entry_fn(LOCAL_CRATE) {
+        let def_id = match tcx.entry_fn(()) {
             Some((def_id, _)) => def_id,
             _ => return,
         };
@@ -343,32 +342,36 @@ impl<'tcx> Queries<'tcx> {
     }
 
     pub fn linker(&'tcx self) -> Result<Linker> {
-        let dep_graph = self.dep_graph()?;
-        let prepare_outputs = self.prepare_outputs()?;
-        let crate_hash = self.global_ctxt()?.peek_mut().enter(|tcx| tcx.crate_hash(LOCAL_CRATE));
-        let ongoing_codegen = self.ongoing_codegen()?;
-
         let sess = self.session().clone();
         let codegen_backend = self.codegen_backend().clone();
 
+        let dep_graph = self.dep_graph()?.peek().clone();
+        let prepare_outputs = self.prepare_outputs()?.take();
+        let crate_hash = self.global_ctxt()?.peek_mut().enter(|tcx| tcx.crate_hash(LOCAL_CRATE));
+        let ongoing_codegen = self.ongoing_codegen()?.take();
+
         Ok(Linker {
             sess,
-            dep_graph: dep_graph.peek().clone(),
-            prepare_outputs: prepare_outputs.take(),
-            crate_hash,
-            ongoing_codegen: ongoing_codegen.take(),
             codegen_backend,
+
+            dep_graph,
+            prepare_outputs,
+            crate_hash,
+            ongoing_codegen,
         })
     }
 }
 
 pub struct Linker {
+    // compilation inputs
     sess: Lrc<Session>,
+    codegen_backend: Lrc<Box<dyn CodegenBackend>>,
+
+    // compilation outputs
     dep_graph: DepGraph,
     prepare_outputs: OutputFilenames,
     crate_hash: Svh,
     ongoing_codegen: Box<dyn Any>,
-    codegen_backend: Lrc<Box<dyn CodegenBackend>>,
 }
 
 impl Linker {

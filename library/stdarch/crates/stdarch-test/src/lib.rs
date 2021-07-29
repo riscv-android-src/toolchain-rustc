@@ -3,14 +3,12 @@
 //! This basically just disassembles the current executable and then parses the
 //! output once globally and then provides the `assert` function which makes
 //! assertions about the disassembly of a function.
-#![feature(test)] // For black_box
+#![feature(bench_black_box)] // For black_box
 #![deny(rust_2018_idioms)]
 #![allow(clippy::missing_docs_in_private_items, clippy::print_stdout)]
 
-extern crate assert_instr_macro;
 #[macro_use]
 extern crate lazy_static;
-extern crate simd_test_macro;
 #[macro_use]
 extern crate cfg_if;
 
@@ -24,7 +22,7 @@ cfg_if! {
         use wasm::disassemble_myself;
     } else {
         mod disassembly;
-        use disassembly::disassemble_myself;
+        use crate::disassembly::disassemble_myself;
     }
 }
 
@@ -78,8 +76,12 @@ pub fn assert(shim_addr: usize, fnname: &str, expected: &str) {
         instrs = &instrs[..instrs.len() - 1];
     }
 
-    // If the expected intrinsic is a nop it is compiled away so we
-    // can't check for it - aka the intrinsic is not generating any code
+    // There are two cases when the expected instruction is nop:
+    // 1. The expected intrinsic is compiled away so we can't
+    // check for it - aka the intrinsic is not generating any code.
+    // 2. It is a mark, indicating that the instruction will be
+    // compiled into other instructions - mainly because of llvm
+    // optimization.
     if expected == "nop" {
         return;
     }
@@ -118,9 +120,9 @@ pub fn assert(shim_addr: usize, fnname: &str, expected: &str) {
                 // Intrinsics using `cvtpi2ps` are typically "composites" and
                 // in some cases exceed the limit.
                 "cvtpi2ps" => 25,
-
-                // core_arch/src/acle/simd32
-                "usad8" => 27,
+                // core_arch/src/arm_shared/simd32
+                // vfmaq_n_f32_vfma : #instructions = 26 >= 22 (limit)
+                "usad8" | "vfma" | "vfms" => 27,
                 "qadd8" | "qsub8" | "sadd8" | "sel" | "shadd8" | "shsub8" | "usub8" | "ssub8" => 29,
 
                 // Original limit was 20 instructions, but ARM DSP Intrinsics

@@ -9,11 +9,8 @@
 //! function itself contains the relevant instruction.
 #![deny(rust_2018_idioms)]
 
-extern crate proc_macro;
-extern crate proc_macro2;
 #[macro_use]
 extern crate quote;
-extern crate syn;
 
 use proc_macro2::TokenStream;
 use quote::ToTokens;
@@ -63,6 +60,7 @@ pub fn assert_instr(
     );
     let mut inputs = Vec::new();
     let mut input_vals = Vec::new();
+    let mut const_vals = Vec::new();
     let ret = &func.sig.output;
     for arg in func.sig.inputs.iter() {
         let capture = match *arg {
@@ -81,6 +79,20 @@ pub fn assert_instr(
         } else {
             inputs.push(capture);
             input_vals.push(quote! { #ident });
+        }
+    }
+    for arg in func.sig.generics.params.iter() {
+        let c = match *arg {
+            syn::GenericParam::Const(ref c) => c,
+            ref v => panic!(
+                "only const generics are allowed: `{:?}`",
+                v.clone().into_token_stream()
+            ),
+        };
+        if let Some(&(_, ref tokens)) = invoc.args.iter().find(|a| c.ident == a.0) {
+            const_vals.push(quote! { #tokens });
+        } else {
+            panic!("const generics must have a value for tests");
         }
     }
 
@@ -134,7 +146,7 @@ pub fn assert_instr(
                 std::mem::transmute(#shim_name_str.as_bytes().as_ptr()),
                 std::sync::atomic::Ordering::Relaxed,
             );
-            #name(#(#input_vals),*)
+            #name::<#(#const_vals),*>(#(#input_vals),*)
         }
     };
 

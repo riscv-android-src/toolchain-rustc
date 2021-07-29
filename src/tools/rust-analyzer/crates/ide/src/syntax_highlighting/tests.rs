@@ -10,6 +10,7 @@ use crate::{fixture, FileRange, HlTag, TextRange};
 fn test_highlighting() {
     check_highlighting(
         r#"
+//- /main.rs crate:main deps:foo
 use inner::{self as inner_mod};
 mod inner {}
 
@@ -39,11 +40,11 @@ struct Foo {
     pub y: i32,
 }
 
-trait Bar {
+trait Bar where Self: {
     fn bar(&self) -> i32;
 }
 
-impl Bar for Foo {
+impl Bar for Foo where Self: {
     fn bar(&self) -> i32 {
         self.x
     }
@@ -207,6 +208,63 @@ impl<T> Option<T> {
             Nope => Nope,
         }
     }
+}
+
+async fn learn_and_sing() {
+    let song = learn_song().await;
+    sing_song(song).await;
+}
+
+async fn async_main() {
+    let f1 = learn_and_sing();
+    let f2 = dance();
+    futures::join!(f1, f2);
+}
+
+unsafe trait Dangerous {}
+impl Dangerous for () {}
+
+fn use_foo_items() {
+    let bob = foo::Person {
+        name: "Bob",
+        age: foo::consts::NUMBER,
+    };
+
+    let control_flow = foo::identity(foo::ControlFlow::Continue);
+
+    if control_flow.should_die() {
+        foo::die!();
+    }
+}
+
+
+//- /foo.rs crate:foo
+pub struct Person {
+    pub name: &'static str,
+    pub age: u8,
+}
+
+pub enum ControlFlow {
+    Continue,
+    Die,
+}
+
+impl ControlFlow {
+    pub fn should_die(self) -> bool {
+        matches!(self, ControlFlow::Die)
+    }
+}
+
+pub fn identity<T>(x: T) -> T { x }
+
+pub mod consts {
+    pub const NUMBER: i64 = 92;
+}
+
+macro_rules! die {
+    () => {
+        panic!();
+    };
 }
 "#
         .trim(),
@@ -513,6 +571,11 @@ fn main() {
 fn test_highlight_doc_comment() {
     check_highlighting(
         r#"
+//! This is a module to test doc injection.
+//! ```
+//! fn test() {}
+//! ```
+
 /// ```
 /// let _ = "early doctests should not go boom";
 /// ```
@@ -520,6 +583,13 @@ struct Foo {
     bar: bool,
 }
 
+/// This is an impl with a code block.
+///
+/// ```
+/// fn foo() {
+///
+/// }
+/// ```
 impl Foo {
     /// ```
     /// let _ = "Call me
@@ -618,6 +688,7 @@ It is beyond me why you'd use these when you got ///
 ```rust
 let _ = example(&[1, 2, 3]);
 ```
+[`block_comments2`] tests these with indentation
  */
 pub fn block_comments() {}
 
@@ -626,6 +697,7 @@ pub fn block_comments() {}
     ```rust
     let _ = example(&[1, 2, 3]);
     ```
+    [`block_comments`] tests these without indentation
 */
 pub fn block_comments2() {}
 "#

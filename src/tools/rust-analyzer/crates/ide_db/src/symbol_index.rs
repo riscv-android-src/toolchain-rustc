@@ -127,7 +127,7 @@ fn library_symbols(db: &dyn SymbolsDatabase) -> Arc<FxHashMap<SourceRootId, Symb
 }
 
 fn file_symbols(db: &dyn SymbolsDatabase, file_id: FileId) -> Arc<SymbolIndex> {
-    db.check_canceled();
+    db.unwind_if_cancelled();
     let parse = db.parse(file_id);
 
     let symbols = source_file_to_file_symbols(&parse.tree(), file_id);
@@ -160,6 +160,11 @@ impl<DB: ParallelDatabase> Clone for Snap<salsa::Snapshot<DB>> {
 //
 // That is, `#` switches from "types" to all symbols, `*` switches from the current
 // workspace to dependencies.
+//
+// Note that filtering does not currently work in VSCode due to the editor never
+// sending the special symbols to the language server. Instead, you can configure
+// the filtering via the `rust-analyzer.workspace.symbol.search.scope` and
+// `rust-analyzer.workspace.symbol.search.kind` settings.
 //
 // |===
 // | Editor  | Shortcut

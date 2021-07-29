@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "notify"
-version = "5.0.0-pre.7"
+version = "5.0.0-pre.9"
 authors = ["Félix Saparelli <me@passcod.name>", "Daniel Faust <hessijames@gmail.com>"]
 exclude = ["/clippy.toml", ".github/*"]
 description = "Cross-platform filesystem notification library"
@@ -24,9 +24,6 @@ keywords = ["events", "filesystem", "notify", "watch"]
 categories = ["filesystem"]
 license = "CC0-1.0 OR Artistic-2.0"
 repository = "https://github.com/notify-rs/notify.git"
-[dependencies.anymap]
-version = "0.12.1"
-
 [dependencies.bitflags]
 version = "1.0.4"
 
@@ -49,6 +46,9 @@ version = "2.0.1"
 [dev-dependencies.serde_json]
 version = "1.0.39"
 
+[dev-dependencies.tempfile]
+version = "3.2.0"
+
 [features]
 manual_tests = []
 timing_tests = []
@@ -59,11 +59,8 @@ default-features = false
 [target."cfg(target_os=\"linux\")".dependencies.mio]
 version = "0.7.7"
 features = ["os-ext"]
-[target."cfg(target_os=\"macos\")".dependencies.fsevent]
-version = "2.0.1"
-
 [target."cfg(target_os=\"macos\")".dependencies.fsevent-sys]
-version = "3"
+version = "4"
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3.8"
 features = ["fileapi", "handleapi", "ioapiset", "minwinbase", "synchapi", "winbase", "winnt"]

@@ -4,7 +4,6 @@ mod config;
 mod item;
 mod context;
 mod patterns;
-mod generated_lint_completions;
 #[cfg(test)]
 mod test_utils;
 mod render;
@@ -80,7 +79,7 @@ pub use crate::{
 //
 // And the auto import completions, enabled with the `rust-analyzer.completion.autoimport.enable` setting and the corresponding LSP client capabilities.
 // Those are the additional completion options with automatic `use` import and options from all project importable items,
-// fuzzy matched agains the completion imput.
+// fuzzy matched against the completion input.
 //
 // image::https://user-images.githubusercontent.com/48062697/113020667-b72ab880-917a-11eb-8778-716cf26a0eb3.gif[]
 
@@ -107,7 +106,7 @@ pub use crate::{
 /// identifier prefix/fuzzy match should be done higher in the stack, together
 /// with ordering of completions (currently this is done by the client).
 ///
-/// # Hypothetical Completion Problem
+/// # Speculative Completion Problem
 ///
 /// There's a curious unsolved problem in the current implementation. Often, you
 /// want to compute completions on a *slightly different* text document.
@@ -121,7 +120,7 @@ pub use crate::{
 /// doesn't allow such "phantom" inputs.
 ///
 /// Another case where this would be instrumental is macro expansion. We want to
-/// insert a fake ident and re-expand code. There's `expand_hypothetical` as a
+/// insert a fake ident and re-expand code. There's `expand_speculative` as a
 /// work-around for this.
 ///
 /// A different use-case is completion of injection (examples and links in doc

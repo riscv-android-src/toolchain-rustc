@@ -88,7 +88,7 @@ impl<'tcx> MonoItem<'tcx> {
 
         match *self {
             MonoItem::Fn(ref instance) => {
-                let entry_def_id = tcx.entry_fn(LOCAL_CRATE).map(|(id, _)| id);
+                let entry_def_id = tcx.entry_fn(()).map(|(id, _)| id);
                 // If this function isn't inlined or otherwise has an extern
                 // indicator, then we'll be creating a globally shared version.
                 if tcx.codegen_fn_attrs(instance.def_id()).contains_extern_indicator()
@@ -186,6 +186,15 @@ impl<'tcx> MonoItem<'tcx> {
     pub fn codegen_dep_node(&self, tcx: TyCtxt<'tcx>) -> DepNode {
         crate::dep_graph::make_compile_mono_item(tcx, self)
     }
+
+    /// Returns the item's `CrateNum`
+    pub fn krate(&self) -> CrateNum {
+        match self {
+            MonoItem::Fn(ref instance) => instance.def_id().krate,
+            MonoItem::Static(def_id) => def_id.krate,
+            MonoItem::GlobalAsm(..) => LOCAL_CRATE,
+        }
+    }
 }
 
 impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for MonoItem<'tcx> {
@@ -229,6 +238,7 @@ pub struct CodegenUnit<'tcx> {
     name: Symbol,
     items: FxHashMap<MonoItem<'tcx>, (Linkage, Visibility)>,
     size_estimate: Option<usize>,
+    primary: bool,
 }
 
 /// Specifies the linkage type for a `MonoItem`.
@@ -257,8 +267,9 @@ pub enum Visibility {
 }
 
 impl<'tcx> CodegenUnit<'tcx> {
+    #[inline]
     pub fn new(name: Symbol) -> CodegenUnit<'tcx> {
-        CodegenUnit { name, items: Default::default(), size_estimate: None }
+        CodegenUnit { name, items: Default::default(), size_estimate: None, primary: false }
     }
 
     pub fn name(&self) -> Symbol {
@@ -267,6 +278,14 @@ impl<'tcx> CodegenUnit<'tcx> {
 
     pub fn set_name(&mut self, name: Symbol) {
         self.name = name;
+    }
+
+    pub fn is_primary(&self) -> bool {
+        self.primary
+    }
+
+    pub fn make_primary(&mut self) {
+        self.primary = true;
     }
 
     pub fn items(&self) -> &FxHashMap<MonoItem<'tcx>, (Linkage, Visibility)> {
@@ -293,6 +312,7 @@ impl<'tcx> CodegenUnit<'tcx> {
         self.size_estimate = Some(self.items.keys().map(|mi| mi.size_estimate(tcx)).sum());
     }
 
+    #[inline]
     pub fn size_estimate(&self) -> usize {
         // Should only be called if `estimate_size` has previously been called.
         self.size_estimate.expect("estimate_size must be called before getting a size_estimate")
@@ -378,6 +398,7 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for CodegenUnit<'tcx> {
             name,
             // The size estimate is not relevant to the hash
             size_estimate: _,
+            primary: _,
         } = *self;
 
         name.hash_stable(hcx, hasher);

@@ -111,7 +111,6 @@ pub type CompiledAddr = usize;
 /// jan
 /// feb
 /// mar
-/// apr
 /// may
 /// jun
 /// jul
@@ -120,7 +119,7 @@ pub type CompiledAddr = usize;
 /// The corresponding automaton that stores all of these as keys looks like
 /// this:
 ///
-/// ![finite state automaton](http://burntsushi.net/stuff/months-set.png)
+/// ![finite state automaton](https://burntsushi.net/stuff/months-set.png)
 ///
 /// Notice here how the prefix and suffix of `jan` and `jun` are shared.
 /// Similarly, the prefixes of `jun` and `jul` are shared and the prefixes
@@ -155,7 +154,6 @@ pub type CompiledAddr = usize;
 /// jan,1
 /// feb,2
 /// mar,3
-/// apr,4
 /// may,5
 /// jun,6
 /// jul,7
@@ -164,7 +162,7 @@ pub type CompiledAddr = usize;
 /// The corresponding transducer looks very similar to the automaton above,
 /// except outputs have been added to some of the transitions:
 ///
-/// ![finite state transducer](http://burntsushi.net/stuff/months-map.png)
+/// ![finite state transducer](https://burntsushi.net/stuff/months-map.png)
 ///
 /// All of the operations with a transducer are the same as described above
 /// for automatons. Additionally, the same compression techniques are used:
@@ -212,7 +210,7 @@ pub type CompiledAddr = usize;
 ///
 /// The corresponding automaton looks like this:
 ///
-/// ![finite state automaton - one billion strings](http://burntsushi.net/stuff/one-billion.png)
+/// ![finite state automaton - one billion strings](https://burntsushi.net/stuff/one-billion.png)
 ///
 /// Indeed, the on disk size of this automaton is a mere **251 bytes**.
 ///
@@ -220,7 +218,7 @@ pub type CompiledAddr = usize;
 /// to show how good compression can be in the optimal case.
 ///
 /// Also, check out the
-/// [corresponding transducer](http://burntsushi.net/stuff/one-billion-map.svg)
+/// [corresponding transducer](https://burntsushi.net/stuff/one-billion-map.svg)
 /// that maps each string to its integer value. It's a bit bigger, but still
 /// only takes up **896 bytes** of space on disk. This demonstrates that
 /// output values are also compressible.
@@ -255,17 +253,17 @@ pub type CompiledAddr = usize;
 /// of many academics, especially
 /// [Jan Daciuk](http://galaxy.eti.pg.gda.pl/katedry/kiw/pracownicy/Jan.Daciuk/personal/).
 ///
-/// * [Incremental construction of minimal acyclic finite-state automata](http://www.mitpressjournals.org/doi/pdfplus/10.1162/089120100561601)
+/// * [Incremental construction of minimal acyclic finite-state automata](https://www.mitpressjournals.org/doi/pdfplus/10.1162/089120100561601)
 ///   (Section 3 provides a decent overview of the algorithm used to construct
 ///   transducers in this crate, assuming all outputs are `0`.)
-/// * [Direct Construction of Minimal Acyclic Subsequential Transducers](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.24.3698&rep=rep1&type=pdf)
+/// * [Direct Construction of Minimal Acyclic Subsequential Transducers](https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.24.3698&rep=rep1&type=pdf)
 ///   (The whole thing. The proof is dense but illuminating. The algorithm at
 ///   the end is the money shot, namely, it incorporates output values.)
-/// * [Experiments with Automata Compression](http://www.researchgate.net/profile/Jii_Dvorsky/publication/221568039_Word_Random_Access_Compression/links/0c96052c095630d5b3000000.pdf#page=116), [Smaller Representation of Finite State Automata](http://www.cs.put.poznan.pl/dweiss/site/publications/download/fsacomp.pdf)
+/// * [Experiments with Automata Compression](https://www.researchgate.net/profile/Jiri-Dvorsky/publication/221568039_Word_Random_Access_Compression/links/0c96052c095630d5b3000000/Word-Random-Access-Compression.pdf#page=116), [Smaller Representation of Finite State Automata](https://www.cs.put.poznan.pl/dweiss/site/publications/download/fsacomp.pdf)
 ///   (various compression techniques for representing states/transitions)
 /// * [Jan Daciuk's dissertation](http://www.pg.gda.pl/~jandac/thesis.ps.gz)
 ///   (excellent for in depth overview)
-/// * [Comparison of Construction Algorithms for Minimal, Acyclic, Deterministic, Finite-State Automata from Sets of Strings](http://www.cs.mun.ca/~harold/Courses/Old/CS4750/Diary/q3p2qx4lv71m5vew.pdf)
+/// * [Comparison of Construction Algorithms for Minimal, Acyclic, Deterministic, Finite-State Automata from Sets of Strings](https://www.cs.mun.ca/~harold/Courses/Old/CS4750/Diary/q3p2qx4lv71m5vew.pdf)
 ///   (excellent for surface level overview)
 #[derive(Clone)]
 pub struct Fst<D> {
@@ -1316,7 +1314,7 @@ impl Output {
 
     /// Returns the subtraction of `o` from this output.
     ///
-    /// This function panics if `self > o`.
+    /// This function panics if `self < o`.
     #[inline]
     pub fn sub(self, o: Output) -> Output {
         Output(

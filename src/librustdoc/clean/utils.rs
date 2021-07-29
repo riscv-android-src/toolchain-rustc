@@ -2,7 +2,7 @@ use crate::clean::auto_trait::AutoTraitFinder;
 use crate::clean::blanket_impl::BlanketImplFinder;
 use crate::clean::{
     inline, Clean, Crate, Generic, GenericArg, GenericArgs, ImportSource, Item, ItemKind, Lifetime,
-    MacroKind, Path, PathSegment, Primitive, PrimitiveType, ResolvedPath, Type, TypeBinding,
+    Path, PathSegment, Primitive, PrimitiveType, ResolvedPath, Type, TypeBinding,
 };
 use crate::core::DocContext;
 use crate::formats::item_type::ItemType;
@@ -15,6 +15,9 @@ use rustc_middle::ty::subst::{GenericArgKind, SubstsRef};
 use rustc_middle::ty::{self, DefIdTree, TyCtxt};
 use rustc_span::symbol::{kw, sym, Symbol};
 use std::mem;
+
+#[cfg(test)]
+mod tests;
 
 crate fn krate(cx: &mut DocContext<'_>) -> Crate {
     use crate::visit_lib::LibEmbargoVisitor;
@@ -45,9 +48,9 @@ crate fn krate(cx: &mut DocContext<'_>) -> Crate {
                 // `#[doc(masked)]` to the injected `extern crate` because it's unstable.
                 if it.is_extern_crate()
                     && (it.attrs.has_doc_flag(sym::masked)
-                        || cx.tcx.is_compiler_builtins(it.def_id.krate))
+                        || cx.tcx.is_compiler_builtins(it.def_id.krate()))
                 {
-                    cx.cache.masked_crates.insert(it.def_id.krate);
+                    cx.cache.masked_crates.insert(it.def_id.krate());
                 }
             }
         }
@@ -172,8 +175,9 @@ crate fn strip_type(ty: Type) -> Type {
         Type::BorrowedRef { lifetime, mutability, type_ } => {
             Type::BorrowedRef { lifetime, mutability, type_: Box::new(strip_type(*type_)) }
         }
-        Type::QPath { name, self_type, trait_ } => Type::QPath {
+        Type::QPath { name, self_type, trait_, self_def_id } => Type::QPath {
             name,
+            self_def_id,
             self_type: Box::new(strip_type(*self_type)),
             trait_: Box::new(strip_type(*trait_)),
         },
@@ -335,11 +339,27 @@ crate fn print_evaluated_const(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String>
 
 fn format_integer_with_underscore_sep(num: &str) -> String {
     let num_chars: Vec<_> = num.chars().collect();
-    let num_start_index = if num_chars.get(0) == Some(&'-') { 1 } else { 0 };
+    let mut num_start_index = if num_chars.get(0) == Some(&'-') { 1 } else { 0 };
+    let chunk_size = match num[num_start_index..].as_bytes() {
+        [b'0', b'b' | b'x', ..] => {
+            num_start_index += 2;
+            4
+        }
+        [b'0', b'o', ..] => {
+            num_start_index += 2;
+            let remaining_chars = num_chars.len() - num_start_index;
+            if remaining_chars <= 6 {
+                // don't add underscores to Unix permissions like 0755 or 100755
+                return num.to_string();
+            }
+            3
+        }
+        _ => 3,
+    };
 
     num_chars[..num_start_index]
         .iter()
-        .chain(num_chars[num_start_index..].rchunks(3).rev().intersperse(&['_']).flatten())
+        .chain(num_chars[num_start_index..].rchunks(chunk_size).rev().intersperse(&['_']).flatten())
         .collect()
 }
 
@@ -431,35 +451,48 @@ crate fn get_auto_trait_and_blanket_impls(
     auto_impls.into_iter().chain(blanket_impls)
 }
 
+/// If `res` has a documentation page associated, store it in the cache.
+///
+/// This is later used by [`href()`] to determine the HTML link for the item.
+///
+/// [`href()`]: crate::html::format::href
 crate fn register_res(cx: &mut DocContext<'_>, res: Res) -> DefId {
+    use DefKind::*;
     debug!("register_res({:?})", res);
 
     let (did, kind) = match res {
-        Res::Def(DefKind::Fn, i) => (i, ItemType::Function),
-        Res::Def(DefKind::TyAlias, i) => (i, ItemType::Typedef),
-        Res::Def(DefKind::Enum, i) => (i, ItemType::Enum),
-        Res::Def(DefKind::Trait, i) => (i, ItemType::Trait),
         Res::Def(DefKind::AssocTy | DefKind::AssocFn | DefKind::AssocConst, i) => {
+            // associated items are documented, but on the page of their parent
             (cx.tcx.parent(i).unwrap(), ItemType::Trait)
         }
-        Res::Def(DefKind::Struct, i) => (i, ItemType::Struct),
-        Res::Def(DefKind::Union, i) => (i, ItemType::Union),
-        Res::Def(DefKind::Mod, i) => (i, ItemType::Module),
-        Res::Def(DefKind::ForeignTy, i) => (i, ItemType::ForeignType),
-        Res::Def(DefKind::Const, i) => (i, ItemType::Constant),
-        Res::Def(DefKind::Static, i) => (i, ItemType::Static),
         Res::Def(DefKind::Variant, i) => {
+            // variant items are documented, but on the page of their parent
             (cx.tcx.parent(i).expect("cannot get parent def id"), ItemType::Enum)
         }
-        Res::Def(DefKind::Macro(mac_kind), i) => match mac_kind {
-            MacroKind::Bang => (i, ItemType::Macro),
-            MacroKind::Attr => (i, ItemType::ProcAttribute),
-            MacroKind::Derive => (i, ItemType::ProcDerive),
-        },
-        Res::Def(DefKind::TraitAlias, i) => (i, ItemType::TraitAlias),
-        Res::SelfTy(Some(def_id), _) => (def_id, ItemType::Trait),
-        Res::SelfTy(_, Some((impl_def_id, _))) => return impl_def_id,
-        _ => return res.def_id(),
+        // Each of these have their own page.
+        Res::Def(
+            kind
+            @
+            (Fn | TyAlias | Enum | Trait | Struct | Union | Mod | ForeignTy | Const | Static
+            | Macro(..) | TraitAlias),
+            i,
+        ) => (i, kind.into()),
+        // This is part of a trait definition; document the trait.
+        Res::SelfTy(Some(trait_def_id), _) => (trait_def_id, ItemType::Trait),
+        // This is an inherent impl; it doesn't have its own page.
+        Res::SelfTy(None, Some((impl_def_id, _))) => return impl_def_id,
+        Res::SelfTy(None, None)
+        | Res::PrimTy(_)
+        | Res::ToolMod
+        | Res::SelfCtor(_)
+        | Res::Local(_)
+        | Res::NonMacroAttr(_)
+        | Res::Err => return res.def_id(),
+        Res::Def(
+            TyParam | ConstParam | Ctor(..) | ExternCrate | Use | ForeignMod | AnonConst | OpaqueTy
+            | Field | LifetimeParam | GlobalAsm | Impl | Closure | Generator,
+            id,
+        ) => return id,
     };
     if did.is_local() {
         return did;
@@ -490,8 +523,6 @@ where
 }
 
 /// Find the nearest parent module of a [`DefId`].
-///
-/// **Panics if the item it belongs to [is fake][Item::is_fake].**
 crate fn find_nearest_parent_module(tcx: TyCtxt<'_>, def_id: DefId) -> Option<DefId> {
     if def_id.is_top_level_module() {
         // The crate root has no parent. Use it as the root instead.
@@ -525,3 +556,9 @@ crate fn has_doc_flag(attrs: ty::Attributes<'_>, flag: Symbol) -> bool {
             && attr.meta_item_list().map_or(false, |l| rustc_attr::list_contains_name(&l, flag))
     })
 }
+
+/// A link to `doc.rust-lang.org` that includes the channel name. Use this instead of manual links
+/// so that the channel is consistent.
+///
+/// Set by `bootstrap::Builder::doc_rust_lang_org_channel` in order to keep tests passing on beta/stable.
+crate const DOC_RUST_LANG_ORG_CHANNEL: &'static str = env!("DOC_RUST_LANG_ORG_CHANNEL");

@@ -13,9 +13,9 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_ast"
-version = "718.0.0"
+version = "722.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_ast` in the rust-lang/rust repository from commit e10cbc33c1fd2fcd446cab5cdcc57332d154721c The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_ast` in the rust-lang/rust repository from commit c9c1f8be3fda5b58520c579451d3f5e20736ec90 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
@@ -25,27 +25,27 @@ doctest = false
 version = "1.2.1"
 
 [dependencies.rustc_data_structures]
-version = "718.0.0"
+version = "722.0.0"
 package = "rustc-ap-rustc_data_structures"
 
 [dependencies.rustc_index]
-version = "718.0.0"
+version = "722.0.0"
 package = "rustc-ap-rustc_index"
 
 [dependencies.rustc_lexer]
-version = "718.0.0"
+version = "722.0.0"
 package = "rustc-ap-rustc_lexer"
 
 [dependencies.rustc_macros]
-version = "718.0.0"
+version = "722.0.0"
 package = "rustc-ap-rustc_macros"
 
 [dependencies.rustc_serialize]
-version = "718.0.0"
+version = "722.0.0"
 package = "rustc-ap-rustc_serialize"
 
 [dependencies.rustc_span]
-version = "718.0.0"
+version = "722.0.0"
 package = "rustc-ap-rustc_span"
 
 [dependencies.smallvec]

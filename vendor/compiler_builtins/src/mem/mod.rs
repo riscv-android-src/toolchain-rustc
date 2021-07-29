@@ -1,3 +1,6 @@
+// Trying to satisfy clippy here is hopeless
+#![allow(clippy::style)]
+
 #[allow(warnings)]
 #[cfg(target_pointer_width = "16")]
 type c_int = i16;
@@ -17,12 +20,14 @@ use core::ops::{BitOr, Shl};
 mod impls;
 
 #[cfg_attr(all(feature = "mem", not(feature = "mangled-names")), no_mangle)]
+#[cfg_attr(not(all(target_os = "windows", target_env = "gnu")), linkage = "weak")]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     impls::copy_forward(dest, src, n);
     dest
 }
 
 #[cfg_attr(all(feature = "mem", not(feature = "mangled-names")), no_mangle)]
+#[cfg_attr(not(all(target_os = "windows", target_env = "gnu")), linkage = "weak")]
 pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     let delta = (dest as usize).wrapping_sub(src as usize);
     if delta >= n {
@@ -36,12 +41,14 @@ pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mu
 }
 
 #[cfg_attr(all(feature = "mem", not(feature = "mangled-names")), no_mangle)]
+#[cfg_attr(not(all(target_os = "windows", target_env = "gnu")), linkage = "weak")]
 pub unsafe extern "C" fn memset(s: *mut u8, c: c_int, n: usize) -> *mut u8 {
     impls::set_bytes(s, c as u8, n);
     s
 }
 
 #[cfg_attr(all(feature = "mem", not(feature = "mangled-names")), no_mangle)]
+#[cfg_attr(not(all(target_os = "windows", target_env = "gnu")), linkage = "weak")]
 pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut i = 0;
     while i < n {
@@ -56,11 +63,13 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 }
 
 #[cfg_attr(all(feature = "mem", not(feature = "mangled-names")), no_mangle)]
+#[cfg_attr(not(all(target_os = "windows", target_env = "gnu")), linkage = "weak")]
 pub unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     memcmp(s1, s2, n)
 }
 
 // `bytes` must be a multiple of `mem::size_of::<T>()`
+#[cfg_attr(not(target_has_atomic_load_store = "8"), allow(dead_code))]
 fn memcpy_element_unordered_atomic<T: Copy>(dest: *mut T, src: *const T, bytes: usize) {
     unsafe {
         let n = exact_div(bytes, mem::size_of::<T>());
@@ -73,6 +82,7 @@ fn memcpy_element_unordered_atomic<T: Copy>(dest: *mut T, src: *const T, bytes: 
 }
 
 // `bytes` must be a multiple of `mem::size_of::<T>()`
+#[cfg_attr(not(target_has_atomic_load_store = "8"), allow(dead_code))]
 fn memmove_element_unordered_atomic<T: Copy>(dest: *mut T, src: *const T, bytes: usize) {
     unsafe {
         let n = exact_div(bytes, mem::size_of::<T>());
@@ -95,6 +105,7 @@ fn memmove_element_unordered_atomic<T: Copy>(dest: *mut T, src: *const T, bytes:
 }
 
 // `T` must be a primitive integer type, and `bytes` must be a multiple of `mem::size_of::<T>()`
+#[cfg_attr(not(target_has_atomic_load_store = "8"), allow(dead_code))]
 fn memset_element_unordered_atomic<T>(s: *mut T, c: u8, bytes: usize)
 where
     T: Copy + From<u8> + Shl<u32, Output = T> + BitOr<T, Output = T>,

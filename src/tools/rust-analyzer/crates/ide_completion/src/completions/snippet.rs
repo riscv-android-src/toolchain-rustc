@@ -14,7 +14,7 @@ fn snippet(ctx: &CompletionContext, cap: SnippetCap, label: &str, snippet: &str)
 }
 
 pub(crate) fn complete_expr_snippet(acc: &mut Completions, ctx: &CompletionContext) {
-    if !(ctx.is_trivial_path && ctx.function_syntax.is_some()) {
+    if !(ctx.is_trivial_path && ctx.function_def.is_some()) {
         return;
     }
     let cap = match ctx.config.snippet_cap {
@@ -22,12 +22,14 @@ pub(crate) fn complete_expr_snippet(acc: &mut Completions, ctx: &CompletionConte
         None => return,
     };
 
-    snippet(ctx, cap, "pd", "eprintln!(\"$0 = {:?}\", $0);").add_to(acc);
-    snippet(ctx, cap, "ppd", "eprintln!(\"$0 = {:#?}\", $0);").add_to(acc);
+    if ctx.can_be_stmt {
+        snippet(ctx, cap, "pd", "eprintln!(\"$0 = {:?}\", $0);").add_to(acc);
+        snippet(ctx, cap, "ppd", "eprintln!(\"$0 = {:#?}\", $0);").add_to(acc);
+    }
 }
 
 pub(crate) fn complete_item_snippet(acc: &mut Completions, ctx: &CompletionContext) {
-    if !ctx.is_new_item {
+    if !ctx.expects_item() {
         return;
     }
     let cap = match ctx.config.snippet_cap {

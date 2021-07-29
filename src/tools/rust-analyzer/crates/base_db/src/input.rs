@@ -53,11 +53,15 @@ impl SourceRoot {
 }
 
 /// `CrateGraph` is a bit of information which turns a set of text files into a
-/// number of Rust crates. Each crate is defined by the `FileId` of its root module,
-/// the set of cfg flags (not yet implemented) and the set of dependencies. Note
-/// that, due to cfg's, there might be several crates for a single `FileId`! As
-/// in the rust-lang proper, a crate does not have a name. Instead, names are
-/// specified on dependency edges. That is, a crate might be known under
+/// number of Rust crates.
+///
+/// Each crate is defined by the `FileId` of its root module, the set of enabled
+/// `cfg` flags and the set of dependencies.
+///
+/// Note that, due to cfg's, there might be several crates for a single `FileId`!
+///
+/// For the purposes of analysis, a crate does not have a name. Instead, names
+/// are specified on dependency edges. That is, a crate might be known under
 /// different names in different dependent crates.
 ///
 /// Note that `CrateGraph` is build-system agnostic: it's a concept of the Rust
@@ -143,7 +147,7 @@ impl CrateDisplayName {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ProcMacroId(pub u32);
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum ProcMacroKind {
     CustomDerive,
     FuncLike,

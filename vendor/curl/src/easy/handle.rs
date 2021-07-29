@@ -588,9 +588,19 @@ impl Easy {
         self.inner.proxy_sslcert(sslcert)
     }
 
+    /// Same as [`Easy2::proxy_sslcert_blob`](struct.Easy2.html#method.proxy_sslcert_blob)
+    pub fn proxy_sslcert_blob(&mut self, blob: &[u8]) -> Result<(), Error> {
+        self.inner.proxy_sslcert_blob(blob)
+    }
+
     /// Same as [`Easy2::proxy_sslkey`](struct.Easy2.html#method.proxy_sslkey)
     pub fn proxy_sslkey(&mut self, sslkey: &str) -> Result<(), Error> {
         self.inner.proxy_sslkey(sslkey)
+    }
+
+    /// Same as [`Easy2::proxy_sslkey_blob`](struct.Easy2.html#method.proxy_sslkey_blob)
+    pub fn proxy_sslkey_blob(&mut self, blob: &[u8]) -> Result<(), Error> {
+        self.inner.proxy_sslkey_blob(blob)
     }
 
     /// Same as [`Easy2::proxy_type`](struct.Easy2.html#method.proxy_type)
@@ -948,6 +958,11 @@ impl Easy {
         self.inner.ssl_cert(cert)
     }
 
+    /// Same as [`Easy2::ssl_cert_blob`](struct.Easy2.html#method.ssl_cert_blob)
+    pub fn ssl_cert_blob(&mut self, blob: &[u8]) -> Result<(), Error> {
+        self.inner.ssl_cert_blob(blob)
+    }
+
     /// Same as [`Easy2::ssl_cert_type`](struct.Easy2.html#method.ssl_cert_type)
     pub fn ssl_cert_type(&mut self, kind: &str) -> Result<(), Error> {
         self.inner.ssl_cert_type(kind)
@@ -956,6 +971,11 @@ impl Easy {
     /// Same as [`Easy2::ssl_key`](struct.Easy2.html#method.ssl_key)
     pub fn ssl_key<P: AsRef<Path>>(&mut self, key: P) -> Result<(), Error> {
         self.inner.ssl_key(key)
+    }
+
+    /// Same as [`Easy2::ssl_key_blob`](struct.Easy2.html#method.ssl_key_blob)
+    pub fn ssl_key_blob(&mut self, blob: &[u8]) -> Result<(), Error> {
+        self.inner.ssl_key_blob(blob)
     }
 
     /// Same as [`Easy2::ssl_key_type`](struct.Easy2.html#method.ssl_key_type)
@@ -1015,6 +1035,11 @@ impl Easy {
     /// Same as [`Easy2::issuer_cert`](struct.Easy2.html#method.issuer_cert)
     pub fn issuer_cert<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
         self.inner.issuer_cert(path)
+    }
+
+    /// Same as [`Easy2::issuer_cert_blob`](struct.Easy2.html#method.issuer_cert_blob)
+    pub fn issuer_cert_blob(&mut self, blob: &[u8]) -> Result<(), Error> {
+        self.inner.issuer_cert_blob(blob)
     }
 
     /// Same as [`Easy2::capath`](struct.Easy2.html#method.capath)
@@ -1254,6 +1279,12 @@ impl Easy {
             data: Box::new(Callbacks::default()),
             easy: self,
         }
+    }
+
+    /// Same as [`Easy2::upkeep`](struct.Easy2.html#method.upkeep)
+    #[cfg(feature = "upkeep_7_62_0")]
+    pub fn upkeep(&self) -> Result<(), Error> {
+        self.inner.upkeep()
     }
 
     /// Same as [`Easy2::unpause_read`](struct.Easy2.html#method.unpause_read)
@@ -1502,6 +1533,12 @@ impl<'easy, 'data> Transfer<'easy, 'data> {
         let _reset = Reset(&inner.borrowed);
 
         self.easy.do_perform()
+    }
+
+    /// Same as `Easy::upkeep`
+    #[cfg(feature = "upkeep_7_62_0")]
+    pub fn upkeep(&self) -> Result<(), Error> {
+        self.easy.upkeep()
     }
 
     /// Same as `Easy::unpause_read`.

@@ -30,6 +30,7 @@ use rustc_middle::ty::{self, Instance, Ty, TyCtxt};
 use rustc_session::cgu_reuse_tracker::CguReuse;
 use rustc_session::config::{self, EntryFnType};
 use rustc_session::Session;
+use rustc_span::symbol::sym;
 use rustc_target::abi::{Align, LayoutOf, VariantIdx};
 
 use std::ops::{Deref, DerefMut};
@@ -347,7 +348,7 @@ pub fn codegen_instance<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
 pub fn maybe_create_entry_wrapper<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     cx: &'a Bx::CodegenCx,
 ) -> Option<Bx::Function> {
-    let main_def_id = cx.tcx().entry_fn(LOCAL_CRATE).map(|(def_id, _)| def_id)?;
+    let (main_def_id, entry_type) = cx.tcx().entry_fn(())?;
     let main_is_local = main_def_id.is_local();
     let instance = Instance::mono(cx.tcx(), main_def_id);
 
@@ -357,28 +358,16 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         if !cx.codegen_unit().contains_item(&MonoItem::Fn(instance)) {
             return None;
         }
-    } else {
-        // FIXME: Add support for non-local main fn codegen
-        let span = cx.tcx().main_def.unwrap().span;
-        let n = 28937;
-        cx.sess()
-            .struct_span_err(span, "entry symbol `main` from foreign crate is not yet supported.")
-            .note(&format!(
-                "see issue #{} <https://github.com/rust-lang/rust/issues/{}> \
-                 for more information",
-                n, n,
-            ))
-            .emit();
-        cx.sess().abort_if_errors();
-        bug!();
+    } else if !cx.codegen_unit().is_primary() {
+        // We want to create the wrapper only when the codegen unit is the primary one
+        return None;
     }
 
     let main_llfn = cx.get_fn_addr(instance);
 
-    return cx.tcx().entry_fn(LOCAL_CRATE).map(|(_, et)| {
-        let use_start_lang_item = EntryFnType::Start != et;
-        create_entry_fn::<Bx>(cx, main_llfn, main_def_id, use_start_lang_item)
-    });
+    let use_start_lang_item = EntryFnType::Start != entry_type;
+    let entry_fn = create_entry_fn::<Bx>(cx, main_llfn, main_def_id, use_start_lang_item);
+    return Some(entry_fn);
 
     fn create_entry_fn<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         cx: &'a Bx::CodegenCx,
@@ -420,7 +409,8 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         cx.set_frame_pointer_elimination(llfn);
         cx.apply_target_cpu_attr(llfn);
 
-        let mut bx = Bx::new_block(&cx, llfn, "top");
+        let llbb = Bx::append_block(&cx, llfn, "top");
+        let mut bx = Bx::build(&cx, llbb);
 
         bx.insert_reference_to_gdb_debug_scripts_section_global();
 
@@ -478,12 +468,13 @@ fn get_argc_argv<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 pub fn codegen_crate<B: ExtraBackendMethods>(
     backend: B,
     tcx: TyCtxt<'tcx>,
+    target_cpu: String,
     metadata: EncodedMetadata,
     need_metadata_module: bool,
 ) -> OngoingCodegen<B> {
     // Skip crate items and just output metadata in -Z no-codegen mode.
     if tcx.sess.opts.debugging_opts.no_codegen || !tcx.sess.opts.output_types.should_codegen() {
-        let ongoing_codegen = start_async_codegen(backend, tcx, metadata, 1);
+        let ongoing_codegen = start_async_codegen(backend, tcx, target_cpu, metadata, 1);
 
         ongoing_codegen.codegen_finished(tcx);
 
@@ -496,7 +487,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
     // Run the monomorphization collector and partition the collected items into
     // codegen units.
-    let codegen_units = tcx.collect_and_partition_mono_items(LOCAL_CRATE).1;
+    let codegen_units = tcx.collect_and_partition_mono_items(()).1;
 
     // Force all codegen_unit queries so they are already either red or green
     // when compile_codegen_unit accesses them. We are not able to re-execute
@@ -509,7 +500,8 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
         }
     }
 
-    let ongoing_codegen = start_async_codegen(backend.clone(), tcx, metadata, codegen_units.len());
+    let ongoing_codegen =
+        start_async_codegen(backend.clone(), tcx, target_cpu, metadata, codegen_units.len());
     let ongoing_codegen = AbortCodegenOnDrop::<B>(Some(ongoing_codegen));
 
     // Codegen an allocator shim, if necessary.
@@ -520,7 +512,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     // linkage, then it's already got an allocator shim and we'll be using that
     // one instead. If nothing exists then it's our job to generate the
     // allocator!
-    let any_dynamic_crate = tcx.dependency_formats(LOCAL_CRATE).iter().any(|(_, list)| {
+    let any_dynamic_crate = tcx.dependency_formats(()).iter().any(|(_, list)| {
         use rustc_middle::middle::dependency_format::Linkage;
         list.iter().any(|&linkage| linkage == Linkage::Dynamic)
     });
@@ -764,7 +756,22 @@ impl<B: ExtraBackendMethods> Drop for AbortCodegenOnDrop<B> {
 
 impl CrateInfo {
     pub fn new(tcx: TyCtxt<'_>) -> CrateInfo {
+        let local_crate_name = tcx.crate_name(LOCAL_CRATE);
+        let crate_attrs = tcx.hir().attrs(rustc_hir::CRATE_HIR_ID);
+        let subsystem = tcx.sess.first_attr_value_str_by_name(crate_attrs, sym::windows_subsystem);
+        let windows_subsystem = subsystem.map(|subsystem| {
+            if subsystem != sym::windows && subsystem != sym::console {
+                tcx.sess.fatal(&format!(
+                    "invalid windows subsystem `{}`, only \
+                                     `windows` and `console` are allowed",
+                    subsystem
+                ));
+            }
+            subsystem.to_string()
+        });
+
         let mut info = CrateInfo {
+            local_crate_name,
             panic_runtime: None,
             compiler_builtins: None,
             profiler_runtime: None,
@@ -777,7 +784,8 @@ impl CrateInfo {
             used_crate_source: Default::default(),
             lang_item_to_crate: Default::default(),
             missing_lang_items: Default::default(),
-            dependency_formats: tcx.dependency_formats(LOCAL_CRATE),
+            dependency_formats: tcx.dependency_formats(()),
+            windows_subsystem,
         };
         let lang_items = tcx.lang_items();
 

@@ -1948,8 +1948,9 @@ impl<T> [T] {
     /// assert!(!v.contains(&50));
     /// ```
     ///
-    /// If you do not have an `&T`, but just an `&U` such that `T: Borrow<U>`
-    /// (e.g. `String: Borrow<str>`), you can use `iter().any`:
+    /// If you do not have a `&T`, but some other value that you can compare
+    /// with one (for example, `String` implements `PartialEq<str>`), you can
+    /// use `iter().any`:
     ///
     /// ```
     /// let v = [String::from("hello"), String::from("world")]; // slice of `String`
@@ -2099,9 +2100,11 @@ impl<T> [T] {
     ///
     /// If the value is found then [`Result::Ok`] is returned, containing the
     /// index of the matching element. If there are multiple matches, then any
-    /// one of the matches could be returned. If the value is not found then
-    /// [`Result::Err`] is returned, containing the index where a matching
-    /// element could be inserted while maintaining sorted order.
+    /// one of the matches could be returned. The index is chosen
+    /// deterministically, but is subject to change in future versions of Rust.
+    /// If the value is not found then [`Result::Err`] is returned, containing
+    /// the index where a matching element could be inserted while maintaining
+    /// sorted order.
     ///
     /// See also [`binary_search_by`], [`binary_search_by_key`], and [`partition_point`].
     ///
@@ -2152,9 +2155,11 @@ impl<T> [T] {
     ///
     /// If the value is found then [`Result::Ok`] is returned, containing the
     /// index of the matching element. If there are multiple matches, then any
-    /// one of the matches could be returned. If the value is not found then
-    /// [`Result::Err`] is returned, containing the index where a matching
-    /// element could be inserted while maintaining sorted order.
+    /// one of the matches could be returned. The index is chosen
+    /// deterministically, but is subject to change in future versions of Rust.
+    /// If the value is not found then [`Result::Err`] is returned, containing
+    /// the index where a matching element could be inserted while maintaining
+    /// sorted order.
     ///
     /// See also [`binary_search`], [`binary_search_by_key`], and [`partition_point`].
     ///
@@ -2223,9 +2228,11 @@ impl<T> [T] {
     ///
     /// If the value is found then [`Result::Ok`] is returned, containing the
     /// index of the matching element. If there are multiple matches, then any
-    /// one of the matches could be returned. If the value is not found then
-    /// [`Result::Err`] is returned, containing the index where a matching
-    /// element could be inserted while maintaining sorted order.
+    /// one of the matches could be returned. The index is chosen
+    /// deterministically, but is subject to change in future versions of Rust.
+    /// If the value is not found then [`Result::Err`] is returned, containing
+    /// the index where a matching element could be inserted while maintaining
+    /// sorted order.
     ///
     /// See also [`binary_search`], [`binary_search_by`], and [`partition_point`].
     ///
@@ -3095,7 +3102,11 @@ impl<T> [T] {
         // SAFETY: the conditions for `ptr::copy` have all been checked above,
         // as have those for `ptr::add`.
         unsafe {
-            ptr::copy(self.as_ptr().add(src_start), self.as_mut_ptr().add(dest), count);
+            // Derive both `src_ptr` and `dest_ptr` from the same loan
+            let ptr = self.as_mut_ptr();
+            let src_ptr = ptr.add(src_start);
+            let dest_ptr = ptr.add(dest);
+            ptr::copy(src_ptr, dest_ptr, count);
         }
     }
 

@@ -2,15 +2,22 @@
 
 use crate::{CompletionContext, Completions};
 
+// Ideally this should be removed and moved into `(un)qualified_path` respectively
 pub(crate) fn complete_macro_in_item_position(acc: &mut Completions, ctx: &CompletionContext) {
     // Show only macros in top level.
-    if ctx.is_new_item {
-        ctx.scope.process_all_names(&mut |name, res| {
-            if let hir::ScopeDef::MacroDef(mac) = res {
-                acc.add_macro(ctx, Some(name.to_string()), mac);
-            }
-        })
+    if !ctx.expects_item() {
+        return;
     }
+
+    ctx.scope.process_all_names(&mut |name, res| {
+        if let hir::ScopeDef::MacroDef(mac) = res {
+            acc.add_macro(ctx, Some(name.clone()), mac);
+        }
+        // FIXME: This should be done in qualified_path/unqualified_path instead?
+        if let hir::ScopeDef::ModuleDef(hir::ModuleDef::Module(_)) = res {
+            acc.add_resolution(ctx, name, &res);
+        }
+    })
 }
 
 #[cfg(test)]

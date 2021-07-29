@@ -190,7 +190,6 @@
 #![cfg_attr(not(feature = "restricted-std"), stable(feature = "rust1", since = "1.0.0"))]
 #![cfg_attr(feature = "restricted-std", unstable(feature = "restricted_std", issue = "none"))]
 #![doc(
-    html_root_url = "https://doc.rust-lang.org/nightly/",
     html_playground_url = "https://play.rust-lang.org/",
     issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
     test(no_crate_inject, attr(deny(warnings))),
@@ -230,6 +229,7 @@
 #![feature(arbitrary_self_types)]
 #![feature(array_error_internals)]
 #![feature(asm)]
+#![feature(assert_matches)]
 #![feature(associated_type_bounds)]
 #![feature(atomic_mut_ptr)]
 #![feature(bench_black_box)]
@@ -245,7 +245,6 @@
 #![feature(const_cstr_unchecked)]
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(const_fn_transmute)]
-#![feature(const_fn)]
 #![feature(const_fn_fn_ptr_basics)]
 #![feature(const_io_structs)]
 #![feature(const_ip)]
@@ -260,15 +259,14 @@
 #![feature(doc_cfg)]
 #![feature(doc_keyword)]
 #![feature(doc_masked)]
-#![cfg_attr(bootstrap, feature(doc_spotlight))]
-#![cfg_attr(not(bootstrap), feature(doc_notable_trait))]
+#![feature(doc_notable_trait)]
 #![feature(dropck_eyepatch)]
 #![feature(duration_constants)]
 #![feature(edition_panic)]
 #![feature(exact_size_is_empty)]
 #![feature(exhaustive_patterns)]
 #![feature(extend_one)]
-#![feature(extended_key_value_attributes)]
+#![cfg_attr(bootstrap, feature(extended_key_value_attributes))]
 #![feature(fn_traits)]
 #![feature(format_args_nl)]
 #![feature(gen_future)]
@@ -300,7 +298,6 @@
 #![feature(nonnull_slice_from_raw_parts)]
 #![feature(once_cell)]
 #![feature(auto_traits)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![feature(panic_info_message)]
 #![feature(panic_internals)]
 #![feature(panic_unwind)]
@@ -530,7 +527,6 @@ mod sys;
 pub mod alloc;
 
 // Private support modules
-mod memchr;
 mod panicking;
 
 // The runtime entry point and a few unstable public functions used by the
@@ -564,9 +560,9 @@ pub use core::{
 #[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
 #[allow(deprecated)]
 pub use core::{
-    asm, assert, cfg, column, compile_error, concat, concat_idents, env, file, format_args,
-    format_args_nl, global_asm, include, include_bytes, include_str, line, llvm_asm, log_syntax,
-    module_path, option_env, stringify, trace_macros,
+    asm, assert, assert_matches, cfg, column, compile_error, concat, concat_idents, env, file,
+    format_args, format_args_nl, global_asm, include, include_bytes, include_str, line, llvm_asm,
+    log_syntax, module_path, option_env, stringify, trace_macros,
 };
 
 #[stable(feature = "core_primitive", since = "1.43.0")]

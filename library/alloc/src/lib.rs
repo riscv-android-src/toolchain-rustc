@@ -59,7 +59,6 @@
 #![allow(unused_attributes)]
 #![stable(feature = "alloc", since = "1.36.0")]
 #![doc(
-    html_root_url = "https://doc.rust-lang.org/nightly/",
     html_playground_url = "https://play.rust-lang.org/",
     issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
     test(no_crate_inject, attr(allow(unused_variables), deny(warnings)))
@@ -87,9 +86,8 @@
 #![feature(cfg_sanitize)]
 #![feature(cfg_target_has_atomic)]
 #![feature(coerce_unsized)]
-#![feature(const_btree_new)]
-#![cfg_attr(bootstrap, feature(const_fn))]
-#![cfg_attr(not(bootstrap), feature(const_fn_trait_bound))]
+#![cfg_attr(not(no_global_oom_handling), feature(const_btree_new))]
+#![feature(const_fn_trait_bound)]
 #![feature(cow_is_borrowed)]
 #![feature(const_cow_is_borrowed)]
 #![feature(destructuring_assignment)]
@@ -118,7 +116,6 @@
 #![feature(nonnull_slice_from_raw_parts)]
 #![feature(auto_traits)]
 #![feature(option_result_unwrap_unchecked)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![feature(pattern)]
 #![feature(ptr_internals)]
 #![feature(rustc_attrs)]
@@ -140,11 +137,13 @@
 #![feature(maybe_uninit_extra, maybe_uninit_slice, maybe_uninit_uninit_array)]
 #![feature(alloc_layout_extra)]
 #![feature(trusted_random_access)]
-#![feature(try_trait)]
+#![cfg_attr(bootstrap, feature(try_trait))]
+#![cfg_attr(not(bootstrap), feature(try_trait_v2))]
 #![feature(min_type_alias_impl_trait)]
 #![feature(associated_type_bounds)]
 #![feature(slice_group_by)]
 #![feature(decl_macro)]
+#![feature(bindings_after_at)]
 // Allow testing this library
 
 #[cfg(test)]
@@ -183,7 +182,7 @@ pub mod str;
 pub mod string;
 #[cfg(target_has_atomic = "ptr")]
 pub mod sync;
-#[cfg(target_has_atomic = "ptr")]
+#[cfg(all(not(no_global_oom_handling), target_has_atomic = "ptr"))]
 pub mod task;
 #[cfg(test)]
 mod tests;

@@ -12,7 +12,7 @@
 
 [package]
 name = "compiler_builtins"
-version = "0.1.39"
+version = "0.1.45"
 authors = ["Jorge Aparicio <japaricious@gmail.com>"]
 links = "compiler-rt"
 include = ["/Cargo.toml", "/build.rs", "/src/*", "/examples/*", "/LICENSE.txt", "/README.md", "/compiler-rt/*", "/libm/src/math/*"]
@@ -52,4 +52,5 @@ mangled-names = []
 mem = []
 no-asm = []
 no-lang-items = []
+public-test-deps = []
 rustc-dep-of-std = ["compiler-builtins", "core"]

@@ -3,10 +3,9 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::num::NonZeroU64;
-use std::rc::Rc;
-use std::time::Instant;
 use std::fmt;
+use std::num::NonZeroU64;
+use std::time::Instant;
 
 use log::trace;
 use rand::rngs::StdRng;
@@ -18,11 +17,11 @@ use rustc_middle::{
     ty::{
         self,
         layout::{LayoutCx, LayoutError, TyAndLayout},
-        TyCtxt,
+        Instance, TyCtxt,
     },
 };
-use rustc_span::symbol::{sym, Symbol};
 use rustc_span::def_id::DefId;
+use rustc_span::symbol::{sym, Symbol};
 use rustc_target::abi::{LayoutOf, Size};
 use rustc_target::spec::abi::Abi;
 
@@ -35,7 +34,6 @@ pub const STACK_SIZE: u64 = 16 * PAGE_SIZE; // whatever
 pub const NUM_CPUS: u64 = 1;
 
 /// Extra data stored with each stack frame
-#[derive(Debug)]
 pub struct FrameData<'tcx> {
     /// Extra data for Stacked Borrows.
     pub call_id: stacked_borrows::CallId,
@@ -44,6 +42,21 @@ pub struct FrameData<'tcx> {
     /// called by `try`). When this frame is popped during unwinding a panic,
     /// we stop unwinding, use the `CatchUnwindData` to handle catching.
     pub catch_unwind: Option<CatchUnwindData<'tcx>>,
+
+    /// If `measureme` profiling is enabled, holds timing information
+    /// for the start of this frame. When we finish executing this frame,
+    /// we use this to register a completed event with `measureme`.
+    pub timing: Option<measureme::DetachedTiming>,
+}
+
+impl<'tcx> std::fmt::Debug for FrameData<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Omitting `timing`, it does not support `Debug`.
+        f.debug_struct("FrameData")
+            .field("call_id", &self.call_id)
+            .field("catch_unwind", &self.catch_unwind)
+            .finish()
+    }
 }
 
 /// Extra memory kinds
@@ -100,7 +113,7 @@ impl fmt::Display for MiriMemoryKind {
             Env => write!(f, "environment variable"),
             Global => write!(f, "global (static or const)"),
             ExternStatic => write!(f, "extern static"),
-            Tls =>  write!(f, "thread-local static"),
+            Tls => write!(f, "thread-local static"),
         }
     }
 }
@@ -116,7 +129,7 @@ pub struct AllocExtra {
 }
 
 /// Extra global memory data
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MemoryExtra {
     pub stacked_borrows: Option<stacked_borrows::MemoryExtra>,
     pub data_race: Option<data_race::MemoryExtra>,
@@ -144,19 +157,16 @@ impl MemoryExtra {
     pub fn new(config: &MiriConfig) -> Self {
         let rng = StdRng::seed_from_u64(config.seed.unwrap_or(0));
         let stacked_borrows = if config.stacked_borrows {
-            Some(Rc::new(RefCell::new(stacked_borrows::GlobalState::new(
+            Some(RefCell::new(stacked_borrows::GlobalState::new(
                 config.tracked_pointer_tag,
                 config.tracked_call_id,
                 config.track_raw,
-            ))))
+            )))
         } else {
             None
         };
-        let data_race = if config.data_race_detector {
-            Some(Rc::new(data_race::GlobalState::new()))
-        } else {
-            None
-        };
+        let data_race =
+            if config.data_race_detector { Some(data_race::GlobalState::new()) } else { None };
         MemoryExtra {
             stacked_borrows,
             data_race,
@@ -176,11 +186,7 @@ impl MemoryExtra {
     ) {
         let ptr = ptr.assert_ptr();
         assert_eq!(ptr.offset, Size::ZERO);
-        this.memory
-            .extra
-            .extern_statics
-            .try_insert(Symbol::intern(name), ptr.alloc_id)
-            .unwrap();
+        this.memory.extra.extern_statics.try_insert(Symbol::intern(name), ptr.alloc_id).unwrap();
     }
 
     /// Sets up the "extern statics" for this machine.
@@ -196,7 +202,11 @@ impl MemoryExtra {
                 this.write_scalar(Scalar::from_machine_usize(0, this), &place.into())?;
                 Self::add_extern_static(this, "__cxa_thread_atexit_impl", place.ptr);
                 // "environ"
-                Self::add_extern_static(this, "environ", this.machine.env_vars.environ.unwrap().ptr);
+                Self::add_extern_static(
+                    this,
+                    "environ",
+                    this.machine.env_vars.environ.unwrap().ptr,
+                );
             }
             "windows" => {
                 // "_tls_used"
@@ -253,12 +263,16 @@ pub struct Evaluator<'mir, 'tcx> {
     /// TLS state.
     pub(crate) tls: TlsData<'tcx>,
 
-    /// If enabled, the `env_vars` field is populated with the host env vars during initialization
-    /// and random number generation is delegated to the host.
-    pub(crate) communicate: bool,
+    /// What should Miri do when an op requires communicating with the host,
+    /// such as accessing host env vars, random number generation, and
+    /// file system access.
+    pub(crate) isolated_op: IsolatedOp,
 
     /// Whether to enforce the validity invariant.
     pub(crate) validate: bool,
+
+    /// Whether to enforce [ABI](Abi) of function calls.
+    pub(crate) enforce_abi: bool,
 
     pub(crate) file_handler: shims::posix::FileHandler,
     pub(crate) dir_handler: shims::posix::DirHandler,
@@ -274,16 +288,30 @@ pub struct Evaluator<'mir, 'tcx> {
 
     /// Allocations that are considered roots of static memory (that may leak).
     pub(crate) static_roots: Vec<AllocId>,
+
+    /// The `measureme` profiler used to record timing information about
+    /// the emulated program.
+    profiler: Option<measureme::Profiler>,
+    /// Used with `profiler` to cache the `StringId`s for event names
+    /// uesd with `measureme`.
+    string_cache: FxHashMap<String, measureme::StringId>,
+
+    /// Cache of `Instance` exported under the given `Symbol` name.
+    pub(crate) exported_symbols_cache: FxHashMap<Symbol, Instance<'tcx>>,
+
+    /// Whether to raise a panic in the context of the evaluated process when unsupported
+    /// functionality is encountered. If `false`, an error is propagated in the Miri application context
+    /// instead (default behavior)
+    pub(crate) panic_on_unsupported: bool,
 }
 
 impl<'mir, 'tcx> Evaluator<'mir, 'tcx> {
-    pub(crate) fn new(
-        communicate: bool,
-        validate: bool,
-        layout_cx: LayoutCx<'tcx, TyCtxt<'tcx>>,
-    ) -> Self {
-        let layouts = PrimitiveLayouts::new(layout_cx)
-            .expect("Couldn't get layouts of primitive types");
+    pub(crate) fn new(config: &MiriConfig, layout_cx: LayoutCx<'tcx, TyCtxt<'tcx>>) -> Self {
+        let layouts =
+            PrimitiveLayouts::new(layout_cx).expect("Couldn't get layouts of primitive types");
+        let profiler = config.measureme_out.as_ref().map(|out| {
+            measureme::Profiler::new(out).expect("Couldn't create `measureme` profiler")
+        });
         Evaluator {
             // `env_vars` could be initialized properly here if `Memory` were available before
             // calling this method.
@@ -292,15 +320,24 @@ impl<'mir, 'tcx> Evaluator<'mir, 'tcx> {
             argv: None,
             cmd_line: None,
             tls: TlsData::default(),
-            communicate,
-            validate,
+            isolated_op: config.isolated_op,
+            validate: config.validate,
+            enforce_abi: config.check_abi,
             file_handler: Default::default(),
             dir_handler: Default::default(),
             time_anchor: Instant::now(),
             layouts,
             threads: ThreadManager::default(),
             static_roots: Vec::new(),
+            profiler,
+            string_cache: Default::default(),
+            exported_symbols_cache: FxHashMap::default(),
+            panic_on_unsupported: config.panic_on_unsupported,
         }
+    }
+
+    pub(crate) fn communicate(&self) -> bool {
+        self.isolated_op == IsolatedOp::Allow
     }
 }
 
@@ -354,13 +391,18 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
     }
 
     #[inline(always)]
+    fn enforce_abi(ecx: &InterpCx<'mir, 'tcx, Self>) -> bool {
+        ecx.machine.enforce_abi
+    }
+
+    #[inline(always)]
     fn find_mir_or_eval_fn(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
         abi: Abi,
         args: &[OpTy<'tcx, Tag>],
         ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
-        unwind: Option<mir::BasicBlock>,
+        unwind: StackPopUnwind,
     ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>> {
         ecx.find_mir_or_eval_fn(instance, abi, args, ret, unwind)
     }
@@ -372,7 +414,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         abi: Abi,
         args: &[OpTy<'tcx, Tag>],
         ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
-        _unwind: Option<mir::BasicBlock>,
+        _unwind: StackPopUnwind,
     ) -> InterpResult<'tcx> {
         ecx.call_dlsym(fn_val, abi, args, ret)
     }
@@ -383,7 +425,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
         ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
-        unwind: Option<mir::BasicBlock>,
+        unwind: StackPopUnwind,
     ) -> InterpResult<'tcx> {
         ecx.call_intrinsic(instance, args, ret, unwind)
     }
@@ -476,17 +518,16 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
 
         let kind = kind.expect("we set our STATIC_KIND so this cannot be None");
         let alloc = alloc.into_owned();
-        let (stacks, base_tag) =
-            if let Some(stacked_borrows) = &memory_extra.stacked_borrows {
-                let (stacks, base_tag) =
-                    Stacks::new_allocation(id, alloc.size, Rc::clone(stacked_borrows), kind);
-                (Some(stacks), base_tag)
-            } else {
-                // No stacks, no tag.
-                (None, Tag::Untagged)
-            };
+        let (stacks, base_tag) = if let Some(stacked_borrows) = &memory_extra.stacked_borrows {
+            let (stacks, base_tag) =
+                Stacks::new_allocation(id, alloc.size(), stacked_borrows, kind);
+            (Some(stacks), base_tag)
+        } else {
+            // No stacks, no tag.
+            (None, Tag::Untagged)
+        };
         let race_alloc = if let Some(data_race) = &memory_extra.data_race {
-            Some(data_race::AllocExtra::new_allocation(&data_race, alloc.size, kind))
+            Some(data_race::AllocExtra::new_allocation(&data_race, alloc.size(), kind))
         } else {
             None
         };
@@ -507,18 +548,67 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
     }
 
     #[inline(always)]
-    fn before_deallocation(
-        memory_extra: &mut Self::MemoryExtra,
-        id: AllocId,
+    fn memory_read(
+        memory_extra: &Self::MemoryExtra,
+        alloc_extra: &AllocExtra,
+        ptr: Pointer<Tag>,
+        size: Size,
     ) -> InterpResult<'tcx> {
-        if Some(id) == memory_extra.tracked_alloc_id {
-            register_diagnostic(NonHaltingDiagnostic::FreedAlloc(id));
+        if let Some(data_race) = &alloc_extra.data_race {
+            data_race.read(ptr, size, memory_extra.data_race.as_ref().unwrap())?;
         }
-
-        Ok(())
+        if let Some(stacked_borrows) = &alloc_extra.stacked_borrows {
+            stacked_borrows.memory_read(ptr, size, memory_extra.stacked_borrows.as_ref().unwrap())
+        } else {
+            Ok(())
+        }
     }
 
-    
+    #[inline(always)]
+    fn memory_written(
+        memory_extra: &mut Self::MemoryExtra,
+        alloc_extra: &mut AllocExtra,
+        ptr: Pointer<Tag>,
+        size: Size,
+    ) -> InterpResult<'tcx> {
+        if let Some(data_race) = &mut alloc_extra.data_race {
+            data_race.write(ptr, size, memory_extra.data_race.as_mut().unwrap())?;
+        }
+        if let Some(stacked_borrows) = &mut alloc_extra.stacked_borrows {
+            stacked_borrows.memory_written(
+                ptr,
+                size,
+                memory_extra.stacked_borrows.as_mut().unwrap(),
+            )
+        } else {
+            Ok(())
+        }
+    }
+
+    #[inline(always)]
+    fn memory_deallocated(
+        memory_extra: &mut Self::MemoryExtra,
+        alloc_extra: &mut AllocExtra,
+        ptr: Pointer<Tag>,
+        size: Size,
+    ) -> InterpResult<'tcx> {
+        if Some(ptr.alloc_id) == memory_extra.tracked_alloc_id {
+            register_diagnostic(NonHaltingDiagnostic::FreedAlloc(ptr.alloc_id));
+        }
+        if let Some(data_race) = &mut alloc_extra.data_race {
+            data_race.deallocate(ptr, size, memory_extra.data_race.as_mut().unwrap())?;
+        }
+        if let Some(stacked_borrows) = &mut alloc_extra.stacked_borrows {
+            stacked_borrows.memory_deallocated(
+                ptr,
+                size,
+                memory_extra.stacked_borrows.as_mut().unwrap(),
+            )
+        } else {
+            Ok(())
+        }
+    }
+
     fn after_static_mem_initialized(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         ptr: Pointer<Self::PointerTag>,
@@ -545,11 +635,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         kind: mir::RetagKind,
         place: &PlaceTy<'tcx, Tag>,
     ) -> InterpResult<'tcx> {
-        if ecx.memory.extra.stacked_borrows.is_some() {
-            ecx.retag(kind, place)
-        } else {
-            Ok(())
-        }
+        if ecx.memory.extra.stacked_borrows.is_some() { ecx.retag(kind, place) } else { Ok(()) }
     }
 
     #[inline(always)]
@@ -557,42 +643,59 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         frame: Frame<'mir, 'tcx, Tag>,
     ) -> InterpResult<'tcx, Frame<'mir, 'tcx, Tag, FrameData<'tcx>>> {
+        // Start recording our event before doing anything else
+        let timing = if let Some(profiler) = ecx.machine.profiler.as_ref() {
+            let fn_name = frame.instance.to_string();
+            let entry = ecx.machine.string_cache.entry(fn_name.clone());
+            let name = entry.or_insert_with(|| profiler.alloc_string(&*fn_name));
+
+            Some(profiler.start_recording_interval_event_detached(
+                *name,
+                measureme::EventId::from_label(*name),
+                ecx.get_active_thread().to_u32(),
+            ))
+        } else {
+            None
+        };
+
         let stacked_borrows = ecx.memory.extra.stacked_borrows.as_ref();
         let call_id = stacked_borrows.map_or(NonZeroU64::new(1).unwrap(), |stacked_borrows| {
             stacked_borrows.borrow_mut().new_call()
         });
-        let extra = FrameData { call_id, catch_unwind: None };
+
+        let extra = FrameData { call_id, catch_unwind: None, timing };
         Ok(frame.with_extra(extra))
     }
 
     fn stack<'a>(
-        ecx: &'a InterpCx<'mir, 'tcx, Self>
+        ecx: &'a InterpCx<'mir, 'tcx, Self>,
     ) -> &'a [Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>] {
         ecx.active_thread_stack()
     }
 
     fn stack_mut<'a>(
-        ecx: &'a mut InterpCx<'mir, 'tcx, Self>
+        ecx: &'a mut InterpCx<'mir, 'tcx, Self>,
     ) -> &'a mut Vec<Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>> {
         ecx.active_thread_stack_mut()
     }
 
     #[inline(always)]
     fn after_stack_push(ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx> {
-        if ecx.memory.extra.stacked_borrows.is_some() {
-            ecx.retag_return_place()
-        } else {
-            Ok(())
-        }
+        if ecx.memory.extra.stacked_borrows.is_some() { ecx.retag_return_place() } else { Ok(()) }
     }
 
     #[inline(always)]
     fn after_stack_pop(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        frame: Frame<'mir, 'tcx, Tag, FrameData<'tcx>>,
+        mut frame: Frame<'mir, 'tcx, Tag, FrameData<'tcx>>,
         unwinding: bool,
     ) -> InterpResult<'tcx, StackPopJump> {
-        ecx.handle_stack_pop(frame.extra, unwinding)
+        let timing = frame.extra.timing.take();
+        let res = ecx.handle_stack_pop(frame.extra, unwinding);
+        if let Some(profiler) = ecx.machine.profiler.as_ref() {
+            profiler.finish_recording_interval_event(timing.unwrap());
+        }
+        res
     }
 
     #[inline(always)]
@@ -609,55 +712,5 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         ptr: Pointer<Self::PointerTag>,
     ) -> InterpResult<'tcx, u64> {
         intptrcast::GlobalState::ptr_to_int(ptr, memory)
-    }
-}
-
-impl AllocationExtra<Tag> for AllocExtra {
-    #[inline(always)]
-    fn memory_read<'tcx>(
-        alloc: &Allocation<Tag, AllocExtra>,
-        ptr: Pointer<Tag>,
-        size: Size,
-    ) -> InterpResult<'tcx> {
-        if let Some(data_race) = &alloc.extra.data_race {
-            data_race.read(ptr, size)?;
-        }
-        if let Some(stacked_borrows) = &alloc.extra.stacked_borrows {
-            stacked_borrows.memory_read(ptr, size)
-        } else {
-            Ok(())
-        }
-    }
-
-    #[inline(always)]
-    fn memory_written<'tcx>(
-        alloc: &mut Allocation<Tag, AllocExtra>,
-        ptr: Pointer<Tag>,
-        size: Size,
-    ) -> InterpResult<'tcx> {
-        if let Some(data_race) = &mut alloc.extra.data_race {
-            data_race.write(ptr, size)?;
-        }
-        if let Some(stacked_borrows) = &mut alloc.extra.stacked_borrows {
-            stacked_borrows.memory_written(ptr, size)
-        } else {
-            Ok(())
-        }
-    }
-
-    #[inline(always)]
-    fn memory_deallocated<'tcx>(
-        alloc: &mut Allocation<Tag, AllocExtra>,
-        ptr: Pointer<Tag>,
-        size: Size,
-    ) -> InterpResult<'tcx> {
-        if let Some(data_race) = &mut alloc.extra.data_race {
-            data_race.deallocate(ptr, size)?;
-        }
-        if let Some(stacked_borrows) = &mut alloc.extra.stacked_borrows {
-            stacked_borrows.memory_deallocated(ptr, size)
-        } else {
-            Ok(())
-        }
     }
 }

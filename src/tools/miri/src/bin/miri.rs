@@ -1,30 +1,52 @@
-#![feature(rustc_private)]
+#![feature(rustc_private, bool_to_option, stmt_expr_attributes)]
 
-extern crate rustc_middle;
 extern crate rustc_driver;
+extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_interface;
+extern crate rustc_metadata;
+extern crate rustc_middle;
 extern crate rustc_session;
-extern crate rustc_errors;
 
 use std::convert::TryFrom;
 use std::env;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::str::FromStr;
 
 use hex::FromHexError;
 use log::debug;
 
-use rustc_session::{CtfeBacktrace, config::ErrorOutputType};
-use rustc_errors::emitter::{HumanReadableErrorType, ColorConfig};
 use rustc_driver::Compilation;
+use rustc_errors::emitter::{ColorConfig, HumanReadableErrorType};
 use rustc_hir::def_id::LOCAL_CRATE;
-use rustc_middle::ty::TyCtxt;
+use rustc_interface::interface::Config;
+use rustc_middle::{
+    middle::exported_symbols::{ExportedSymbol, SymbolExportLevel},
+    ty::{query::Providers, TyCtxt},
+};
+use rustc_session::{config::ErrorOutputType, search_paths::PathKind, CtfeBacktrace};
 
 struct MiriCompilerCalls {
     miri_config: miri::MiriConfig,
 }
 
 impl rustc_driver::Callbacks for MiriCompilerCalls {
+    fn config(&mut self, config: &mut Config) {
+        config.override_queries = Some(|_, _, external_providers| {
+            external_providers.used_crate_source = |tcx, cnum| {
+                let mut providers = Providers::default();
+                rustc_metadata::provide_extern(&mut providers);
+                let mut crate_source = (providers.used_crate_source)(tcx, cnum);
+                // HACK: rustc will emit "crate ... required to be available in rlib format, but
+                // was not found in this form" errors once we use `tcx.dependency_formats()` if
+                // there's no rlib provided, so setting a dummy path here to workaround those errors.
+                Rc::make_mut(&mut crate_source).rlib = Some((PathBuf::new(), PathKind::All));
+                crate_source
+            };
+        });
+    }
+
     fn after_analysis<'tcx>(
         &mut self,
         compiler: &rustc_interface::interface::Compiler,
@@ -34,11 +56,16 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
 
         queries.global_ctxt().unwrap().peek_mut().enter(|tcx| {
             init_late_loggers(tcx);
-            let (entry_def_id, _) = if let Some((entry_def, x)) = tcx.entry_fn(LOCAL_CRATE) {
+            let (entry_def_id, _) = if let Some((entry_def, x)) = tcx.entry_fn(()) {
                 (entry_def, x)
             } else {
-                let output_ty = ErrorOutputType::HumanReadable(HumanReadableErrorType::Default(ColorConfig::Auto));
-                rustc_session::early_error(output_ty, "miri can only run programs that have a main function");
+                let output_ty = ErrorOutputType::HumanReadable(HumanReadableErrorType::Default(
+                    ColorConfig::Auto,
+                ));
+                rustc_session::early_error(
+                    output_ty,
+                    "miri can only run programs that have a main function",
+                );
             };
             let mut config = self.miri_config.clone();
 
@@ -60,6 +87,39 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
         compiler.session().abort_if_errors();
 
         Compilation::Stop
+    }
+}
+
+struct MiriBeRustCompilerCalls {
+    target_crate: bool,
+}
+
+impl rustc_driver::Callbacks for MiriBeRustCompilerCalls {
+    fn config(&mut self, config: &mut Config) {
+        if config.opts.prints.is_empty() && self.target_crate {
+            // Queries overriden here affect the data stored in `rmeta` files of dependencies,
+            // which will be used later in non-`MIRI_BE_RUSTC` mode.
+            config.override_queries = Some(|_, local_providers, _| {
+                // `exported_symbols()` provided by rustc always returns empty result if
+                // `tcx.sess.opts.output_types.should_codegen()` is false.
+                local_providers.exported_symbols = |tcx, cnum| {
+                    assert_eq!(cnum, LOCAL_CRATE);
+                    tcx.arena.alloc_from_iter(
+                        // This is based on:
+                        // https://github.com/rust-lang/rust/blob/2962e7c0089d5c136f4e9600b7abccfbbde4973d/compiler/rustc_codegen_ssa/src/back/symbol_export.rs#L62-L63
+                        // https://github.com/rust-lang/rust/blob/2962e7c0089d5c136f4e9600b7abccfbbde4973d/compiler/rustc_codegen_ssa/src/back/symbol_export.rs#L174
+                        tcx.reachable_set(()).iter().filter_map(|&local_def_id| {
+                            tcx.codegen_fn_attrs(local_def_id)
+                                .contains_extern_indicator()
+                                .then_some((
+                                    ExportedSymbol::NonGeneric(local_def_id.to_def_id()),
+                                    SymbolExportLevel::C,
+                                ))
+                        }),
+                    )
+                }
+            });
+        }
     }
 }
 
@@ -175,11 +235,7 @@ fn main() {
     if let Some(crate_kind) = env::var_os("MIRI_BE_RUSTC") {
         rustc_driver::init_rustc_env_logger();
 
-        // Don't insert `MIRI_DEFAULT_ARGS`, in particular, `--cfg=miri`, if we are building a
-        // "host" crate. That may cause procedural macros (and probably build scripts) to depend
-        // on Miri-only symbols, such as `miri_resolve_frame`:
-        // https://github.com/rust-lang/miri/issues/1760
-        let insert_default_args = if crate_kind == "target" {
+        let target_crate = if crate_kind == "target" {
             true
         } else if crate_kind == "host" {
             false
@@ -188,8 +244,16 @@ fn main() {
         };
 
         // We cannot use `rustc_driver::main` as we need to adjust the CLI arguments.
-        let mut callbacks = rustc_driver::TimePassesCallbacks::default();
-        run_compiler(env::args().collect(), &mut callbacks, insert_default_args)
+        run_compiler(
+            env::args().collect(),
+            &mut MiriBeRustCompilerCalls { target_crate },
+            // Don't insert `MIRI_DEFAULT_ARGS`, in particular, `--cfg=miri`, if we are building
+            // a "host" crate. That may cause procedural macros (and probably build scripts) to
+            // depend on Miri-only symbols, such as `miri_resolve_frame`:
+            // https://github.com/rust-lang/miri/issues/1760
+            #[rustfmt::skip]
+            /* insert_default_args: */ target_crate,
+        )
     }
 
     // Init loggers the Miri way.
@@ -199,6 +263,9 @@ fn main() {
     let mut miri_config = miri::MiriConfig::default();
     let mut rustc_args = vec![];
     let mut after_dashdash = false;
+
+    // If user has explicitly enabled/disabled isolation
+    let mut isolation_enabled: Option<bool> = None;
     for arg in env::args() {
         if rustc_args.is_empty() {
             // Very first arg: binary name.
@@ -223,11 +290,47 @@ fn main() {
                 "-Zmiri-symbolic-alignment-check" => {
                     miri_config.check_alignment = miri::AlignmentCheck::Symbolic;
                 }
+                "-Zmiri-disable-abi-check" => {
+                    miri_config.check_abi = false;
+                }
                 "-Zmiri-disable-isolation" => {
-                    miri_config.communicate = true;
+                    if matches!(isolation_enabled, Some(true)) {
+                        panic!(
+                            "-Zmiri-disable-isolation cannot be used along with -Zmiri-isolation-error"
+                        );
+                    } else {
+                        isolation_enabled = Some(false);
+                    }
+                    miri_config.isolated_op = miri::IsolatedOp::Allow;
+                }
+                arg if arg.starts_with("-Zmiri-isolation-error=") => {
+                    if matches!(isolation_enabled, Some(false)) {
+                        panic!(
+                            "-Zmiri-isolation-error cannot be used along with -Zmiri-disable-isolation"
+                        );
+                    } else {
+                        isolation_enabled = Some(true);
+                    }
+
+                    miri_config.isolated_op = match arg
+                        .strip_prefix("-Zmiri-isolation-error=")
+                        .unwrap()
+                    {
+                        "abort" => miri::IsolatedOp::Reject(miri::RejectOpWith::Abort),
+                        "hide" => miri::IsolatedOp::Reject(miri::RejectOpWith::NoWarning),
+                        "warn" => miri::IsolatedOp::Reject(miri::RejectOpWith::Warning),
+                        "warn-nobacktrace" =>
+                            miri::IsolatedOp::Reject(miri::RejectOpWith::WarningWithoutBacktrace),
+                        _ => panic!(
+                            "-Zmiri-isolation-error must be `abort`, `hide`, `warn`, or `warn-nobacktrace`"
+                        ),
+                    };
                 }
                 "-Zmiri-ignore-leaks" => {
                     miri_config.ignore_leaks = true;
+                }
+                "-Zmiri-panic-on-unsupported" => {
+                    miri_config.panic_on_unsupported = true;
                 }
                 "-Zmiri-track-raw-pointers" => {
                     miri_config.track_raw = true;
@@ -249,10 +352,7 @@ fn main() {
                             err => panic!("unknown error decoding -Zmiri-seed as hex: {:?}", err),
                         });
                     if seed_raw.len() > 8 {
-                        panic!(
-                            "-Zmiri-seed must be at most 8 bytes, was {}",
-                            seed_raw.len()
-                        );
+                        panic!("-Zmiri-seed must be at most 8 bytes, was {}", seed_raw.len());
                     }
 
                     let mut bytes = [0; 8];
@@ -260,17 +360,19 @@ fn main() {
                     miri_config.seed = Some(u64::from_be_bytes(bytes));
                 }
                 arg if arg.starts_with("-Zmiri-env-exclude=") => {
-                    miri_config.excluded_env_vars
+                    miri_config
+                        .excluded_env_vars
                         .push(arg.strip_prefix("-Zmiri-env-exclude=").unwrap().to_owned());
                 }
                 arg if arg.starts_with("-Zmiri-track-pointer-tag=") => {
-                    let id: u64 = match arg.strip_prefix("-Zmiri-track-pointer-tag=").unwrap().parse() {
-                        Ok(id) => id,
-                        Err(err) => panic!(
-                            "-Zmiri-track-pointer-tag requires a valid `u64` argument: {}",
-                            err
-                        ),
-                    };
+                    let id: u64 =
+                        match arg.strip_prefix("-Zmiri-track-pointer-tag=").unwrap().parse() {
+                            Ok(id) => id,
+                            Err(err) => panic!(
+                                "-Zmiri-track-pointer-tag requires a valid `u64` argument: {}",
+                                err
+                            ),
+                        };
                     if let Some(id) = miri::PtrId::new(id) {
                         miri_config.tracked_pointer_tag = Some(id);
                     } else {
@@ -280,10 +382,8 @@ fn main() {
                 arg if arg.starts_with("-Zmiri-track-call-id=") => {
                     let id: u64 = match arg.strip_prefix("-Zmiri-track-call-id=").unwrap().parse() {
                         Ok(id) => id,
-                        Err(err) => panic!(
-                            "-Zmiri-track-call-id requires a valid `u64` argument: {}",
-                            err
-                        ),
+                        Err(err) =>
+                            panic!("-Zmiri-track-call-id requires a valid `u64` argument: {}", err),
                     };
                     if let Some(id) = miri::CallId::new(id) {
                         miri_config.tracked_call_id = Some(id);
@@ -292,22 +392,34 @@ fn main() {
                     }
                 }
                 arg if arg.starts_with("-Zmiri-track-alloc-id=") => {
-                    let id: u64 = match arg.strip_prefix("-Zmiri-track-alloc-id=").unwrap().parse() {
+                    let id: u64 = match arg.strip_prefix("-Zmiri-track-alloc-id=").unwrap().parse()
+                    {
                         Ok(id) => id,
-                        Err(err) => panic!(
-                            "-Zmiri-track-alloc-id requires a valid `u64` argument: {}",
-                            err
-                        ),
+                        Err(err) =>
+                            panic!("-Zmiri-track-alloc-id requires a valid `u64` argument: {}", err),
                     };
                     miri_config.tracked_alloc_id = Some(miri::AllocId(id));
                 }
                 arg if arg.starts_with("-Zmiri-compare-exchange-weak-failure-rate=") => {
-                    let rate = match arg.strip_prefix("-Zmiri-compare-exchange-weak-failure-rate=").unwrap().parse::<f64>() {
+                    let rate = match arg
+                        .strip_prefix("-Zmiri-compare-exchange-weak-failure-rate=")
+                        .unwrap()
+                        .parse::<f64>()
+                    {
                         Ok(rate) if rate >= 0.0 && rate <= 1.0 => rate,
-                        Ok(_) => panic!("-Zmiri-compare-exchange-weak-failure-rate must be between `0.0` and `1.0`"),
-                        Err(err) => panic!("-Zmiri-compare-exchange-weak-failure-rate requires a `f64` between `0.0` and `1.0`: {}", err),
+                        Ok(_) => panic!(
+                            "-Zmiri-compare-exchange-weak-failure-rate must be between `0.0` and `1.0`"
+                        ),
+                        Err(err) => panic!(
+                            "-Zmiri-compare-exchange-weak-failure-rate requires a `f64` between `0.0` and `1.0`: {}",
+                            err
+                        ),
                     };
                     miri_config.cmpxchg_weak_failure_rate = rate;
+                }
+                arg if arg.starts_with("-Zmiri-measureme=") => {
+                    let measureme_out = arg.strip_prefix("-Zmiri-measureme=").unwrap();
+                    miri_config.measureme_out = Some(measureme_out.to_string());
                 }
                 _ => {
                     // Forward to rustc.
@@ -319,5 +431,9 @@ fn main() {
 
     debug!("rustc arguments: {:?}", rustc_args);
     debug!("crate arguments: {:?}", miri_config.args);
-    run_compiler(rustc_args, &mut MiriCompilerCalls { miri_config }, /* insert_default_args: */ true)
+    run_compiler(
+        rustc_args,
+        &mut MiriCompilerCalls { miri_config },
+        /* insert_default_args: */ true,
+    )
 }

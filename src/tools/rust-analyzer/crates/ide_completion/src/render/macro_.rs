@@ -1,6 +1,6 @@
 //! Renderer for macro invocations.
 
-use hir::{Documentation, HasSource};
+use hir::HasSource;
 use ide_db::SymbolKind;
 use syntax::display::macro_label;
 
@@ -12,7 +12,7 @@ use crate::{
 pub(crate) fn render_macro<'a>(
     ctx: RenderContext<'a>,
     import_to_add: Option<ImportEdit>,
-    name: String,
+    name: hir::Name,
     macro_: hir::MacroDef,
 ) -> Option<CompletionItem> {
     let _p = profile::span("render_macro");
@@ -24,13 +24,14 @@ struct MacroRender<'a> {
     ctx: RenderContext<'a>,
     name: String,
     macro_: hir::MacroDef,
-    docs: Option<Documentation>,
+    docs: Option<hir::Documentation>,
     bra: &'static str,
     ket: &'static str,
 }
 
 impl<'a> MacroRender<'a> {
-    fn new(ctx: RenderContext<'a>, name: String, macro_: hir::MacroDef) -> MacroRender<'a> {
+    fn new(ctx: RenderContext<'a>, name: hir::Name, macro_: hir::MacroDef) -> MacroRender<'a> {
+        let name = name.to_string();
         let docs = ctx.docs(macro_);
         let docs_str = docs.as_ref().map_or("", |s| s.as_str());
         let (bra, ket) = guess_macro_braces(&name, docs_str);
@@ -74,7 +75,11 @@ impl<'a> MacroRender<'a> {
         if self.needs_bang() && self.ctx.snippet_cap().is_some() {
             format!("{}!{}…{}", self.name, self.bra, self.ket)
         } else {
-            self.banged_name()
+            if self.macro_.kind() == hir::MacroKind::Derive {
+                self.name.to_string()
+            } else {
+                self.banged_name()
+            }
         }
     }
 

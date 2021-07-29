@@ -92,7 +92,7 @@ impl HirDisplay for Function {
             &data.ret_type
         } else {
             match &*data.ret_type {
-                TypeRef::ImplTrait(bounds) => match &bounds[0] {
+                TypeRef::ImplTrait(bounds) => match bounds[0].as_ref() {
                     TypeBound::Path(path) => {
                         path.segments().iter().last().unwrap().args_and_bindings.unwrap().bindings
                             [0]
@@ -170,7 +170,7 @@ impl HirDisplay for Field {
     fn hir_fmt(&self, f: &mut HirFormatter) -> Result<(), HirDisplayError> {
         write_visibility(self.parent.module(f.db).id, self.visibility(f.db), f)?;
         write!(f, "{}: ", self.name(f.db))?;
-        self.signature_ty(f.db).hir_fmt(f)
+        self.ty(f.db).hir_fmt(f)
     }
 }
 
@@ -427,10 +427,6 @@ impl HirDisplay for Trait {
         write!(f, "trait {}", data.name)?;
         let def_id = GenericDefId::TraitId(self.id);
         write_generic_params(def_id, f)?;
-        if !data.bounds.is_empty() {
-            write!(f, ": ")?;
-            f.write_joined(&*data.bounds, " + ")?;
-        }
         write_where_clause(def_id, f)?;
         Ok(())
     }

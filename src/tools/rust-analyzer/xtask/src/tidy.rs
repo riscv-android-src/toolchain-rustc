@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use xshell::{cmd, pushd, pushenv, read_file};
 
@@ -36,7 +33,7 @@ fn check_code_formatting() {
     let _e = pushenv("RUSTUP_TOOLCHAIN", "stable");
     crate::ensure_rustfmt().unwrap();
     let res = cmd!("cargo fmt -- --check").run();
-    if !res.is_ok() {
+    if res.is_err() {
         let _ = cmd!("cargo fmt").run();
     }
     res.unwrap()
@@ -196,7 +193,9 @@ https://github.blog/2015-06-08-how-to-undo-almost-anything-with-git/#redo-after-
 fn deny_clippy(path: &Path, text: &str) {
     let ignore = &[
         // The documentation in string literals may contain anything for its own purposes
-        "ide_completion/src/generated_lint_completions.rs",
+        "ide_db/src/helpers/generated_lints.rs",
+        // The tests test clippy lint hovers
+        "ide/src/hover.rs",
     ];
     if ignore.iter().any(|p| path.ends_with(p)) {
         return;
@@ -247,19 +246,19 @@ Zlib OR Apache-2.0 OR MIT
         .map(|it| it.trim())
         .map(|it| it[r#""license":"#.len()..].trim_matches('"'))
         .collect::<Vec<_>>();
-    licenses.sort();
+    licenses.sort_unstable();
     licenses.dedup();
     if licenses != expected {
         let mut diff = String::new();
 
-        diff += &format!("New Licenses:\n");
+        diff.push_str("New Licenses:\n");
         for &l in licenses.iter() {
             if !expected.contains(&l) {
                 diff += &format!("  {}\n", l)
             }
         }
 
-        diff += &format!("\nMissing Licenses:\n");
+        diff.push_str("\nMissing Licenses:\n");
         for &l in expected.iter() {
             if !licenses.contains(&l) {
                 diff += &format!("  {}\n", l)
@@ -278,11 +277,12 @@ fn check_todo(path: &Path, text: &str) {
         // Some of our assists generate `todo!()`.
         "handlers/add_turbo_fish.rs",
         "handlers/generate_function.rs",
+        "handlers/fill_match_arms.rs",
         // To support generating `todo!()` in assists, we have `expr_todo()` in
         // `ast::make`.
         "ast/make.rs",
         // The documentation in string literals may contain anything for its own purposes
-        "ide_completion/src/generated_lint_completions.rs",
+        "ide_db/src/helpers/generated_lints.rs",
     ];
     if need_todo.iter().any(|p| path.ends_with(p)) {
         return;
@@ -312,7 +312,7 @@ fn check_dbg(path: &Path, text: &str) {
         "ide_completion/src/completions/postfix.rs",
         // The documentation in string literals may contain anything for its own purposes
         "ide_completion/src/lib.rs",
-        "ide_completion/src/generated_lint_completions.rs",
+        "ide_db/src/helpers/generated_lints.rs",
         // test for doc test for remove_dbg
         "src/tests/generated.rs",
     ];
@@ -347,9 +347,8 @@ struct TidyDocs {
 
 impl TidyDocs {
     fn visit(&mut self, path: &Path, text: &str) {
-        // Test hopefully don't really need comments, and for assists we already
-        // have special comments which are source of doc tests and user docs.
-        if is_exclude_dir(path, &["tests", "test_data"]) {
+        // Tests and diagnostic fixes don't need module level comments.
+        if is_exclude_dir(path, &["tests", "test_data", "fixes", "grammar"]) {
             return;
         }
 
@@ -393,35 +392,8 @@ impl TidyDocs {
             )
         }
 
-        let poorly_documented = [
-            "hir",
-            "hir_expand",
-            "ide",
-            "mbe",
-            "parser",
-            "profile",
-            "project_model",
-            "syntax",
-            "tt",
-            "hir_ty",
-        ];
-
-        let mut has_fixmes =
-            poorly_documented.iter().map(|it| (*it, false)).collect::<HashMap<&str, bool>>();
-        'outer: for path in self.contains_fixme {
-            for krate in poorly_documented.iter() {
-                if path.components().any(|it| it.as_os_str() == *krate) {
-                    has_fixmes.insert(krate, true);
-                    continue 'outer;
-                }
-            }
+        for path in self.contains_fixme {
             panic!("FIXME doc in a fully-documented crate: {}", path.display())
-        }
-
-        for (krate, has_fixme) in has_fixmes.iter() {
-            if !has_fixme {
-                panic!("crate {} is fully documented :tada:, remove it from the list of poorly documented crates", krate)
-            }
         }
     }
 }

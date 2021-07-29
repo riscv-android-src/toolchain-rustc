@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "measureme"
-version = "9.1.0"
+version = "9.1.2"
 authors = ["Wesley Wiser <wwiser@gmail.com>", "Michael Woerister <michaelwoerister@posteo>"]
 description = "Support crate for rustc's self-profiling feature"
 homepage = "https://github.com/rust-lang/measureme"
@@ -34,8 +34,8 @@ version = "1.0"
 
 [features]
 nightly = []
-[target."cfg(all(target_arch = \"x86_64\", target_os = \"linux\"))".dependencies.memmap]
-version = "0.7"
+[target."cfg(all(target_arch = \"x86_64\", target_os = \"linux\"))".dependencies.memmap2]
+version = "0.2.1"
 
 [target."cfg(all(target_arch = \"x86_64\", target_os = \"linux\"))".dependencies.perf-event-open-sys]
 version = "1.0.1"

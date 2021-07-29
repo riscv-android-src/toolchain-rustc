@@ -1,13 +1,4 @@
-#![allow(
-    clippy::blocks_in_if_conditions,
-    clippy::cast_possible_truncation,
-    clippy::map_unwrap_or,
-    clippy::needless_pass_by_value,
-    clippy::option_if_let_else,
-    clippy::range_plus_one,
-    clippy::single_match_else,
-    clippy::too_many_lines
-)]
+#![allow(clippy::blocks_in_if_conditions, clippy::range_plus_one)]
 
 extern crate proc_macro;
 

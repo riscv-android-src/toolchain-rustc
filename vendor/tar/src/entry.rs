@@ -40,6 +40,7 @@ pub struct EntryFields<'a> {
     pub unpack_xattrs: bool,
     pub preserve_permissions: bool,
     pub preserve_mtime: bool,
+    pub overwrite: bool,
 }
 
 pub enum EntryIo<'a> {
@@ -139,6 +140,14 @@ impl<'a, R: Read> Entry<'a, R> {
     /// This provides access to the metadata for this entry in the archive.
     pub fn header(&self) -> &Header {
         &self.fields.header
+    }
+
+    /// Returns access to the size of this entry in the archive.
+    ///
+    /// In the event the size is stored in a pax extension, that size value
+    /// will be referenced. Otherwise, the entry size will be stored in the header.
+    pub fn size(&self) -> u64 {
+        self.fields.size
     }
 
     /// Returns the starting position, in bytes, of the header of this entry in
@@ -484,17 +493,26 @@ impl<'a> EntryFields<'a> {
                     )
                 })?;
             } else {
-                symlink(&src, dst).map_err(|err| {
-                    Error::new(
-                        err.kind(),
-                        format!(
-                            "{} when symlinking {} to {}",
-                            err,
-                            src.display(),
-                            dst.display()
-                        ),
-                    )
-                })?;
+                symlink(&src, dst)
+                    .or_else(|err_io| {
+                        if err_io.kind() == io::ErrorKind::AlreadyExists && self.overwrite {
+                            // remove dest and try once more
+                            std::fs::remove_file(dst).and_then(|()| symlink(&src, dst))
+                        } else {
+                            Err(err_io)
+                        }
+                    })
+                    .map_err(|err| {
+                        Error::new(
+                            err.kind(),
+                            format!(
+                                "{} when symlinking {} to {}",
+                                err,
+                                src.display(),
+                                dst.display()
+                            ),
+                        )
+                    })?;
             };
             return Ok(Unpacked::__Nonexhaustive);
 
@@ -545,17 +563,19 @@ impl<'a> EntryFields<'a> {
         // is attackable; if an existing file is found unlink it.
         fn open(dst: &Path) -> io::Result<std::fs::File> {
             OpenOptions::new().write(true).create_new(true).open(dst)
-        };
+        }
         let mut f = (|| -> io::Result<std::fs::File> {
             let mut f = open(dst).or_else(|err| {
                 if err.kind() != ErrorKind::AlreadyExists {
                     Err(err)
-                } else {
+                } else if self.overwrite {
                     match fs::remove_file(dst) {
                         Ok(()) => open(dst),
                         Err(ref e) if e.kind() == io::ErrorKind::NotFound => open(dst),
                         Err(e) => Err(e),
                     }
+                } else {
+                    Err(err)
                 }
             })?;
             for io in self.data.drain(..) {
@@ -590,6 +610,13 @@ impl<'a> EntryFields<'a> {
 
         if self.preserve_mtime {
             if let Ok(mtime) = self.header.mtime() {
+                // For some more information on this see the comments in
+                // `Header::fill_platform_from`, but the general idea is that
+                // we're trying to avoid 0-mtime files coming out of archives
+                // since some tools don't ingest them well. Perhaps one day
+                // when Cargo stops working with 0-mtime archives we can remove
+                // this.
+                let mtime = if mtime == 0 { 1 } else { mtime };
                 let mtime = FileTime::from_unix_time(mtime as i64, 0);
                 filetime::set_file_handle_times(&f, Some(mtime), Some(mtime)).map_err(|e| {
                     TarError::new(&format!("failed to set mtime for `{}`", dst.display()), e)

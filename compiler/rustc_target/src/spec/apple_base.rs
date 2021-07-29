@@ -22,10 +22,12 @@ pub fn opts(os: &str) -> TargetOptions {
         // macOS has -dead_strip, which doesn't rely on function_sections
         function_sections: false,
         dynamic_linking: true,
+        linker_is_gnu: false,
         executables: true,
-        os_family: Some("unix".to_string()),
+        families: vec!["unix".to_string()],
         is_like_osx: true,
         dwarf_version: Some(2),
+        eliminate_frame_pointer: false,
         has_rpath: true,
         dll_suffix: ".dylib".to_string(),
         archive_format: "darwin".to_string(),

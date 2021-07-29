@@ -1,19 +1,19 @@
 //! Completes constants and paths in patterns.
 
-use crate::{CompletionContext, Completions};
+use crate::{context::PatternRefutability, CompletionContext, Completions};
 
 /// Completes constants and paths in patterns.
 pub(crate) fn complete_pattern(acc: &mut Completions, ctx: &CompletionContext) {
-    if !(ctx.is_pat_binding_or_const || ctx.is_irrefutable_pat_binding) {
-        return;
-    }
-    if ctx.record_pat_syntax.is_some() {
-        return;
-    }
+    let refutable = match ctx.is_pat_or_const {
+        Some(it) => it == PatternRefutability::Refutable,
+        None => return,
+    };
 
-    if !ctx.is_irrefutable_pat_binding {
-        if let Some(ty) = ctx.expected_type.as_ref() {
-            super::complete_enum_variants(acc, ctx, ty, |acc, ctx, variant, path| {
+    if refutable {
+        if let Some(hir::Adt::Enum(e)) =
+            ctx.expected_type.as_ref().and_then(|ty| ty.strip_references().as_adt())
+        {
+            super::complete_enum_variants(acc, ctx, e, |acc, ctx, variant, path| {
                 acc.add_qualified_variant_pat(ctx, variant, path.clone());
                 acc.add_qualified_enum_variant(ctx, variant, path);
             });
@@ -29,14 +29,14 @@ pub(crate) fn complete_pattern(acc: &mut Completions, ctx: &CompletionContext) {
                     acc.add_struct_pat(ctx, *strukt, Some(name.clone()));
                     true
                 }
-                hir::ModuleDef::Variant(variant) if !ctx.is_irrefutable_pat_binding => {
+                hir::ModuleDef::Variant(variant) if refutable => {
                     acc.add_variant_pat(ctx, *variant, Some(name.clone()));
                     true
                 }
                 hir::ModuleDef::Adt(hir::Adt::Enum(..))
                 | hir::ModuleDef::Variant(..)
                 | hir::ModuleDef::Const(..)
-                | hir::ModuleDef::Module(..) => !ctx.is_irrefutable_pat_binding,
+                | hir::ModuleDef::Module(..) => refutable,
                 _ => false,
             },
             hir::ScopeDef::MacroDef(_) => true,
@@ -45,13 +45,13 @@ pub(crate) fn complete_pattern(acc: &mut Completions, ctx: &CompletionContext) {
                     acc.add_struct_pat(ctx, strukt, Some(name.clone()));
                     true
                 }
-                Some(hir::Adt::Enum(_)) => !ctx.is_irrefutable_pat_binding,
+                Some(hir::Adt::Enum(_)) => refutable,
                 _ => true,
             },
             _ => false,
         };
         if add_resolution {
-            acc.add_resolution(ctx, name.to_string(), &res);
+            acc.add_resolution(ctx, name, &res);
         }
     });
 }
@@ -398,6 +398,33 @@ impl Foo {
                 sp Self
                 en Foo
             "#]],
+        )
+    }
+
+    #[test]
+    fn completes_in_record_field_pat() {
+        check_snippet(
+            r#"
+struct Foo { bar: Bar }
+struct Bar(u32);
+fn outer(Foo { bar: $0 }: Foo) {}
+"#,
+            expect![[r#"
+                bn Foo Foo { bar$1 }$0
+                bn Bar Bar($1)$0
+            "#]],
+        )
+    }
+
+    #[test]
+    fn skips_in_record_field_pat_name() {
+        check_snippet(
+            r#"
+struct Foo { bar: Bar }
+struct Bar(u32);
+fn outer(Foo { bar$0 }: Foo) {}
+"#,
+            expect![[r#""#]],
         )
     }
 }

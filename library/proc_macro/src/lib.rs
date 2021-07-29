@@ -12,7 +12,6 @@
 #![stable(feature = "proc_macro_lib", since = "1.15.0")]
 #![deny(missing_docs)]
 #![doc(
-    html_root_url = "https://doc.rust-lang.org/nightly/",
     html_playground_url = "https://play.rust-lang.org/",
     issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
     test(no_crate_inject, attr(deny(warnings))),
@@ -21,8 +20,7 @@
 #![feature(rustc_allow_const_fn_unstable)]
 #![feature(nll)]
 #![feature(staged_api)]
-#![cfg_attr(bootstrap, feature(const_fn))]
-#![cfg_attr(not(bootstrap), feature(const_fn_trait_bound))]
+#![feature(const_fn_trait_bound)]
 #![feature(const_fn_fn_ptr_basics)]
 #![feature(allow_internal_unstable)]
 #![feature(decl_macro)]
@@ -33,6 +31,7 @@
 #![feature(restricted_std)]
 #![feature(rustc_attrs)]
 #![feature(min_specialization)]
+#![feature(bound_cloned)]
 #![recursion_limit = "256"]
 
 #[unstable(feature = "proc_macro_internals", issue = "27812")]
@@ -45,7 +44,7 @@ mod diagnostic;
 pub use diagnostic::{Diagnostic, Level, MultiSpan};
 
 use std::cmp::Ordering;
-use std::ops::{Bound, RangeBounds};
+use std::ops::RangeBounds;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::{error, fmt, iter, mem};
@@ -89,6 +88,12 @@ impl !Sync for TokenStream {}
 #[derive(Debug)]
 pub struct LexError {
     _inner: (),
+}
+
+impl LexError {
+    fn new() -> Self {
+        LexError { _inner: () }
+    }
 }
 
 #[stable(feature = "proc_macro_lexerror_impls", since = "1.44.0")]
@@ -265,7 +270,7 @@ pub mod token_stream {
 /// Unquoting is done with `$`, and works by taking the single next ident as the unquoted term.
 /// To quote `$` itself, use `$$`.
 #[unstable(feature = "proc_macro_quote", issue = "54722")]
-#[allow_internal_unstable(proc_macro_def_site)]
+#[allow_internal_unstable(proc_macro_def_site, proc_macro_internals)]
 #[rustc_builtin_macro]
 pub macro quote($($t:tt)*) {
     /* compiler built-in */
@@ -392,6 +397,20 @@ impl Span {
     #[unstable(feature = "proc_macro_span", issue = "54725")]
     pub fn source_text(&self) -> Option<String> {
         self.0.source_text()
+    }
+
+    // Used by the implementation of `Span::quote`
+    #[doc(hidden)]
+    #[unstable(feature = "proc_macro_internals", issue = "27812")]
+    pub fn save_span(&self) -> usize {
+        self.0.save_span()
+    }
+
+    // Used by the implementation of `Span::quote`
+    #[doc(hidden)]
+    #[unstable(feature = "proc_macro_internals", issue = "27812")]
+    pub fn recover_proc_macro_span(id: usize) -> Span {
+        Span(bridge::client::Span::recover_proc_macro_span(id))
     }
 
     diagnostic_method!(error, Level::Error);
@@ -1144,16 +1163,29 @@ impl Literal {
     // was 'c' or whether it was '\u{63}'.
     #[unstable(feature = "proc_macro_span", issue = "54725")]
     pub fn subspan<R: RangeBounds<usize>>(&self, range: R) -> Option<Span> {
-        // HACK(eddyb) something akin to `Option::cloned`, but for `Bound<&T>`.
-        fn cloned_bound<T: Clone>(bound: Bound<&T>) -> Bound<T> {
-            match bound {
-                Bound::Included(x) => Bound::Included(x.clone()),
-                Bound::Excluded(x) => Bound::Excluded(x.clone()),
-                Bound::Unbounded => Bound::Unbounded,
-            }
-        }
+        self.0.subspan(range.start_bound().cloned(), range.end_bound().cloned()).map(Span)
+    }
+}
 
-        self.0.subspan(cloned_bound(range.start_bound()), cloned_bound(range.end_bound())).map(Span)
+/// Parse a single literal from its stringified representation.
+///
+/// In order to parse successfully, the input string must not contain anything
+/// but the literal token. Specifically, it must not contain whitespace or
+/// comments in addition to the literal.
+///
+/// The resulting literal token will have a `Span::call_site()` span.
+///
+/// NOTE: some errors may cause panics instead of returning `LexError`. We
+/// reserve the right to change these errors into `LexError`s later.
+#[stable(feature = "proc_macro_literal_parse", since = "1.54.0")]
+impl FromStr for Literal {
+    type Err = LexError;
+
+    fn from_str(src: &str) -> Result<Self, LexError> {
+        match bridge::client::Literal::from_str(src) {
+            Ok(literal) => Ok(Literal(literal)),
+            Err(()) => Err(LexError::new()),
+        }
     }
 }
 

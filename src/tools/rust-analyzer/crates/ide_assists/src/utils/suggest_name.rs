@@ -6,7 +6,7 @@ use itertools::Itertools;
 use stdx::to_lower_snake_case;
 use syntax::{
     ast::{self, NameOwner},
-    match_ast, AstNode,
+    match_ast, AstNode, SmolStr,
 };
 
 /// Trait names, that will be ignored when in `impl Trait` and `dyn Trait`
@@ -57,6 +57,14 @@ const USELESS_METHODS: &[&str] = &[
     "iter_mut",
 ];
 
+pub(crate) fn for_generic_parameter(ty: &ast::ImplTraitType) -> SmolStr {
+    let c = ty
+        .type_bound_list()
+        .and_then(|bounds| bounds.syntax().text().char_at(0.into()))
+        .unwrap_or('T');
+    c.encode_utf8(&mut [0; 4]).into()
+}
+
 /// Suggest name of variable for given expression
 ///
 /// **NOTE**: it is caller's responsibility to guarantee uniqueness of the name.
@@ -75,7 +83,8 @@ const USELESS_METHODS: &[&str] = &[
 /// It also applies heuristics to filter out less informative names
 ///
 /// Currently it sticks to the first name found.
-pub(crate) fn variable(expr: &ast::Expr, sema: &Semantics<'_, RootDatabase>) -> String {
+// FIXME: Microoptimize and return a `SmolStr` here.
+pub(crate) fn for_variable(expr: &ast::Expr, sema: &Semantics<'_, RootDatabase>) -> String {
     // `from_param` does not benifit from stripping
     // it need the largest context possible
     // so we check firstmost
@@ -227,7 +236,7 @@ fn name_of_type(ty: &hir::Type, db: &RootDatabase) -> Option<String> {
         let name = adt.name(db).to_string();
 
         if WRAPPER_TYPES.contains(&name.as_str()) {
-            let inner_ty = ty.type_parameters().next()?;
+            let inner_ty = ty.type_arguments().next()?;
             return name_of_type(&inner_ty, db);
         }
 
@@ -276,7 +285,7 @@ mod tests {
             frange.range,
             "selection is not an expression(yet contained in one)"
         );
-        let name = variable(&expr, &sema);
+        let name = for_variable(&expr, &sema);
         assert_eq!(&name, expected);
     }
 

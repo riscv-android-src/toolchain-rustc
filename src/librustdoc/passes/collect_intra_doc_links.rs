@@ -37,9 +37,6 @@ use crate::html::markdown::{markdown_links, MarkdownLink};
 use crate::lint::{BROKEN_INTRA_DOC_LINKS, PRIVATE_INTRA_DOC_LINKS};
 use crate::passes::Pass;
 
-mod early;
-crate use early::IntraLinkCrateLoader;
-
 crate const COLLECT_INTRA_DOC_LINKS: Pass = Pass {
     name: "collect-intra-doc-links",
     run: collect_intra_doc_links,
@@ -91,10 +88,10 @@ impl Res {
         }
     }
 
-    fn name(self, tcx: TyCtxt<'_>) -> String {
+    fn name(self, tcx: TyCtxt<'_>) -> Symbol {
         match self {
-            Res::Def(_, id) => tcx.item_name(id).to_string(),
-            Res::Primitive(prim) => prim.as_str().to_string(),
+            Res::Def(_, id) => tcx.item_name(id),
+            Res::Primitive(prim) => prim.as_sym(),
         }
     }
 
@@ -296,7 +293,7 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
     ) -> Result<(Res, Option<String>), ErrorKind<'path>> {
         let tcx = self.cx.tcx;
         let no_res = || ResolutionFailure::NotResolved {
-            module_id,
+            module_id: module_id.into(),
             partial_res: None,
             unresolved: path_str.into(),
         };
@@ -388,7 +385,7 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
                         ty::AssocKind::Const => "associatedconstant",
                         ty::AssocKind::Type => "associatedtype",
                     };
-                    let fragment = format!("{}#{}.{}", prim_ty.as_str(), out, item_name);
+                    let fragment = format!("{}#{}.{}", prim_ty.as_sym(), out, item_name);
                     (Res::Primitive(prim_ty), fragment, Some((kind.as_def_kind(), item.def_id)))
                 })
         })
@@ -481,7 +478,7 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
                             AnchorFailure::RustdocAnchorConflict(res),
                         ));
                     }
-                    return Ok((res, Some(ty.as_str().to_owned())));
+                    return Ok((res, Some(ty.as_sym().to_string())));
                 }
                 _ => return Ok((res, extra_fragment.clone())),
             }
@@ -524,7 +521,7 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
                     // but the disambiguator logic expects the associated item.
                     // Store the kind in a side channel so that only the disambiguator logic looks at it.
                     if let Some((kind, id)) = side_channel {
-                        self.kind_side_channel.set(Some((kind, id)));
+                        self.kind_side_channel.set(Some((kind, id.into())));
                     }
                     Ok((res, Some(fragment)))
                 };
@@ -795,7 +792,7 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
         let parent_node = if item.is_fake() {
             None
         } else {
-            find_nearest_parent_module(self.cx.tcx, item.def_id)
+            find_nearest_parent_module(self.cx.tcx, item.def_id.expect_real())
         };
 
         if parent_node.is_some() {
@@ -807,31 +804,34 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
         let self_id = if item.is_fake() {
             None
         // Checking if the item is a field in an enum variant
-        } else if (matches!(self.cx.tcx.def_kind(item.def_id), DefKind::Field)
+        } else if (matches!(self.cx.tcx.def_kind(item.def_id.expect_real()), DefKind::Field)
             && matches!(
-                self.cx.tcx.def_kind(self.cx.tcx.parent(item.def_id).unwrap()),
+                self.cx.tcx.def_kind(self.cx.tcx.parent(item.def_id.expect_real()).unwrap()),
                 DefKind::Variant
             ))
         {
-            self.cx.tcx.parent(item.def_id).and_then(|item_id| self.cx.tcx.parent(item_id))
+            self.cx
+                .tcx
+                .parent(item.def_id.expect_real())
+                .and_then(|item_id| self.cx.tcx.parent(item_id))
         } else if matches!(
-            self.cx.tcx.def_kind(item.def_id),
+            self.cx.tcx.def_kind(item.def_id.expect_real()),
             DefKind::AssocConst
                 | DefKind::AssocFn
                 | DefKind::AssocTy
                 | DefKind::Variant
                 | DefKind::Field
         ) {
-            self.cx.tcx.parent(item.def_id)
+            self.cx.tcx.parent(item.def_id.expect_real())
         // HACK(jynelson): `clean` marks associated types as `TypedefItem`, not as `AssocTypeItem`.
         // Fixing this breaks `fn render_deref_methods`.
         // As a workaround, see if the parent of the item is an `impl`; if so this must be an associated item,
         // regardless of what rustdoc wants to call it.
-        } else if let Some(parent) = self.cx.tcx.parent(item.def_id) {
+        } else if let Some(parent) = self.cx.tcx.parent(item.def_id.expect_real()) {
             let parent_kind = self.cx.tcx.def_kind(parent);
-            Some(if parent_kind == DefKind::Impl { parent } else { item.def_id })
+            Some(if parent_kind == DefKind::Impl { parent } else { item.def_id.expect_real() })
         } else {
-            Some(item.def_id)
+            Some(item.def_id.expect_real())
         };
 
         // FIXME(jynelson): this shouldn't go through stringification, rustdoc should just use the DefId directly
@@ -856,7 +856,7 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
         let inner_docs = item.inner_docs(self.cx.tcx);
 
         if item.is_mod() && inner_docs {
-            self.mod_ids.push(item.def_id);
+            self.mod_ids.push(item.def_id.expect_real());
         }
 
         // We want to resolve in the lexical scope of the documentation.
@@ -869,7 +869,7 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
             let (krate, parent_node) = if let Some(id) = parent_module {
                 (id.krate, Some(id))
             } else {
-                (item.def_id.krate, parent_node)
+                (item.def_id.krate(), parent_node)
             };
             // NOTE: if there are links that start in one crate and end in another, this will not resolve them.
             // This is a degenerate case and it's not supported by rustdoc.
@@ -883,7 +883,7 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
 
         Some(if item.is_mod() {
             if !inner_docs {
-                self.mod_ids.push(item.def_id);
+                self.mod_ids.push(item.def_id.expect_real());
             }
 
             let ret = self.fold_item_recur(item);
@@ -1145,7 +1145,7 @@ impl LinkCollector<'_, '_> {
                         return None;
                     }
                     res = prim;
-                    fragment = Some(prim.name(self.cx.tcx));
+                    fragment = Some(prim.name(self.cx.tcx).to_string());
                 } else {
                     // `[char]` when a `char` module is in scope
                     let candidates = vec![res, prim];
@@ -1199,15 +1199,17 @@ impl LinkCollector<'_, '_> {
             // item can be non-local e.g. when using #[doc(primitive = "pointer")]
             if let Some((src_id, dst_id)) = id
                 .as_local()
-                .and_then(|dst_id| item.def_id.as_local().map(|src_id| (src_id, dst_id)))
+                // The `expect_real()` should be okay because `local_def_id_to_hir_id`
+                // would presumably panic if a fake `DefIndex` were passed.
+                .and_then(|dst_id| {
+                    item.def_id.expect_real().as_local().map(|src_id| (src_id, dst_id))
+                })
             {
-                use rustc_hir::def_id::LOCAL_CRATE;
-
                 let hir_src = self.cx.tcx.hir().local_def_id_to_hir_id(src_id);
                 let hir_dst = self.cx.tcx.hir().local_def_id_to_hir_id(dst_id);
 
-                if self.cx.tcx.privacy_access_levels(LOCAL_CRATE).is_exported(hir_src)
-                    && !self.cx.tcx.privacy_access_levels(LOCAL_CRATE).is_exported(hir_dst)
+                if self.cx.tcx.privacy_access_levels(()).is_exported(hir_src)
+                    && !self.cx.tcx.privacy_access_levels(()).is_exported(hir_dst)
                 {
                     privacy_error(self.cx, &diag_info, &path_str);
                 }
@@ -1227,7 +1229,7 @@ impl LinkCollector<'_, '_> {
                     // doesn't allow statements like `use str::trim;`, making this a (hopefully)
                     // valid omission. See https://github.com/rust-lang/rust/pull/80660#discussion_r551585677
                     // for discussion on the matter.
-                    verify(kind, id)?;
+                    verify(kind, id.into())?;
 
                     // FIXME: it would be nice to check that the feature gate was enabled in the original crate, not just ignore it altogether.
                     // However I'm not sure how to check that across crates.
@@ -1265,9 +1267,9 @@ impl LinkCollector<'_, '_> {
                 Some(ItemLink { link: ori_link.link, link_text, did: None, fragment })
             }
             Res::Def(kind, id) => {
-                verify(kind, id)?;
+                verify(kind, id.into())?;
                 let id = clean::register_res(self.cx, rustc_hir::def::Res::Def(kind, id));
-                Some(ItemLink { link: ori_link.link, link_text, did: Some(id), fragment })
+                Some(ItemLink { link: ori_link.link, link_text, did: Some(id.into()), fragment })
             }
         }
     }
@@ -1421,7 +1423,7 @@ impl LinkCollector<'_, '_> {
                 }
 
                 if len == 1 {
-                    Some(candidates.into_iter().filter_map(|res| res.ok()).next().unwrap())
+                    Some(candidates.into_iter().find_map(|res| res.ok()).unwrap())
                 } else if len == 2 && is_derive_trait_collision(&candidates) {
                     Some(candidates.type_ns.unwrap())
                 } else {
@@ -1795,7 +1797,7 @@ fn resolution_failure(
                         name = start;
                         for &ns in &[TypeNS, ValueNS, MacroNS] {
                             if let Some(res) =
-                                collector.check_full_res(ns, &start, module_id, &None)
+                                collector.check_full_res(ns, &start, module_id.into(), &None)
                             {
                                 debug!("found partial_res={:?}", res);
                                 *partial_res = Some(res);
@@ -1993,7 +1995,13 @@ fn disambiguator_error(
     msg: &str,
 ) {
     diag_info.link_range = disambiguator_range;
-    report_diagnostic(cx.tcx, BROKEN_INTRA_DOC_LINKS, msg, &diag_info, |_diag, _sp| {});
+    report_diagnostic(cx.tcx, BROKEN_INTRA_DOC_LINKS, msg, &diag_info, |diag, _sp| {
+        let msg = format!(
+            "see {}/rustdoc/linking-to-items-by-name.html#namespaces-and-disambiguators for more info about disambiguators",
+            crate::DOC_RUST_LANG_ORG_CHANNEL
+        );
+        diag.note(&msg);
+    });
 }
 
 /// Report an ambiguity error, where there were multiple possible resolutions.

@@ -752,6 +752,24 @@ fn bar() -> u32 {0}
 }
 
 #[test]
+fn infer_builtin_macros_include_expression() {
+    check_types(
+        r#"
+//- /main.rs
+#[rustc_builtin_macro]
+macro_rules! include {() => {}}
+fn main() {
+    let i = include!("bla.rs");
+    i;
+  //^ i32
+}
+//- /bla.rs
+0
+        "#,
+    )
+}
+
+#[test]
 fn infer_builtin_macros_include_child_mod() {
     check_types(
         r#"
@@ -964,14 +982,18 @@ fn test() {
 }         //^ S
 
 //- /lib.rs crate:core
-#[prelude_import]
-use clone::*;
-mod clone {
-    trait Clone {
+pub mod prelude {
+    pub mod rust_2018 {
+        #[rustc_builtin_macro]
+        pub macro Clone {}
+        pub use crate::clone::Clone;
+    }
+}
+
+pub mod clone {
+    pub trait Clone {
         fn clone(&self) -> Self;
     }
-    #[rustc_builtin_macro]
-    macro Clone {}
 }
 "#,
     );
@@ -983,14 +1005,22 @@ fn infer_derive_clone_in_core() {
         r#"
 //- /lib.rs crate:core
 #[prelude_import]
-use clone::*;
-mod clone {
-    trait Clone {
+use prelude::rust_2018::*;
+
+pub mod prelude {
+    pub mod rust_2018 {
+        #[rustc_builtin_macro]
+        pub macro Clone {}
+        pub use crate::clone::Clone;
+    }
+}
+
+pub mod clone {
+    pub trait Clone {
         fn clone(&self) -> Self;
     }
-    #[rustc_builtin_macro]
-    macro Clone {}
 }
+
 #[derive(Clone)]
 pub struct S;
 
@@ -1019,14 +1049,18 @@ fn test() {
 }
 
 //- /lib.rs crate:core
-#[prelude_import]
-use clone::*;
-mod clone {
-    trait Clone {
+pub mod prelude {
+    pub mod rust_2018 {
+        #[rustc_builtin_macro]
+        pub macro Clone {}
+        pub use crate::clone::Clone;
+    }
+}
+
+pub mod clone {
+    pub trait Clone {
         fn clone(&self) -> Self;
     }
-    #[rustc_builtin_macro]
-    macro Clone {}
 }
 "#,
     );

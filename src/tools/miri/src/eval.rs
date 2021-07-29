@@ -22,6 +22,35 @@ pub enum AlignmentCheck {
     Int,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum RejectOpWith {
+    /// Isolated op is rejected with an abort of the machine.
+    Abort,
+
+    /// If not Abort, miri returns an error for an isolated op.
+    /// Following options determine if user should be warned about such error.
+    /// Do not print warning about rejected isolated op.
+    NoWarning,
+
+    /// Print a warning about rejected isolated op, with backtrace.
+    Warning,
+
+    /// Print a warning about rejected isolated op, without backtrace.
+    WarningWithoutBacktrace,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum IsolatedOp {
+    /// Reject an op requiring communication with the host. By
+    /// default, miri rejects the op with an abort. If not, it returns
+    /// an error code, and prints a warning about it. Warning levels
+    /// are controlled by `RejectOpWith` enum.
+    Reject(RejectOpWith),
+
+    /// Execute op requiring communication with the host, i.e. disable isolation.
+    Allow,
+}
+
 /// Configuration needed to spawn a Miri instance.
 #[derive(Clone)]
 pub struct MiriConfig {
@@ -31,8 +60,10 @@ pub struct MiriConfig {
     pub stacked_borrows: bool,
     /// Controls alignment checking.
     pub check_alignment: AlignmentCheck,
-    /// Determines if communication with the host environment is enabled.
-    pub communicate: bool,
+    /// Controls function [ABI](Abi) checking.
+    pub check_abi: bool,
+    /// Action for an op requiring communication with the host.
+    pub isolated_op: IsolatedOp,
     /// Determines if memory leaks should be ignored.
     pub ignore_leaks: bool,
     /// Environment variables that should always be isolated from the host.
@@ -54,6 +85,11 @@ pub struct MiriConfig {
     /// Rate of spurious failures for compare_exchange_weak atomic operations,
     /// between 0.0 and 1.0, defaulting to 0.8 (80% chance of failure).
     pub cmpxchg_weak_failure_rate: f64,
+    /// If `Some`, enable the `measureme` profiler, writing results to a file
+    /// with the specified prefix.
+    pub measureme_out: Option<String>,
+    /// Panic when unsupported functionality is encountered
+    pub panic_on_unsupported: bool,
 }
 
 impl Default for MiriConfig {
@@ -62,7 +98,8 @@ impl Default for MiriConfig {
             validate: true,
             stacked_borrows: true,
             check_alignment: AlignmentCheck::Int,
-            communicate: false,
+            check_abi: true,
+            isolated_op: IsolatedOp::Reject(RejectOpWith::Abort),
             ignore_leaks: false,
             excluded_env_vars: vec![],
             args: vec![],
@@ -73,6 +110,8 @@ impl Default for MiriConfig {
             track_raw: false,
             data_race_detector: true,
             cmpxchg_weak_failure_rate: 0.8,
+            measureme_out: None,
+            panic_on_unsupported: false,
         }
     }
 }
@@ -92,7 +131,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
         tcx,
         rustc_span::source_map::DUMMY_SP,
         param_env,
-        Evaluator::new(config.communicate, config.validate, layout_cx),
+        Evaluator::new(&config, layout_cx),
         MemoryExtra::new(&config),
     );
     // Complete initialization.
@@ -135,8 +174,9 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
             argvs.push(arg_place.ptr);
         }
         // Make an array with all these pointers, in the Miri memory.
-        let argvs_layout =
-            ecx.layout_of(tcx.mk_array(tcx.mk_imm_ptr(tcx.types.u8), u64::try_from(argvs.len()).unwrap()))?;
+        let argvs_layout = ecx.layout_of(
+            tcx.mk_array(tcx.mk_imm_ptr(tcx.types.u8), u64::try_from(argvs.len()).unwrap()),
+        )?;
         let argvs_place = ecx.allocate(argvs_layout, MiriMemoryKind::Machine.into());
         for (idx, arg) in argvs.into_iter().enumerate() {
             let place = ecx.mplace_field(&argvs_place, idx)?;
@@ -224,9 +264,11 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
                     assert!(ecx.step()?, "a terminated thread was scheduled for execution");
                 }
                 SchedulingAction::ExecuteTimeoutCallback => {
-                    assert!(ecx.machine.communicate,
+                    assert!(
+                        ecx.machine.communicate(),
                         "scheduler callbacks require disabled isolation, but the code \
-                        that created the callback did not check it");
+                        that created the callback did not check it"
+                    );
                     ecx.run_timeout_callback()?;
                 }
                 SchedulingAction::ExecuteDtors => {
@@ -241,7 +283,8 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
             }
             ecx.process_diagnostics(info);
         }
-        let return_code = ecx.read_scalar(&ret_place.into())?.check_init()?.to_machine_isize(&ecx)?;
+        let return_code =
+            ecx.read_scalar(&ret_place.into())?.check_init()?.to_machine_isize(&ecx)?;
         Ok(return_code)
     })();
 

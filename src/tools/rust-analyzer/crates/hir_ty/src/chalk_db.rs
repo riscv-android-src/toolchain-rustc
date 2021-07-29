@@ -344,20 +344,20 @@ impl<'a> chalk_solve::RustIrDatabase<Interner> for ChalkContext<'a> {
     }
 
     fn unification_database(&self) -> &dyn chalk_ir::UnificationDatabase<Interner> {
-        self
+        &self.db
     }
 }
 
-impl<'a> chalk_ir::UnificationDatabase<Interner> for ChalkContext<'a> {
+impl<'a> chalk_ir::UnificationDatabase<Interner> for &'a dyn HirDatabase {
     fn fn_def_variance(
         &self,
         fn_def_id: chalk_ir::FnDefId<Interner>,
     ) -> chalk_ir::Variances<Interner> {
-        self.db.fn_def_variance(self.krate, fn_def_id)
+        HirDatabase::fn_def_variance(*self, fn_def_id)
     }
 
     fn adt_variance(&self, adt_id: chalk_ir::AdtId<Interner>) -> chalk_ir::Variances<Interner> {
-        self.db.adt_variance(self.krate, adt_id)
+        HirDatabase::adt_variance(*self, adt_id)
     }
 }
 
@@ -383,7 +383,7 @@ pub(crate) fn associated_ty_data_query(
     // Lower bounds -- we could/should maybe move this to a separate query in `lower`
     let type_alias_data = db.type_alias_data(type_alias);
     let generic_params = generics(db.upcast(), type_alias.into());
-    let bound_vars = generic_params.bound_vars_subst(DebruijnIndex::INNERMOST);
+    // let bound_vars = generic_params.bound_vars_subst(DebruijnIndex::INNERMOST);
     let resolver = hir_def::resolver::HasResolver::resolver(type_alias, db.upcast());
     let ctx = crate::TyLoweringContext::new(db, &resolver)
         .with_type_param_mode(crate::lower::TypeParamLoweringMode::Variable);
@@ -396,8 +396,10 @@ pub(crate) fn associated_ty_data_query(
         .filter_map(|pred| generic_predicate_to_inline_bound(db, &pred, &self_ty))
         .collect();
 
-    let where_clauses = convert_where_clauses(db, type_alias.into(), &bound_vars);
-    let bound_data = rust_ir::AssociatedTyDatumBound { bounds, where_clauses };
+    // FIXME: Re-enable where clauses on associated types when an upstream chalk bug is fixed.
+    //        (rust-analyzer#9052)
+    // let where_clauses = convert_where_clauses(db, type_alias.into(), &bound_vars);
+    let bound_data = rust_ir::AssociatedTyDatumBound { bounds, where_clauses: vec![] };
     let datum = AssociatedTyDatum {
         trait_id: to_chalk_trait_id(trait_),
         id,
@@ -651,11 +653,7 @@ pub(crate) fn fn_def_datum_query(
     Arc::new(datum)
 }
 
-pub(crate) fn fn_def_variance_query(
-    db: &dyn HirDatabase,
-    _krate: CrateId,
-    fn_def_id: FnDefId,
-) -> Variances {
+pub(crate) fn fn_def_variance_query(db: &dyn HirDatabase, fn_def_id: FnDefId) -> Variances {
     let callable_def: CallableDefId = from_chalk(db, fn_def_id);
     let generic_params = generics(db.upcast(), callable_def.into());
     Variances::from_iter(
@@ -666,7 +664,6 @@ pub(crate) fn fn_def_variance_query(
 
 pub(crate) fn adt_variance_query(
     db: &dyn HirDatabase,
-    _krate: CrateId,
     chalk_ir::AdtId(adt_id): AdtId,
 ) -> Variances {
     let generic_params = generics(db.upcast(), adt_id.into());

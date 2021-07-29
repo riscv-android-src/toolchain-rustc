@@ -11,13 +11,15 @@ pub mod udiv;
 
 pub use self::leading_zeros::__clzsi2;
 
+public_test_dep! {
 /// Trait for some basic operations on integers
-#[doc(hidden)]
-pub trait Int:
+pub(crate) trait Int:
     Copy
+    + core::fmt::Debug
     + PartialEq
     + PartialOrd
     + ops::AddAssign
+    + ops::SubAssign
     + ops::BitAndAssign
     + ops::BitOrAssign
     + ops::BitXorAssign
@@ -38,12 +40,16 @@ pub trait Int:
     /// Unsigned version of Self
     type UnsignedInt: Int;
 
+    /// If `Self` is a signed integer
+    const SIGNED: bool;
+
     /// The bitwidth of the int type
     const BITS: u32;
 
     const ZERO: Self;
     const ONE: Self;
     const MIN: Self;
+    const MAX: Self;
 
     /// LUT used for maximizing the space covered and minimizing the computational cost of fuzzing
     /// in `testcrate`. For example, Self = u128 produces [0,1,2,7,8,15,16,31,32,63,64,95,96,111,
@@ -51,18 +57,6 @@ pub trait Int:
     const FUZZ_LENGTHS: [u8; 20];
     /// The number of entries of `FUZZ_LENGTHS` actually used. The maximum is 20 for u128.
     const FUZZ_NUM: usize;
-
-    /// Extracts the sign from self and returns a tuple.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// let i = -25_i32;
-    /// let (sign, u) = i.extract_sign();
-    /// assert_eq!(sign, true);
-    /// assert_eq!(u, 25_u32);
-    /// ```
-    fn extract_sign(self) -> (bool, Self::UnsignedInt);
 
     fn unsigned(self) -> Self::UnsignedInt;
     fn from_unsigned(unsigned: Self::UnsignedInt) -> Self;
@@ -77,8 +71,6 @@ pub trait Int:
 
     // copied from primitive integers, but put in a trait
     fn is_zero(self) -> bool;
-    fn max_value() -> Self;
-    fn min_value() -> Self;
     fn wrapping_neg(self) -> Self;
     fn wrapping_add(self, other: Self) -> Self;
     fn wrapping_mul(self, other: Self) -> Self;
@@ -87,25 +79,19 @@ pub trait Int:
     fn wrapping_shr(self, other: u32) -> Self;
     fn rotate_left(self, other: u32) -> Self;
     fn overflowing_add(self, other: Self) -> (Self, bool);
-    fn aborting_div(self, other: Self) -> Self;
-    fn aborting_rem(self, other: Self) -> Self;
     fn leading_zeros(self) -> u32;
 }
-
-fn unwrap<T>(t: Option<T>) -> T {
-    match t {
-        Some(t) => t,
-        None => ::abort(),
-    }
 }
 
 macro_rules! int_impl_common {
-    ($ty:ty, $bits:expr) => {
-        const BITS: u32 = $bits;
+    ($ty:ty) => {
+        const BITS: u32 = <Self as Int>::ZERO.count_zeros();
+        const SIGNED: bool = Self::MIN != Self::ZERO;
 
         const ZERO: Self = 0;
         const ONE: Self = 1;
         const MIN: Self = <Self>::MIN;
+        const MAX: Self = <Self>::MAX;
 
         const FUZZ_LENGTHS: [u8; 20] = {
             let bits = <Self as Int>::BITS;
@@ -177,14 +163,6 @@ macro_rules! int_impl_common {
             self == Self::ZERO
         }
 
-        fn max_value() -> Self {
-            <Self>::max_value()
-        }
-
-        fn min_value() -> Self {
-            <Self>::min_value()
-        }
-
         fn wrapping_neg(self) -> Self {
             <Self>::wrapping_neg(self)
         }
@@ -217,14 +195,6 @@ macro_rules! int_impl_common {
             <Self>::overflowing_add(self, other)
         }
 
-        fn aborting_div(self, other: Self) -> Self {
-            unwrap(<Self>::checked_div(self, other))
-        }
-
-        fn aborting_rem(self, other: Self) -> Self {
-            unwrap(<Self>::checked_rem(self, other))
-        }
-
         fn leading_zeros(self) -> u32 {
             <Self>::leading_zeros(self)
         }
@@ -232,41 +202,35 @@ macro_rules! int_impl_common {
 }
 
 macro_rules! int_impl {
-    ($ity:ty, $uty:ty, $bits:expr) => {
+    ($ity:ty, $uty:ty) => {
         impl Int for $uty {
             type OtherSign = $ity;
             type UnsignedInt = $uty;
-
-            fn extract_sign(self) -> (bool, $uty) {
-                (false, self)
-            }
 
             fn unsigned(self) -> $uty {
                 self
             }
 
+            // It makes writing macros easier if this is implemented for both signed and unsigned
+            #[allow(clippy::wrong_self_convention)]
             fn from_unsigned(me: $uty) -> Self {
                 me
             }
 
             fn abs_diff(self, other: Self) -> Self {
-                (self.wrapping_sub(other) as $ity).wrapping_abs() as $uty
+                if self < other {
+                    other.wrapping_sub(self)
+                } else {
+                    self.wrapping_sub(other)
+                }
             }
 
-            int_impl_common!($uty, $bits);
+            int_impl_common!($uty);
         }
 
         impl Int for $ity {
             type OtherSign = $uty;
             type UnsignedInt = $uty;
-
-            fn extract_sign(self) -> (bool, $uty) {
-                if self < 0 {
-                    (true, (!(self as $uty)).wrapping_add(1))
-                } else {
-                    (false, self as $uty)
-                }
-            }
 
             fn unsigned(self) -> $uty {
                 self as $uty
@@ -280,22 +244,22 @@ macro_rules! int_impl {
                 self.wrapping_sub(other).wrapping_abs() as $uty
             }
 
-            int_impl_common!($ity, $bits);
+            int_impl_common!($ity);
         }
     };
 }
 
-int_impl!(isize, usize, usize::MAX.count_ones());
-int_impl!(i8, u8, 8);
-int_impl!(i16, u16, 16);
-int_impl!(i32, u32, 32);
-int_impl!(i64, u64, 64);
-int_impl!(i128, u128, 128);
+int_impl!(isize, usize);
+int_impl!(i8, u8);
+int_impl!(i16, u16);
+int_impl!(i32, u32);
+int_impl!(i64, u64);
+int_impl!(i128, u128);
 
+public_test_dep! {
 /// Trait for integers twice the bit width of another integer. This is implemented for all
 /// primitives except for `u8`, because there is not a smaller primitive.
-#[doc(hidden)]
-pub trait DInt: Int {
+pub(crate) trait DInt: Int {
     /// Integer that is half the bit width of the integer this trait is implemented for
     type H: HInt<D = Self> + Int;
 
@@ -308,11 +272,12 @@ pub trait DInt: Int {
     /// Constructs an integer using lower and higher half parts
     fn from_lo_hi(lo: Self::H, hi: Self::H) -> Self;
 }
+}
 
+public_test_dep! {
 /// Trait for integers half the bit width of another integer. This is implemented for all
 /// primitives except for `u128`, because it there is not a larger primitive.
-#[doc(hidden)]
-pub trait HInt: Int {
+pub(crate) trait HInt: Int {
     /// Integer that is double the bit width of the integer this trait is implemented for
     type D: DInt<H = Self> + Int;
 
@@ -327,6 +292,7 @@ pub trait HInt: Int {
     fn zero_widen_mul(self, rhs: Self) -> Self::D;
     /// Widening multiplication. This cannot overflow.
     fn widen_mul(self, rhs: Self) -> Self::D;
+}
 }
 
 macro_rules! impl_d_int {
@@ -390,14 +356,16 @@ impl_h_int!(
     i64 u64 i128
 );
 
+public_test_dep! {
 /// Trait to express (possibly lossy) casting of integers
 pub(crate) trait CastInto<T: Copy>: Copy {
     fn cast(self) -> T;
 }
+}
 
 macro_rules! cast_into {
     ($ty:ty) => {
-        cast_into!($ty; usize, isize, u32, i32, u64, i64, u128, i128);
+        cast_into!($ty; usize, isize, u8, i8, u16, i16, u32, i32, u64, i64, u128, i128);
     };
     ($ty:ty; $($into:ty),*) => {$(
         impl CastInto<$into> for $ty {
@@ -408,6 +376,12 @@ macro_rules! cast_into {
     )*};
 }
 
+cast_into!(usize);
+cast_into!(isize);
+cast_into!(u8);
+cast_into!(i8);
+cast_into!(u16);
+cast_into!(i16);
 cast_into!(u32);
 cast_into!(i32);
 cast_into!(u64);

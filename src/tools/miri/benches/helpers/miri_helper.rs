@@ -2,7 +2,6 @@ extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_interface;
 
-use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_driver::Compilation;
 use rustc_interface::{interface, Queries};
 
@@ -21,8 +20,7 @@ impl rustc_driver::Callbacks for MiriCompilerCalls<'_> {
         compiler.session().abort_if_errors();
 
         queries.global_ctxt().unwrap().peek_mut().enter(|tcx| {
-            let (entry_def_id, _) =
-                tcx.entry_fn(LOCAL_CRATE).expect("no main or start function found");
+            let (entry_def_id, _) = tcx.entry_fn(()).expect("no main or start function found");
 
             self.bencher.iter(|| {
                 let config = miri::MiriConfig::default();

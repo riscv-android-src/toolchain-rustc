@@ -10,6 +10,7 @@ use crate::revision::Revision;
 use crate::runtime::Runtime;
 use crate::runtime::RuntimeId;
 use crate::runtime::StampedValue;
+use crate::Cancelled;
 use crate::{
     CycleError, Database, DatabaseKeyIndex, DiscardIf, DiscardWhat, Event, EventKind, QueryDb,
     SweepStrategy,
@@ -280,7 +281,7 @@ where
 
         debug!(
             "read_upgrade({:?}): result.changed_at={:?}, \
-             result.durability={:?}, result.dependencies = {:#?}",
+             result.durability={:?}, result.dependencies = {:?}",
             self, result.changed_at, result.durability, result.dependencies,
         );
 
@@ -297,7 +298,7 @@ where
                 }
             }
         };
-        debug!("read_upgrade({:?}): inputs={:?}", self, inputs);
+        debug!("read_upgrade({:?}): inputs={:#?}", self, inputs.debug(db));
 
         panic_guard.memo = Some(Memo {
             value,
@@ -353,7 +354,12 @@ where
                             },
                         });
 
-                        let result = future.wait().unwrap_or_else(|| db.on_propagated_panic());
+                        let result = future.wait().unwrap_or_else(|| {
+                            // If the other thread panics, we treat this as cancellation: there is no
+                            // need to panic ourselves, since the original panic will already invoke
+                            // the panic hook and bubble up to the thread boundary (or be caught).
+                            Cancelled::throw()
+                        });
                         ProbeState::UpToDate(if result.cycle.is_empty() {
                             Ok(result.value)
                         } else {
@@ -541,6 +547,8 @@ where
         let runtime = db.salsa_runtime();
         let revision_now = runtime.current_revision();
 
+        db.unwind_if_cancelled();
+
         debug!(
             "maybe_changed_since({:?}) called with revision={:?}, revision_now={:?}",
             self, revision, revision_now,
@@ -574,7 +582,7 @@ where
                         // Release our lock on `self.state`, so other thread can complete.
                         std::mem::drop(state);
 
-                        let result = future.wait().unwrap_or_else(|| db.on_propagated_panic());
+                        let result = future.wait().unwrap_or_else(|| Cancelled::throw());
                         return !result.cycle.is_empty() || result.value.changed_at > revision;
                     }
 
@@ -991,6 +999,47 @@ where
 {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(fmt, "{:?}({:?})", Q::default(), self.key)
+    }
+}
+
+impl MemoInputs {
+    fn debug<'a, D: ?Sized>(&'a self, db: &'a D) -> impl std::fmt::Debug + 'a
+    where
+        D: DatabaseOps,
+    {
+        enum DebugMemoInputs<'a, D: ?Sized> {
+            Tracked {
+                inputs: &'a [DatabaseKeyIndex],
+                db: &'a D,
+            },
+            NoInputs,
+            Untracked,
+        }
+
+        impl<D: ?Sized + DatabaseOps> std::fmt::Debug for DebugMemoInputs<'_, D> {
+            fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    DebugMemoInputs::Tracked { inputs, db } => fmt
+                        .debug_struct("Tracked")
+                        .field(
+                            "inputs",
+                            &inputs.iter().map(|key| key.debug(*db)).collect::<Vec<_>>(),
+                        )
+                        .finish(),
+                    DebugMemoInputs::NoInputs => fmt.debug_struct("NoInputs").finish(),
+                    DebugMemoInputs::Untracked => fmt.debug_struct("Untracked").finish(),
+                }
+            }
+        }
+
+        match self {
+            MemoInputs::Tracked { inputs } => DebugMemoInputs::Tracked {
+                inputs: &inputs,
+                db,
+            },
+            MemoInputs::NoInputs => DebugMemoInputs::NoInputs,
+            MemoInputs::Untracked => DebugMemoInputs::Untracked,
+        }
     }
 }
 

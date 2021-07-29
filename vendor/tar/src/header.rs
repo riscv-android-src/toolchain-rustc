@@ -364,6 +364,11 @@ impl Header {
     /// in the appropriate format. May fail if the path is too long or if the
     /// path specified is not Unicode and this is a Windows platform. Will
     /// strip out any "." path component, which signifies the current directory.
+    ///
+    /// Note: This function does not support names over 100 bytes, or paths
+    /// over 255 bytes, even for formats that support longer names. Instead,
+    /// use `Builder` methods to insert a long-name extension at the same time
+    /// as the file content.
     pub fn set_path<P: AsRef<Path>>(&mut self, p: P) -> io::Result<()> {
         self._set_path(p.as_ref())
     }
@@ -729,7 +734,16 @@ impl Header {
                 self.set_mode(meta.mode() as u32);
             }
             HeaderMode::Deterministic => {
-                self.set_mtime(0);
+                // We could in theory set the mtime to zero here, but not all
+                // tools seem to behave well when ingesting files with a 0
+                // timestamp. For example rust-lang/cargo#9512 shows that lldb
+                // doesn't ingest files with a zero timestamp correctly.
+                //
+                // We just need things to be deterministic here so just pick
+                // something that isn't zero. This time, chosen after careful
+                // deliberation, corresponds to Nov 29, 1973.
+                self.set_mtime(123456789);
+
                 self.set_uid(0);
                 self.set_gid(0);
 
@@ -797,7 +811,7 @@ impl Header {
             HeaderMode::Deterministic => {
                 self.set_uid(0);
                 self.set_gid(0);
-                self.set_mtime(0);
+                self.set_mtime(123456789); // see above in unix
                 let fs_mode = if meta.is_dir() { 0o755 } else { 0o644 };
                 self.set_mode(fs_mode);
             }

@@ -66,6 +66,14 @@
 	font-display: swap;
 }
 
+/* Avoid using legacy CJK serif fonts in Windows like Batang */
+@font-face {
+	font-family: 'Noto Sans KR';
+	src: url("noto-sans-kr-v13-korean-regular.woff") format("woff");
+	font-display: swap;
+	unicode-range: U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
+
 * {
 	-webkit-box-sizing: border-box;
 	-moz-box-sizing: border-box;
@@ -90,7 +98,7 @@ html {
 /* General structure and fonts */
 
 body {
-	font: 16px/1.4 "Source Serif 4", serif;
+	font: 16px/1.4 "Source Serif 4", "Noto Sans KR", serif;
 	margin: 0;
 	position: relative;
 	padding: 10px 15px 20px 15px;
@@ -109,8 +117,7 @@ h2 {
 h3 {
 	font-size: 1.3em;
 }
-h1, h2, h3:not(.impl):not(.method):not(.type):not(.tymethod):not(.notable),
-h4:not(.method):not(.type):not(.tymethod):not(.associatedconstant) {
+h1, h2, h3, h4 {
 	font-weight: 500;
 	margin: 20px 0 15px 0;
 	padding-bottom: 6px;
@@ -127,26 +134,51 @@ h1.fqn {
 h1.fqn > .in-band > a:hover {
 	text-decoration: underline;
 }
-h2, h3:not(.impl):not(.method):not(.type):not(.tymethod),
-h4:not(.method):not(.type):not(.tymethod):not(.associatedconstant) {
+#main > h2, #main > h3, #main > h4 {
 	border-bottom: 1px solid;
 }
-h3.impl, h3.method, h4.method, h3.type, h4.type, h4.associatedconstant {
+h3.code-header, h4.code-header {
+	font-size: 1em;
+	font-weight: 600;
+	border: none;
+	padding: 0;
+	margin: 0;
+}
+.impl,
+.impl-items .method,
+.methods .method,
+.impl-items .type,
+.methods .type,
+.impl-items .associatedconstant,
+.methods .associatedconstant,
+.impl-items .associatedtype,
+.methods .associatedtype {
 	flex-basis: 100%;
 	font-weight: 600;
 	margin-top: 16px;
 	margin-bottom: 10px;
 	position: relative;
 }
-h3.impl, h3.method, h4.method.trait-impl, h3.type,
-h4.type.trait-impl, h4.associatedconstant.trait-impl {
+.impl, .method.trait-impl,
+.type.trait-impl,
+.associatedconstant.trait-impl,
+.associatedtype.trait-impl {
 	padding-left: 15px;
 }
 
+div.impl-items > div {
+	padding-left: 0;
+}
+
 h1, h2, h3, h4,
-.sidebar, a.source, .search-input, .content table td:first-child > a,
-.collapse-toggle, div.item-list .out-of-band,
+.sidebar, a.source, .search-input, .search-results .result-name,
+.content table td:first-child > a,
+div.item-list .out-of-band, span.since,
 #source-sidebar, #sidebar-toggle,
+details.rustdoc-toggle > summary::before,
+details.undocumented > summary::before,
+div.impl-items > div:not(.docblock):not(.item-info),
+.content ul.crate a.crate, a.srclink,
 /* This selector is for the items listed in the "all items" page. */
 #main > ul.docblock > li > a {
 	font-family: "Fira Sans", Arial, sans-serif;
@@ -154,7 +186,6 @@ h1, h2, h3, h4,
 
 .content ul.crate a.crate {
 	font-size: 16px/1.6;
-	font-family: "Fira Sans", Arial, sans-serif;
 }
 
 ol, ul {
@@ -172,7 +203,34 @@ summary {
 	outline: none;
 }
 
-code, pre, a.test-arrow {
+/* Fix some style changes due to normalize.css 8 */
+
+td,
+th {
+	padding: 0;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+button,
+input,
+optgroup,
+select,
+textarea {
+	color: inherit;
+	font: inherit;
+	margin: 0;
+}
+
+/* end tweaks for normalize.css 8 */
+
+details:not(.rustdoc-toggle) summary {
+	margin-bottom: .6em;
+}
+
+code, pre, a.test-arrow, .code-header {
 	font-family: "Source Code Pro", monospace;
 }
 .docblock code, .docblock-short code {
@@ -204,7 +262,6 @@ li {
 	max-width: none;
 	overflow: visible;
 	margin-left: 0px;
-	min-width: 70em;
 }
 
 nav.sub {
@@ -279,6 +336,8 @@ nav.sub {
 	margin: 30px 10px 20px 10px;
 	text-align: center;
 	word-wrap: break-word;
+	font-weight: inherit;
+	padding: 0;
 }
 
 .sidebar .version {
@@ -294,8 +353,11 @@ nav.sub {
 	border: none;
 }
 
-.location a:first-child {
+.location a:first-of-type {
 	font-weight: 500;
+}
+.location a:hover {
+	text-decoration: underline;
 }
 
 .block {
@@ -303,8 +365,6 @@ nav.sub {
 	margin-bottom: 14px;
 }
 .block h2, .block h3 {
-	margin-top: 0;
-	margin-bottom: 8px;
 	text-align: center;
 }
 .block ul, .block li {
@@ -330,6 +390,8 @@ nav.sub {
 	text-align: center;
 	font-size: 17px;
 	margin-bottom: 5px;
+	font-weight: inherit;
+	padding: 0;
 }
 
 .sidebar-links {
@@ -355,7 +417,7 @@ nav.sub {
 	padding-left: 0;
 }
 
-.rustdoc:not(.source) .example-wrap {
+.rustdoc .example-wrap {
 	display: inline-flex;
 	margin-bottom: 10px;
 }
@@ -368,10 +430,10 @@ nav.sub {
 .example-wrap > pre.line-number {
 	overflow: initial;
 	border: 1px solid;
-	border-top-left-radius: 5px;
-	border-bottom-left-radius: 5px;
 	padding: 13px 8px;
 	text-align: right;
+	border-top-left-radius: 5px;
+	border-bottom-left-radius: 5px;
 }
 
 .rustdoc:not(.source) .example-wrap > pre.rust {
@@ -379,7 +441,7 @@ nav.sub {
 	overflow-x: auto;
 }
 
-.rustdoc:not(.source) .example-wrap > pre {
+.rustdoc .example-wrap > pre {
 	margin: 0;
 }
 
@@ -393,11 +455,8 @@ nav.sub {
 	table-layout: fixed;
 }
 
-.content pre.line-numbers {
-	float: left;
-	border: none;
+.content > .example-wrap pre.line-numbers {
 	position: relative;
-
 	-webkit-user-select: none;
 	-moz-user-select: none;
 	-ms-user-select: none;
@@ -429,13 +488,12 @@ nav.sub {
 	border-bottom: 1px solid;
 }
 
-#main > .docblock h1 { font-size: 1.3em; }
-#main > .docblock h2 { font-size: 1.15em; }
-#main > .docblock h3, #main > .docblock h4, #main > .docblock h5 { font-size: 1em; }
-
-#main > h2 + div, #main > h2 + h3, #main > h3 + div {
-	display: none; /* Changed to flex or block via js once the page is loaded */
-	flex-wrap: wrap;
+.top-doc .docblock h1 { font-size: 1.3em; }
+.top-doc .docblock h2 { font-size: 1.15em; }
+.top-doc .docblock h3,
+.top-doc .docblock h4,
+.top-doc .docblock h5 {
+	font-size: 1em;
 }
 
 .docblock h1 { font-size: 1em; }
@@ -456,17 +514,10 @@ nav.sub {
 	font-weight: normal;
 }
 
-h3.impl > .out-of-band {
-	font-size: 21px;
-}
-
-h4.method > .out-of-band {
-	font-size: 19px;
-}
-
-h4 > code, h3 > code, .invisible > code {
+.method > .code-header, .trait-impl > .code-header, .invisible > .code-header {
 	max-width: calc(100% - 41px);
 	display: block;
+	flex-grow: 1;
 }
 
 .invisible {
@@ -480,7 +531,7 @@ h4 > code, h3 > code, .invisible > code {
 	padding: 0px;
 }
 
-.in-band > code {
+.in-band > code, .in-band > .code-header {
 	display: inline-block;
 }
 
@@ -537,7 +588,7 @@ h4 > code, h3 > code, .invisible > code {
 }
 .content .multi-column li { width: 100%; display: inline-block; }
 
-.content .method {
+.content > .methods > .method {
 	font-size: 1em;
 	position: relative;
 }
@@ -549,7 +600,7 @@ h4 > code, h3 > code, .invisible > code {
 	font-size: 0.8em;
 }
 
-.content .methods > div:not(.notable-traits) {
+.content .methods > div:not(.notable-traits):not(.method) {
 	margin-left: 40px;
 	margin-bottom: 15px;
 }
@@ -558,17 +609,11 @@ h4 > code, h3 > code, .invisible > code {
 	margin-left: 20px;
 	margin-top: -34px;
 }
-.content .docblock > .impl-items > h4 {
-	border-bottom: 0;
-}
 .content .docblock >.impl-items .table-display {
 	margin: 0;
 }
 .content .docblock >.impl-items table td {
 	padding: 0;
-}
-.toggle-wrapper.marg-left > .collapse-toggle {
-	left: -24px;
 }
 .content .docblock > .impl-items .table-display, .impl-items table td {
 	border: none;
@@ -581,7 +626,7 @@ h4 > code, h3 > code, .invisible > code {
 .content .item-info {
 	position: relative;
 	margin-left: 33px;
-	margin-top: -13px;
+	margin-top: -6px;
 }
 
 .sub-variant > div > .item-info {
@@ -592,11 +637,14 @@ h4 > code, h3 > code, .invisible > code {
 	content: '⬑';
 	font-size: 25px;
 	position: absolute;
-	top: -6px;
+	top: 0px;
 	left: -19px;
 }
 
-.content .impl-items .method, .content .impl-items > .type, .impl-items > .associatedconstant {
+.content .impl-items .method, .content .impl-items > .type, .impl-items > .associatedconstant,
+.impl-items > .associatedtype, .content .impl-items details > summary > .type,
+.impl-items details > summary > .associatedconstant,
+.impl-items details > summary > .associatedtype {
 	margin-left: 20px;
 }
 
@@ -656,7 +704,8 @@ a {
 }
 
 .in-band:hover > .anchor, .impl:hover > .anchor, .method.trait-impl:hover > .anchor,
-.type.trait-impl:hover > .anchor, .associatedconstant.trait-impl:hover > .anchor {
+.type.trait-impl:hover > .anchor, .associatedconstant.trait-impl:hover > .anchor,
+.associatedtype.trait-impl:hover > .anchor {
 	display: inline-block;
 	position: absolute;
 }
@@ -681,7 +730,8 @@ a {
 	text-decoration: underline;
 }
 
-.invisible > .srclink, h4 > code + .srclink, h3 > code + .srclink {
+.invisible > .srclink,
+.method > .code-header + .srclink {
 	position: absolute;
 	top: 0;
 	right: 0;
@@ -754,41 +804,49 @@ a {
 	outline: 0;
 }
 
-.search-results .desc {
+.search-results {
+	display: none;
+	padding-bottom: 2em;
+}
+
+.search-results.active {
+	display: block;
+	/* prevent overhanging tabs from moving the first result */
+	clear: both;
+}
+
+.search-results .desc > span {
 	white-space: nowrap;
 	text-overflow: ellipsis;
 	overflow: hidden;
 	display: block;
 }
 
-.search-results a {
+.search-results > a {
 	display: block;
+	width: 100%;
+	/* A little margin ensures the browser's outlining of focused links has room to display. */
+	margin-left: 2px;
+	margin-right: 2px;
+	border-bottom: 1px solid #aaa3;
 }
 
-.content .search-results td:first-child {
-	padding-right: 0;
+.search-results > a > div {
+	display: flex;
+	flex-flow: row wrap;
+}
+
+.search-results .result-name, .search-results div.desc, .search-results .result-description {
 	width: 50%;
 }
-.content .search-results td:first-child a {
-	padding-right: 10px;
-}
-.content .search-results td:first-child a:after {
-	clear: both;
-	content: "";
-	display: block;
-}
-.content .search-results td:first-child a span {
-	float: left;
+.search-results .result-name {
+	padding-right: 1em;
 }
 
-tr.result span.primitive::after {
-	content: ' (primitive type)';
-	font-style: italic;
-}
-
-tr.result span.keyword::after {
-	content: ' (keyword)';
-	font-style: italic;
+.search-results .result-name > span {
+	display: inline-block;
+	margin: 0;
+	font-weight: normal;
 }
 
 body.blur > :not(#help) {
@@ -895,7 +953,7 @@ body.blur > :not(#help) {
 .impl-items .since, .impl .since, .methods .since {
 	flex-grow: 0;
 	padding-left: 12px;
-	padding-right: 2px;
+	padding-right: 6px;
 	position: initial;
 }
 
@@ -910,7 +968,7 @@ body.blur > :not(#help) {
 	flex-grow: 1;
 }
 
-.impl-items h4, h4.impl, h3.impl, .methods h3 {
+.has-srclink {
 	display: flex;
 	flex-basis: 100%;
 	font-size: 16px;
@@ -972,45 +1030,6 @@ a.test-arrow:hover{
 	font-weight: 300;
 }
 
-.collapse-toggle {
-	font-weight: 300;
-	position: absolute;
-	left: -23px;
-	top: 0;
-}
-
-h3 > .collapse-toggle, h4 > .collapse-toggle {
-	font-size: 0.8em;
-	top: 5px;
-}
-
-.toggle-wrapper > .collapse-toggle {
-	left: -24px;
-	margin-top: 0px;
-}
-
-.toggle-wrapper {
-	position: relative;
-	margin-top: 0;
-}
-
-.toggle-wrapper.collapsed {
-	height: 25px;
-	transition: height .2s;
-	margin-bottom: .6em;
-}
-
-.collapse-toggle > .inner {
-	display: inline-block;
-	width: 1.2ch;
-	text-align: center;
-}
-
-.collapse-toggle.hidden-default {
-	position: relative;
-	margin-left: 20px;
-}
-
 .since + .srclink {
 	display: table-cell;
 	padding-left: 10px;
@@ -1025,14 +1044,6 @@ h3 > .collapse-toggle, h4 > .collapse-toggle {
 	position: initial;
 	font-size: 20px;
 	margin-right: 5px;
-}
-
-.toggle-wrapper > .collapse-toggle {
-	left: 0;
-}
-
-.variant + .toggle-wrapper + .docblock > p {
-	margin-top: 5px;
 }
 
 .sub-variant, .sub-variant > h3 {
@@ -1075,8 +1086,7 @@ h3 > .collapse-toggle, h4 > .collapse-toggle {
 	display: block;
 }
 
-
-:target > code {
+:target > code, :target > .code-header {
 	opacity: 1;
 }
 
@@ -1168,6 +1178,13 @@ h3 > .collapse-toggle, h4 > .collapse-toggle {
 	margin: 0;
 }
 
+.notable-traits .notable {
+	margin: 0;
+	margin-bottom: 13px;
+	font-size: 19px;
+	font-weight: 600;
+}
+
 .notable-traits .docblock code.content{
 	margin: 0;
 	padding: 0;
@@ -1187,6 +1204,11 @@ pre.rust {
 .search-failed {
 	text-align: center;
 	margin-top: 20px;
+	display: none;
+}
+
+.search-failed.active {
+	display: block;
 }
 
 .search-failed > ul {
@@ -1224,12 +1246,6 @@ pre.rust {
 	cursor: pointer;
 	z-index: 2;
 	margin-left: 5px;
-}
-
-h4 > .notable-traits {
-	position: absolute;
-	left: -44px;
-	top: 2px;
 }
 
 #all-types {
@@ -1287,7 +1303,7 @@ h4 > .notable-traits {
 	outline: none;
 }
 
-#settings-menu, .help-button {
+#settings-menu, #help-button {
 	position: absolute;
 	top: 10px;
 }
@@ -1297,7 +1313,7 @@ h4 > .notable-traits {
 	outline: none;
 }
 
-#theme-picker, #settings-menu, .help-button, #copy-path {
+#theme-picker, #settings-menu, #help-button, #copy-path {
 	padding: 4px;
 	width: 27px;
 	height: 29px;
@@ -1306,7 +1322,7 @@ h4 > .notable-traits {
 	cursor: pointer;
 }
 
-.help-button {
+#help-button {
 	right: 30px;
 	font-family: "Fira Sans", Arial, sans-serif;
 	text-align: center;
@@ -1315,11 +1331,11 @@ h4 > .notable-traits {
 }
 
 #copy-path {
-	height: 30px;
-	font-size: 18px;
+	background: initial;
 	margin-left: 10px;
-	padding: 0 6px;
-	width: 28px;
+	padding: 0;
+	padding-left: 2px;
+	border: 0;
 }
 
 #theme-choices {
@@ -1343,322 +1359,6 @@ h4 > .notable-traits {
 
 #theme-choices > button:not(:first-child) {
 	border-top: 1px solid;
-}
-
-/* Media Queries */
-
-@media (min-width: 701px) {
-	/* In case there is no documentation before a code block, we need to add some margin at the top
-	to prevent an overlay between the "collapse toggle" and the information tooltip.
-	However, it's not needed with smaller screen width because the doc/code block is always put
-	"one line" below. */
-	.docblock > .information:first-child > .tooltip {
-		margin-top: 16px;
-	}
-}
-
-@media (max-width: 700px) {
-	body {
-		padding-top: 0px;
-	}
-
-	.rustdoc > .sidebar {
-		height: 45px;
-		min-height: 40px;
-		margin: 0;
-		margin-left: -15px;
-		padding: 0 15px;
-		position: static;
-		z-index: 11;
-	}
-
-	.sidebar > .location {
-		float: right;
-		margin: 0px;
-		margin-top: 2px;
-		padding: 3px 10px 1px 10px;
-		min-height: 39px;
-		background: inherit;
-		text-align: left;
-		font-size: 24px;
-	}
-
-	.sidebar .location:empty {
-		padding: 0;
-	}
-
-	.sidebar .logo-container {
-		width: 35px;
-		height: 35px;
-		margin-top: 5px;
-		margin-bottom: 5px;
-		float: left;
-		margin-left: 50px;
-	}
-
-	.sidebar .logo-container > img {
-		max-width: 35px;
-		max-height: 35px;
-	}
-
-	.sidebar-menu {
-		position: fixed;
-		z-index: 10;
-		font-size: 2rem;
-		cursor: pointer;
-		width: 45px;
-		left: 0;
-		text-align: center;
-		display: block;
-		border-bottom: 1px solid;
-		border-right: 1px solid;
-		height: 45px;
-	}
-
-	.rustdoc.source > .sidebar > .sidebar-menu {
-		display: none;
-	}
-
-	.sidebar-elems {
-		position: fixed;
-		z-index: 1;
-		left: 0;
-		top: 45px;
-		bottom: 0;
-		overflow-y: auto;
-		border-right: 1px solid;
-		display: none;
-	}
-
-	.sidebar > .block.version {
-		border-bottom: none;
-		margin-top: 12px;
-		margin-bottom: 0;
-	}
-
-	nav.sub {
-		width: calc(100% - 32px);
-		float: right;
-	}
-
-	.content {
-		margin-left: 0px;
-	}
-
-	#main, #search {
-		margin-top: 45px;
-		padding: 0;
-	}
-
-	.content h4 > .out-of-band {
-		position: inherit;
-	}
-
-	.toggle-wrapper > .collapse-toggle {
-		left: 0px;
-	}
-
-	.toggle-wrapper {
-		height: 1.5em;
-	}
-
-	#search {
-		margin-left: 0;
-	}
-
-	.content .impl-items .method, .content .impl-items > .type, .impl-items > .associatedconstant {
-		display: flex;
-	}
-
-	.anchor {
-		display: none !important;
-	}
-
-	.theme-picker {
-		left: 10px;
-		top: 54px;
-		z-index: 1;
-	}
-
-	h4 > .notable-traits {
-		position: absolute;
-		left: -22px;
-		top: 24px;
-	}
-
-	#titles > button > div.count {
-		float: left;
-		width: 100%;
-	}
-
-	#titles {
-		height: 50px;
-	}
-
-	.sidebar.mobile {
-		position: fixed;
-		width: 100%;
-		margin-left: 0;
-		background-color: rgba(0,0,0,0);
-		height: 100%;
-	}
-	/*
-	This allows to prevent the version text to overflow the sidebar title on mobile mode when the
-	sidebar is displayed (after clicking on the "hamburger" button).
-	*/
-	.sidebar.mobile > div.version {
-		overflow: hidden;
-		max-height: 33px;
-	}
-	.sidebar {
-		width: calc(100% + 30px);
-	}
-
-	.show-it {
-		display: block;
-		width: 246px;
-	}
-
-	.show-it > .block.items {
-		margin: 8px 0;
-	}
-
-	.show-it > .block.items > ul {
-		margin: 0;
-	}
-
-	.show-it > .block.items > ul > li {
-		text-align: center;
-		margin: 2px 0;
-	}
-
-	.show-it > .block.items > ul > li > a {
-		font-size: 21px;
-	}
-
-	/* Because of ios, we need to actually have a full height sidebar title so the
-	 * actual sidebar can show up. But then we need to make it transparent so we don't
-	 * hide content. The filler just allows to create the background for the sidebar
-	 * title. But because of the absolute position, I had to lower the z-index.
-	 */
-	#sidebar-filler {
-		position: fixed;
-		left: 45px;
-		width: calc(100% - 45px);
-		top: 0;
-		height: 45px;
-		z-index: -1;
-		border-bottom: 1px solid;
-	}
-
-	.collapse-toggle {
-		left: -20px;
-	}
-
-	.impl > .collapse-toggle {
-		left: -10px;
-	}
-
-	.item-list > details.rustdoc-toggle > summary:not(.hideme)::before {
-		left: -10px;
-	}
-
-	#all-types {
-		margin: 10px;
-	}
-
-	#sidebar-toggle {
-		top: 100px;
-		width: 30px;
-		font-size: 1.5rem;
-		text-align: center;
-		padding: 0;
-	}
-
-	#source-sidebar {
-		z-index: 11;
-	}
-
-	#main > .line-numbers {
-		margin-top: 0;
-	}
-
-	.notable-traits .notable-traits-tooltiptext {
-		left: 0;
-		top: 100%;
-	}
-
-	/* We don't display the help button on mobile devices. */
-	.help-button {
-		display: none;
-	}
-	.search-container > div {
-		width: calc(100% - 32px);
-	}
-}
-
-@media print {
-	nav.sub, .content .out-of-band, .collapse-toggle {
-		display: none;
-	}
-}
-
-@media (max-width: 464px) {
-	#titles, #titles > button {
-		height: 73px;
-	}
-
-	/* This is to prevent the search bar from being underneath the <section>
-	 * element following it.
-	 */
-	#main, #search {
-		margin-top: 100px;
-	}
-
-	#main > table:not(.table-display) td {
-		word-break: break-word;
-		width: 50%;
-	}
-
-	.search-container > div {
-		display: block;
-		width: calc(100% - 37px);
-	}
-
-	#crate-search {
-		width: 100%;
-		border-radius: 4px;
-		border: 0;
-	}
-
-	#crate-search + .search-input {
-		width: calc(100% + 71px);
-		margin-left: -36px;
-	}
-
-	#theme-picker, #settings-menu {
-		padding: 5px;
-		width: 31px;
-		height: 31px;
-	}
-
-	#theme-picker {
-		margin-top: -2px;
-	}
-
-	#settings-menu {
-		top: 7px;
-	}
-
-	.docblock {
-		margin-left: 12px;
-	}
-}
-
-h3.notable {
-	margin: 0;
-	margin-bottom: 13px;
-	font-size: 19px;
 }
 
 kbd {
@@ -1764,7 +1464,13 @@ details.rustdoc-toggle > summary.hideme {
 	cursor: pointer;
 }
 
-details.rustdoc-toggle > summary::-webkit-details-marker {
+details.rustdoc-toggle > summary, details.undocumented > summary {
+	list-style: none;
+}
+details.rustdoc-toggle > summary::-webkit-details-marker,
+details.rustdoc-toggle > summary::marker,
+details.undocumented > summary::-webkit-details-marker,
+details.undocumented > summary::marker {
 	display: none;
 }
 
@@ -1780,6 +1486,18 @@ details.rustdoc-toggle > summary::before {
 	cursor: pointer;
 }
 
+details.rustdoc-toggle.top-doc > summary,
+details.rustdoc-toggle.top-doc > summary::before,
+details.rustdoc-toggle.non-exhaustive > summary,
+details.rustdoc-toggle.non-exhaustive > summary::before {
+	font-family: 'Fira Sans';
+	font-size: 16px;
+}
+
+details.non-exhaustive {
+	margin-bottom: 8px;
+}
+
 details.rustdoc-toggle > summary.hideme::before {
 	position: relative;
 }
@@ -1787,6 +1505,13 @@ details.rustdoc-toggle > summary.hideme::before {
 details.rustdoc-toggle > summary:not(.hideme)::before {
 	position: absolute;
 	left: -23px;
+	top: 3px;
+}
+
+.impl-items > details.rustdoc-toggle > summary:not(.hideme)::before,
+.undocumented > details.rustdoc-toggle > summary:not(.hideme)::before {
+	position: absolute;
+	left: -2px;
 }
 
 /* When a "hideme" summary is open and the "Expand description" or "Show
@@ -1798,7 +1523,7 @@ details.rustdoc-toggle[open] > summary.hideme {
 	position: absolute;
 }
 
-details.rustdoc-toggle[open] {
+details.rustdoc-toggle, details.undocumented {
 	position: relative;
 }
 
@@ -1809,4 +1534,321 @@ details.rustdoc-toggle[open] > summary.hideme > span {
 details.rustdoc-toggle[open] > summary::before {
 	content: "[−]";
 	display: inline;
+}
+
+details.undocumented > summary::before {
+	content: "[+] Show hidden undocumented items";
+	cursor: pointer;
+	font-size: 16px;
+	font-weight: 300;
+}
+
+details.undocumented[open] > summary::before {
+	content: "[−] Hide undocumented items";
+}
+
+/* Media Queries */
+
+@media (min-width: 701px) {
+	/* In case there is no documentation before a code block, we need to add some margin at the top
+	to prevent an overlay between the "collapse toggle" and the information tooltip.
+	However, it's not needed with smaller screen width because the doc/code block is always put
+	"one line" below. */
+	.docblock > .information:first-child > .tooltip {
+		margin-top: 16px;
+	}
+}
+
+@media (max-width: 700px) {
+	body {
+		padding-top: 0px;
+	}
+
+	.rustdoc > .sidebar {
+		height: 45px;
+		min-height: 40px;
+		margin: 0;
+		margin-left: -15px;
+		padding: 0 15px;
+		position: static;
+		z-index: 11;
+	}
+
+	.sidebar > .location {
+		float: right;
+		margin: 0px;
+		margin-top: 2px;
+		padding: 3px 10px 1px 10px;
+		min-height: 39px;
+		background: inherit;
+		text-align: left;
+		font-size: 24px;
+	}
+
+	.sidebar .location:empty {
+		padding: 0;
+	}
+
+	.sidebar .logo-container {
+		width: 35px;
+		height: 35px;
+		margin-top: 5px;
+		margin-bottom: 5px;
+		float: left;
+		margin-left: 50px;
+	}
+
+	.sidebar .logo-container > img {
+		max-width: 35px;
+		max-height: 35px;
+	}
+
+	.sidebar-menu {
+		position: fixed;
+		z-index: 10;
+		font-size: 2rem;
+		cursor: pointer;
+		width: 45px;
+		left: 0;
+		text-align: center;
+		display: block;
+		border-bottom: 1px solid;
+		border-right: 1px solid;
+		height: 45px;
+	}
+
+	.rustdoc.source > .sidebar > .sidebar-menu {
+		display: none;
+	}
+
+	/* We do NOT hide this element so that alternative device readers still have this information
+	   available. */
+	.sidebar-elems {
+		position: fixed;
+		z-index: 1;
+		top: 45px;
+		bottom: 0;
+		width: 246px;
+		/* We move the sidebar to the left by its own width so it doesn't appear. */
+		left: -246px;
+		overflow-y: auto;
+		border-right: 1px solid;
+	}
+
+	.sidebar > .block.version {
+		border-bottom: none;
+		margin-top: 12px;
+		margin-bottom: 0;
+	}
+
+	nav.sub {
+		width: calc(100% - 32px);
+		float: right;
+	}
+
+	.content {
+		margin-left: 0px;
+	}
+
+	#main, #search {
+		margin-top: 45px;
+		padding: 0;
+	}
+
+	#search {
+		margin-left: 0;
+	}
+
+	.content .impl-items .method, .content .impl-items > .type, .impl-items > .associatedconstant,
+	.impl-items > .associatedtype {
+		display: flex;
+	}
+
+	.anchor {
+		display: none !important;
+	}
+
+	.theme-picker {
+		left: 10px;
+		top: 54px;
+		z-index: 1;
+	}
+
+	.notable-traits {
+		position: absolute;
+		left: -22px;
+		top: 24px;
+	}
+
+	#titles > button > div.count {
+		float: left;
+		width: 100%;
+	}
+
+	#titles {
+		height: 50px;
+	}
+
+	.sidebar.mobile {
+		position: fixed;
+		width: 100%;
+		margin-left: 0;
+		background-color: rgba(0,0,0,0);
+		height: 100%;
+	}
+	/*
+	This allows to prevent the version text to overflow the sidebar title on mobile mode when the
+	sidebar is displayed (after clicking on the "hamburger" button).
+	*/
+	.sidebar.mobile > div.version {
+		overflow: hidden;
+		max-height: 33px;
+	}
+	.sidebar {
+		width: calc(100% + 30px);
+	}
+
+	.show-it {
+		left: 0;
+	}
+
+	.show-it > .block.items {
+		margin: 8px 0;
+	}
+
+	.show-it > .block.items > ul {
+		margin: 0;
+	}
+
+	.show-it > .block.items > ul > li {
+		text-align: center;
+		margin: 2px 0;
+	}
+
+	.show-it > .block.items > ul > li > a {
+		font-size: 21px;
+	}
+
+	/* Because of ios, we need to actually have a full height sidebar title so the
+	 * actual sidebar can show up. But then we need to make it transparent so we don't
+	 * hide content. The filler just allows to create the background for the sidebar
+	 * title. But because of the absolute position, I had to lower the z-index.
+	 */
+	#sidebar-filler {
+		position: fixed;
+		left: 45px;
+		width: calc(100% - 45px);
+		top: 0;
+		height: 45px;
+		z-index: -1;
+		border-bottom: 1px solid;
+	}
+
+	#main > details.rustdoc-toggle > summary::before,
+	#main > div > details.rustdoc-toggle > summary::before {
+		left: -11px;
+	}
+
+	#all-types {
+		margin: 10px;
+	}
+
+	#sidebar-toggle {
+		top: 100px;
+		width: 30px;
+		font-size: 1.5rem;
+		text-align: center;
+		padding: 0;
+	}
+
+	#source-sidebar {
+		z-index: 11;
+	}
+
+	#main > .line-numbers {
+		margin-top: 0;
+	}
+
+	.notable-traits .notable-traits-tooltiptext {
+		left: 0;
+		top: 100%;
+	}
+
+	/* We don't display the help button on mobile devices. */
+	#help-button {
+		display: none;
+	}
+	.search-container > div {
+		width: calc(100% - 32px);
+	}
+
+	/* Display an alternating layout on tablets and phones */
+	.search-results > a {
+		border-bottom: 1px solid #aaa9;
+		padding: 5px 0px;
+	}
+	.search-results .result-name, .search-results div.desc, .search-results .result-description {
+		width: 100%;
+	}
+	.search-results div.desc, .search-results .result-description {
+		padding-left: 2em;
+	}
+}
+
+@media print {
+	nav.sub, .content .out-of-band {
+		display: none;
+	}
+}
+
+@media (max-width: 464px) {
+	#titles, #titles > button {
+		height: 73px;
+	}
+
+	/* This is to prevent the search bar from being underneath the <section>
+	 * element following it.
+	 */
+	#main, #search {
+		margin-top: 100px;
+	}
+
+	#main > table:not(.table-display) td {
+		word-break: break-word;
+		width: 50%;
+	}
+
+	.search-container > div {
+		display: block;
+		width: calc(100% - 37px);
+	}
+
+	#crate-search {
+		width: 100%;
+		border-radius: 4px;
+		border: 0;
+	}
+
+	#crate-search + .search-input {
+		width: calc(100% + 71px);
+		margin-left: -36px;
+	}
+
+	#theme-picker, #settings-menu {
+		padding: 5px;
+		width: 31px;
+		height: 31px;
+	}
+
+	#theme-picker {
+		margin-top: -2px;
+	}
+
+	#settings-menu {
+		top: 7px;
+	}
+
+	.docblock {
+		margin-left: 12px;
+	}
 }

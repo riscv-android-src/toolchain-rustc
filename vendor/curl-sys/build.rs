@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    let host = env::var("HOST").unwrap();
     let target = env::var("TARGET").unwrap();
     let windows = target.contains("windows");
 
@@ -19,13 +20,18 @@ fn main() {
         return println!("cargo:rustc-flags=-l curl");
     }
 
+    // When cross-compiling for Haiku, use the system's default supplied
+    // libcurl (it supports http2). This is in the case where rustc and
+    // cargo are built for Haiku, which is done from a Linux host.
+    if host != target && target.contains("haiku") {
+        return println!("cargo:rustc-flags=-l curl");
+    }
+
     // If the static-curl feature is disabled, probe for a system-wide libcurl.
     if !cfg!(feature = "static-curl") {
-        // OSX and Haiku ships libcurl by default, so we just use that version
+        // OSX ships libcurl by default, so we just use that version
         // so long as it has the right features enabled.
-        if (target.contains("apple") || target.contains("haiku"))
-            && (!cfg!(feature = "http2") || curl_config_reports_http2())
-        {
+        if target.contains("apple") && (!cfg!(feature = "http2") || curl_config_reports_http2()) {
             return println!("cargo:rustc-flags=-l curl");
         }
 
@@ -232,11 +238,6 @@ fn main() {
             .file("curl/lib/vauth/vauth.c");
     }
 
-    if !windows {
-        cfg.define("USE_UNIX_SOCKETS", None)
-            .define("HAVE_SYS_UN_H", None);
-    }
-
     // Configure TLS backend. Since Cargo does not support mutually exclusive
     // features, make sure we only compile one vtls.
     if cfg!(feature = "mesalink") {
@@ -282,6 +283,7 @@ fn main() {
         }
     }
 
+    // Configure platform-specific details.
     if windows {
         cfg.define("WIN32", None)
             .define("USE_THREADS_WIN32", None)
@@ -295,15 +297,6 @@ fn main() {
             cfg.file("curl/lib/vauth/spnego_sspi.c");
         }
     } else {
-        if target.contains("-apple-") {
-            cfg.define("__APPLE__", None)
-                .define("macintosh", None)
-                .define("HAVE_MACH_ABSOLUTE_TIME", None);
-        } else {
-            cfg.define("HAVE_CLOCK_GETTIME_MONOTONIC", None)
-                .define("HAVE_GETTIMEOFDAY", None);
-        }
-
         cfg.define("RECV_TYPE_ARG1", "int")
             .define("HAVE_PTHREAD_H", None)
             .define("HAVE_ARPA_INET_H", None)
@@ -311,6 +304,7 @@ fn main() {
             .define("HAVE_FCNTL_H", None)
             .define("HAVE_NETDB_H", None)
             .define("HAVE_NETINET_IN_H", None)
+            .define("HAVE_NETINET_TCP_H", None)
             .define("HAVE_POLL_FINE", None)
             .define("HAVE_POLL_H", None)
             .define("HAVE_FCNTL_O_NONBLOCK", None)
@@ -324,7 +318,9 @@ fn main() {
             .define("HAVE_STERRROR_R", None)
             .define("HAVE_SOCKETPAIR", None)
             .define("HAVE_STRUCT_TIMEVAL", None)
+            .define("HAVE_SYS_UN_H", None)
             .define("USE_THREADS_POSIX", None)
+            .define("USE_UNIX_SOCKETS", None)
             .define("RECV_TYPE_ARG2", "void*")
             .define("RECV_TYPE_ARG3", "size_t")
             .define("RECV_TYPE_ARG4", "int")
@@ -339,11 +335,24 @@ fn main() {
             .define("SIZEOF_INT", "4")
             .define("SIZEOF_SHORT", "2");
 
+        if target.contains("-apple-") {
+            cfg.define("__APPLE__", None)
+                .define("macintosh", None)
+                .define("HAVE_MACH_ABSOLUTE_TIME", None);
+        } else {
+            cfg.define("HAVE_CLOCK_GETTIME_MONOTONIC", None)
+                .define("HAVE_GETTIMEOFDAY", None);
+        }
+
         if cfg!(feature = "spnego") {
             cfg.define("HAVE_GSSAPI", None)
                 .file("curl/lib/curl_gssapi.c")
                 .file("curl/lib/socks_gssapi.c")
                 .file("curl/lib/vauth/spnego_gssapi.c");
+            if let Some(path) = env::var_os("GSSAPI_ROOT") {
+                let path = PathBuf::from(path);
+                cfg.include(path.join("include"));
+            }
 
             // Link against the MIT gssapi library. It might be desirable to add support for
             // choosing between MIT and Heimdal libraries in the future.

@@ -19,6 +19,7 @@ use crate::{
 
 pub(super) fn element(
     sema: &Semantics<RootDatabase>,
+    krate: Option<hir::Crate>,
     bindings_shadow_count: &mut FxHashMap<hir::Name, u32>,
     syntactic_name_ref_highlighting: bool,
     element: SyntaxElement,
@@ -46,8 +47,10 @@ pub(super) fn element(
 
             match name_kind {
                 Some(NameClass::ExternCrate(_)) => SymbolKind::Module.into(),
-                Some(NameClass::Definition(def)) => highlight_def(db, def) | HlMod::Definition,
-                Some(NameClass::ConstReference(def)) => highlight_def(db, def),
+                Some(NameClass::Definition(def)) => {
+                    highlight_def(db, krate, def) | HlMod::Definition
+                }
+                Some(NameClass::ConstReference(def)) => highlight_def(db, krate, def),
                 Some(NameClass::PatFieldShorthand { field_ref, .. }) => {
                     let mut h = HlTag::Symbol(SymbolKind::Field).into();
                     if let Definition::Field(field) = field_ref {
@@ -68,7 +71,7 @@ pub(super) fn element(
         }
         NAME_REF => {
             let name_ref = element.into_node().and_then(ast::NameRef::cast).unwrap();
-            highlight_func_by_name_ref(sema, &name_ref).unwrap_or_else(|| {
+            highlight_func_by_name_ref(sema, krate, &name_ref).unwrap_or_else(|| {
                 let is_self = name_ref.self_token().is_some();
                 let h = match NameRefClass::classify(sema, &name_ref) {
                     Some(name_kind) => match name_kind {
@@ -82,7 +85,7 @@ pub(super) fn element(
                                 }
                             };
 
-                            let mut h = highlight_def(db, def);
+                            let mut h = highlight_def(db, krate, def);
 
                             if let Definition::Local(local) = &def {
                                 if is_consumed_lvalue(name_ref.syntax().clone().into(), local, db) {
@@ -105,7 +108,7 @@ pub(super) fn element(
                         NameRefClass::FieldShorthand { .. } => SymbolKind::Field.into(),
                     },
                     None if syntactic_name_ref_highlighting => {
-                        highlight_name_ref_by_syntax(name_ref, sema)
+                        highlight_name_ref_by_syntax(name_ref, sema, krate)
                     }
                     None => HlTag::UnresolvedReference.into(),
                 };
@@ -136,9 +139,11 @@ pub(super) fn element(
             let lifetime = element.into_node().and_then(ast::Lifetime::cast).unwrap();
 
             match NameClass::classify_lifetime(sema, &lifetime) {
-                Some(NameClass::Definition(def)) => highlight_def(db, def) | HlMod::Definition,
+                Some(NameClass::Definition(def)) => {
+                    highlight_def(db, krate, def) | HlMod::Definition
+                }
                 None => match NameRefClass::classify_lifetime(sema, &lifetime) {
-                    Some(NameRefClass::Definition(def)) => highlight_def(db, def),
+                    Some(NameRefClass::Definition(def)) => highlight_def(db, krate, def),
                     _ => SymbolKind::LifetimeParam.into(),
                 },
                 _ => Highlight::from(SymbolKind::LifetimeParam) | HlMod::Definition,
@@ -227,8 +232,8 @@ pub(super) fn element(
         k if k.is_keyword() => {
             let h = Highlight::new(HlTag::Keyword);
             match k {
-                T![await]
-                | T![break]
+                T![await] => h | HlMod::Async | HlMod::ControlFlow,
+                T![break]
                 | T![continue]
                 | T![else]
                 | T![if]
@@ -255,6 +260,7 @@ pub(super) fn element(
                     })
                     .map(|modifier| h | modifier)
                     .unwrap_or(h),
+                T![async] => h | HlMod::Async,
                 _ => h,
             }
         }
@@ -276,18 +282,23 @@ pub(super) fn element(
         hash((name, shadow_count))
     }
 }
-fn highlight_def(db: &RootDatabase, def: Definition) -> Highlight {
-    match def {
-        Definition::Macro(_) => HlTag::Symbol(SymbolKind::Macro),
-        Definition::Field(_) => HlTag::Symbol(SymbolKind::Field),
+fn highlight_def(db: &RootDatabase, krate: Option<hir::Crate>, def: Definition) -> Highlight {
+    let mut h = match def {
+        Definition::Macro(_) => Highlight::new(HlTag::Symbol(SymbolKind::Macro)),
+        Definition::Field(_) => Highlight::new(HlTag::Symbol(SymbolKind::Field)),
         Definition::ModuleDef(def) => match def {
-            hir::ModuleDef::Module(_) => HlTag::Symbol(SymbolKind::Module),
+            hir::ModuleDef::Module(_) => Highlight::new(HlTag::Symbol(SymbolKind::Module)),
             hir::ModuleDef::Function(func) => {
                 let mut h = Highlight::new(HlTag::Symbol(SymbolKind::Function));
                 if let Some(item) = func.as_assoc_item(db) {
                     h |= HlMod::Associated;
-                    if func.self_param(db).is_none() {
-                        h |= HlMod::Static
+                    match func.self_param(db) {
+                        Some(sp) => {
+                            if let hir::Access::Exclusive = sp.access(db) {
+                                h |= HlMod::Mutable;
+                            }
+                        }
+                        None => h |= HlMod::Static,
                     }
 
                     match item.container(db) {
@@ -305,14 +316,25 @@ fn highlight_def(db: &RootDatabase, def: Definition) -> Highlight {
                 if func.is_unsafe(db) {
                     h |= HlMod::Unsafe;
                 }
-                return h;
+                if func.is_async(db) {
+                    h |= HlMod::Async;
+                }
+
+                h
             }
-            hir::ModuleDef::Adt(hir::Adt::Struct(_)) => HlTag::Symbol(SymbolKind::Struct),
-            hir::ModuleDef::Adt(hir::Adt::Enum(_)) => HlTag::Symbol(SymbolKind::Enum),
-            hir::ModuleDef::Adt(hir::Adt::Union(_)) => HlTag::Symbol(SymbolKind::Union),
-            hir::ModuleDef::Variant(_) => HlTag::Symbol(SymbolKind::Variant),
+            hir::ModuleDef::Adt(adt) => {
+                let h = match adt {
+                    hir::Adt::Struct(_) => HlTag::Symbol(SymbolKind::Struct),
+                    hir::Adt::Enum(_) => HlTag::Symbol(SymbolKind::Enum),
+                    hir::Adt::Union(_) => HlTag::Symbol(SymbolKind::Union),
+                };
+
+                Highlight::new(h)
+            }
+            hir::ModuleDef::Variant(_) => Highlight::new(HlTag::Symbol(SymbolKind::Variant)),
             hir::ModuleDef::Const(konst) => {
                 let mut h = Highlight::new(HlTag::Symbol(SymbolKind::Const));
+
                 if let Some(item) = konst.as_assoc_item(db) {
                     h |= HlMod::Associated;
                     match item.container(db) {
@@ -327,11 +349,20 @@ fn highlight_def(db: &RootDatabase, def: Definition) -> Highlight {
                     }
                 }
 
-                return h;
+                h
             }
-            hir::ModuleDef::Trait(_) => HlTag::Symbol(SymbolKind::Trait),
+            hir::ModuleDef::Trait(trait_) => {
+                let mut h = Highlight::new(HlTag::Symbol(SymbolKind::Trait));
+
+                if trait_.is_unsafe(db) {
+                    h |= HlMod::Unsafe;
+                }
+
+                h
+            }
             hir::ModuleDef::TypeAlias(type_) => {
                 let mut h = Highlight::new(HlTag::Symbol(SymbolKind::TypeAlias));
+
                 if let Some(item) = type_.as_assoc_item(db) {
                     h |= HlMod::Associated;
                     match item.container(db) {
@@ -345,23 +376,30 @@ fn highlight_def(db: &RootDatabase, def: Definition) -> Highlight {
                         }
                     }
                 }
-                return h;
+
+                h
             }
-            hir::ModuleDef::BuiltinType(_) => HlTag::BuiltinType,
+            hir::ModuleDef::BuiltinType(_) => Highlight::new(HlTag::BuiltinType),
             hir::ModuleDef::Static(s) => {
                 let mut h = Highlight::new(HlTag::Symbol(SymbolKind::Static));
+
                 if s.is_mut(db) {
                     h |= HlMod::Mutable;
                     h |= HlMod::Unsafe;
                 }
-                return h;
+
+                h
             }
         },
-        Definition::SelfType(_) => HlTag::Symbol(SymbolKind::Impl),
+        Definition::SelfType(_) => Highlight::new(HlTag::Symbol(SymbolKind::Impl)),
         Definition::GenericParam(it) => match it {
-            hir::GenericParam::TypeParam(_) => HlTag::Symbol(SymbolKind::TypeParam),
-            hir::GenericParam::ConstParam(_) => HlTag::Symbol(SymbolKind::ConstParam),
-            hir::GenericParam::LifetimeParam(_) => HlTag::Symbol(SymbolKind::LifetimeParam),
+            hir::GenericParam::TypeParam(_) => Highlight::new(HlTag::Symbol(SymbolKind::TypeParam)),
+            hir::GenericParam::ConstParam(_) => {
+                Highlight::new(HlTag::Symbol(SymbolKind::ConstParam))
+            }
+            hir::GenericParam::LifetimeParam(_) => {
+                Highlight::new(HlTag::Symbol(SymbolKind::LifetimeParam))
+            }
         },
         Definition::Local(local) => {
             let tag = if local.is_self(db) {
@@ -379,33 +417,51 @@ fn highlight_def(db: &RootDatabase, def: Definition) -> Highlight {
             if ty.as_callable(db).is_some() || ty.impls_fnonce(db) {
                 h |= HlMod::Callable;
             }
-            return h;
+            h
         }
-        Definition::Label(_) => HlTag::Symbol(SymbolKind::Label),
+        Definition::Label(_) => Highlight::new(HlTag::Symbol(SymbolKind::Label)),
+    };
+
+    let is_from_other_crate = def.module(db).map(hir::Module::krate) != krate;
+    let is_builtin_type = matches!(def, Definition::ModuleDef(hir::ModuleDef::BuiltinType(_)));
+
+    if is_from_other_crate && !is_builtin_type {
+        h |= HlMod::Library;
     }
-    .into()
+
+    h
 }
 
 fn highlight_func_by_name_ref(
     sema: &Semantics<RootDatabase>,
+    krate: Option<hir::Crate>,
     name_ref: &ast::NameRef,
 ) -> Option<Highlight> {
     let mc = name_ref.syntax().parent().and_then(ast::MethodCallExpr::cast)?;
-    highlight_method_call(sema, &mc)
+    highlight_method_call(sema, krate, &mc)
 }
 
 fn highlight_method_call(
     sema: &Semantics<RootDatabase>,
+    krate: Option<hir::Crate>,
     method_call: &ast::MethodCallExpr,
 ) -> Option<Highlight> {
     let func = sema.resolve_method_call(&method_call)?;
+
     let mut h = SymbolKind::Function.into();
     h |= HlMod::Associated;
+
     if func.is_unsafe(sema.db) || sema.is_unsafe_method_call(&method_call) {
         h |= HlMod::Unsafe;
     }
+    if func.is_async(sema.db) {
+        h |= HlMod::Async;
+    }
     if func.as_assoc_item(sema.db).and_then(|it| it.containing_trait(sema.db)).is_some() {
-        h |= HlMod::Trait
+        h |= HlMod::Trait;
+    }
+    if Some(func.module(sema.db).krate()) != krate {
+        h |= HlMod::Library;
     }
 
     if let Some(self_param) = func.self_param(sema.db) {
@@ -454,7 +510,11 @@ fn highlight_name_by_syntax(name: ast::Name) -> Highlight {
     tag.into()
 }
 
-fn highlight_name_ref_by_syntax(name: ast::NameRef, sema: &Semantics<RootDatabase>) -> Highlight {
+fn highlight_name_ref_by_syntax(
+    name: ast::NameRef,
+    sema: &Semantics<RootDatabase>,
+    krate: Option<hir::Crate>,
+) -> Highlight {
     let default = HlTag::UnresolvedReference;
 
     let parent = match name.syntax().parent() {
@@ -465,7 +525,7 @@ fn highlight_name_ref_by_syntax(name: ast::NameRef, sema: &Semantics<RootDatabas
     match parent.kind() {
         METHOD_CALL_EXPR => {
             return ast::MethodCallExpr::cast(parent)
-                .and_then(|it| highlight_method_call(sema, &it))
+                .and_then(|it| highlight_method_call(sema, krate, &it))
                 .unwrap_or_else(|| SymbolKind::Function.into());
         }
         FIELD_EXPR => {

@@ -37,13 +37,25 @@ pre                 { color: #DCDCCC; background: #3F3F3F; font-size: 22px; padd
 
 .unresolved_reference { color: #FC5555; text-decoration: wavy underline; }
 </style>
-<pre><code><span class="comment documentation">/// ```</span>
+<pre><code><span class="comment documentation">//! This is a module to test doc injection.</span>
+<span class="comment documentation">//! ```</span>
+<span class="comment documentation">//! </span><span class="keyword injected">fn</span><span class="none injected"> </span><span class="function declaration injected">test</span><span class="parenthesis injected">(</span><span class="parenthesis injected">)</span><span class="none injected"> </span><span class="brace injected">{</span><span class="brace injected">}</span>
+<span class="comment documentation">//! ```</span>
+
+<span class="comment documentation">/// ```</span>
 <span class="comment documentation">/// </span><span class="keyword injected">let</span><span class="none injected"> </span><span class="punctuation injected">_</span><span class="none injected"> </span><span class="operator injected">=</span><span class="none injected"> </span><span class="string_literal injected">"early doctests should not go boom"</span><span class="semicolon injected">;</span>
 <span class="comment documentation">/// ```</span>
 <span class="keyword">struct</span> <span class="struct declaration">Foo</span> <span class="brace">{</span>
     <span class="field declaration">bar</span><span class="colon">:</span> <span class="builtin_type">bool</span><span class="comma">,</span>
 <span class="brace">}</span>
 
+<span class="comment documentation">/// This is an impl with a code block.</span>
+<span class="comment documentation">///</span>
+<span class="comment documentation">/// ```</span>
+<span class="comment documentation">/// </span><span class="keyword injected">fn</span><span class="none injected"> </span><span class="function declaration injected">foo</span><span class="parenthesis injected">(</span><span class="parenthesis injected">)</span><span class="none injected"> </span><span class="brace injected">{</span>
+<span class="comment documentation">///</span>
+<span class="comment documentation">/// </span><span class="brace injected">}</span>
+<span class="comment documentation">/// ```</span>
 <span class="keyword">impl</span> <span class="struct">Foo</span> <span class="brace">{</span>
     <span class="comment documentation">/// ```</span>
     <span class="comment documentation">/// </span><span class="keyword injected">let</span><span class="none injected"> </span><span class="punctuation injected">_</span><span class="none injected"> </span><span class="operator injected">=</span><span class="none injected"> </span><span class="string_literal injected">"Call me</span>
@@ -142,6 +154,7 @@ It is beyond me why you'd use these when you got ///
 ```rust
 </span><span class="keyword injected">let</span><span class="none injected"> </span><span class="punctuation injected">_</span><span class="none injected"> </span><span class="operator injected">=</span><span class="none injected"> </span><span class="function injected">example</span><span class="parenthesis injected">(</span><span class="operator injected">&</span><span class="bracket injected">[</span><span class="numeric_literal injected">1</span><span class="comma injected">,</span><span class="none injected"> </span><span class="numeric_literal injected">2</span><span class="comma injected">,</span><span class="none injected"> </span><span class="numeric_literal injected">3</span><span class="bracket injected">]</span><span class="parenthesis injected">)</span><span class="semicolon injected">;</span><span class="comment documentation">
 ```
+</span><span class="function documentation injected intra_doc_link">[`block_comments2`]</span><span class="comment documentation"> tests these with indentation
  */</span>
 <span class="keyword">pub</span> <span class="keyword">fn</span> <span class="function declaration">block_comments</span><span class="parenthesis">(</span><span class="parenthesis">)</span> <span class="brace">{</span><span class="brace">}</span>
 
@@ -150,5 +163,6 @@ It is beyond me why you'd use these when you got ///
     ```rust
 </span><span class="comment documentation"> </span><span class="none injected">   </span><span class="keyword injected">let</span><span class="none injected"> </span><span class="punctuation injected">_</span><span class="none injected"> </span><span class="operator injected">=</span><span class="none injected"> </span><span class="function injected">example</span><span class="parenthesis injected">(</span><span class="operator injected">&</span><span class="bracket injected">[</span><span class="numeric_literal injected">1</span><span class="comma injected">,</span><span class="none injected"> </span><span class="numeric_literal injected">2</span><span class="comma injected">,</span><span class="none injected"> </span><span class="numeric_literal injected">3</span><span class="bracket injected">]</span><span class="parenthesis injected">)</span><span class="semicolon injected">;</span><span class="comment documentation">
     ```
+    </span><span class="function documentation injected intra_doc_link">[`block_comments`]</span><span class="comment documentation"> tests these without indentation
 */</span>
 <span class="keyword">pub</span> <span class="keyword">fn</span> <span class="function declaration">block_comments2</span><span class="parenthesis">(</span><span class="parenthesis">)</span> <span class="brace">{</span><span class="brace">}</span></code></pre>

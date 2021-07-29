@@ -2,9 +2,8 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use std::collections::HashMap;
-
 use rustc_ast::ast::Mutability;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::{TyKind, Unsafety};
@@ -143,21 +142,18 @@ pub fn has_drop<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
 // Returns whether the type has #[must_use] attribute
 pub fn is_must_use_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
     match ty.kind() {
-        ty::Adt(ref adt, _) => must_use_attr(&cx.tcx.get_attrs(adt.did)).is_some(),
-        ty::Foreign(ref did) => must_use_attr(&cx.tcx.get_attrs(*did)).is_some(),
-        ty::Slice(ref ty)
-        | ty::Array(ref ty, _)
-        | ty::RawPtr(ty::TypeAndMut { ref ty, .. })
-        | ty::Ref(_, ref ty, _) => {
+        ty::Adt(adt, _) => must_use_attr(cx.tcx.get_attrs(adt.did)).is_some(),
+        ty::Foreign(ref did) => must_use_attr(cx.tcx.get_attrs(*did)).is_some(),
+        ty::Slice(ty) | ty::Array(ty, _) | ty::RawPtr(ty::TypeAndMut { ty, .. }) | ty::Ref(_, ty, _) => {
             // for the Array case we don't need to care for the len == 0 case
             // because we don't want to lint functions returning empty arrays
             is_must_use_ty(cx, *ty)
         },
-        ty::Tuple(ref substs) => substs.types().any(|ty| is_must_use_ty(cx, ty)),
+        ty::Tuple(substs) => substs.types().any(|ty| is_must_use_ty(cx, ty)),
         ty::Opaque(ref def_id, _) => {
             for (predicate, _) in cx.tcx.explicit_item_bounds(*def_id) {
                 if let ty::PredicateKind::Trait(trait_predicate, _) = predicate.kind().skip_binder() {
-                    if must_use_attr(&cx.tcx.get_attrs(trait_predicate.trait_ref.def_id)).is_some() {
+                    if must_use_attr(cx.tcx.get_attrs(trait_predicate.trait_ref.def_id)).is_some() {
                         return true;
                     }
                 }
@@ -167,7 +163,7 @@ pub fn is_must_use_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
         ty::Dynamic(binder, _) => {
             for predicate in binder.iter() {
                 if let ty::ExistentialPredicate::Trait(ref trait_ref) = predicate.skip_binder() {
-                    if must_use_attr(&cx.tcx.get_attrs(trait_ref.def_id)).is_some() {
+                    if must_use_attr(cx.tcx.get_attrs(trait_ref.def_id)).is_some() {
                         return true;
                     }
                 }
@@ -184,14 +180,14 @@ pub fn is_must_use_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
 /// Checks if `Ty` is normalizable. This function is useful
 /// to avoid crashes on `layout_of`.
 pub fn is_normalizable<'tcx>(cx: &LateContext<'tcx>, param_env: ty::ParamEnv<'tcx>, ty: Ty<'tcx>) -> bool {
-    is_normalizable_helper(cx, param_env, ty, &mut HashMap::new())
+    is_normalizable_helper(cx, param_env, ty, &mut FxHashMap::default())
 }
 
 fn is_normalizable_helper<'tcx>(
     cx: &LateContext<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     ty: Ty<'tcx>,
-    cache: &mut HashMap<Ty<'tcx>, bool>,
+    cache: &mut FxHashMap<Ty<'tcx>, bool>,
 ) -> bool {
     if let Some(&cached_result) = cache.get(ty) {
         return cached_result;
@@ -306,7 +302,7 @@ pub fn type_is_unsafe_function<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bo
 /// Returns the base type for HIR references and pointers.
 pub fn walk_ptrs_hir_ty<'tcx>(ty: &'tcx hir::Ty<'tcx>) -> &'tcx hir::Ty<'tcx> {
     match ty.kind {
-        TyKind::Ptr(ref mut_ty) | TyKind::Rptr(_, ref mut_ty) => walk_ptrs_hir_ty(&mut_ty.ty),
+        TyKind::Ptr(ref mut_ty) | TyKind::Rptr(_, ref mut_ty) => walk_ptrs_hir_ty(mut_ty.ty),
         _ => ty,
     }
 }
@@ -321,4 +317,28 @@ pub fn walk_ptrs_ty_depth(ty: Ty<'_>) -> (Ty<'_>, usize) {
         }
     }
     inner(ty, 0)
+}
+
+/// Returns `true` if types `a` and `b` are same types having same `Const` generic args,
+/// otherwise returns `false`
+pub fn same_type_and_consts(a: Ty<'tcx>, b: Ty<'tcx>) -> bool {
+    match (&a.kind(), &b.kind()) {
+        (&ty::Adt(did_a, substs_a), &ty::Adt(did_b, substs_b)) => {
+            if did_a != did_b {
+                return false;
+            }
+
+            substs_a
+                .iter()
+                .zip(substs_b.iter())
+                .all(|(arg_a, arg_b)| match (arg_a.unpack(), arg_b.unpack()) {
+                    (GenericArgKind::Const(inner_a), GenericArgKind::Const(inner_b)) => inner_a == inner_b,
+                    (GenericArgKind::Type(type_a), GenericArgKind::Type(type_b)) => {
+                        same_type_and_consts(type_a, type_b)
+                    },
+                    _ => true,
+                })
+        },
+        _ => a == b,
+    }
 }

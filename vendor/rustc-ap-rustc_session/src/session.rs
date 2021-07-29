@@ -22,9 +22,9 @@ use rustc_errors::json::JsonEmitter;
 use rustc_errors::registry::Registry;
 use rustc_errors::{Diagnostic, DiagnosticBuilder, DiagnosticId, ErrorReported};
 use rustc_lint_defs::FutureBreakage;
-pub use rustc_span::crate_disambiguator::CrateDisambiguator;
-use rustc_span::edition::Edition;
+pub use rustc_span::def_id::StableCrateId;
 use rustc_span::source_map::{FileLoader, MultiSpan, RealFileLoader, SourceMap, Span};
+use rustc_span::{edition::Edition, RealFileName};
 use rustc_span::{sym, SourceFileHashAlgorithm, Symbol};
 use rustc_target::asm::InlineAsmArch;
 use rustc_target::spec::{CodeModel, PanicStrategy, RelocModel, RelroLevel};
@@ -125,21 +125,20 @@ pub struct Session {
     /// The name of the root source file of the crate, in the local file system.
     /// `None` means that there is no source file.
     pub local_crate_source_file: Option<PathBuf>,
-    /// The directory the compiler has been executed in plus a flag indicating
-    /// if the value stored here has been affected by path remapping.
-    pub working_dir: (PathBuf, bool),
+    /// The directory the compiler has been executed in
+    pub working_dir: RealFileName,
 
     /// Set of `(DiagnosticId, Option<Span>, message)` tuples tracking
     /// (sub)diagnostics that have been set once, but should not be set again,
     /// in order to avoid redundantly verbose output (Issue #24690, #44953).
     pub one_time_diagnostics: Lock<FxHashSet<(DiagnosticMessageId, Option<Span>, String)>>,
     crate_types: OnceCell<Vec<CrateType>>,
-    /// The `crate_disambiguator` is constructed out of all the `-C metadata`
-    /// arguments passed to the compiler. Its value together with the crate-name
-    /// forms a unique global identifier for the crate. It is used to allow
-    /// multiple crates with the same name to coexist. See the
+    /// The `stable_crate_id` is constructed out of the crate name and all the
+    /// `-C metadata` arguments passed to the compiler. Its value forms a unique
+    /// global identifier for the crate. It is used to allow multiple crates
+    /// with the same name to coexist. See the
     /// `rustc_codegen_llvm::back::symbol_names` module for more information.
-    pub crate_disambiguator: OnceCell<CrateDisambiguator>,
+    pub stable_crate_id: OnceCell<StableCrateId>,
 
     features: OnceCell<rustc_feature::Features>,
 
@@ -336,8 +335,8 @@ impl Session {
         self.parse_sess.span_diagnostic.emit_future_breakage_report(diags_and_breakage);
     }
 
-    pub fn local_crate_disambiguator(&self) -> CrateDisambiguator {
-        self.crate_disambiguator.get().copied().unwrap()
+    pub fn local_stable_crate_id(&self) -> StableCrateId {
+        self.stable_crate_id.get().copied().unwrap()
     }
 
     pub fn crate_types(&self) -> &[CrateType] {
@@ -421,7 +420,7 @@ impl Session {
     }
 
     pub fn span_fatal<S: Into<MultiSpan>>(&self, sp: S, msg: &str) -> ! {
-        self.diagnostic().span_fatal(sp, msg).raise()
+        self.diagnostic().span_fatal(sp, msg)
     }
     pub fn span_fatal_with_code<S: Into<MultiSpan>>(
         &self,
@@ -429,7 +428,7 @@ impl Session {
         msg: &str,
         code: DiagnosticId,
     ) -> ! {
-        self.diagnostic().span_fatal_with_code(sp, msg, code).raise()
+        self.diagnostic().span_fatal_with_code(sp, msg, code)
     }
     pub fn fatal(&self, msg: &str) -> ! {
         self.diagnostic().fatal(msg).raise()
@@ -491,12 +490,6 @@ impl Session {
     }
     pub fn warn(&self, msg: &str) {
         self.diagnostic().warn(msg)
-    }
-    pub fn opt_span_warn<S: Into<MultiSpan>>(&self, opt_sp: Option<S>, msg: &str) {
-        match opt_sp {
-            Some(sp) => self.span_warn(sp, msg),
-            None => self.warn(msg),
-        }
     }
     /// Delay a span_bug() call until abort_if_errors()
     #[track_caller]
@@ -838,12 +831,12 @@ impl Session {
 
     /// Returns the symbol name for the registrar function,
     /// given the crate `Svh` and the function `DefIndex`.
-    pub fn generate_plugin_registrar_symbol(&self, disambiguator: CrateDisambiguator) -> String {
-        format!("__rustc_plugin_registrar_{}__", disambiguator.to_fingerprint().to_hex())
+    pub fn generate_plugin_registrar_symbol(&self, stable_crate_id: StableCrateId) -> String {
+        format!("__rustc_plugin_registrar_{:08x}__", stable_crate_id.to_u64())
     }
 
-    pub fn generate_proc_macro_decls_symbol(&self, disambiguator: CrateDisambiguator) -> String {
-        format!("__rustc_proc_macro_decls_{}__", disambiguator.to_fingerprint().to_hex())
+    pub fn generate_proc_macro_decls_symbol(&self, stable_crate_id: StableCrateId) -> String {
+        format!("__rustc_proc_macro_decls_{:08x}__", stable_crate_id.to_u64())
     }
 
     pub fn target_filesearch(&self, kind: PathKind) -> filesearch::FileSearch<'_> {
@@ -1282,9 +1275,14 @@ pub fn build_session(
         DiagnosticOutput::Raw(write) => Some(write),
     };
 
-    let target_cfg = config::build_target_config(&sopts, target_override);
+    let sysroot = match &sopts.maybe_sysroot {
+        Some(sysroot) => sysroot.clone(),
+        None => filesearch::get_or_default_sysroot(),
+    };
+
+    let target_cfg = config::build_target_config(&sopts, target_override, &sysroot);
     let host_triple = TargetTriple::from_triple(config::host_triple());
-    let host = Target::search(&host_triple).unwrap_or_else(|e| {
+    let host = Target::search(&host_triple, &sysroot).unwrap_or_else(|e| {
         early_error(sopts.error_format, &format!("Error loading host specification: {}", e))
     });
 
@@ -1331,10 +1329,6 @@ pub fn build_session(
 
     let mut parse_sess = ParseSess::with_span_handler(span_diagnostic, source_map);
     parse_sess.assume_incomplete_release = sopts.debugging_opts.assume_incomplete_release;
-    let sysroot = match &sopts.maybe_sysroot {
-        Some(sysroot) => sysroot.clone(),
-        None => filesearch::get_or_default_sysroot(),
-    };
 
     let host_triple = config::host_triple();
     let target_triple = sopts.target_triple.triple();
@@ -1361,7 +1355,12 @@ pub fn build_session(
     let working_dir = env::current_dir().unwrap_or_else(|e| {
         parse_sess.span_diagnostic.fatal(&format!("Current directory is invalid: {}", e)).raise()
     });
-    let working_dir = file_path_mapping.map_prefix(working_dir);
+    let (path, remapped) = file_path_mapping.map_prefix(working_dir.clone());
+    let working_dir = if remapped {
+        RealFileName::Remapped { local_path: Some(working_dir), virtual_name: path }
+    } else {
+        RealFileName::LocalPath(path)
+    };
 
     let cgu_reuse_tracker = if sopts.debugging_opts.query_dep_graph {
         CguReuseTracker::new()
@@ -1396,7 +1395,7 @@ pub fn build_session(
         working_dir,
         one_time_diagnostics: Default::default(),
         crate_types: OnceCell::new(),
-        crate_disambiguator: OnceCell::new(),
+        stable_crate_id: OnceCell::new(),
         features: OnceCell::new(),
         lint_store: OnceCell::new(),
         recursion_limit: OnceCell::new(),
@@ -1513,6 +1512,14 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     if let (Some(first), Some(second)) = (sanitizer_iter.next(), sanitizer_iter.next()) {
         sess.err(&format!("`-Zsanitizer={}` is incompatible with `-Zsanitizer={}`", first, second));
     }
+
+    // Cannot enable crt-static with sanitizers on Linux
+    if sess.crt_static(None) && !sess.opts.debugging_opts.sanitizer.is_empty() {
+        sess.err(
+            "Sanitizer is incompatible with statically linked libc, \
+                                disable it using `-C target-feature=-crt-static`",
+        );
+    }
 }
 
 /// Holds data on the current incremental compilation session, if there is one.
@@ -1533,7 +1540,7 @@ pub enum IncrCompSession {
     InvalidBecauseOfErrors { session_directory: PathBuf },
 }
 
-pub fn early_error(output: config::ErrorOutputType, msg: &str) -> ! {
+pub fn early_error_no_abort(output: config::ErrorOutputType, msg: &str) {
     let emitter: Box<dyn Emitter + sync::Send> = match output {
         config::ErrorOutputType::HumanReadable(kind) => {
             let (short, color_config) = kind.unzip();
@@ -1545,6 +1552,10 @@ pub fn early_error(output: config::ErrorOutputType, msg: &str) -> ! {
     };
     let handler = rustc_errors::Handler::with_emitter(true, None, emitter);
     handler.struct_fatal(msg).emit();
+}
+
+pub fn early_error(output: config::ErrorOutputType, msg: &str) -> ! {
+    early_error_no_abort(output, msg);
     rustc_errors::FatalError.raise();
 }
 

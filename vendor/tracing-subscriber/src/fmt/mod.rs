@@ -572,7 +572,7 @@ where
     }
 }
 
-impl<N, E, F, W> Into<tracing_core::Dispatch> for SubscriberBuilder<N, E, F, W>
+impl<N, E, F, W> From<SubscriberBuilder<N, E, F, W>> for tracing_core::Dispatch
 where
     N: for<'writer> FormatFields<'writer> + 'static,
     E: FormatEvent<Registry, N> + 'static,
@@ -580,8 +580,8 @@ where
     F: layer::Layer<Formatter<N, E, W>> + Send + Sync + 'static,
     fmt_layer::Layer<Registry, N, E, W>: layer::Layer<Registry> + Send + Sync + 'static,
 {
-    fn into(self) -> tracing_core::Dispatch {
-        tracing_core::Dispatch::new(self.finish())
+    fn from(builder: SubscriberBuilder<N, E, F, W>) -> tracing_core::Dispatch {
+        tracing_core::Dispatch::new(builder.finish())
     }
 }
 
@@ -1176,6 +1176,7 @@ mod test {
         }
     }
 
+    #[derive(Clone)]
     pub(crate) struct MockMakeWriter<'a> {
         buf: &'a Mutex<Vec<u8>>,
     }
@@ -1183,6 +1184,10 @@ mod test {
     impl<'a> MockMakeWriter<'a> {
         pub(crate) fn new(buf: &'a Mutex<Vec<u8>>) -> Self {
             Self { buf }
+        }
+
+        pub(crate) fn buf(&self) -> MutexGuard<'a, Vec<u8>> {
+            self.buf.lock().unwrap()
         }
     }
 

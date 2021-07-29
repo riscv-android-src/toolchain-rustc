@@ -34,6 +34,12 @@ crate struct Page<'a> {
     crate static_extra_scripts: &'a [&'a str],
 }
 
+impl<'a> Page<'a> {
+    crate fn get_static_root_path(&self) -> &str {
+        self.static_root_path.unwrap_or(self.root_path)
+    }
+}
+
 crate fn render<T: Print, S: Print>(
     layout: &Layout,
     page: &Page<'_>,
@@ -41,7 +47,7 @@ crate fn render<T: Print, S: Print>(
     t: T,
     style_files: &[StylePath],
 ) -> String {
-    let static_root_path = page.static_root_path.unwrap_or(page.root_path);
+    let static_root_path = page.get_static_root_path();
     format!(
         "<!DOCTYPE html>\
 <html lang=\"en\">\
@@ -81,7 +87,7 @@ crate fn render<T: Print, S: Print>(
         {sidebar}\
     </nav>\
     <div class=\"theme-picker\">\
-        <button id=\"theme-picker\" aria-label=\"Pick another theme!\" aria-haspopup=\"menu\">\
+        <button id=\"theme-picker\" aria-label=\"Pick another theme!\" aria-haspopup=\"menu\" title=\"themes\">\
             <img src=\"{static_root_path}brush{suffix}.svg\" \
                  width=\"18\" height=\"18\" \
                  alt=\"Pick another theme!\">\
@@ -99,8 +105,8 @@ crate fn render<T: Print, S: Print>(
                            placeholder=\"Click or press ‘S’ to search, ‘?’ for more options…\" \
                            type=\"search\">\
                 </div>\
-                <button type=\"button\" class=\"help-button\">?</button>
-                <a id=\"settings-menu\" href=\"{root_path}settings.html\">\
+                <button type=\"button\" id=\"help-button\" title=\"help\">?</button>\
+                <a id=\"settings-menu\" href=\"{root_path}settings.html\" title=\"settings\">\
                     <img src=\"{static_root_path}wheel{suffix}.svg\" \
                          width=\"18\" height=\"18\" \
                          alt=\"Change settings\">\
@@ -113,7 +119,7 @@ crate fn render<T: Print, S: Print>(
     {after_content}\
     <div id=\"rustdoc-vars\" data-root-path=\"{root_path}\" data-current-crate=\"{krate}\" \
        data-search-index-js=\"{root_path}search-index{suffix}.js\" \
-       data-search-js=\"{static_root_path}search{suffix}.js\"></div>
+       data-search-js=\"{static_root_path}search{suffix}.js\"></div>\
     <script src=\"{static_root_path}main{suffix}.js\"></script>\
     {extra_scripts}\
 </body>\
@@ -155,7 +161,7 @@ crate fn render<T: Print, S: Print>(
             }
         },
         title = page.title,
-        description = page.description,
+        description = Escape(page.description),
         keywords = page.keywords,
         favicon = if layout.favicon.is_empty() {
             format!(
@@ -229,6 +235,7 @@ crate fn redirect(url: &str) -> String {
 <html lang="en">
 <head>
     <meta http-equiv="refresh" content="0;URL={url}">
+    <title>Redirection</title>
 </head>
 <body>
     <p>Redirecting to <a href="{url}">{url}</a>...</p>

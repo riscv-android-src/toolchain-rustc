@@ -80,12 +80,20 @@ fn functions(input: TokenStream, dirs: &[&str]) -> TokenStream {
             let name = &f.sig.ident;
             // println!("{}", name);
             let mut arguments = Vec::new();
+            let mut const_arguments = Vec::new();
             for input in f.sig.inputs.iter() {
                 let ty = match *input {
                     syn::FnArg::Typed(ref c) => &c.ty,
                     _ => panic!("invalid argument on {}", name),
                 };
                 arguments.push(to_type(ty));
+            }
+            for generic in f.sig.generics.params.iter() {
+                let ty = match *generic {
+                    syn::GenericParam::Const(ref c) => &c.ty,
+                    _ => panic!("invalid generic argument on {}", name),
+                };
+                const_arguments.push(to_type(ty));
             }
             let ret = match f.sig.output {
                 syn::ReturnType::Default => quote! { None },
@@ -100,7 +108,32 @@ fn functions(input: TokenStream, dirs: &[&str]) -> TokenStream {
             } else {
                 quote! { None }
             };
-            let required_const = find_required_const(&f.attrs);
+
+            let required_const = find_required_const("rustc_args_required_const", &f.attrs);
+            let mut legacy_const_generics =
+                find_required_const("rustc_legacy_const_generics", &f.attrs);
+            if !required_const.is_empty() && !legacy_const_generics.is_empty() {
+                panic!(
+                    "Can't have both #[rustc_args_required_const] and \
+                     #[rustc_legacy_const_generics]"
+                );
+            }
+
+            // The list of required consts, used to verify the arguments, comes from either the
+            // `rustc_args_required_const` or the `rustc_legacy_const_generics` attribute.
+            let required_const = if required_const.is_empty() {
+                legacy_const_generics.clone()
+            } else {
+                required_const
+            };
+
+            legacy_const_generics.sort();
+            for (idx, ty) in legacy_const_generics
+                .into_iter()
+                .zip(const_arguments.into_iter())
+            {
+                arguments.insert(idx, ty);
+            }
 
             // strip leading underscore from fn name when building a test
             // _mm_foo -> mm_foo such that the test name is test_mm_foo.
@@ -191,6 +224,7 @@ fn to_type(t: &syn::Type) -> proc_macro2::TokenStream {
             "int64x1_t" => quote! { &I64X1 },
             "int64x2_t" => quote! { &I64X2 },
             "uint8x8_t" => quote! { &U8X8 },
+            "uint8x4_t" => quote! { &U8X4 },
             "uint8x8x2_t" => quote! { &U8X8X2 },
             "uint8x16x2_t" => quote! { &U8X16X2 },
             "uint8x16x3_t" => quote! { &U8X16X3 },
@@ -389,11 +423,11 @@ fn find_target_feature(attrs: &[syn::Attribute]) -> Option<syn::Lit> {
         })
 }
 
-fn find_required_const(attrs: &[syn::Attribute]) -> Vec<usize> {
+fn find_required_const(name: &str, attrs: &[syn::Attribute]) -> Vec<usize> {
     attrs
         .iter()
         .flat_map(|a| {
-            if a.path.segments[0].ident == "rustc_args_required_const" {
+            if a.path.segments[0].ident == name {
                 syn::parse::<RustcArgsRequiredConst>(a.tokens.clone().into())
                     .unwrap()
                     .args

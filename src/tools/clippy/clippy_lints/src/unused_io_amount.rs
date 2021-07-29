@@ -45,7 +45,7 @@ impl<'tcx> LateLintPass<'tcx> for UnusedIoAmount {
                 if let hir::ExprKind::Call(func, args) = res.kind {
                     if matches!(
                         func.kind,
-                        hir::ExprKind::Path(hir::QPath::LangItem(hir::LangItem::TryIntoResult, _))
+                        hir::ExprKind::Path(hir::QPath::LangItem(hir::LangItem::TryTraitBranch, _))
                     ) {
                         check_map_error(cx, &args[0], expr);
                     }
@@ -66,7 +66,7 @@ impl<'tcx> LateLintPass<'tcx> for UnusedIoAmount {
 
 fn check_map_error(cx: &LateContext<'_>, call: &hir::Expr<'_>, expr: &hir::Expr<'_>) {
     let mut call = call;
-    while let hir::ExprKind::MethodCall(ref path, _, ref args, _) = call.kind {
+    while let hir::ExprKind::MethodCall(path, _, args, _) = call.kind {
         if matches!(&*path.ident.as_str(), "or" | "or_else" | "ok") {
             call = &args[0];
         } else {

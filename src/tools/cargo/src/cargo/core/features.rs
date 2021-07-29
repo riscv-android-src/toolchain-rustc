@@ -62,7 +62,7 @@
 //!
 //! 1. Add the option to the [`CliUnstable`] struct below. Flags can take an
 //!    optional value if you want.
-//! 2. Update the [`CliUnstable::add`] function to parse the flag.
+//! 2. Update the [`CliUnstable::add`][CliUnstable] function to parse the flag.
 //! 3. Wherever the new functionality is implemented, call
 //!    [`Config::cli_unstable`][crate::util::config::Config::cli_unstable] to
 //!    get an instance of `CliUnstable` and check if the option has been
@@ -81,8 +81,8 @@
 //!      macro below.
 //!   2. `-Z unstable-options`: Find the call to `fail_if_stable_opt` and
 //!      remove it. Be sure to update the man pages if necessary.
-//!   3. `-Z` flag: Change the parsing code in [`CliUnstable::add`] to call
-//!      `stabilized_warn` or `stabilized_err` and remove the field from
+//!   3. `-Z` flag: Change the parsing code in [`CliUnstable::add`][CliUnstable]
+//!      to call `stabilized_warn` or `stabilized_err` and remove the field from
 //!      `CliUnstable. Remove the `(unstable)` note in the clap help text if
 //!      necessary.
 //! 2. Remove `masquerade_as_nightly_cargo` from any tests, and remove
@@ -600,6 +600,8 @@ unstable_cli_options!(
     namespaced_features: bool = ("Allow features with `dep:` prefix"),
     no_index_update: bool = ("Do not update the registry index even if the cache is outdated"),
     panic_abort_tests: bool = ("Enable support to run tests with -Cpanic=abort"),
+    host_config: bool = ("Enable the [host] section in the .cargo/config.toml file"),
+    target_applies_to_host: bool = ("Enable the `target-applies-to-host` key in the .cargo/config.toml file"),
     patch_in_config: bool = ("Allow `[patch]` sections in .cargo/config.toml files"),
     rustdoc_map: bool = ("Allow passing external documentation mappings to rustdoc"),
     separate_nightlies: bool = (HIDDEN),
@@ -787,6 +789,8 @@ impl CliUnstable {
             "panic-abort-tests" => self.panic_abort_tests = parse_empty(k, v)?,
             "jobserver-per-rustc" => self.jobserver_per_rustc = parse_empty(k, v)?,
             "configurable-env" => self.configurable_env = parse_empty(k, v)?,
+            "host-config" => self.host_config = parse_empty(k, v)?,
+            "target-applies-to-host" => self.target_applies_to_host = parse_empty(k, v)?,
             "patch-in-config" => self.patch_in_config = parse_empty(k, v)?,
             "features" => {
                 // For now this is still allowed (there are still some

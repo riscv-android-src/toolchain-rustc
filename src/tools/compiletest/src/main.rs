@@ -5,7 +5,9 @@
 
 extern crate test;
 
-use crate::common::{expected_output_path, output_base_dir, output_relative_path, UI_EXTENSIONS};
+use crate::common::{
+    expected_output_path, output_base_dir, output_relative_path, PanicStrategy, UI_EXTENSIONS,
+};
 use crate::common::{CompareMode, Config, Debugger, Mode, PassMode, Pretty, TestPaths};
 use crate::util::logv;
 use getopts::Options;
@@ -87,6 +89,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "force {check,build,run}-pass tests to this mode.",
             "check | build | run",
         )
+        .optopt("", "run", "whether to execute run-* tests", "auto | always | never")
         .optflag("", "ignored", "run tests marked as ignored")
         .optflag("", "exact", "filters match exactly")
         .optopt(
@@ -96,8 +99,9 @@ pub fn parse_config(args: Vec<String>) -> Config {
              (eg. emulator, valgrind)",
             "PROGRAM",
         )
-        .optopt("", "host-rustcflags", "flags to pass to rustc for host", "FLAGS")
-        .optopt("", "target-rustcflags", "flags to pass to rustc for target", "FLAGS")
+        .optmulti("", "host-rustcflags", "flags to pass to rustc for host", "FLAGS")
+        .optmulti("", "target-rustcflags", "flags to pass to rustc for target", "FLAGS")
+        .optopt("", "target-panic", "what panic strategy the target supports", "unwind | abort")
         .optflag("", "verbose", "run tests verbosely, showing all output")
         .optflag(
             "",
@@ -140,7 +144,8 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "enable this to generate a Rustfix coverage file, which is saved in \
                 `./<build_base>/rustfix_missing_coverage.txt`",
         )
-        .optflag("h", "help", "show this message");
+        .optflag("h", "help", "show this message")
+        .reqopt("", "channel", "current Rust channel", "CHANNEL");
 
     let (argv0, args_) = args.split_first().unwrap();
     if args.len() == 1 || args[1] == "-h" || args[1] == "--help" {
@@ -234,10 +239,21 @@ pub fn parse_config(args: Vec<String>) -> Config {
             mode.parse::<PassMode>()
                 .unwrap_or_else(|_| panic!("unknown `--pass` option `{}` given", mode))
         }),
+        run: matches.opt_str("run").and_then(|mode| match mode.as_str() {
+            "auto" => None,
+            "always" => Some(true),
+            "never" => Some(false),
+            _ => panic!("unknown `--run` option `{}` given", mode),
+        }),
         logfile: matches.opt_str("logfile").map(|s| PathBuf::from(&s)),
         runtool: matches.opt_str("runtool"),
-        host_rustcflags: matches.opt_str("host-rustcflags"),
-        target_rustcflags: matches.opt_str("target-rustcflags"),
+        host_rustcflags: Some(matches.opt_strs("host-rustcflags").join(" ")),
+        target_rustcflags: Some(matches.opt_strs("target-rustcflags").join(" ")),
+        target_panic: match matches.opt_str("target-panic").as_deref() {
+            Some("unwind") | None => PanicStrategy::Unwind,
+            Some("abort") => PanicStrategy::Abort,
+            _ => panic!("unknown `--target-panic` option `{}` given", mode),
+        },
         target,
         host: opt_str2(matches.opt_str("host")),
         cdb,
@@ -263,6 +279,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         compare_mode: matches.opt_str("compare-mode").map(CompareMode::parse),
         rustfix_coverage: matches.opt_present("rustfix-coverage"),
         has_tidy,
+        channel: matches.opt_str("channel").unwrap(),
 
         cc: matches.opt_str("cc").unwrap(),
         cxx: matches.opt_str("cxx").unwrap(),
@@ -649,6 +666,10 @@ fn make_test(config: &Config, testpaths: &TestPaths, inputs: &Stamp) -> Vec<test
                     ignore,
                     should_panic,
                     allow_fail: false,
+                    #[cfg(not(bootstrap))]
+                    compile_fail: false,
+                    #[cfg(not(bootstrap))]
+                    no_run: false,
                     test_type: test::TestType::Unknown,
                 },
                 testfn: make_test_closure(config, testpaths, revision),

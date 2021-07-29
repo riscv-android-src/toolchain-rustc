@@ -16,29 +16,25 @@
 //! Generate a 2048-bit RSA key pair and use the public key to encrypt some data.
 //!
 //! ```rust
-//!
-//! extern crate openssl;
-//!
 //! use openssl::rsa::{Rsa, Padding};
 //!
-//! fn main() {
-//!     let rsa = Rsa::generate(2048).unwrap();
-//!     let data = b"foobar";
-//!     let mut buf = vec![0; rsa.size() as usize];
-//!     let encrypted_len = rsa.public_encrypt(data, &mut buf, Padding::PKCS1).unwrap();
-//! }
+//! let rsa = Rsa::generate(2048).unwrap();
+//! let data = b"foobar";
+//! let mut buf = vec![0; rsa.size() as usize];
+//! let encrypted_len = rsa.public_encrypt(data, &mut buf, Padding::PKCS1).unwrap();
 //! ```
-use ffi;
+use cfg_if::cfg_if;
 use foreign_types::{ForeignType, ForeignTypeRef};
 use libc::c_int;
 use std::fmt;
 use std::mem;
 use std::ptr;
 
-use bn::{BigNum, BigNumRef};
-use error::ErrorStack;
-use pkey::{HasPrivate, HasPublic, Private, Public};
-use {cvt, cvt_n, cvt_p};
+use crate::bn::{BigNum, BigNumRef};
+use crate::error::ErrorStack;
+use crate::pkey::{HasPrivate, HasPublic, Private, Public};
+use crate::util::ForeignTypeRefExt;
+use crate::{cvt, cvt_n, cvt_p};
 
 /// Type of encryption padding to use.
 ///
@@ -191,7 +187,7 @@ where
         unsafe {
             let mut d = ptr::null();
             RSA_get0_key(self.as_ptr(), ptr::null_mut(), ptr::null_mut(), &mut d);
-            BigNumRef::from_ptr(d as *mut _)
+            BigNumRef::from_const_ptr(d)
         }
     }
 
@@ -204,11 +200,7 @@ where
         unsafe {
             let mut p = ptr::null();
             RSA_get0_factors(self.as_ptr(), &mut p, ptr::null_mut());
-            if p.is_null() {
-                None
-            } else {
-                Some(BigNumRef::from_ptr(p as *mut _))
-            }
+            BigNumRef::from_const_ptr_opt(p)
         }
     }
 
@@ -221,11 +213,7 @@ where
         unsafe {
             let mut q = ptr::null();
             RSA_get0_factors(self.as_ptr(), ptr::null_mut(), &mut q);
-            if q.is_null() {
-                None
-            } else {
-                Some(BigNumRef::from_ptr(q as *mut _))
-            }
+            BigNumRef::from_const_ptr_opt(q)
         }
     }
 
@@ -238,11 +226,7 @@ where
         unsafe {
             let mut dp = ptr::null();
             RSA_get0_crt_params(self.as_ptr(), &mut dp, ptr::null_mut(), ptr::null_mut());
-            if dp.is_null() {
-                None
-            } else {
-                Some(BigNumRef::from_ptr(dp as *mut _))
-            }
+            BigNumRef::from_const_ptr_opt(dp)
         }
     }
 
@@ -255,11 +239,7 @@ where
         unsafe {
             let mut dq = ptr::null();
             RSA_get0_crt_params(self.as_ptr(), ptr::null_mut(), &mut dq, ptr::null_mut());
-            if dq.is_null() {
-                None
-            } else {
-                Some(BigNumRef::from_ptr(dq as *mut _))
-            }
+            BigNumRef::from_const_ptr_opt(dq)
         }
     }
 
@@ -272,11 +252,7 @@ where
         unsafe {
             let mut qi = ptr::null();
             RSA_get0_crt_params(self.as_ptr(), ptr::null_mut(), ptr::null_mut(), &mut qi);
-            if qi.is_null() {
-                None
-            } else {
-                Some(BigNumRef::from_ptr(qi as *mut _))
-            }
+            BigNumRef::from_const_ptr_opt(qi)
         }
     }
 
@@ -415,7 +391,7 @@ where
         unsafe {
             let mut n = ptr::null();
             RSA_get0_key(self.as_ptr(), &mut n, ptr::null_mut(), ptr::null_mut());
-            BigNumRef::from_ptr(n as *mut _)
+            BigNumRef::from_const_ptr(n)
         }
     }
 
@@ -428,7 +404,7 @@ where
         unsafe {
             let mut e = ptr::null();
             RSA_get0_key(self.as_ptr(), ptr::null_mut(), &mut e, ptr::null_mut());
-            BigNumRef::from_ptr(e as *mut _)
+            BigNumRef::from_const_ptr(e)
         }
     }
 }
@@ -670,7 +646,7 @@ impl Rsa<Private> {
 }
 
 impl<T> fmt::Debug for Rsa<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Rsa")
     }
 }
@@ -773,7 +749,7 @@ cfg_if! {
 
 #[cfg(test)]
 mod test {
-    use symm::Cipher;
+    use crate::symm::Cipher;
 
     use super::*;
 

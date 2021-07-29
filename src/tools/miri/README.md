@@ -146,7 +146,7 @@ nightly that *does* come with Miri:
 MIRI_NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)
 echo "Installing latest nightly with Miri: $MIRI_NIGHTLY"
 rustup set profile minimal
-rustup default "$MIRI_NIGHTLY"
+rustup override set "$MIRI_NIGHTLY"
 rustup component add miri
 
 cargo miri test
@@ -164,7 +164,7 @@ doesn't expose any environment to the program, so running
 `RUST_BACKTRACE=1 cargo miri test` will not do what you expect.
 
 To get a backtrace, you need to disable isolation
-[using `-Zmiri-disable-isolation`](#miri-flags):
+[using `-Zmiri-disable-isolation`][miri-flags]:
 
 ```sh
 RUST_BACKTRACE=1 MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test
@@ -200,6 +200,8 @@ environment variable:
   `compare_exchange_weak` operations. The default is `0.8` (so 4 out of 5 weak ops will fail).
   You can change it to any value between `0.0` and `1.0`, where `1.0` means it
   will always fail and `0.0` means it will never fail.
+* `-Zmiri-disable-abi-check` disables checking [function ABI]. Using this flag
+  is **unsound**.
 * `-Zmiri-disable-alignment-check` disables checking pointer alignment, so you
   can focus on other failures, but it means Miri can miss bugs in your program.
   Using this flag is **unsound**.
@@ -217,11 +219,27 @@ environment variable:
 * `-Zmiri-disable-isolation` disables host isolation.  As a consequence,
   the program has access to host resources such as environment variables, file
   systems, and randomness.
+* `-Zmiri-isolation-error=<action>` configures Miri's response to operations
+  requiring host access while isolation is enabled. `abort`, `hide`, `warn`,
+  and `warn-nobacktrace` are the supported actions. Default action is `abort`
+  which halts the machine. Rest of the actions configure it to return an error
+  code for the op and continue executing. `warn` prints backtrace that could
+  be used to trace the call. `warn-nobacktrace` is less verbose without
+  backtrace. `hide` hides the warning.
 * `-Zmiri-env-exclude=<var>` keeps the `var` environment variable isolated from
   the host so that it cannot be accessed by the program.  Can be used multiple
   times to exclude several variables.  On Windows, the `TERM` environment
   variable is excluded by default.
 * `-Zmiri-ignore-leaks` disables the memory leak checker.
+* `-Zmiri-measureme=<name>` enables `measureme` profiling for the interpreted program.
+   This can be used to find which parts of your program are executing slowly under Miri.
+   The profile is written out to a file with the prefix `<name>`, and can be processed
+   using the tools in the repository https://github.com/rust-lang/measureme.
+* `-Zmiri-panic-on-unsupported` will makes some forms of unsupported functionality,
+  such as FFI and unsupported syscalls, panic within the context of the emulated
+  application instead of raising an error within the context of Miri (and halting
+  execution). Note that code might not expect these operations to ever panic, so
+  this flag can lead to strange (mis)behavior.
 * `-Zmiri-seed=<hex>` configures the seed of the RNG that Miri uses to resolve
   non-determinism.  This RNG is used to pick base addresses for allocations.
   When isolation is enabled (the default), this is also used to emulate system
@@ -258,6 +276,8 @@ environment variable:
   this pointer. Note that it is not currently guaranteed that code that works
   with `-Zmiri-track-raw-pointers` also works without
   `-Zmiri-track-raw-pointers`, but for the vast majority of code, this will be the case.
+
+[function ABI]: https://doc.rust-lang.org/reference/items/functions.html#extern-function-qualifier
 
 Some native rustc `-Z` flags are also very relevant for Miri:
 
@@ -436,6 +456,7 @@ Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows 
 * [Windows `Env` iterator using a raw pointer outside its valid memory area](https://github.com/rust-lang/rust/pull/70479)
 * [`VecDeque::iter_mut` creating overlapping mutable references](https://github.com/rust-lang/rust/issues/74029)
 * [Various standard library aliasing issues involving raw pointers](https://github.com/rust-lang/rust/pull/78602)
+* [`<[T]>::copy_within` using a loan after invalidating it](https://github.com/rust-lang/rust/pull/85610)
 
 ## License
 

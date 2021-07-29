@@ -5,7 +5,7 @@
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorOf, DefKind, Res};
-use rustc_hir::def_id::{DefId, LOCAL_CRATE};
+use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_hir::{Node, PatKind, TyKind};
@@ -44,6 +44,7 @@ struct MarkSymbolVisitor<'tcx> {
     repr_has_repr_c: bool,
     in_pat: bool,
     inherited_pub_visibility: bool,
+    pub_visibility: bool,
     ignore_variant_stack: Vec<DefId>,
     // maps from tuple struct constructors to tuple struct items
     struct_constructors: FxHashMap<hir::HirId, hir::HirId>,
@@ -133,6 +134,23 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
         }
     }
 
+    #[allow(dead_code)] // FIXME(81658): should be used + lint reinstated after #83171 relands.
+    fn handle_assign(&mut self, expr: &'tcx hir::Expr<'tcx>) {
+        if self
+            .typeck_results()
+            .expr_adjustments(expr)
+            .iter()
+            .any(|adj| matches!(adj.kind, ty::adjustment::Adjust::Deref(_)))
+        {
+            self.visit_expr(expr);
+        } else if let hir::ExprKind::Field(base, ..) = expr.kind {
+            // Ignore write to field
+            self.handle_assign(base);
+        } else {
+            self.visit_expr(expr);
+        }
+    }
+
     fn handle_field_pattern_match(
         &mut self,
         lhs: &hir::Pat<'_>,
@@ -172,27 +190,33 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
 
     fn visit_node(&mut self, node: Node<'tcx>) {
         let had_repr_c = self.repr_has_repr_c;
-        self.repr_has_repr_c = false;
         let had_inherited_pub_visibility = self.inherited_pub_visibility;
+        let had_pub_visibility = self.pub_visibility;
+        self.repr_has_repr_c = false;
         self.inherited_pub_visibility = false;
+        self.pub_visibility = false;
         match node {
-            Node::Item(item) => match item.kind {
-                hir::ItemKind::Struct(..) | hir::ItemKind::Union(..) => {
-                    let def = self.tcx.adt_def(item.def_id);
-                    self.repr_has_repr_c = def.repr.c();
+            Node::Item(item) => {
+                self.pub_visibility = item.vis.node.is_pub();
 
-                    intravisit::walk_item(self, &item);
-                }
-                hir::ItemKind::Enum(..) => {
-                    self.inherited_pub_visibility = item.vis.node.is_pub();
+                match item.kind {
+                    hir::ItemKind::Struct(..) | hir::ItemKind::Union(..) => {
+                        let def = self.tcx.adt_def(item.def_id);
+                        self.repr_has_repr_c = def.repr.c();
 
-                    intravisit::walk_item(self, &item);
+                        intravisit::walk_item(self, &item);
+                    }
+                    hir::ItemKind::Enum(..) => {
+                        self.inherited_pub_visibility = self.pub_visibility;
+
+                        intravisit::walk_item(self, &item);
+                    }
+                    hir::ItemKind::ForeignMod { .. } => {}
+                    _ => {
+                        intravisit::walk_item(self, &item);
+                    }
                 }
-                hir::ItemKind::ForeignMod { .. } => {}
-                _ => {
-                    intravisit::walk_item(self, &item);
-                }
-            },
+            }
             Node::TraitItem(trait_item) => {
                 intravisit::walk_trait_item(self, trait_item);
             }
@@ -204,8 +228,9 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
             }
             _ => {}
         }
-        self.repr_has_repr_c = had_repr_c;
+        self.pub_visibility = had_pub_visibility;
         self.inherited_pub_visibility = had_inherited_pub_visibility;
+        self.repr_has_repr_c = had_repr_c;
     }
 
     fn mark_as_used_if_union(&mut self, adt: &ty::AdtDef, fields: &[hir::ExprField<'_>]) {
@@ -243,10 +268,10 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
     ) {
         let has_repr_c = self.repr_has_repr_c;
         let inherited_pub_visibility = self.inherited_pub_visibility;
-        let live_fields = def
-            .fields()
-            .iter()
-            .filter(|f| has_repr_c || inherited_pub_visibility || f.vis.node.is_pub());
+        let pub_visibility = self.pub_visibility;
+        let live_fields = def.fields().iter().filter(|f| {
+            has_repr_c || (pub_visibility && (inherited_pub_visibility || f.vis.node.is_pub()))
+        });
         self.live_symbols.extend(live_fields.map(|f| f.hir_id));
 
         intravisit::walk_struct_def(self, def);
@@ -451,7 +476,7 @@ fn create_and_seed_worklist<'tcx>(
         )
         .chain(
             // Seed entry point
-            tcx.entry_fn(LOCAL_CRATE).and_then(|(def_id, _)| {
+            tcx.entry_fn(()).and_then(|(def_id, _)| {
                 def_id.as_local().map(|def_id| tcx.hir().local_def_id_to_hir_id(def_id))
             }),
         )
@@ -479,6 +504,7 @@ fn find_live<'tcx>(
         repr_has_repr_c: false,
         in_pat: false,
         inherited_pub_visibility: false,
+        pub_visibility: false,
         ignore_variant_stack: vec![],
         struct_constructors,
     };
@@ -687,7 +713,7 @@ impl Visitor<'tcx> for DeadVisitor<'tcx> {
 }
 
 pub fn check_crate(tcx: TyCtxt<'_>) {
-    let access_levels = &tcx.privacy_access_levels(LOCAL_CRATE);
+    let access_levels = &tcx.privacy_access_levels(());
     let krate = tcx.hir().krate();
     let live_symbols = find_live(tcx, access_levels, krate);
     let mut visitor = DeadVisitor { tcx, live_symbols };

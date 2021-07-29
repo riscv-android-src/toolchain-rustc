@@ -1,18 +1,16 @@
 //! Implements "Stacked Borrows".  See <https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md>
 //! for further information.
 
+use log::trace;
 use std::cell::RefCell;
 use std::fmt;
 use std::num::NonZeroU64;
-use std::rc::Rc;
-
-use log::trace;
 
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_hir::Mutability;
 use rustc_middle::mir::RetagKind;
 use rustc_middle::ty;
 use rustc_target::abi::{Align, LayoutOf, Size};
-use rustc_hir::Mutability;
 
 use crate::*;
 
@@ -87,8 +85,6 @@ pub struct Stack {
 pub struct Stacks {
     // Even reading memory can have effects on the stack, so we need a `RefCell` here.
     stacks: RefCell<RangeMap<Stack>>,
-    // Pointer to global state
-    global: MemoryExtra,
 }
 
 /// Extra global state, available to the memory access hooks.
@@ -112,7 +108,7 @@ pub struct GlobalState {
     track_raw: bool,
 }
 /// Memory extra state gives us interior mutable access to the global state.
-pub type MemoryExtra = Rc<RefCell<GlobalState>>;
+pub type MemoryExtra = RefCell<GlobalState>;
 
 /// Indicates which kind of access is being performed.
 #[derive(Copy, Clone, Hash, PartialEq, Eq)]
@@ -157,7 +153,11 @@ impl fmt::Display for RefKind {
 
 /// Utilities for initialization and ID generation
 impl GlobalState {
-    pub fn new(tracked_pointer_tag: Option<PtrId>, tracked_call_id: Option<CallId>, track_raw: bool) -> Self {
+    pub fn new(
+        tracked_pointer_tag: Option<PtrId>,
+        tracked_call_id: Option<CallId>,
+        track_raw: bool,
+    ) -> Self {
         GlobalState {
             next_ptr_id: NonZeroU64::new(1).unwrap(),
             base_ptr_ids: FxHashMap::default(),
@@ -211,7 +211,9 @@ impl GlobalState {
 fn err_sb_ub(msg: String) -> InterpError<'static> {
     err_machine_stop!(TerminationInfo::ExperimentalUb {
         msg,
-        url: format!("https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md"),
+        url: format!(
+            "https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md"
+        ),
     })
 }
 
@@ -300,10 +302,7 @@ impl<'tcx> Stack {
                         tag, item
                     )))?
                 } else {
-                    Err(err_sb_ub(format!(
-                        "deallocating while item is protected: {:?}",
-                        item
-                    )))?
+                    Err(err_sb_ub(format!("deallocating while item is protected: {:?}", item)))?
                 }
             }
         }
@@ -312,14 +311,21 @@ impl<'tcx> Stack {
 
     /// Test if a memory `access` using pointer tagged `tag` is granted.
     /// If yes, return the index of the item that granted it.
-    fn access(&mut self, access: AccessKind, ptr: Pointer<Tag>, global: &GlobalState) -> InterpResult<'tcx> {
+    fn access(
+        &mut self,
+        access: AccessKind,
+        ptr: Pointer<Tag>,
+        global: &GlobalState,
+    ) -> InterpResult<'tcx> {
         // Two main steps: Find granting item, remove incompatible items above.
 
         // Step 1: Find granting item.
         let granting_idx = self.find_granting(access, ptr.tag).ok_or_else(|| {
             err_sb_ub(format!(
                 "no item granting {} to tag {:?} at {} found in borrow stack.",
-                access, ptr.tag, ptr.erase_tag(),
+                access,
+                ptr.tag,
+                ptr.erase_tag(),
             ))
         })?;
 
@@ -379,7 +385,12 @@ impl<'tcx> Stack {
     /// `weak` controls whether this operation is weak or strong: weak granting does not act as
     /// an access, and they add the new item directly on top of the one it is derived
     /// from instead of all the way at the top of the stack.
-    fn grant(&mut self, derived_from: Pointer<Tag>, new: Item, global: &GlobalState) -> InterpResult<'tcx> {
+    fn grant(
+        &mut self,
+        derived_from: Pointer<Tag>,
+        new: Item,
+        global: &GlobalState,
+    ) -> InterpResult<'tcx> {
         // Figure out which access `perm` corresponds to.
         let access =
             if new.perm.grants(AccessKind::Write) { AccessKind::Write } else { AccessKind::Read };
@@ -434,11 +445,11 @@ impl<'tcx> Stack {
 /// Map per-stack operations to higher-level per-location-range operations.
 impl<'tcx> Stacks {
     /// Creates new stack with initial tag.
-    fn new(size: Size, perm: Permission, tag: Tag, extra: MemoryExtra) -> Self {
+    fn new(size: Size, perm: Permission, tag: Tag) -> Self {
         let item = Item { perm, tag, protector: None };
         let stack = Stack { borrows: vec![item] };
 
-        Stacks { stacks: RefCell::new(RangeMap::new(size, stack)), global: extra }
+        Stacks { stacks: RefCell::new(RangeMap::new(size, stack)) }
     }
 
     /// Call `f` on every stack in the range.
@@ -446,14 +457,29 @@ impl<'tcx> Stacks {
         &self,
         ptr: Pointer<Tag>,
         size: Size,
-        f: impl Fn(Pointer<Tag>, &mut Stack, &GlobalState) -> InterpResult<'tcx>,
+        f: impl Fn(Pointer<Tag>, &mut Stack) -> InterpResult<'tcx>,
     ) -> InterpResult<'tcx> {
-        let global = self.global.borrow();
         let mut stacks = self.stacks.borrow_mut();
         for (offset, stack) in stacks.iter_mut(ptr.offset, size) {
             let mut cur_ptr = ptr;
             cur_ptr.offset = offset;
-            f(cur_ptr, stack, &*global)?;
+            f(cur_ptr, stack)?;
+        }
+        Ok(())
+    }
+
+    /// Call `f` on every stack in the range.
+    fn for_each_mut(
+        &mut self,
+        ptr: Pointer<Tag>,
+        size: Size,
+        f: impl Fn(Pointer<Tag>, &mut Stack) -> InterpResult<'tcx>,
+    ) -> InterpResult<'tcx> {
+        let stacks = self.stacks.get_mut();
+        for (offset, stack) in stacks.iter_mut(ptr.offset, size) {
+            let mut cur_ptr = ptr;
+            cur_ptr.offset = offset;
+            f(cur_ptr, stack)?;
         }
         Ok(())
     }
@@ -464,44 +490,61 @@ impl Stacks {
     pub fn new_allocation(
         id: AllocId,
         size: Size,
-        extra: MemoryExtra,
+        extra: &MemoryExtra,
         kind: MemoryKind<MiriMemoryKind>,
     ) -> (Self, Tag) {
+        let mut extra = extra.borrow_mut();
         let (tag, perm) = match kind {
             // New unique borrow. This tag is not accessible by the program,
             // so it will only ever be used when using the local directly (i.e.,
             // not through a pointer). That is, whenever we directly write to a local, this will pop
             // everything else off the stack, invalidating all previous pointers,
             // and in particular, *all* raw pointers.
-            MemoryKind::Stack => (Tag::Tagged(extra.borrow_mut().new_ptr()), Permission::Unique),
+            MemoryKind::Stack => (Tag::Tagged(extra.new_ptr()), Permission::Unique),
             // `Global` memory can be referenced by global pointers from `tcx`.
             // Thus we call `global_base_ptr` such that the global pointers get the same tag
             // as what we use here.
             // `ExternStatic` is used for extern statics, and thus must also be listed here.
             // `Env` we list because we can get away with precise tracking there.
             // The base pointer is not unique, so the base permission is `SharedReadWrite`.
-            MemoryKind::Machine(MiriMemoryKind::Global | MiriMemoryKind::ExternStatic | MiriMemoryKind::Tls | MiriMemoryKind::Env) =>
-                (extra.borrow_mut().global_base_ptr(id), Permission::SharedReadWrite),
+            MemoryKind::Machine(
+                MiriMemoryKind::Global
+                | MiriMemoryKind::ExternStatic
+                | MiriMemoryKind::Tls
+                | MiriMemoryKind::Env,
+            ) => (extra.global_base_ptr(id), Permission::SharedReadWrite),
             // Everything else we handle like raw pointers for now.
             _ => {
-                let mut extra = extra.borrow_mut();
-                let tag = if extra.track_raw { Tag::Tagged(extra.new_ptr()) } else { Tag::Untagged };
+                let tag =
+                    if extra.track_raw { Tag::Tagged(extra.new_ptr()) } else { Tag::Untagged };
                 (tag, Permission::SharedReadWrite)
             }
         };
-        (Stacks::new(size, perm, tag, extra), tag)
+        (Stacks::new(size, perm, tag), tag)
     }
 
     #[inline(always)]
-    pub fn memory_read<'tcx>(&self, ptr: Pointer<Tag>, size: Size) -> InterpResult<'tcx> {
+    pub fn memory_read<'tcx>(
+        &self,
+        ptr: Pointer<Tag>,
+        size: Size,
+        extra: &MemoryExtra,
+    ) -> InterpResult<'tcx> {
         trace!("read access with tag {:?}: {:?}, size {}", ptr.tag, ptr.erase_tag(), size.bytes());
-        self.for_each(ptr, size, |ptr, stack, global| stack.access(AccessKind::Read, ptr, global))
+        let global = &*extra.borrow();
+        self.for_each(ptr, size, move |ptr, stack| stack.access(AccessKind::Read, ptr, global))
     }
 
     #[inline(always)]
-    pub fn memory_written<'tcx>(&mut self, ptr: Pointer<Tag>, size: Size) -> InterpResult<'tcx> {
+    pub fn memory_written<'tcx>(
+        &mut self,
+        ptr: Pointer<Tag>,
+        size: Size,
+        extra: &mut MemoryExtra,
+    ) -> InterpResult<'tcx> {
         trace!("write access with tag {:?}: {:?}, size {}", ptr.tag, ptr.erase_tag(), size.bytes());
-        self.for_each(ptr, size, |ptr, stack, global| stack.access(AccessKind::Write, ptr, global))
+        let global = extra.get_mut();
+        self.for_each_mut(ptr, size, move |ptr, stack| stack.access(AccessKind::Write, ptr, global))
     }
 
     #[inline(always)]
@@ -509,9 +552,11 @@ impl Stacks {
         &mut self,
         ptr: Pointer<Tag>,
         size: Size,
+        extra: &mut MemoryExtra,
     ) -> InterpResult<'tcx> {
         trace!("deallocation with tag {:?}: {:?}, size {}", ptr.tag, ptr.erase_tag(), size.bytes());
-        self.for_each(ptr, size, |ptr, stack, global| stack.dealloc(ptr, global))
+        let global = extra.get_mut();
+        self.for_each_mut(ptr, size, move |ptr, stack| stack.dealloc(ptr, global))
     }
 }
 
@@ -527,6 +572,18 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         new_tag: Tag,
         protect: bool,
     ) -> InterpResult<'tcx> {
+        // Nothing to do for ZSTs.
+        if size == Size::ZERO {
+            trace!(
+                "reborrow of size 0: {} reference {:?} derived from {:?} (pointee {})",
+                kind,
+                new_tag,
+                place.ptr,
+                place.layout.ty,
+            );
+            return Ok(());
+        }
+
         let this = self.eval_context_mut();
         let protector = if protect { Some(this.frame().extra.call_id) } else { None };
         let ptr = place.ptr.assert_ptr();
@@ -540,10 +597,6 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             size.bytes()
         );
 
-        // Get the allocation. It might not be mutable, so we cannot use `get_mut`.
-        let extra = &this.memory.get_raw(ptr.alloc_id)?.extra;
-        let stacked_borrows =
-            extra.stacked_borrows.as_ref().expect("we should have Stacked Borrows data");
         // Update the stacks.
         // Make sure that raw pointers and mutable shared references are reborrowed "weak":
         // There could be existing unique pointers reborrowed from them that should remain valid!
@@ -555,6 +608,12 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // Shared references and *const are a whole different kind of game, the
                 // permission is not uniform across the entire range!
                 // We need a frozen-sensitive reborrow.
+                // We have to use shared references to alloc/memory_extra here since
+                // `visit_freeze_sensitive` needs to access the global state.
+                let extra = this.memory.get_alloc_extra(ptr.alloc_id)?;
+                let stacked_borrows =
+                    extra.stacked_borrows.as_ref().expect("we should have Stacked Borrows data");
+                let global = this.memory.extra.stacked_borrows.as_ref().unwrap().borrow();
                 return this.visit_freeze_sensitive(place, size, |cur_ptr, size, frozen| {
                     // We are only ever `SharedReadOnly` inside the frozen bits.
                     let perm = if frozen {
@@ -563,14 +622,21 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                         Permission::SharedReadWrite
                     };
                     let item = Item { perm, tag: new_tag, protector };
-                    stacked_borrows.for_each(cur_ptr, size, |cur_ptr, stack, global| {
-                        stack.grant(cur_ptr, item, global)
+                    stacked_borrows.for_each(cur_ptr, size, |cur_ptr, stack| {
+                        stack.grant(cur_ptr, item, &*global)
                     })
                 });
             }
         };
+        // Here we can avoid `borrow()` calls because we have mutable references.
+        // Note that this asserts that the allocation is mutable -- but since we are creating a
+        // mutable pointer, that seems reasonable.
+        let (alloc_extra, memory_extra) = this.memory.get_alloc_extra_mut(ptr.alloc_id)?;
+        let stacked_borrows =
+            alloc_extra.stacked_borrows.as_mut().expect("we should have Stacked Borrows data");
+        let global = memory_extra.stacked_borrows.as_mut().unwrap().get_mut();
         let item = Item { perm, tag: new_tag, protector };
-        stacked_borrows.for_each(ptr, size, |ptr, stack, global| stack.grant(ptr, item, global))
+        stacked_borrows.for_each_mut(ptr, size, |ptr, stack| stack.grant(ptr, item, global))
     }
 
     /// Retags an indidual pointer, returning the retagged version.
@@ -584,9 +650,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
         // We want a place for where the ptr *points to*, so we get one.
         let place = this.ref_to_mplace(val)?;
-        let size = this
-            .size_and_align_of_mplace(&place)?
-            .map(|(size, _)| size);
+        let size = this.size_and_align_of_mplace(&place)?.map(|(size, _)| size);
         // FIXME: If we cannot determine the size (because the unsized tail is an `extern type`),
         // bail out -- we cannot reasonably figure out which memory range to reborrow.
         // See https://github.com/rust-lang/unsafe-code-guidelines/issues/276.
@@ -599,16 +663,10 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // We can see dangling ptrs in here e.g. after a Box's `Unique` was
         // updated using "self.0 = ..." (can happen in Box::from_raw) so we cannot ICE; see miri#1050.
         let place = this.mplace_access_checked(place, Some(Align::from_bytes(1).unwrap()))?;
-        // Nothing to do for ZSTs. We use `is_bits` here because we *do* need to retag even ZSTs
-        // when there actually is a tag (to avoid inheriting a tag that would let us access more
-        // than 0 bytes).
-        if size == Size::ZERO && place.ptr.is_bits() {
-            return Ok(*val);
-        }
 
         // Compute new borrow.
         let new_tag = {
-            let mut mem_extra = this.memory.extra.stacked_borrows.as_ref().unwrap().borrow_mut();
+            let mem_extra = this.memory.extra.stacked_borrows.as_mut().unwrap().get_mut();
             match kind {
                 // Give up tracking for raw pointers.
                 RefKind::Raw { .. } if !mem_extra.track_raw => Tag::Untagged,
@@ -667,7 +725,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     /// After a stack frame got pushed, retag the return place so that we are sure
     /// it does not alias with anything.
-    /// 
+    ///
     /// This is a HACK because there is nothing in MIR that would make the retag
     /// explicit. Also see https://github.com/rust-lang/rust/issues/71117.
     fn retag_return_place(&mut self) -> InterpResult<'tcx> {
@@ -690,7 +748,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let ptr_layout = this.layout_of(this.tcx.mk_mut_ptr(return_place.layout.ty))?;
         let val = ImmTy::from_immediate(return_place.to_ref(), ptr_layout);
         // Reborrow it.
-        let val = this.retag_reference(&val, RefKind::Unique { two_phase: false }, /*protector*/ true)?;
+        let val = this.retag_reference(
+            &val,
+            RefKind::Unique { two_phase: false },
+            /*protector*/ true,
+        )?;
         // And use reborrowed pointer for return place.
         let return_place = this.ref_to_mplace(&val)?;
         this.frame_mut().return_place = Some(return_place.into());

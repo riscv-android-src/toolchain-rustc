@@ -6,8 +6,8 @@ use std::ops::Deref;
 use std::slice;
 use std::sync::Arc;
 
-use input::Char;
-use literal::LiteralSearcher;
+use crate::input::Char;
+use crate::literal::LiteralSearcher;
 
 /// `InstPtr` represents the index of an instruction in a regex program.
 pub type InstPtr = usize;
@@ -168,7 +168,7 @@ impl Deref for Program {
 }
 
 impl fmt::Debug for Program {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use self::Inst::*;
 
         fn with_goto(cur: usize, goto: usize, fmtd: String) -> String {

@@ -66,11 +66,11 @@ pre                 { color: #DCDCCC; background: #3F3F3F; font-size: 22px; padd
     <span class="keyword">pub</span> <span class="field declaration">y</span><span class="colon">:</span> <span class="builtin_type">i32</span><span class="comma">,</span>
 <span class="brace">}</span>
 
-<span class="keyword">trait</span> <span class="trait declaration">Bar</span> <span class="brace">{</span>
+<span class="keyword">trait</span> <span class="trait declaration">Bar</span> <span class="keyword">where</span> <span class="type_param">Self</span><span class="colon">:</span> <span class="brace">{</span>
     <span class="keyword">fn</span> <span class="function associated declaration trait">bar</span><span class="parenthesis">(</span><span class="operator">&</span><span class="self_keyword declaration">self</span><span class="parenthesis">)</span> <span class="operator">-&gt;</span> <span class="builtin_type">i32</span><span class="semicolon">;</span>
 <span class="brace">}</span>
 
-<span class="keyword">impl</span> <span class="trait">Bar</span> <span class="keyword">for</span> <span class="struct">Foo</span> <span class="brace">{</span>
+<span class="keyword">impl</span> <span class="trait">Bar</span> <span class="keyword">for</span> <span class="struct">Foo</span> <span class="keyword">where</span> <span class="self_type">Self</span><span class="colon">:</span> <span class="brace">{</span>
     <span class="keyword">fn</span> <span class="function associated declaration trait">bar</span><span class="parenthesis">(</span><span class="operator">&</span><span class="self_keyword declaration">self</span><span class="parenthesis">)</span> <span class="operator">-&gt;</span> <span class="builtin_type">i32</span> <span class="brace">{</span>
         <span class="self_keyword">self</span><span class="operator">.</span><span class="field">x</span>
     <span class="brace">}</span>
@@ -81,7 +81,7 @@ pre                 { color: #DCDCCC; background: #3F3F3F; font-size: 22px; padd
         <span class="value_param">f</span><span class="operator">.</span><span class="function associated consuming">baz</span><span class="parenthesis">(</span><span class="self_keyword consuming mutable">self</span><span class="parenthesis">)</span>
     <span class="brace">}</span>
 
-    <span class="keyword">fn</span> <span class="function associated declaration">qux</span><span class="parenthesis">(</span><span class="operator">&</span><span class="keyword">mut</span> <span class="self_keyword declaration mutable">self</span><span class="parenthesis">)</span> <span class="brace">{</span>
+    <span class="keyword">fn</span> <span class="function associated declaration mutable">qux</span><span class="parenthesis">(</span><span class="operator">&</span><span class="keyword">mut</span> <span class="self_keyword declaration mutable">self</span><span class="parenthesis">)</span> <span class="brace">{</span>
         <span class="self_keyword mutable">self</span><span class="operator">.</span><span class="field">x</span> <span class="operator">=</span> <span class="numeric_literal">0</span><span class="semicolon">;</span>
     <span class="brace">}</span>
 
@@ -100,7 +100,7 @@ pre                 { color: #DCDCCC; background: #3F3F3F; font-size: 22px; padd
         <span class="value_param">f</span><span class="operator">.</span><span class="function associated">baz</span><span class="parenthesis">(</span><span class="self_keyword">self</span><span class="parenthesis">)</span>
     <span class="brace">}</span>
 
-    <span class="keyword">fn</span> <span class="function associated declaration">qux</span><span class="parenthesis">(</span><span class="operator">&</span><span class="keyword">mut</span> <span class="self_keyword declaration mutable">self</span><span class="parenthesis">)</span> <span class="brace">{</span>
+    <span class="keyword">fn</span> <span class="function associated declaration mutable">qux</span><span class="parenthesis">(</span><span class="operator">&</span><span class="keyword">mut</span> <span class="self_keyword declaration mutable">self</span><span class="parenthesis">)</span> <span class="brace">{</span>
         <span class="self_keyword mutable">self</span><span class="operator">.</span><span class="field">x</span> <span class="operator">=</span> <span class="numeric_literal">0</span><span class="semicolon">;</span>
     <span class="brace">}</span>
 
@@ -234,4 +234,34 @@ pre                 { color: #DCDCCC; background: #3F3F3F; font-size: 22px; padd
             <span class="variable declaration">Nope</span> <span class="operator">=&gt;</span> <span class="variable">Nope</span><span class="comma">,</span>
         <span class="brace">}</span>
     <span class="brace">}</span>
-<span class="brace">}</span></code></pre>
+<span class="brace">}</span>
+
+<span class="keyword async">async</span> <span class="keyword">fn</span> <span class="function declaration async">learn_and_sing</span><span class="parenthesis">(</span><span class="parenthesis">)</span> <span class="brace">{</span>
+    <span class="keyword">let</span> <span class="variable declaration">song</span> <span class="operator">=</span> <span class="unresolved_reference">learn_song</span><span class="parenthesis">(</span><span class="parenthesis">)</span><span class="operator">.</span><span class="keyword control async">await</span><span class="semicolon">;</span>
+    <span class="unresolved_reference">sing_song</span><span class="parenthesis">(</span><span class="variable consuming">song</span><span class="parenthesis">)</span><span class="operator">.</span><span class="keyword control async">await</span><span class="semicolon">;</span>
+<span class="brace">}</span>
+
+<span class="keyword async">async</span> <span class="keyword">fn</span> <span class="function declaration async">async_main</span><span class="parenthesis">(</span><span class="parenthesis">)</span> <span class="brace">{</span>
+    <span class="keyword">let</span> <span class="variable declaration">f1</span> <span class="operator">=</span> <span class="function async">learn_and_sing</span><span class="parenthesis">(</span><span class="parenthesis">)</span><span class="semicolon">;</span>
+    <span class="keyword">let</span> <span class="variable declaration">f2</span> <span class="operator">=</span> <span class="unresolved_reference">dance</span><span class="parenthesis">(</span><span class="parenthesis">)</span><span class="semicolon">;</span>
+    futures::<span class="macro">join!</span><span class="parenthesis">(</span>f1<span class="comma">,</span> f2<span class="parenthesis">)</span><span class="semicolon">;</span>
+<span class="brace">}</span>
+
+<span class="keyword unsafe">unsafe</span> <span class="keyword">trait</span> <span class="trait declaration unsafe">Dangerous</span> <span class="brace">{</span><span class="brace">}</span>
+<span class="keyword">impl</span> <span class="trait unsafe">Dangerous</span> <span class="keyword">for</span> <span class="parenthesis">(</span><span class="parenthesis">)</span> <span class="brace">{</span><span class="brace">}</span>
+
+<span class="keyword">fn</span> <span class="function declaration">use_foo_items</span><span class="parenthesis">(</span><span class="parenthesis">)</span> <span class="brace">{</span>
+    <span class="keyword">let</span> <span class="variable declaration">bob</span> <span class="operator">=</span> <span class="module library">foo</span><span class="operator">::</span><span class="struct library">Person</span> <span class="brace">{</span>
+        <span class="field library">name</span><span class="colon">:</span> <span class="string_literal">"Bob"</span><span class="comma">,</span>
+        <span class="field library">age</span><span class="colon">:</span> <span class="module library">foo</span><span class="operator">::</span><span class="module library">consts</span><span class="operator">::</span><span class="constant library">NUMBER</span><span class="comma">,</span>
+    <span class="brace">}</span><span class="semicolon">;</span>
+
+    <span class="keyword">let</span> <span class="variable declaration">control_flow</span> <span class="operator">=</span> <span class="module library">foo</span><span class="operator">::</span><span class="function library">identity</span><span class="parenthesis">(</span><span class="module library">foo</span><span class="operator">::</span><span class="enum library">ControlFlow</span><span class="operator">::</span><span class="enum_variant library">Continue</span><span class="parenthesis">)</span><span class="semicolon">;</span>
+
+    <span class="keyword control">if</span> <span class="variable">control_flow</span><span class="operator">.</span><span class="function associated consuming library">should_die</span><span class="parenthesis">(</span><span class="parenthesis">)</span> <span class="brace">{</span>
+        foo::<span class="macro">die!</span><span class="parenthesis">(</span><span class="parenthesis">)</span><span class="semicolon">;</span>
+    <span class="brace">}</span>
+<span class="brace">}</span>
+
+
+</code></pre>

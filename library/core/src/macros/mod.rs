@@ -110,6 +110,62 @@ macro_rules! assert_ne {
     });
 }
 
+/// Asserts that an expression matches any of the given patterns.
+///
+/// Like in a `match` expression, the pattern can be optionally followed by `if`
+/// and a guard expression that has access to names bound by the pattern.
+///
+/// On panic, this macro will print the value of the expression with its
+/// debug representation.
+///
+/// Like [`assert!`], this macro has a second form, where a custom
+/// panic message can be provided.
+///
+/// # Examples
+///
+/// ```
+/// #![feature(assert_matches)]
+///
+/// use std::assert_matches::assert_matches;
+///
+/// let a = 1u32.checked_add(2);
+/// let b = 1u32.checked_sub(2);
+/// assert_matches!(a, Some(_));
+/// assert_matches!(b, None);
+///
+/// let c = Ok("abc".to_string());
+/// assert_matches!(c, Ok(x) | Err(x) if x.len() < 100);
+/// ```
+#[unstable(feature = "assert_matches", issue = "82775")]
+#[allow_internal_unstable(core_panic)]
+#[rustc_macro_transparency = "semitransparent"]
+pub macro assert_matches {
+    ($left:expr, $( $pattern:pat_param )|+ $( if $guard: expr )? $(,)?) => ({
+        match $left {
+            $( $pattern )|+ $( if $guard )? => {}
+            ref left_val => {
+                $crate::panicking::assert_matches_failed(
+                    left_val,
+                    $crate::stringify!($($pattern)|+ $(if $guard)?),
+                    $crate::option::Option::None
+                );
+            }
+        }
+    }),
+    ($left:expr, $( $pattern:pat_param )|+ $( if $guard: expr )?, $($arg:tt)+) => ({
+        match $left {
+            $( $pattern )|+ $( if $guard )? => {}
+            ref left_val => {
+                $crate::panicking::assert_matches_failed(
+                    left_val,
+                    $crate::stringify!($($pattern)|+ $(if $guard)?),
+                    $crate::option::Option::Some($crate::format_args!($($arg)+))
+                );
+            }
+        }
+    }),
+}
+
 /// Asserts that a boolean expression is `true` at runtime.
 ///
 /// This will invoke the [`panic!`] macro if the provided expression cannot be
@@ -208,6 +264,45 @@ macro_rules! debug_assert_ne {
     ($($arg:tt)*) => (if $crate::cfg!(debug_assertions) { $crate::assert_ne!($($arg)*); })
 }
 
+/// Asserts that an expression matches any of the given patterns.
+///
+/// Like in a `match` expression, the pattern can be optionally followed by `if`
+/// and a guard expression that has access to names bound by the pattern.
+///
+/// On panic, this macro will print the value of the expression with its
+/// debug representation.
+///
+/// Unlike [`assert_matches!`], `debug_assert_matches!` statements are only
+/// enabled in non optimized builds by default. An optimized build will not
+/// execute `debug_assert_matches!` statements unless `-C debug-assertions` is
+/// passed to the compiler. This makes `debug_assert_matches!` useful for
+/// checks that are too expensive to be present in a release build but may be
+/// helpful during development. The result of expanding `debug_assert_matches!`
+/// is always type checked.
+///
+/// # Examples
+///
+/// ```
+/// #![feature(assert_matches)]
+///
+/// use std::assert_matches::debug_assert_matches;
+///
+/// let a = 1u32.checked_add(2);
+/// let b = 1u32.checked_sub(2);
+/// debug_assert_matches!(a, Some(_));
+/// debug_assert_matches!(b, None);
+///
+/// let c = Ok("abc".to_string());
+/// debug_assert_matches!(c, Ok(x) | Err(x) if x.len() < 100);
+/// ```
+#[macro_export]
+#[unstable(feature = "assert_matches", issue = "82775")]
+#[allow_internal_unstable(assert_matches)]
+#[rustc_macro_transparency = "semitransparent"]
+pub macro debug_assert_matches($($arg:tt)*) {
+    if $crate::cfg!(debug_assertions) { $crate::assert_matches::assert_matches!($($arg)*); }
+}
+
 /// Returns whether the given expression matches any of the given patterns.
 ///
 /// Like in a `match` expression, the pattern can be optionally followed by `if`
@@ -225,7 +320,7 @@ macro_rules! debug_assert_ne {
 #[macro_export]
 #[stable(feature = "matches_macro", since = "1.42.0")]
 macro_rules! matches {
-    ($expression:expr, $( $pattern:pat )|+ $( if $guard: expr )? $(,)?) => {
+    ($expression:expr, $( $pattern:pat_param )|+ $( if $guard: expr )? $(,)?) => {
         match $expression {
             $( $pattern )|+ $( if $guard )? => true,
             _ => false
@@ -505,7 +600,7 @@ macro_rules! unreachable {
 /// Indicates unimplemented code by panicking with a message of "not implemented".
 ///
 /// This allows your code to type-check, which is useful if you are prototyping or
-/// implementing a trait that requires multiple methods which you don't plan of using all of.
+/// implementing a trait that requires multiple methods which you don't plan to use all of.
 ///
 /// The difference between `unimplemented!` and [`todo!`] is that while `todo!`
 /// conveys an intent of implementing the functionality later and the message is "not yet
@@ -1268,7 +1363,10 @@ pub(crate) mod builtin {
     #[rustc_builtin_macro]
     #[macro_export]
     macro_rules! global_asm {
-        ("assembly") => {
+        ("assembly template",
+            $(operands,)*
+            $(options($(option),*))?
+        ) => {
             /* compiler built-in */
         };
     }

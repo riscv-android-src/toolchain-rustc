@@ -149,8 +149,7 @@ values:
 
 * `y`, `yes`, `on`, or no value: Unwind tables are forced to be generated.
 * `n`, `no`, or `off`: Unwind tables are not forced to be generated. If unwind
-  tables are required by the target or `-C panic=unwind`, an error will be
-  emitted.
+  tables are required by the target an error will be emitted.
 
 The default if not specified depends on the target.
 
@@ -160,9 +159,6 @@ This flag allows you to enable incremental compilation, which allows `rustc`
 to save information after compiling a crate to be reused when recompiling the
 crate, improving re-compile times. This takes a path to a directory where
 incremental files will be stored.
-
-Note that this option currently does not take effect unless
-`RUSTC_FORCE_INCREMENTAL=1` in the environment.
 
 ## inline-threshold
 
@@ -237,6 +233,8 @@ flavor. Valid options are:
 * `ptx-linker`: use
   [`rust-ptx-linker`](https://github.com/denzp/rust-ptx-linker) for Nvidia
   NVPTX GPGPU support.
+* `bpf-linker`: use
+  [`bpf-linker`](https://github.com/alessandrod/bpf-linker) for eBPF support.
 * `wasm-ld`: use the [`wasm-ld`](https://lld.llvm.org/WebAssembly.html)
   executable, a port of LLVM `lld` for WebAssembly.
 * `ld64.lld`: use the LLVM `lld` executable with the [`-flavor darwin`

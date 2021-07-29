@@ -1,11 +1,10 @@
 //! `core_arch`
 
-#![cfg_attr(not(bootstrap), allow(automatic_links))]
 #[macro_use]
 mod macros;
 
 #[cfg(any(target_arch = "arm", target_arch = "aarch64", doc))]
-mod acle;
+mod arm_shared;
 
 mod simd;
 
@@ -53,17 +52,29 @@ pub mod arch {
     #[doc(cfg(target_arch = "aarch64"))]
     #[unstable(feature = "stdsimd", issue = "27731")]
     pub mod aarch64 {
-        pub use crate::core_arch::{aarch64::*, arm::*};
+        pub use crate::core_arch::aarch64::*;
     }
 
     /// Platform-specific intrinsics for the `wasm32` platform.
     ///
     /// This module provides intrinsics specific to the WebAssembly
-    /// architecture. Here you'll find intrinsics necessary for leveraging
-    /// WebAssembly proposals such as [atomics] and [simd]. These proposals are
-    /// evolving over time and as such the support here is unstable and requires
-    /// the nightly channel. As WebAssembly proposals stabilize these functions
-    /// will also become stable.
+    /// architecture. Here you'll find intrinsics specific to WebAssembly that
+    /// aren't otherwise surfaced somewhere in a cross-platform abstraction of
+    /// `std`, and you'll also find functions for leveraging WebAssembly
+    /// proposals such as [atomics] and [simd].
+    ///
+    /// Intrinsics in the `wasm32` module are modeled after the WebAssembly
+    /// instructions that they represent. Most functions are named after the
+    /// instruction they intend to correspond to, and the arguments/results
+    /// correspond to the type signature of the instruction itself. Stable
+    /// WebAssembly instructions are [documented online][instrdoc].
+    ///
+    /// [instrdoc]: https://webassembly.github.io/spec/core/valid/instructions.html
+    ///
+    /// If a proposal is not yet stable in WebAssembly itself then the functions
+    /// within this function may be unstable and require the nightly channel of
+    /// Rust to use. As the proposal itself stabilizes the intrinsics in this
+    /// module should stabilize as well.
     ///
     /// [atomics]: https://github.com/webassembly/threads
     /// [simd]: https://github.com/webassembly/simd
@@ -74,38 +85,30 @@ pub mod arch {
     /// ## Atomics
     ///
     /// The [threads proposal][atomics] for WebAssembly adds a number of
-    /// instructions for dealing with multithreaded programs. Atomic
-    /// instructions can all be generated through `std::sync::atomic` types, but
-    /// some instructions have no equivalent in Rust such as
-    /// `memory.atomic.notify` so this module will provide these intrinsics.
+    /// instructions for dealing with multithreaded programs. Most instructions
+    /// added in the [atomics] proposal are exposed in Rust through the
+    /// `std::sync::atomic` module. Some instructions, however, don't have
+    /// direct equivalents in Rust so they're exposed here instead.
     ///
-    /// At this time, however, these intrinsics are only available **when the
-    /// standard library itself is compiled with atomics**. Compiling with
-    /// atomics is not enabled by default and requires passing
-    /// `-Ctarget-feature=+atomics` to rustc. The standard library shipped via
-    /// `rustup` is not compiled with atomics. To get access to these intrinsics
-    /// you'll need to compile the standard library from source with the
-    /// requisite compiler flags.
+    /// Note that the instructions added in the [atomics] proposal can work in
+    /// either a context with a shared wasm memory and without. These intrinsics
+    /// are always available in the standard library, but you likely won't be
+    /// able to use them too productively unless you recompile the standard
+    /// library (and all your code) with `-Ctarget-feature=+atomics`.
+    ///
+    /// It's also worth pointing out that multi-threaded WebAssembly and its
+    /// story in Rust is still in a somewhat "early days" phase as of the time
+    /// of this writing. Pieces should mostly work but it generally requires a
+    /// good deal of manual setup. At this time it's not as simple as "just call
+    /// `std::thread::spawn`", but it will hopefully get there one day!
     ///
     /// ## SIMD
     ///
-    /// The [simd proposal][simd] for WebAssembly adds a new `v128` type for a
-    /// 128-bit SIMD register. It also adds a large array of instructions to
-    /// operate on the `v128` type to perform data processing. The SIMD proposal
-    /// has been in progress for quite some time and many instructions have come
-    /// and gone. This module attempts to keep up with the proposal, but if you
-    /// notice anything awry please feel free to [open an
-    /// issue](https://github.com/rust-lang/stdarch/issues/new).
-    ///
-    /// It's important to be aware that the current state of development of SIMD
-    /// in WebAssembly is still somewhat early days. There's lots of pieces to
-    /// demo and prototype with, but discussions and support are still in
-    /// progress. There's a number of pitfalls and gotchas in various places,
-    /// which will attempt to be documented here, but there may be others
-    /// lurking!
-    ///
-    /// Using SIMD is intended to be similar to as you would on `x86_64`, for
-    /// example. You'd write a function such as:
+    /// The [simd proposal][simd] for WebAssembly added a new `v128` type for a
+    /// 128-bit SIMD register. It also added a large array of instructions to
+    /// operate on the `v128` type to perform data processing. Using SIMD on
+    /// wasm is intended to be similar to as you would on `x86_64`, for example.
+    /// You'd write a function such as:
     ///
     /// ```rust,ignore
     /// #[cfg(target_arch = "wasm32")]
@@ -118,15 +121,17 @@ pub mod arch {
     ///
     /// Unlike `x86_64`, however, WebAssembly does not currently have dynamic
     /// detection at runtime as to whether SIMD is supported (this is one of the
-    /// motivators for the [conditional sections proposal][condsections], but
-    /// that is still pretty early days). This means that your binary will
-    /// either have SIMD and can only run on engines which support SIMD, or it
-    /// will not have SIMD at all. For compatibility the standard library itself
-    /// does not use any SIMD internally. Determining how best to ship your
-    /// WebAssembly binary with SIMD is largely left up to you as it can can be
-    /// pretty nuanced depending on your situation.
+    /// motivators for the [conditional sections][condsections] and [feature
+    /// detection] proposals, but that is still pretty early days). This means
+    /// that your binary will either have SIMD and can only run on engines
+    /// which support SIMD, or it will not have SIMD at all. For compatibility
+    /// the standard library itself does not use any SIMD internally.
+    /// Determining how best to ship your WebAssembly binary with SIMD is
+    /// largely left up to you as it can can be pretty nuanced depending on
+    /// your situation.
     ///
     /// [condsections]: https://github.com/webassembly/conditional-sections
+    /// [feature detection]: https://github.com/WebAssembly/feature-detection
     ///
     /// To enable SIMD support at compile time you need to do one of two things:
     ///
@@ -138,7 +143,9 @@ pub mod arch {
     /// * Second you can compile your program with `-Ctarget-feature=+simd128`.
     ///   This compilation flag blanket enables SIMD support for your entire
     ///   compilation. Note that this does not include the standard library
-    ///   unless you recompile the standard library.
+    ///   unless you [recompile the standard library][buildstd].
+    ///
+    /// [buildstd]: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std
     ///
     /// If you enable SIMD via either of these routes then you'll have a
     /// WebAssembly binary that uses SIMD instructions, and you'll need to ship
@@ -147,21 +154,6 @@ pub mod arch {
     /// generated in your program. This means to generate a binary without SIMD
     /// you'll need to avoid both options above plus calling into any intrinsics
     /// in this module.
-    ///
-    /// > **Note**: Due to
-    /// > [rust-lang/rust#74320](https://github.com/rust-lang/rust/issues/74320)
-    /// > it's recommended to compile your entire program with SIMD support
-    /// > (using `RUSTFLAGS`) or otherwise functions may not be inlined
-    /// > correctly.
-    ///
-    /// > **Note**: LLVM's SIMD support is actually split into two features:
-    /// > `simd128` and `unimplemented-simd128`. Rust code can enable `simd128`
-    /// > with `#[target_feature]` (and test for it with `#[cfg(target_feature =
-    /// > "simd128")]`, but it cannot enable `unimplemented-simd128`. The only
-    /// > way to enable this feature is to compile with
-    /// > `-Ctarget-feature=+simd128,+unimplemented-simd128`. This second
-    /// > feature enables more recent instructions implemented in LLVM which
-    /// > haven't always had enough time to make their way to runtimes.
     #[cfg(any(target_arch = "wasm32", doc))]
     #[doc(cfg(target_arch = "wasm32"))]
     #[stable(feature = "simd_wasm32", since = "1.33.0")]
@@ -233,8 +225,8 @@ mod x86_64;
 #[cfg(any(target_arch = "aarch64", doc))]
 #[doc(cfg(target_arch = "aarch64"))]
 mod aarch64;
-#[cfg(any(target_arch = "arm", target_arch = "aarch64", doc))]
-#[doc(cfg(any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(any(target_arch = "arm", doc))]
+#[doc(cfg(any(target_arch = "arm")))]
 mod arm;
 
 #[cfg(any(target_arch = "wasm32", doc))]

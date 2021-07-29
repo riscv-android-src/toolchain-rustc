@@ -25,7 +25,7 @@ checksum = "0ee1c47aaa256ecabcaea351eae4a9b01ef39ed810004e298d2511ed284b1525"
 
 [[package]]
 name = "minifier"
-version = "0.0.39"
+version = "0.0.41"
 dependencies = [
  "macro-utils",
  "regex",

@@ -14,6 +14,9 @@ pub type key_t = ::c_long;
 pub type msglen_t = ::c_ulong;
 pub type msgqnum_t = ::c_ulong;
 
+pub type cpulevel_t = ::c_int;
+pub type cpuwhich_t = ::c_int;
+
 pub type mqd_t = *mut ::c_void;
 pub type posix_spawnattr_t = *mut ::c_void;
 pub type posix_spawn_file_actions_t = *mut ::c_void;
@@ -120,6 +123,17 @@ s! {
         pub pve_fileid: ::c_long,
         pub pve_fsid: u32,
         pub pve_path: *mut ::c_char,
+    }
+
+    pub struct cpuset_t {
+        #[cfg(target_pointer_width = "64")]
+        __bits: [::c_long; 4],
+        #[cfg(target_pointer_width = "32")]
+        __bits: [::c_long; 8],
+    }
+
+    pub struct cap_rights_t {
+        cr_rights: [u64; 2],
     }
 }
 
@@ -448,6 +462,7 @@ pub const Q_GETQUOTA: ::c_int = 0x700;
 pub const Q_SETQUOTA: ::c_int = 0x800;
 
 pub const MAP_GUARD: ::c_int = 0x00002000;
+pub const MAP_ALIGNED_SUPER: ::c_int = 1 << 24;
 
 pub const POSIX_FADV_NORMAL: ::c_int = 0;
 pub const POSIX_FADV_RANDOM: ::c_int = 1;
@@ -1213,6 +1228,12 @@ pub const F_READAHEAD: ::c_int = 15;
 pub const F_RDAHEAD: ::c_int = 16;
 pub const F_DUP2FD_CLOEXEC: ::c_int = 18;
 
+// For realhostname* api
+pub const HOSTNAME_FOUND: ::c_int = 0;
+pub const HOSTNAME_INCORRECTNAME: ::c_int = 1;
+pub const HOSTNAME_INVALIDADDR: ::c_int = 2;
+pub const HOSTNAME_INVALIDNAME: ::c_int = 3;
+
 const_fn! {
     {const} fn _ALIGN(p: usize) -> usize {
         (p + _ALIGNBYTES) & !_ALIGNBYTES
@@ -1263,6 +1284,38 @@ f! {
 
     pub fn uname(buf: *mut ::utsname) -> ::c_int {
         __xuname(256, buf as *mut ::c_void)
+    }
+
+    pub fn CPU_ZERO(cpuset: &mut cpuset_t) -> () {
+        for slot in cpuset.__bits.iter_mut() {
+            *slot = 0;
+        }
+    }
+
+    pub fn CPU_FILL(cpuset: &mut cpuset_t) -> () {
+        for slot in cpuset.__bits.iter_mut() {
+            *slot = !0;
+        }
+    }
+
+    pub fn CPU_SET(cpu: usize, cpuset: &mut cpuset_t) -> () {
+        let bitset_bits = ::mem::size_of::<::c_long>();
+        let (idx, offset) = (cpu / bitset_bits, cpu % bitset_bits);
+        cpuset.__bits[idx] |= 1 << offset;
+        ()
+    }
+
+    pub fn CPU_CLR(cpu: usize, cpuset: &mut cpuset_t) -> () {
+        let bitset_bits = ::mem::size_of::<::c_long>();
+        let (idx, offset) = (cpu / bitset_bits, cpu % bitset_bits);
+        cpuset.__bits[idx] &= !(1 << offset);
+        ()
+    }
+
+    pub fn CPU_ISSET(cpu: usize, cpuset: &mut cpuset_t) -> bool {
+        let bitset_bits = ::mem::size_of::<::c_long>();
+        let (idx, offset) = (cpu / bitset_bits, cpu % bitset_bits);
+        0 != cpuset.__bits[idx] & (1 << offset)
     }
 }
 
@@ -1526,6 +1579,33 @@ extern "C" {
     ) -> *mut ::c_void;
 
     pub fn nmount(iov: *mut ::iovec, niov: ::c_uint, flags: ::c_int) -> ::c_int;
+    pub fn cpuset_getaffinity(
+        level: cpulevel_t,
+        which: cpuwhich_t,
+        id: ::id_t,
+        setsize: ::size_t,
+        mask: *mut cpuset_t,
+    ) -> ::c_int;
+    pub fn cpuset_setaffinity(
+        level: cpulevel_t,
+        which: cpuwhich_t,
+        id: ::id_t,
+        setsize: ::size_t,
+        mask: *const cpuset_t,
+    ) -> ::c_int;
+    pub fn cap_enter() -> ::c_int;
+    pub fn cap_getmode(modep: *mut ::c_uint) -> ::c_int;
+    pub fn __cap_rights_init(version: ::c_int, rights: *mut cap_rights_t, ...)
+        -> *mut cap_rights_t;
+    pub fn __cap_rights_set(rights: *mut cap_rights_t, ...) -> *mut cap_rights_t;
+    pub fn __cap_rights_clear(rights: *mut cap_rights_t, ...) -> *mut cap_rights_t;
+    pub fn __cap_rights_is_set(rights: *const cap_rights_t, ...) -> bool;
+    pub fn cap_rights_is_valid(rights: *const cap_rights_t) -> bool;
+    pub fn cap_rights_limit(fd: ::c_int, rights: *const cap_rights_t) -> ::c_int;
+    pub fn cap_rights_merge(dst: *mut cap_rights_t, src: *const cap_rights_t) -> *mut cap_rights_t;
+    pub fn cap_rights_remove(dst: *mut cap_rights_t, src: *const cap_rights_t)
+        -> *mut cap_rights_t;
+    pub fn cap_rights_contains(big: *const cap_rights_t, little: *const cap_rights_t) -> bool;
 }
 
 #[link(name = "util")]
@@ -1537,6 +1617,13 @@ extern "C" {
     pub fn extattr_string_to_namespace(
         string: *const ::c_char,
         attrnamespace: *mut ::c_int,
+    ) -> ::c_int;
+    pub fn realhostname(host: *mut ::c_char, hsize: ::size_t, ip: *const ::in_addr) -> ::c_int;
+    pub fn realhostname_sa(
+        host: *mut ::c_char,
+        hsize: ::size_t,
+        addr: *mut ::sockaddr,
+        addrlen: ::c_int,
     ) -> ::c_int;
 }
 

@@ -4,8 +4,9 @@
 
 use std::{collections::VecDeque, fmt, fs, path::Path, process::Command};
 
-use anyhow::{Context, Result};
+use anyhow::{format_err, Context, Result};
 use base_db::{CrateDisplayName, CrateGraph, CrateId, CrateName, Edition, Env, FileId, ProcMacro};
+use cargo_workspace::DepKind;
 use cfg::CfgOptions;
 use paths::{AbsPath, AbsPathBuf};
 use proc_macro_api::ProcMacroClient;
@@ -48,6 +49,18 @@ pub enum ProjectWorkspace {
     },
     /// Project workspace was manually specified using a `rust-project.json` file.
     Json { project: ProjectJson, sysroot: Option<Sysroot>, rustc_cfg: Vec<CfgFlag> },
+
+    // FIXME: The primary limitation of this approach is that the set of detached files needs to be fixed at the beginning.
+    // That's not the end user experience we should strive for.
+    // Ideally, you should be able to just open a random detached file in existing cargo projects, and get the basic features working.
+    // That needs some changes on the salsa-level though.
+    // In particular, we should split the unified CrateGraph (which currently has maximal durability) into proper crate graph, and a set of ad hoc roots (with minimal durability).
+    // Then, we need to hide the graph behind the queries such that most queries look only at the proper crate graph, and fall back to ad hoc roots only if there's no results.
+    // After this, we should be able to tweak the logic in reload.rs to add newly opened files, which don't belong to any existing crates, to the set of the detached files.
+    // //
+    /// Project with a set of disjoint files, not belonging to any particular workspace.
+    /// Backed by basic sysroot crates for basic completion and highlighting.
+    DetachedFiles { files: Vec<AbsPathBuf>, sysroot: Sysroot, rustc_cfg: Vec<CfgFlag> },
 }
 
 impl fmt::Debug for ProjectWorkspace {
@@ -74,6 +87,12 @@ impl fmt::Debug for ProjectWorkspace {
                 debug_struct.field("n_rustc_cfg", &rustc_cfg.len());
                 debug_struct.finish()
             }
+            ProjectWorkspace::DetachedFiles { files, sysroot, rustc_cfg } => f
+                .debug_struct("DetachedFiles")
+                .field("n_files", &files.len())
+                .field("n_sysroot_crates", &sysroot.crates().len())
+                .field("n_rustc_cfg", &rustc_cfg.len())
+                .finish(),
         }
     }
 }
@@ -143,7 +162,8 @@ impl ProjectWorkspace {
                 } else {
                     None
                 };
-                let rustc_cfg = rustc_cfg::get(config.target.as_deref());
+
+                let rustc_cfg = rustc_cfg::get(Some(&cargo_toml), config.target.as_deref());
                 ProjectWorkspace::Cargo { cargo, sysroot, rustc, rustc_cfg }
             }
         };
@@ -159,8 +179,16 @@ impl ProjectWorkspace {
             Some(path) => Some(Sysroot::load(path)?),
             None => None,
         };
-        let rustc_cfg = rustc_cfg::get(target);
+        let rustc_cfg = rustc_cfg::get(None, target);
         Ok(ProjectWorkspace::Json { project: project_json, sysroot, rustc_cfg })
+    }
+
+    pub fn load_detached_files(detached_files: Vec<AbsPathBuf>) -> Result<ProjectWorkspace> {
+        let sysroot = Sysroot::discover(
+            &detached_files.first().ok_or_else(|| format_err!("No detached files to load"))?,
+        )?;
+        let rustc_cfg = rustc_cfg::get(None, None);
+        Ok(ProjectWorkspace::DetachedFiles { files: detached_files, sysroot, rustc_cfg })
     }
 
     /// Returns the roots for the current `ProjectWorkspace`
@@ -222,6 +250,19 @@ impl ProjectWorkspace {
                     })
                 }))
                 .collect(),
+            ProjectWorkspace::DetachedFiles { files, sysroot, .. } => files
+                .into_iter()
+                .map(|detached_file| PackageRoot {
+                    is_member: true,
+                    include: vec![detached_file.clone()],
+                    exclude: Vec::new(),
+                })
+                .chain(sysroot.crates().map(|krate| PackageRoot {
+                    is_member: false,
+                    include: vec![sysroot[krate].root_dir().to_path_buf()],
+                    exclude: Vec::new(),
+                }))
+                .collect(),
         }
     }
 
@@ -231,6 +272,9 @@ impl ProjectWorkspace {
             ProjectWorkspace::Cargo { cargo, sysroot, rustc, .. } => {
                 let rustc_package_len = rustc.as_ref().map_or(0, |rc| rc.packages().len());
                 cargo.packages().len() + sysroot.crates().len() + rustc_package_len
+            }
+            ProjectWorkspace::DetachedFiles { sysroot, files, .. } => {
+                sysroot.crates().len() + files.len()
             }
         }
     }
@@ -265,6 +309,9 @@ impl ProjectWorkspace {
                 rustc,
                 rustc.as_ref().zip(build_data).and_then(|(it, map)| map.get(it.workspace_root())),
             ),
+            ProjectWorkspace::DetachedFiles { files, sysroot, rustc_cfg } => {
+                detached_files_to_crate_graph(rustc_cfg.clone(), load, files, sysroot)
+            }
         };
         if crate_graph.patch_cfg_if() {
             log::debug!("Patched std to depend on cfg-if")
@@ -310,7 +357,7 @@ fn project_json_to_crate_graph(
 
             let target_cfgs = match krate.target.as_deref() {
                 Some(target) => {
-                    cfg_cache.entry(target).or_insert_with(|| rustc_cfg::get(Some(target)))
+                    cfg_cache.entry(target).or_insert_with(|| rustc_cfg::get(None, Some(target)))
                 }
                 None => &rustc_cfg,
             };
@@ -389,6 +436,7 @@ fn cargo_to_crate_graph(
                     &cfg_options,
                     proc_macro_loader,
                     file_id,
+                    &cargo[tgt].name,
                 );
                 if cargo[tgt].kind == TargetKind::Lib {
                     lib_tgt = Some((crate_id, cargo[tgt].name.clone()));
@@ -405,23 +453,25 @@ fn cargo_to_crate_graph(
                     }
                 }
 
-                pkg_crates.entry(pkg).or_insert_with(Vec::new).push(crate_id);
+                pkg_crates.entry(pkg).or_insert_with(Vec::new).push((crate_id, cargo[tgt].kind));
             }
         }
 
         // Set deps to the core, std and to the lib target of the current package
-        for &from in pkg_crates.get(&pkg).into_iter().flatten() {
+        for (from, kind) in pkg_crates.get(&pkg).into_iter().flatten() {
             if let Some((to, name)) = lib_tgt.clone() {
-                if to != from {
+                if to != *from && *kind != TargetKind::BuildScript {
+                    // (build script can not depend on its library target)
+
                     // For root projects with dashes in their name,
                     // cargo metadata does not do any normalization,
                     // so we do it ourselves currently
                     let name = CrateName::normalize_dashes(&name);
-                    add_dep(&mut crate_graph, from, name, to);
+                    add_dep(&mut crate_graph, *from, name, to);
                 }
             }
             for (name, krate) in public_deps.iter() {
-                add_dep(&mut crate_graph, from, name.clone(), *krate);
+                add_dep(&mut crate_graph, *from, name.clone(), *krate);
             }
         }
     }
@@ -432,8 +482,17 @@ fn cargo_to_crate_graph(
         for dep in cargo[pkg].dependencies.iter() {
             let name = CrateName::new(&dep.name).unwrap();
             if let Some(&to) = pkg_to_lib_crate.get(&dep.pkg) {
-                for &from in pkg_crates.get(&pkg).into_iter().flatten() {
-                    add_dep(&mut crate_graph, from, name.clone(), to)
+                for (from, kind) in pkg_crates.get(&pkg).into_iter().flatten() {
+                    if dep.kind == DepKind::Build && *kind != TargetKind::BuildScript {
+                        // Only build scripts may depend on build dependencies.
+                        continue;
+                    }
+                    if dep.kind != DepKind::Build && *kind == TargetKind::BuildScript {
+                        // Build scripts may only depend on build dependencies.
+                        continue;
+                    }
+
+                    add_dep(&mut crate_graph, *from, name.clone(), to)
                 }
             }
         }
@@ -460,6 +519,48 @@ fn cargo_to_crate_graph(
     crate_graph
 }
 
+fn detached_files_to_crate_graph(
+    rustc_cfg: Vec<CfgFlag>,
+    load: &mut dyn FnMut(&AbsPath) -> Option<FileId>,
+    detached_files: &[AbsPathBuf],
+    sysroot: &Sysroot,
+) -> CrateGraph {
+    let _p = profile::span("detached_files_to_crate_graph");
+    let mut crate_graph = CrateGraph::default();
+    let (public_deps, _libproc_macro) =
+        sysroot_to_crate_graph(&mut crate_graph, sysroot, rustc_cfg.clone(), load);
+
+    let mut cfg_options = CfgOptions::default();
+    cfg_options.extend(rustc_cfg);
+
+    for detached_file in detached_files {
+        let file_id = match load(&detached_file) {
+            Some(file_id) => file_id,
+            None => {
+                log::error!("Failed to load detached file {:?}", detached_file);
+                continue;
+            }
+        };
+        let display_name = detached_file
+            .file_stem()
+            .and_then(|os_str| os_str.to_str())
+            .map(|file_stem| CrateDisplayName::from_canonical_name(file_stem.to_string()));
+        let detached_file_crate = crate_graph.add_crate_root(
+            file_id,
+            Edition::Edition2018,
+            display_name,
+            cfg_options.clone(),
+            Env::default(),
+            Vec::new(),
+        );
+
+        for (name, krate) in public_deps.iter() {
+            add_dep(&mut crate_graph, detached_file_crate, name.clone(), *krate);
+        }
+    }
+    crate_graph
+}
+
 fn handle_rustc_crates(
     rustc_workspace: &CargoWorkspace,
     load: &mut dyn FnMut(&AbsPath) -> Option<FileId>,
@@ -470,7 +571,7 @@ fn handle_rustc_crates(
     pkg_to_lib_crate: &mut FxHashMap<la_arena::Idx<crate::PackageData>, CrateId>,
     public_deps: &[(CrateName, CrateId)],
     cargo: &CargoWorkspace,
-    pkg_crates: &FxHashMap<la_arena::Idx<crate::PackageData>, Vec<CrateId>>,
+    pkg_crates: &FxHashMap<la_arena::Idx<crate::PackageData>, Vec<(CrateId, TargetKind)>>,
 ) {
     let mut rustc_pkg_crates = FxHashMap::default();
     // The root package of the rustc-dev component is rustc_driver, so we match that
@@ -504,6 +605,7 @@ fn handle_rustc_crates(
                         &cfg_options,
                         proc_macro_loader,
                         file_id,
+                        &rustc_workspace[tgt].name,
                     );
                     pkg_to_lib_crate.insert(pkg, crate_id);
                     // Add dependencies on core / std / alloc for this crate
@@ -538,13 +640,13 @@ fn handle_rustc_crates(
                 if !package.metadata.rustc_private {
                     continue;
                 }
-                for &from in pkg_crates.get(&pkg).into_iter().flatten() {
+                for (from, _) in pkg_crates.get(&pkg).into_iter().flatten() {
                     // Avoid creating duplicate dependencies
                     // This avoids the situation where `from` depends on e.g. `arrayvec`, but
                     // `rust_analyzer` thinks that it should use the one from the `rustcSource`
                     // instead of the one from `crates.io`
-                    if !crate_graph[from].dependencies.iter().any(|d| d.name == name) {
-                        add_dep(crate_graph, from, name.clone(), to);
+                    if !crate_graph[*from].dependencies.iter().any(|d| d.name == name) {
+                        add_dep(crate_graph, *from, name.clone(), to);
                     }
                 }
             }
@@ -559,6 +661,7 @@ fn add_target_crate_root(
     cfg_options: &CfgOptions,
     proc_macro_loader: &dyn Fn(&Path) -> Vec<ProcMacro>,
     file_id: FileId,
+    cargo_name: &str,
 ) -> CrateId {
     let edition = pkg.edition;
     let cfg_options = {
@@ -585,7 +688,7 @@ fn add_target_crate_root(
         .map(|it| proc_macro_loader(&it))
         .unwrap_or_default();
 
-    let display_name = CrateDisplayName::from_canonical_name(pkg.name.clone());
+    let display_name = CrateDisplayName::from_canonical_name(cargo_name.to_string());
     let crate_id = crate_graph.add_crate_root(
         file_id,
         edition,

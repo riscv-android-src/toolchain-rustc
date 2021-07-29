@@ -1,4 +1,5 @@
-//! FIXME: write short doc here
+//! A "Parser" structure for token trees. We use this when parsing a declarative
+//! macro definition into a list of patterns and templates.
 
 use crate::{subtree_source::SubtreeTokenSource, ExpandError, ExpandResult};
 
@@ -137,7 +138,7 @@ impl<'a> TtIter<'a> {
             }
         }
         self.inner = self.inner.as_slice()[res.len()..].iter();
-        if res.len() == 0 && err.is_none() {
+        if res.is_empty() && err.is_none() {
             err = Some(err!("no tokens consumed"));
         }
         let res = match res.len() {

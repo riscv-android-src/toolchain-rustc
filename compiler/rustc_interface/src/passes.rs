@@ -6,14 +6,13 @@ use rustc_ast::mut_visit::MutVisitor;
 use rustc_ast::{self as ast, visit};
 use rustc_codegen_ssa::back::link::emit_metadata;
 use rustc_codegen_ssa::traits::CodegenBackend;
+use rustc_data_structures::parallel;
 use rustc_data_structures::steal::Steal;
 use rustc_data_structures::sync::{par_iter, Lrc, OnceCell, ParallelIterator, WorkerLocal};
 use rustc_data_structures::temp_dir::MaybeTempDir;
-use rustc_data_structures::{box_region_allow_access, declare_box_region_type, parallel};
 use rustc_errors::{ErrorReported, PResult};
 use rustc_expand::base::ExtCtxt;
-use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
-use rustc_hir::definitions::Definitions;
+use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_hir::Crate;
 use rustc_lint::LintStore;
 use rustc_metadata::creader::CStore;
@@ -36,7 +35,6 @@ use rustc_session::output::{filename_for_input, filename_for_metadata};
 use rustc_session::search_paths::PathKind;
 use rustc_session::Session;
 use rustc_span::symbol::{Ident, Symbol};
-use rustc_span::{FileName, RealFileName};
 use rustc_trait_selection::traits;
 use rustc_typeck as typeck;
 use tracing::{info, warn};
@@ -49,9 +47,11 @@ use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io::{self, BufWriter, Write};
 use std::lazy::SyncLazy;
+use std::marker::PhantomPinned;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::rc::Rc;
-use std::{env, fs, iter, mem};
+use std::{env, fs, iter};
 
 pub fn parse<'a>(sess: &'a Session, input: &Input) -> PResult<'a, ast::Crate> {
     let krate = sess.time("parse_crate", || match input {
@@ -87,11 +87,83 @@ fn count_nodes(krate: &ast::Crate) -> usize {
     counter.count
 }
 
-declare_box_region_type!(
-    pub BoxedResolver,
-    for(),
-    (&mut Resolver<'_>) -> (Result<ast::Crate>, ResolverOutputs)
-);
+pub use boxed_resolver::BoxedResolver;
+mod boxed_resolver {
+    use super::*;
+
+    pub struct BoxedResolver(Pin<Box<BoxedResolverInner>>);
+
+    struct BoxedResolverInner {
+        session: Lrc<Session>,
+        resolver_arenas: Option<ResolverArenas<'static>>,
+        resolver: Option<Resolver<'static>>,
+        _pin: PhantomPinned,
+    }
+
+    // Note: Drop order is important to prevent dangling references. Resolver must be dropped first,
+    // then resolver_arenas and finally session.
+    impl Drop for BoxedResolverInner {
+        fn drop(&mut self) {
+            self.resolver.take();
+            self.resolver_arenas.take();
+        }
+    }
+
+    impl BoxedResolver {
+        pub(super) fn new<F>(session: Lrc<Session>, make_resolver: F) -> Result<(ast::Crate, Self)>
+        where
+            F: for<'a> FnOnce(
+                &'a Session,
+                &'a ResolverArenas<'a>,
+            ) -> Result<(ast::Crate, Resolver<'a>)>,
+        {
+            let mut boxed_resolver = Box::new(BoxedResolverInner {
+                session,
+                resolver_arenas: Some(Resolver::arenas()),
+                resolver: None,
+                _pin: PhantomPinned,
+            });
+            // SAFETY: `make_resolver` takes a resolver arena with an arbitrary lifetime and
+            // returns a resolver with the same lifetime as the arena. We ensure that the arena
+            // outlives the resolver in the drop impl and elsewhere so these transmutes are sound.
+            unsafe {
+                let (crate_, resolver) = make_resolver(
+                    std::mem::transmute::<&Session, &Session>(&boxed_resolver.session),
+                    std::mem::transmute::<&ResolverArenas<'_>, &ResolverArenas<'_>>(
+                        boxed_resolver.resolver_arenas.as_ref().unwrap(),
+                    ),
+                )?;
+                boxed_resolver.resolver = Some(resolver);
+                Ok((crate_, BoxedResolver(Pin::new_unchecked(boxed_resolver))))
+            }
+        }
+
+        pub fn access<F: for<'a> FnOnce(&mut Resolver<'a>) -> R, R>(&mut self, f: F) -> R {
+            // SAFETY: The resolver doesn't need to be pinned.
+            let mut resolver = unsafe {
+                self.0.as_mut().map_unchecked_mut(|boxed_resolver| &mut boxed_resolver.resolver)
+            };
+            f((&mut *resolver).as_mut().unwrap())
+        }
+
+        pub fn to_resolver_outputs(resolver: Rc<RefCell<BoxedResolver>>) -> ResolverOutputs {
+            match Rc::try_unwrap(resolver) {
+                Ok(resolver) => {
+                    let mut resolver = resolver.into_inner();
+                    // SAFETY: The resolver doesn't need to be pinned.
+                    let mut resolver = unsafe {
+                        resolver
+                            .0
+                            .as_mut()
+                            .map_unchecked_mut(|boxed_resolver| &mut boxed_resolver.resolver)
+                    };
+                    resolver.take().unwrap().into_outputs()
+                }
+                Err(resolver) => resolver.borrow_mut().access(|resolver| resolver.clone_outputs()),
+            }
+        }
+    }
+}
 
 /// Runs the "early phases" of the compiler: initial `cfg` processing, loading compiler plugins,
 /// syntax expansion, secondary `cfg` expansion, synthesis of a test
@@ -113,41 +185,16 @@ pub fn configure_and_expand(
     // its contents but the results of name resolution on those contents. Hopefully we'll push
     // this back at some point.
     let crate_name = crate_name.to_string();
-    let (result, resolver) = BoxedResolver::new(static move |mut action| {
-        let _ = action;
-        let sess = &*sess;
-        let resolver_arenas = Resolver::arenas();
-        let res = configure_and_expand_inner(
+    BoxedResolver::new(sess, move |sess, resolver_arenas| {
+        configure_and_expand_inner(
             sess,
             &lint_store,
             krate,
             &crate_name,
             &resolver_arenas,
-            &*metadata_loader,
-        );
-        let mut resolver = match res {
-            Err(v) => {
-                yield BoxedResolver::initial_yield(Err(v));
-                panic!()
-            }
-            Ok((krate, resolver)) => {
-                action = yield BoxedResolver::initial_yield(Ok(krate));
-                resolver
-            }
-        };
-        box_region_allow_access!(for(), (&mut Resolver<'_>), (&mut resolver), action);
-        resolver.into_outputs()
-    });
-    result.map(|k| (k, resolver))
-}
-
-impl BoxedResolver {
-    pub fn to_resolver_outputs(resolver: Rc<RefCell<BoxedResolver>>) -> ResolverOutputs {
-        match Rc::try_unwrap(resolver) {
-            Ok(resolver) => resolver.into_inner().complete(),
-            Err(resolver) => resolver.borrow_mut().access(|resolver| resolver.clone_outputs()),
-        }
-    }
+            metadata_loader,
+        )
+    })
 }
 
 pub fn register_plugins<'a>(
@@ -174,7 +221,7 @@ pub fn register_plugins<'a>(
 
     let disambiguator = util::compute_crate_disambiguator(sess);
     sess.crate_disambiguator.set(disambiguator).expect("not yet initialized");
-    rustc_incremental::prepare_session_directory(sess, &crate_name, disambiguator);
+    rustc_incremental::prepare_session_directory(sess, &crate_name, disambiguator)?;
 
     if sess.opts.incremental.is_some() {
         sess.time("incr_comp_garbage_collect_session_directories", || {
@@ -233,11 +280,11 @@ fn pre_expansion_lint(
 
 fn configure_and_expand_inner<'a>(
     sess: &'a Session,
-    lint_store: &'a LintStore,
+    lint_store: &LintStore,
     mut krate: ast::Crate,
     crate_name: &str,
     resolver_arenas: &'a ResolverArenas<'a>,
-    metadata_loader: &'a MetadataLoaderDyn,
+    metadata_loader: Box<MetadataLoaderDyn>,
 ) -> Result<(ast::Crate, Resolver<'a>)> {
     tracing::trace!("configure_and_expand_inner");
     pre_expansion_lint(sess, lint_store, &krate, crate_name);
@@ -532,10 +579,10 @@ fn output_conflicts_with_dir(output_paths: &[PathBuf]) -> Option<PathBuf> {
     check_output(output_paths, check)
 }
 
-fn escape_dep_filename(filename: &FileName) -> String {
+fn escape_dep_filename(filename: &String) -> String {
     // Apparently clang and gcc *only* escape spaces:
     // http://llvm.org/klaus/clang/commit/9d50634cfc268ecc9a7250226dd5ca0e945240d4
-    filename.to_string().replace(" ", "\\ ")
+    filename.replace(" ", "\\ ")
 }
 
 // Makefile comments only need escaping newlines and `\`.
@@ -575,7 +622,7 @@ fn write_out_deps(
             .iter()
             .filter(|fmap| fmap.is_real_file())
             .filter(|fmap| !fmap.is_imported())
-            .map(|fmap| escape_dep_filename(&fmap.unmapped_path.as_ref().unwrap_or(&fmap.name)))
+            .map(|fmap| escape_dep_filename(&fmap.name.prefer_local().to_string()))
             .collect();
 
         if let Some(ref backend) = sess.opts.debugging_opts.codegen_backend {
@@ -587,16 +634,13 @@ fn write_out_deps(
                 for cnum in resolver.cstore().crates_untracked() {
                     let source = resolver.cstore().crate_source_untracked(cnum);
                     if let Some((path, _)) = source.dylib {
-                        let file_name = FileName::Real(RealFileName::Named(path));
-                        files.push(escape_dep_filename(&file_name));
+                        files.push(escape_dep_filename(&path.display().to_string()));
                     }
                     if let Some((path, _)) = source.rlib {
-                        let file_name = FileName::Real(RealFileName::Named(path));
-                        files.push(escape_dep_filename(&file_name));
+                        files.push(escape_dep_filename(&path.display().to_string()));
                     }
                     if let Some((path, _)) = source.rmeta {
-                        let file_name = FileName::Real(RealFileName::Named(path));
-                        files.push(escape_dep_filename(&file_name));
+                        files.push(escape_dep_filename(&path.display().to_string()));
                     }
                 }
             });
@@ -761,7 +805,7 @@ pub fn create_global_ctxt<'tcx>(
     lint_store: Lrc<LintStore>,
     krate: &'tcx Crate<'tcx>,
     dep_graph: DepGraph,
-    mut resolver_outputs: ResolverOutputs,
+    resolver_outputs: ResolverOutputs,
     outputs: OutputFilenames,
     crate_name: &str,
     queries: &'tcx OnceCell<TcxQueries<'tcx>>,
@@ -769,12 +813,8 @@ pub fn create_global_ctxt<'tcx>(
     arena: &'tcx WorkerLocal<Arena<'tcx>>,
 ) -> QueryContext<'tcx> {
     let sess = &compiler.session();
-    let defs: &'tcx Definitions = arena.alloc(mem::replace(
-        &mut resolver_outputs.definitions,
-        Definitions::new(crate_name, sess.local_crate_disambiguator()),
-    ));
 
-    let query_result_on_disk_cache = rustc_incremental::load_query_result_cache(sess, defs);
+    let query_result_on_disk_cache = rustc_incremental::load_query_result_cache(sess);
 
     let codegen_backend = compiler.codegen_backend();
     let mut local_providers = *DEFAULT_QUERY_PROVIDERS;
@@ -798,12 +838,11 @@ pub fn create_global_ctxt<'tcx>(
                 arena,
                 resolver_outputs,
                 krate,
-                defs,
                 dep_graph,
                 query_result_on_disk_cache,
                 queries.as_dyn(),
                 &crate_name,
-                &outputs,
+                outputs,
             )
         })
     });
@@ -813,9 +852,7 @@ pub fn create_global_ctxt<'tcx>(
 
 /// Runs the resolution, type-checking, region checking and other
 /// miscellaneous analysis passes on the crate.
-fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
-    assert_eq!(cnum, LOCAL_CRATE);
-
+fn analysis(tcx: TyCtxt<'_>, (): ()) -> Result<()> {
     rustc_passes::hir_id_validator::check_crate(tcx);
 
     let sess = tcx.sess;
@@ -824,14 +861,13 @@ fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
     sess.time("misc_checking_1", || {
         parallel!(
             {
-                entry_point = sess
-                    .time("looking_for_entry_point", || rustc_passes::entry::find_entry_point(tcx));
+                entry_point = sess.time("looking_for_entry_point", || tcx.entry_fn(()));
 
-                sess.time("looking_for_plugin_registrar", || {
-                    plugin::build::find_plugin_registrar(tcx)
+                sess.time("looking_for_plugin_registrar", || tcx.ensure().plugin_registrar_fn(()));
+
+                sess.time("looking_for_derive_registrar", || {
+                    tcx.ensure().proc_macro_decls_static(())
                 });
-
-                sess.time("looking_for_derive_registrar", || proc_macro_decls::find(tcx));
 
                 let cstore = tcx
                     .cstore_as_any()
@@ -884,7 +920,10 @@ fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
 
     sess.time("MIR_effect_checking", || {
         for def_id in tcx.body_owners() {
-            mir::transform::check_unsafety::check_unsafety(tcx, def_id);
+            tcx.ensure().thir_check_unsafety(def_id);
+            if !tcx.sess.opts.debugging_opts.thir_unsafeck {
+                mir::transform::check_unsafety::check_unsafety(tcx, def_id);
+            }
 
             if tcx.hir().body_const_context(def_id).is_some() {
                 tcx.ensure()
@@ -907,11 +946,11 @@ fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
     sess.time("misc_checking_3", || {
         parallel!(
             {
-                tcx.ensure().privacy_access_levels(LOCAL_CRATE);
+                tcx.ensure().privacy_access_levels(());
 
                 parallel!(
                     {
-                        tcx.ensure().check_private_in_public(LOCAL_CRATE);
+                        tcx.ensure().check_private_in_public(());
                     },
                     {
                         sess.time("death_checking", || rustc_passes::dead::check_crate(tcx));
@@ -989,7 +1028,7 @@ fn encode_and_write_metadata(
             .tempdir_in(out_filename.parent().unwrap())
             .unwrap_or_else(|err| tcx.sess.fatal(&format!("couldn't create a temp dir: {}", err)));
         let metadata_tmpdir = MaybeTempDir::new(metadata_tmpdir, tcx.sess.opts.cg.save_temps);
-        let metadata_filename = emit_metadata(tcx.sess, &metadata, &metadata_tmpdir);
+        let metadata_filename = emit_metadata(tcx.sess, &metadata.raw_data, &metadata_tmpdir);
         if let Err(e) = util::non_durable_rename(&metadata_filename, &out_filename) {
             tcx.sess.fatal(&format!("failed to write {}: {}", out_filename.display(), e));
         }

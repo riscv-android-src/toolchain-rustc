@@ -1,27 +1,39 @@
 //! Completion of paths, i.e. `some::prefix::$0`.
 
-use hir::{Adt, HasVisibility, PathResolution, ScopeDef};
+use hir::HasVisibility;
 use rustc_hash::FxHashSet;
 use syntax::AstNode;
 
 use crate::{CompletionContext, Completions};
 
 pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionContext) {
+    if ctx.is_path_disallowed() || ctx.expects_item() {
+        return;
+    }
     let path = match &ctx.path_qual {
         Some(path) => path.clone(),
         None => return,
     };
 
-    if ctx.attribute_under_caret.is_some() || ctx.mod_declaration_under_caret.is_some() {
-        return;
-    }
-
-    let context_module = ctx.scope.module();
-
     let resolution = match ctx.sema.resolve_path(&path) {
         Some(res) => res,
         None => return,
     };
+    let context_module = ctx.scope.module();
+    if ctx.expects_assoc_item() {
+        if let hir::PathResolution::Def(hir::ModuleDef::Module(module)) = resolution {
+            let module_scope = module.scope(ctx.db, context_module);
+            for (name, def) in module_scope {
+                if let hir::ScopeDef::MacroDef(macro_def) = def {
+                    acc.add_macro(ctx, Some(name.clone()), macro_def);
+                }
+                if let hir::ScopeDef::ModuleDef(hir::ModuleDef::Module(_)) = def {
+                    acc.add_resolution(ctx, name, &def);
+                }
+            }
+        }
+        return;
+    }
 
     // Add associated types on type parameters and `Self`.
     resolution.assoc_type_shorthand_candidates(ctx.db, |_, alias| {
@@ -30,11 +42,11 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
     });
 
     match resolution {
-        PathResolution::Def(hir::ModuleDef::Module(module)) => {
+        hir::PathResolution::Def(hir::ModuleDef::Module(module)) => {
             let module_scope = module.scope(ctx.db, context_module);
             for (name, def) in module_scope {
                 if ctx.use_item_syntax.is_some() {
-                    if let ScopeDef::Unknown = def {
+                    if let hir::ScopeDef::Unknown = def {
                         if let Some(name_ref) = ctx.name_ref_syntax.as_ref() {
                             if name_ref.syntax().text() == name.to_string().as_str() {
                                 // for `use self::foo$0`, don't suggest `foo` as a completion
@@ -45,25 +57,31 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
                     }
                 }
 
-                acc.add_resolution(ctx, name.to_string(), &def);
+                acc.add_resolution(ctx, name, &def);
             }
         }
-        PathResolution::Def(def @ hir::ModuleDef::Adt(_))
-        | PathResolution::Def(def @ hir::ModuleDef::TypeAlias(_))
-        | PathResolution::Def(def @ hir::ModuleDef::BuiltinType(_)) => {
-            if let hir::ModuleDef::Adt(Adt::Enum(e)) = def {
-                for variant in e.variants(ctx.db) {
-                    acc.add_enum_variant(ctx, variant, None);
-                }
+        hir::PathResolution::Def(def @ hir::ModuleDef::Adt(_))
+        | hir::PathResolution::Def(def @ hir::ModuleDef::TypeAlias(_))
+        | hir::PathResolution::Def(def @ hir::ModuleDef::BuiltinType(_)) => {
+            if let hir::ModuleDef::Adt(hir::Adt::Enum(e)) = def {
+                add_enum_variants(ctx, acc, e);
             }
             let ty = match def {
                 hir::ModuleDef::Adt(adt) => adt.ty(ctx.db),
-                hir::ModuleDef::TypeAlias(a) => a.ty(ctx.db),
+                hir::ModuleDef::TypeAlias(a) => {
+                    let ty = a.ty(ctx.db);
+                    if let Some(hir::Adt::Enum(e)) = ty.as_adt() {
+                        cov_mark::hit!(completes_variant_through_alias);
+                        add_enum_variants(ctx, acc, e);
+                    }
+                    ty
+                }
                 hir::ModuleDef::BuiltinType(builtin) => {
                     let module = match ctx.scope.module() {
                         Some(it) => it,
                         None => return,
                     };
+                    cov_mark::hit!(completes_primitive_assoc_const);
                     builtin.ty(ctx.db, module)
                 }
                 _ => unreachable!(),
@@ -92,15 +110,14 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
                     if context_module.map_or(false, |m| !item.is_visible_from(ctx.db, m)) {
                         return None;
                     }
-                    match item {
-                        hir::AssocItem::Function(_) | hir::AssocItem::Const(_) => {}
-                        hir::AssocItem::TypeAlias(ty) => acc.add_type_alias(ctx, ty),
+                    if let hir::AssocItem::TypeAlias(ty) = item {
+                        acc.add_type_alias(ctx, ty)
                     }
                     None::<()>
                 });
             }
         }
-        PathResolution::Def(hir::ModuleDef::Trait(t)) => {
+        hir::PathResolution::Def(hir::ModuleDef::Trait(t)) => {
             // Handles `Trait::assoc` as well as `<Ty as Trait>::assoc`.
             for item in t.items(ctx.db) {
                 if context_module.map_or(false, |m| !item.is_visible_from(ctx.db, m)) {
@@ -113,18 +130,16 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
                 }
             }
         }
-        PathResolution::TypeParam(_) | PathResolution::SelfType(_) => {
+        hir::PathResolution::TypeParam(_) | hir::PathResolution::SelfType(_) => {
             if let Some(krate) = ctx.krate {
                 let ty = match resolution {
-                    PathResolution::TypeParam(param) => param.ty(ctx.db),
-                    PathResolution::SelfType(impl_def) => impl_def.self_ty(ctx.db),
+                    hir::PathResolution::TypeParam(param) => param.ty(ctx.db),
+                    hir::PathResolution::SelfType(impl_def) => impl_def.self_ty(ctx.db),
                     _ => return,
                 };
 
-                if let Some(Adt::Enum(e)) = ty.as_adt() {
-                    for variant in e.variants(ctx.db) {
-                        acc.add_enum_variant(ctx, variant, None);
-                    }
+                if let Some(hir::Adt::Enum(e)) = ty.as_adt() {
+                    add_enum_variants(ctx, acc, e);
                 }
 
                 let traits_in_scope = ctx.scope.traits_in_scope();
@@ -148,6 +163,12 @@ pub(crate) fn complete_qualified_path(acc: &mut Completions, ctx: &CompletionCon
             }
         }
         _ => {}
+    }
+}
+
+fn add_enum_variants(ctx: &CompletionContext, acc: &mut Completions, e: hir::Enum) {
+    for variant in e.variants(ctx.db) {
+        acc.add_enum_variant(ctx, variant, None);
     }
 }
 
@@ -587,12 +608,50 @@ fn main() { T::$0; }
 macro_rules! foo { () => {} }
 
 fn main() { let _ = crate::$0 }
-        "#,
+"#,
             expect![[r##"
                 fn main()  fn()
                 ma foo!(…) #[macro_export] macro_rules! foo
             "##]],
         );
+    }
+
+    #[test]
+    fn completes_in_assoc_item_list() {
+        check(
+            r#"
+#[macro_export]
+macro_rules! foo { () => {} }
+mod bar {}
+
+struct MyStruct {}
+impl MyStruct {
+    crate::$0
+}
+"#,
+            expect![[r##"
+                md bar
+                ma foo! #[macro_export] macro_rules! foo
+            "##]],
+        );
+    }
+
+    #[test]
+    #[ignore] // FIXME doesn't complete anything atm
+    fn completes_in_item_list() {
+        check(
+            r#"
+struct MyStruct {}
+macro_rules! foo {}
+mod bar {}
+
+crate::$0
+"#,
+            expect![[r#"
+                md bar
+                ma foo! macro_rules! foo
+            "#]],
+        )
     }
 
     #[test]
@@ -737,29 +796,7 @@ fn f() {}
     }
 
     #[test]
-    fn completes_function() {
-        check(
-            r#"
-fn foo(
-    a: i32,
-    b: i32
-) {
-
-}
-
-fn main() {
-    fo$0
-}
-"#,
-            expect![[r#"
-                fn main() fn()
-                fn foo(…) fn(i32, i32)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn completes_self_enum() {
+    fn completes_variant_through_self() {
         check(
             r#"
 enum Foo {
@@ -783,6 +820,7 @@ impl Foo {
 
     #[test]
     fn completes_primitive_assoc_const() {
+        cov_mark::check!(completes_primitive_assoc_const);
         check(
             r#"
 //- /lib.rs crate:lib deps:core
@@ -801,6 +839,25 @@ impl u8 {
             expect![[r#"
                 ct MAX     pub const MAX: Self = 255;
                 me func(…) fn(self)
+            "#]],
+        );
+    }
+
+    #[test]
+    fn completes_variant_through_alias() {
+        cov_mark::check!(completes_variant_through_alias);
+        check(
+            r#"
+enum Foo {
+    Bar
+}
+type Foo2 = Foo;
+fn main() {
+    Foo2::$0
+}
+"#,
+            expect![[r#"
+                ev Bar ()
             "#]],
         );
     }

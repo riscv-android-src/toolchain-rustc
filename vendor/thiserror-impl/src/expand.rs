@@ -171,10 +171,9 @@ fn impl_enum(input: Enum) -> TokenStream {
                 } else {
                     None
                 };
-                let varsource = quote!(source);
-                let dyn_error = quote_spanned!(source.span()=> #varsource #asref.as_dyn_error());
+                let dyn_error = quote_spanned!(source.span()=> source #asref.as_dyn_error());
                 quote! {
-                    #ty::#ident {#source: #varsource, ..} => std::option::Option::Some(#dyn_error),
+                    #ty::#ident {#source: source, ..} => std::option::Option::Some(#dyn_error),
                 }
             } else {
                 quote! {
@@ -204,14 +203,13 @@ fn impl_enum(input: Enum) -> TokenStream {
                 {
                     let backtrace = &backtrace_field.member;
                     let source = &source_field.member;
-                    let varsource = quote!(source);
                     let source_backtrace = if type_is_option(source_field.ty) {
                         quote_spanned! {source.span()=>
-                            #varsource.as_ref().and_then(|source| source.as_dyn_error().backtrace())
+                            source.as_ref().and_then(|source| source.as_dyn_error().backtrace())
                         }
                     } else {
                         quote_spanned! {source.span()=>
-                            #varsource.as_dyn_error().backtrace()
+                            source.as_dyn_error().backtrace()
                         }
                     };
                     let combinator = if type_is_option(backtrace_field.ty) {
@@ -226,7 +224,7 @@ fn impl_enum(input: Enum) -> TokenStream {
                     quote! {
                         #ty::#ident {
                             #backtrace: backtrace,
-                            #source: #varsource,
+                            #source: source,
                             ..
                         } => {
                             use thiserror::private::AsDynError;
@@ -369,7 +367,7 @@ fn from_initializer(from_field: &Field, backtrace_field: Option<&Field>) -> Toke
             }
         } else {
             quote! {
-                #backtrace_member: std::convert::From::from(std::backtrace::Backtrace::capture()),
+                #backtrace_member: std::backtrace::Backtrace::capture(),
             }
         }
     });

@@ -1,6 +1,13 @@
+/// This struct fakes the `Lint` declaration that is usually created by `declare_lint!`. This
+/// enables the simple extraction of the metadata without changing the current deprecation
+/// declaration.
+pub struct ClippyDeprecatedLint;
+
 macro_rules! declare_deprecated_lint {
-    (pub $name: ident, $_reason: expr) => {
-        declare_lint!(pub $name, Allow, "deprecated lint")
+    { $(#[$attr:meta])* pub $name: ident, $_reason: expr} => {
+        $(#[$attr])*
+        #[allow(dead_code)]
+        pub static $name: ClippyDeprecatedLint = ClippyDeprecatedLint {};
     }
 }
 
@@ -133,4 +140,23 @@ declare_deprecated_lint! {
     /// more specific lint.
     pub FILTER_MAP,
     "this lint has been replaced by `manual_filter_map`, a more specific lint"
+}
+
+declare_deprecated_lint! {
+    /// **What it does:** Nothing. This lint has been deprecated.
+    ///
+    /// **Deprecation reason:** The `avoid_breaking_exported_api` config option was added, which
+    /// enables the `enum_variant_names` lint for public items.
+    /// ```
+    pub PUB_ENUM_VARIANT_NAMES,
+    "set the `avoid_breaking_exported_api` config option to `false` to enable the `enum_variant_names` lint for public items"
+}
+
+declare_deprecated_lint! {
+    /// **What it does:** Nothing. This lint has been deprecated.
+    ///
+    /// **Deprecation reason:** The `avoid_breaking_exported_api` config option was added, which
+    /// enables the `wrong_self_conversion` lint for public items.
+    pub WRONG_PUB_SELF_CONVENTION,
+    "set the `avoid_breaking_exported_api` config option to `false` to enable the `wrong_self_convention` lint for public items"
 }

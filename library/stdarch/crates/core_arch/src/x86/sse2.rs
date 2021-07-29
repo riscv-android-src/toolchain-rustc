@@ -406,113 +406,94 @@ pub unsafe fn _mm_subs_epu16(a: __m128i, b: __m128i) -> __m128i {
     transmute(simd_saturating_sub(a.as_u16x8(), b.as_u16x8()))
 }
 
-/// Shifts `a` left by `imm8` bytes while shifting in zeros.
+/// Shifts `a` left by `IMM8` bytes while shifting in zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_slli_si128)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(pslldq, imm8 = 1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(pslldq, IMM8 = 1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_slli_si128(a: __m128i, imm8: i32) -> __m128i {
-    _mm_slli_si128_impl(a, imm8)
+pub unsafe fn _mm_slli_si128<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    _mm_slli_si128_impl::<IMM8>(a)
 }
 
 /// Implementation detail: converts the immediate argument of the
 /// `_mm_slli_si128` intrinsic into a compile-time constant.
 #[inline]
 #[target_feature(enable = "sse2")]
-unsafe fn _mm_slli_si128_impl(a: __m128i, imm8: i32) -> __m128i {
-    let (zero, imm8) = (_mm_set1_epi8(0).as_i8x16(), imm8 as u32);
-    let a = a.as_i8x16();
-    macro_rules! shuffle {
-        ($shift:expr) => {
-            simd_shuffle16::<i8x16, i8x16>(
-                zero,
-                a,
-                [
-                    16 - $shift,
-                    17 - $shift,
-                    18 - $shift,
-                    19 - $shift,
-                    20 - $shift,
-                    21 - $shift,
-                    22 - $shift,
-                    23 - $shift,
-                    24 - $shift,
-                    25 - $shift,
-                    26 - $shift,
-                    27 - $shift,
-                    28 - $shift,
-                    29 - $shift,
-                    30 - $shift,
-                    31 - $shift,
-                ],
-            )
-        };
+unsafe fn _mm_slli_si128_impl<const IMM8: i32>(a: __m128i) -> __m128i {
+    const fn mask(shift: i32, i: u32) -> u32 {
+        let shift = shift as u32 & 0xff;
+        if shift > 15 {
+            i
+        } else {
+            16 - shift + i
+        }
     }
-    let x = match imm8 {
-        0 => shuffle!(0),
-        1 => shuffle!(1),
-        2 => shuffle!(2),
-        3 => shuffle!(3),
-        4 => shuffle!(4),
-        5 => shuffle!(5),
-        6 => shuffle!(6),
-        7 => shuffle!(7),
-        8 => shuffle!(8),
-        9 => shuffle!(9),
-        10 => shuffle!(10),
-        11 => shuffle!(11),
-        12 => shuffle!(12),
-        13 => shuffle!(13),
-        14 => shuffle!(14),
-        15 => shuffle!(15),
-        _ => shuffle!(16),
-    };
-    transmute(x)
+    let zero = _mm_set1_epi8(0).as_i8x16();
+    transmute::<i8x16, _>(simd_shuffle16!(
+        zero,
+        a.as_i8x16(),
+        <const IMM8: i32> [
+            mask(IMM8, 0),
+            mask(IMM8, 1),
+            mask(IMM8, 2),
+            mask(IMM8, 3),
+            mask(IMM8, 4),
+            mask(IMM8, 5),
+            mask(IMM8, 6),
+            mask(IMM8, 7),
+            mask(IMM8, 8),
+            mask(IMM8, 9),
+            mask(IMM8, 10),
+            mask(IMM8, 11),
+            mask(IMM8, 12),
+            mask(IMM8, 13),
+            mask(IMM8, 14),
+            mask(IMM8, 15),
+        ],
+    ))
 }
 
-/// Shifts `a` left by `imm8` bytes while shifting in zeros.
+/// Shifts `a` left by `IMM8` bytes while shifting in zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_bslli_si128)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(pslldq, imm8 = 1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(pslldq, IMM8 = 1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_bslli_si128(a: __m128i, imm8: i32) -> __m128i {
-    _mm_slli_si128_impl(a, imm8)
+pub unsafe fn _mm_bslli_si128<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    _mm_slli_si128_impl::<IMM8>(a)
 }
 
-/// Shifts `a` right by `imm8` bytes while shifting in zeros.
+/// Shifts `a` right by `IMM8` bytes while shifting in zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_bsrli_si128)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psrldq, imm8 = 1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psrldq, IMM8 = 1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_bsrli_si128(a: __m128i, imm8: i32) -> __m128i {
-    _mm_srli_si128_impl(a, imm8)
+pub unsafe fn _mm_bsrli_si128<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    _mm_srli_si128_impl::<IMM8>(a)
 }
 
-/// Shifts packed 16-bit integers in `a` left by `imm8` while shifting in zeros.
+/// Shifts packed 16-bit integers in `a` left by `IMM8` while shifting in zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_slli_epi16)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psllw, imm8 = 7))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psllw, IMM8 = 7))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_slli_epi16(a: __m128i, imm8: i32) -> __m128i {
-    let a = a.as_i16x8();
-    macro_rules! call {
-        ($imm8:expr) => {
-            transmute(pslliw(a, $imm8))
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm_slli_epi16<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    transmute(pslliw(a.as_i16x8(), IMM8))
 }
 
 /// Shifts packed 16-bit integers in `a` left by `count` while shifting in
@@ -527,22 +508,17 @@ pub unsafe fn _mm_sll_epi16(a: __m128i, count: __m128i) -> __m128i {
     transmute(psllw(a.as_i16x8(), count.as_i16x8()))
 }
 
-/// Shifts packed 32-bit integers in `a` left by `imm8` while shifting in zeros.
+/// Shifts packed 32-bit integers in `a` left by `IMM8` while shifting in zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_slli_epi32)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(pslld, imm8 = 7))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(pslld, IMM8 = 7))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_slli_epi32(a: __m128i, imm8: i32) -> __m128i {
-    let a = a.as_i32x4();
-    macro_rules! call {
-        ($imm8:expr) => {
-            transmute(psllid(a, $imm8))
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm_slli_epi32<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    transmute(psllid(a.as_i32x4(), IMM8))
 }
 
 /// Shifts packed 32-bit integers in `a` left by `count` while shifting in
@@ -557,22 +533,17 @@ pub unsafe fn _mm_sll_epi32(a: __m128i, count: __m128i) -> __m128i {
     transmute(pslld(a.as_i32x4(), count.as_i32x4()))
 }
 
-/// Shifts packed 64-bit integers in `a` left by `imm8` while shifting in zeros.
+/// Shifts packed 64-bit integers in `a` left by `IMM8` while shifting in zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_slli_epi64)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psllq, imm8 = 7))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psllq, IMM8 = 7))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_slli_epi64(a: __m128i, imm8: i32) -> __m128i {
-    let a = a.as_i64x2();
-    macro_rules! call {
-        ($imm8:expr) => {
-            transmute(pslliq(a, $imm8))
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm_slli_epi64<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    transmute(pslliq(a.as_i64x2(), IMM8))
 }
 
 /// Shifts packed 64-bit integers in `a` left by `count` while shifting in
@@ -587,23 +558,18 @@ pub unsafe fn _mm_sll_epi64(a: __m128i, count: __m128i) -> __m128i {
     transmute(psllq(a.as_i64x2(), count.as_i64x2()))
 }
 
-/// Shifts packed 16-bit integers in `a` right by `imm8` while shifting in sign
+/// Shifts packed 16-bit integers in `a` right by `IMM8` while shifting in sign
 /// bits.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_srai_epi16)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psraw, imm8 = 1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psraw, IMM8 = 1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_srai_epi16(a: __m128i, imm8: i32) -> __m128i {
-    let a = a.as_i16x8();
-    macro_rules! call {
-        ($imm8:expr) => {
-            transmute(psraiw(a, $imm8))
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm_srai_epi16<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    transmute(psraiw(a.as_i16x8(), IMM8))
 }
 
 /// Shifts packed 16-bit integers in `a` right by `count` while shifting in sign
@@ -618,23 +584,18 @@ pub unsafe fn _mm_sra_epi16(a: __m128i, count: __m128i) -> __m128i {
     transmute(psraw(a.as_i16x8(), count.as_i16x8()))
 }
 
-/// Shifts packed 32-bit integers in `a` right by `imm8` while shifting in sign
+/// Shifts packed 32-bit integers in `a` right by `IMM8` while shifting in sign
 /// bits.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_srai_epi32)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psrad, imm8 = 1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psrad, IMM8 = 1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_srai_epi32(a: __m128i, imm8: i32) -> __m128i {
-    let a = a.as_i32x4();
-    macro_rules! call {
-        ($imm8:expr) => {
-            transmute(psraid(a, $imm8))
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm_srai_epi32<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    transmute(psraid(a.as_i32x4(), IMM8))
 }
 
 /// Shifts packed 32-bit integers in `a` right by `count` while shifting in sign
@@ -649,90 +610,69 @@ pub unsafe fn _mm_sra_epi32(a: __m128i, count: __m128i) -> __m128i {
     transmute(psrad(a.as_i32x4(), count.as_i32x4()))
 }
 
-/// Shifts `a` right by `imm8` bytes while shifting in zeros.
+/// Shifts `a` right by `IMM8` bytes while shifting in zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_srli_si128)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psrldq, imm8 = 1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psrldq, IMM8 = 1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_srli_si128(a: __m128i, imm8: i32) -> __m128i {
-    _mm_srli_si128_impl(a, imm8)
+pub unsafe fn _mm_srli_si128<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    _mm_srli_si128_impl::<IMM8>(a)
 }
 
 /// Implementation detail: converts the immediate argument of the
 /// `_mm_srli_si128` intrinsic into a compile-time constant.
 #[inline]
 #[target_feature(enable = "sse2")]
-unsafe fn _mm_srli_si128_impl(a: __m128i, imm8: i32) -> __m128i {
-    let (zero, imm8) = (_mm_set1_epi8(0).as_i8x16(), imm8 as u32);
-    let a = a.as_i8x16();
-    macro_rules! shuffle {
-        ($shift:expr) => {
-            simd_shuffle16(
-                a,
-                zero,
-                [
-                    0 + $shift,
-                    1 + $shift,
-                    2 + $shift,
-                    3 + $shift,
-                    4 + $shift,
-                    5 + $shift,
-                    6 + $shift,
-                    7 + $shift,
-                    8 + $shift,
-                    9 + $shift,
-                    10 + $shift,
-                    11 + $shift,
-                    12 + $shift,
-                    13 + $shift,
-                    14 + $shift,
-                    15 + $shift,
-                ],
-            )
-        };
+unsafe fn _mm_srli_si128_impl<const IMM8: i32>(a: __m128i) -> __m128i {
+    const fn mask(shift: i32, i: u32) -> u32 {
+        if (shift as u32) > 15 {
+            i + 16
+        } else {
+            i + (shift as u32)
+        }
     }
-    let x: i8x16 = match imm8 {
-        0 => shuffle!(0),
-        1 => shuffle!(1),
-        2 => shuffle!(2),
-        3 => shuffle!(3),
-        4 => shuffle!(4),
-        5 => shuffle!(5),
-        6 => shuffle!(6),
-        7 => shuffle!(7),
-        8 => shuffle!(8),
-        9 => shuffle!(9),
-        10 => shuffle!(10),
-        11 => shuffle!(11),
-        12 => shuffle!(12),
-        13 => shuffle!(13),
-        14 => shuffle!(14),
-        15 => shuffle!(15),
-        _ => shuffle!(16),
-    };
+    let zero = _mm_set1_epi8(0).as_i8x16();
+    let x: i8x16 = simd_shuffle16!(
+        a.as_i8x16(),
+        zero,
+        <const IMM8: i32> [
+            mask(IMM8, 0),
+            mask(IMM8, 1),
+            mask(IMM8, 2),
+            mask(IMM8, 3),
+            mask(IMM8, 4),
+            mask(IMM8, 5),
+            mask(IMM8, 6),
+            mask(IMM8, 7),
+            mask(IMM8, 8),
+            mask(IMM8, 9),
+            mask(IMM8, 10),
+            mask(IMM8, 11),
+            mask(IMM8, 12),
+            mask(IMM8, 13),
+            mask(IMM8, 14),
+            mask(IMM8, 15),
+        ],
+    );
     transmute(x)
 }
 
-/// Shifts packed 16-bit integers in `a` right by `imm8` while shifting in
+/// Shifts packed 16-bit integers in `a` right by `IMM8` while shifting in
 /// zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_srli_epi16)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psrlw, imm8 = 1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psrlw, IMM8 = 1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_srli_epi16(a: __m128i, imm8: i32) -> __m128i {
-    let a = a.as_i16x8();
-    macro_rules! call {
-        ($imm8:expr) => {
-            transmute(psrliw(a, $imm8))
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm_srli_epi16<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    transmute(psrliw(a.as_i16x8(), IMM8))
 }
 
 /// Shifts packed 16-bit integers in `a` right by `count` while shifting in
@@ -747,23 +687,18 @@ pub unsafe fn _mm_srl_epi16(a: __m128i, count: __m128i) -> __m128i {
     transmute(psrlw(a.as_i16x8(), count.as_i16x8()))
 }
 
-/// Shifts packed 32-bit integers in `a` right by `imm8` while shifting in
+/// Shifts packed 32-bit integers in `a` right by `IMM8` while shifting in
 /// zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_srli_epi32)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psrld, imm8 = 8))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psrld, IMM8 = 8))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_srli_epi32(a: __m128i, imm8: i32) -> __m128i {
-    let a = a.as_i32x4();
-    macro_rules! call {
-        ($imm8:expr) => {
-            transmute(psrlid(a, $imm8))
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm_srli_epi32<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    transmute(psrlid(a.as_i32x4(), IMM8))
 }
 
 /// Shifts packed 32-bit integers in `a` right by `count` while shifting in
@@ -778,17 +713,18 @@ pub unsafe fn _mm_srl_epi32(a: __m128i, count: __m128i) -> __m128i {
     transmute(psrld(a.as_i32x4(), count.as_i32x4()))
 }
 
-/// Shifts packed 64-bit integers in `a` right by `imm8` while shifting in
+/// Shifts packed 64-bit integers in `a` right by `IMM8` while shifting in
 /// zeros.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_srli_epi64)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(psrlq, imm8 = 1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(psrlq, IMM8 = 1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_srli_epi64(a: __m128i, imm8: i32) -> __m128i {
-    transmute(psrliq(a.as_i64x2(), imm8))
+pub unsafe fn _mm_srli_epi64<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
+    transmute(psrliq(a.as_i64x2(), IMM8))
 }
 
 /// Shifts packed 64-bit integers in `a` right by `count` while shifting in
@@ -960,7 +896,7 @@ pub unsafe fn _mm_cmplt_epi32(a: __m128i, b: __m128i) -> __m128i {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_cvtepi32_pd(a: __m128i) -> __m128d {
     let a = a.as_i32x4();
-    simd_cast::<i32x2, __m128d>(simd_shuffle2(a, a, [0, 1]))
+    simd_cast::<i32x2, __m128d>(simd_shuffle2!(a, a, [0, 1]))
 }
 
 /// Returns `a` with its lower element replaced by `b` after converting it to
@@ -1368,7 +1304,7 @@ pub unsafe fn _mm_stream_si32(mem_addr: *mut i32, a: i32) {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_move_epi64(a: __m128i) -> __m128i {
     let zero = _mm_setzero_si128();
-    let r: i64x2 = simd_shuffle2(a.as_i64x2(), zero.as_i64x2(), [0, 2]);
+    let r: i64x2 = simd_shuffle2!(a.as_i64x2(), zero.as_i64x2(), [0, 2]);
     transmute(r)
 }
 
@@ -1413,17 +1349,12 @@ pub unsafe fn _mm_packus_epi16(a: __m128i, b: __m128i) -> __m128i {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_extract_epi16)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(pextrw, imm8 = 9))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(pextrw, IMM8 = 7))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_extract_epi16(a: __m128i, imm8: i32) -> i32 {
-    let a = a.as_u16x8();
-    macro_rules! call {
-        ($imm3:expr) => {
-            simd_extract::<_, u16>(a, $imm3) as i32
-        };
-    }
-    constify_imm3!(imm8, call)
+pub unsafe fn _mm_extract_epi16<const IMM8: i32>(a: __m128i) -> i32 {
+    static_assert_imm3!(IMM8);
+    simd_extract::<_, u16>(a.as_u16x8(), IMM8 as u32) as i32
 }
 
 /// Returns a new vector where the `imm8` element of `a` is replaced with `i`.
@@ -1431,17 +1362,12 @@ pub unsafe fn _mm_extract_epi16(a: __m128i, imm8: i32) -> i32 {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_insert_epi16)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(pinsrw, imm8 = 9))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(pinsrw, IMM8 = 7))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_insert_epi16(a: __m128i, i: i32, imm8: i32) -> __m128i {
-    let a = a.as_i16x8();
-    macro_rules! call {
-        ($imm3:expr) => {
-            transmute(simd_insert(a, $imm3, i as i16))
-        };
-    }
-    constify_imm3!(imm8, call)
+pub unsafe fn _mm_insert_epi16<const IMM8: i32>(a: __m128i, i: i32) -> __m128i {
+    static_assert_imm3!(IMM8);
+    transmute(simd_insert(a.as_i16x8(), IMM8 as u32, i as i16))
 }
 
 /// Returns a mask of the most significant bit of each element in `a`.
@@ -1455,71 +1381,32 @@ pub unsafe fn _mm_movemask_epi8(a: __m128i) -> i32 {
     pmovmskb(a.as_i8x16())
 }
 
-/// Shuffles 32-bit integers in `a` using the control in `imm8`.
+/// Shuffles 32-bit integers in `a` using the control in `IMM8`.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_shuffle_epi32)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(pshufd, imm8 = 9))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(pshufd, IMM8 = 9))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_shuffle_epi32(a: __m128i, imm8: i32) -> __m128i {
-    // simd_shuffleX requires that its selector parameter be made up of
-    // constant values, but we can't enforce that here. In spirit, we need
-    // to write a `match` on all possible values of a byte, and for each value,
-    // hard-code the correct `simd_shuffleX` call using only constants. We
-    // then hope for LLVM to do the rest.
-    //
-    // Of course, that's... awful. So we try to use macros to do it for us.
-    let imm8 = (imm8 & 0xFF) as u8;
+pub unsafe fn _mm_shuffle_epi32<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
     let a = a.as_i32x4();
-
-    macro_rules! shuffle_done {
-        ($x01:expr, $x23:expr, $x45:expr, $x67:expr) => {
-            simd_shuffle4(a, a, [$x01, $x23, $x45, $x67])
-        };
-    }
-    macro_rules! shuffle_x67 {
-        ($x01:expr, $x23:expr, $x45:expr) => {
-            match (imm8 >> 6) & 0b11 {
-                0b00 => shuffle_done!($x01, $x23, $x45, 0),
-                0b01 => shuffle_done!($x01, $x23, $x45, 1),
-                0b10 => shuffle_done!($x01, $x23, $x45, 2),
-                _ => shuffle_done!($x01, $x23, $x45, 3),
-            }
-        };
-    }
-    macro_rules! shuffle_x45 {
-        ($x01:expr, $x23:expr) => {
-            match (imm8 >> 4) & 0b11 {
-                0b00 => shuffle_x67!($x01, $x23, 0),
-                0b01 => shuffle_x67!($x01, $x23, 1),
-                0b10 => shuffle_x67!($x01, $x23, 2),
-                _ => shuffle_x67!($x01, $x23, 3),
-            }
-        };
-    }
-    macro_rules! shuffle_x23 {
-        ($x01:expr) => {
-            match (imm8 >> 2) & 0b11 {
-                0b00 => shuffle_x45!($x01, 0),
-                0b01 => shuffle_x45!($x01, 1),
-                0b10 => shuffle_x45!($x01, 2),
-                _ => shuffle_x45!($x01, 3),
-            }
-        };
-    }
-    let x: i32x4 = match imm8 & 0b11 {
-        0b00 => shuffle_x23!(0),
-        0b01 => shuffle_x23!(1),
-        0b10 => shuffle_x23!(2),
-        _ => shuffle_x23!(3),
-    };
+    let x: i32x4 = simd_shuffle4!(
+        a,
+        a,
+        <const IMM8: i32> [
+            IMM8 as u32 & 0b11,
+            (IMM8 as u32 >> 2) & 0b11,
+            (IMM8 as u32 >> 4) & 0b11,
+            (IMM8 as u32 >> 6) & 0b11,
+        ],
+    );
     transmute(x)
 }
 
 /// Shuffles 16-bit integers in the high 64 bits of `a` using the control in
-/// `imm8`.
+/// `IMM8`.
 ///
 /// Put the results in the high 64 bits of the returned vector, with the low 64
 /// bits being copied from from `a`.
@@ -1527,59 +1414,31 @@ pub unsafe fn _mm_shuffle_epi32(a: __m128i, imm8: i32) -> __m128i {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_shufflehi_epi16)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(pshufhw, imm8 = 9))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(pshufhw, IMM8 = 9))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_shufflehi_epi16(a: __m128i, imm8: i32) -> __m128i {
-    // See _mm_shuffle_epi32.
-    let imm8 = (imm8 & 0xFF) as u8;
+pub unsafe fn _mm_shufflehi_epi16<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
     let a = a.as_i16x8();
-    macro_rules! shuffle_done {
-        ($x01:expr, $x23:expr, $x45:expr, $x67:expr) => {
-            simd_shuffle8(a, a, [0, 1, 2, 3, $x01 + 4, $x23 + 4, $x45 + 4, $x67 + 4])
-        };
-    }
-    macro_rules! shuffle_x67 {
-        ($x01:expr, $x23:expr, $x45:expr) => {
-            match (imm8 >> 6) & 0b11 {
-                0b00 => shuffle_done!($x01, $x23, $x45, 0),
-                0b01 => shuffle_done!($x01, $x23, $x45, 1),
-                0b10 => shuffle_done!($x01, $x23, $x45, 2),
-                _ => shuffle_done!($x01, $x23, $x45, 3),
-            }
-        };
-    }
-    macro_rules! shuffle_x45 {
-        ($x01:expr, $x23:expr) => {
-            match (imm8 >> 4) & 0b11 {
-                0b00 => shuffle_x67!($x01, $x23, 0),
-                0b01 => shuffle_x67!($x01, $x23, 1),
-                0b10 => shuffle_x67!($x01, $x23, 2),
-                _ => shuffle_x67!($x01, $x23, 3),
-            }
-        };
-    }
-    macro_rules! shuffle_x23 {
-        ($x01:expr) => {
-            match (imm8 >> 2) & 0b11 {
-                0b00 => shuffle_x45!($x01, 0),
-                0b01 => shuffle_x45!($x01, 1),
-                0b10 => shuffle_x45!($x01, 2),
-                _ => shuffle_x45!($x01, 3),
-            }
-        };
-    }
-    let x: i16x8 = match imm8 & 0b11 {
-        0b00 => shuffle_x23!(0),
-        0b01 => shuffle_x23!(1),
-        0b10 => shuffle_x23!(2),
-        _ => shuffle_x23!(3),
-    };
+    let x: i16x8 = simd_shuffle8!(
+        a,
+        a,
+        <const IMM8: i32> [
+            0,
+            1,
+            2,
+            3,
+            (IMM8 as u32 & 0b11) + 4,
+            ((IMM8 as u32 >> 2) & 0b11) + 4,
+            ((IMM8 as u32 >> 4) & 0b11) + 4,
+            ((IMM8 as u32 >> 6) & 0b11) + 4,
+        ],
+    );
     transmute(x)
 }
 
 /// Shuffles 16-bit integers in the low 64 bits of `a` using the control in
-/// `imm8`.
+/// `IMM8`.
 ///
 /// Put the results in the low 64 bits of the returned vector, with the high 64
 /// bits being copied from from `a`.
@@ -1587,55 +1446,26 @@ pub unsafe fn _mm_shufflehi_epi16(a: __m128i, imm8: i32) -> __m128i {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_shufflelo_epi16)
 #[inline]
 #[target_feature(enable = "sse2")]
-#[cfg_attr(test, assert_instr(pshuflw, imm8 = 9))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(pshuflw, IMM8 = 9))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_shufflelo_epi16(a: __m128i, imm8: i32) -> __m128i {
-    // See _mm_shuffle_epi32.
-    let imm8 = (imm8 & 0xFF) as u8;
+pub unsafe fn _mm_shufflelo_epi16<const IMM8: i32>(a: __m128i) -> __m128i {
+    static_assert_imm8!(IMM8);
     let a = a.as_i16x8();
-
-    macro_rules! shuffle_done {
-        ($x01:expr, $x23:expr, $x45:expr, $x67:expr) => {
-            simd_shuffle8(a, a, [$x01, $x23, $x45, $x67, 4, 5, 6, 7])
-        };
-    }
-    macro_rules! shuffle_x67 {
-        ($x01:expr, $x23:expr, $x45:expr) => {
-            match (imm8 >> 6) & 0b11 {
-                0b00 => shuffle_done!($x01, $x23, $x45, 0),
-                0b01 => shuffle_done!($x01, $x23, $x45, 1),
-                0b10 => shuffle_done!($x01, $x23, $x45, 2),
-                _ => shuffle_done!($x01, $x23, $x45, 3),
-            }
-        };
-    }
-    macro_rules! shuffle_x45 {
-        ($x01:expr, $x23:expr) => {
-            match (imm8 >> 4) & 0b11 {
-                0b00 => shuffle_x67!($x01, $x23, 0),
-                0b01 => shuffle_x67!($x01, $x23, 1),
-                0b10 => shuffle_x67!($x01, $x23, 2),
-                _ => shuffle_x67!($x01, $x23, 3),
-            }
-        };
-    }
-    macro_rules! shuffle_x23 {
-        ($x01:expr) => {
-            match (imm8 >> 2) & 0b11 {
-                0b00 => shuffle_x45!($x01, 0),
-                0b01 => shuffle_x45!($x01, 1),
-                0b10 => shuffle_x45!($x01, 2),
-                _ => shuffle_x45!($x01, 3),
-            }
-        };
-    }
-    let x: i16x8 = match imm8 & 0b11 {
-        0b00 => shuffle_x23!(0),
-        0b01 => shuffle_x23!(1),
-        0b10 => shuffle_x23!(2),
-        _ => shuffle_x23!(3),
-    };
+    let x: i16x8 = simd_shuffle8!(
+        a,
+        a,
+        <const IMM8: i32> [
+            IMM8 as u32 & 0b11,
+            (IMM8 as u32 >> 2) & 0b11,
+            (IMM8 as u32 >> 4) & 0b11,
+            (IMM8 as u32 >> 6) & 0b11,
+            4,
+            5,
+            6,
+            7,
+        ],
+    );
     transmute(x)
 }
 
@@ -1647,7 +1477,7 @@ pub unsafe fn _mm_shufflelo_epi16(a: __m128i, imm8: i32) -> __m128i {
 #[cfg_attr(test, assert_instr(punpckhbw))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpackhi_epi8(a: __m128i, b: __m128i) -> __m128i {
-    transmute::<i8x16, _>(simd_shuffle16(
+    transmute::<i8x16, _>(simd_shuffle16!(
         a.as_i8x16(),
         b.as_i8x16(),
         [8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31],
@@ -1662,7 +1492,7 @@ pub unsafe fn _mm_unpackhi_epi8(a: __m128i, b: __m128i) -> __m128i {
 #[cfg_attr(test, assert_instr(punpckhwd))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpackhi_epi16(a: __m128i, b: __m128i) -> __m128i {
-    let x = simd_shuffle8(a.as_i16x8(), b.as_i16x8(), [4, 12, 5, 13, 6, 14, 7, 15]);
+    let x = simd_shuffle8!(a.as_i16x8(), b.as_i16x8(), [4, 12, 5, 13, 6, 14, 7, 15]);
     transmute::<i16x8, _>(x)
 }
 
@@ -1674,7 +1504,7 @@ pub unsafe fn _mm_unpackhi_epi16(a: __m128i, b: __m128i) -> __m128i {
 #[cfg_attr(test, assert_instr(unpckhps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpackhi_epi32(a: __m128i, b: __m128i) -> __m128i {
-    transmute::<i32x4, _>(simd_shuffle4(a.as_i32x4(), b.as_i32x4(), [2, 6, 3, 7]))
+    transmute::<i32x4, _>(simd_shuffle4!(a.as_i32x4(), b.as_i32x4(), [2, 6, 3, 7]))
 }
 
 /// Unpacks and interleave 64-bit integers from the high half of `a` and `b`.
@@ -1685,7 +1515,7 @@ pub unsafe fn _mm_unpackhi_epi32(a: __m128i, b: __m128i) -> __m128i {
 #[cfg_attr(test, assert_instr(unpckhpd))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpackhi_epi64(a: __m128i, b: __m128i) -> __m128i {
-    transmute::<i64x2, _>(simd_shuffle2(a.as_i64x2(), b.as_i64x2(), [1, 3]))
+    transmute::<i64x2, _>(simd_shuffle2!(a.as_i64x2(), b.as_i64x2(), [1, 3]))
 }
 
 /// Unpacks and interleave 8-bit integers from the low half of `a` and `b`.
@@ -1696,7 +1526,7 @@ pub unsafe fn _mm_unpackhi_epi64(a: __m128i, b: __m128i) -> __m128i {
 #[cfg_attr(test, assert_instr(punpcklbw))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpacklo_epi8(a: __m128i, b: __m128i) -> __m128i {
-    transmute::<i8x16, _>(simd_shuffle16(
+    transmute::<i8x16, _>(simd_shuffle16!(
         a.as_i8x16(),
         b.as_i8x16(),
         [0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23],
@@ -1711,7 +1541,7 @@ pub unsafe fn _mm_unpacklo_epi8(a: __m128i, b: __m128i) -> __m128i {
 #[cfg_attr(test, assert_instr(punpcklwd))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpacklo_epi16(a: __m128i, b: __m128i) -> __m128i {
-    let x = simd_shuffle8(a.as_i16x8(), b.as_i16x8(), [0, 8, 1, 9, 2, 10, 3, 11]);
+    let x = simd_shuffle8!(a.as_i16x8(), b.as_i16x8(), [0, 8, 1, 9, 2, 10, 3, 11]);
     transmute::<i16x8, _>(x)
 }
 
@@ -1723,7 +1553,7 @@ pub unsafe fn _mm_unpacklo_epi16(a: __m128i, b: __m128i) -> __m128i {
 #[cfg_attr(test, assert_instr(unpcklps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpacklo_epi32(a: __m128i, b: __m128i) -> __m128i {
-    transmute::<i32x4, _>(simd_shuffle4(a.as_i32x4(), b.as_i32x4(), [0, 4, 1, 5]))
+    transmute::<i32x4, _>(simd_shuffle4!(a.as_i32x4(), b.as_i32x4(), [0, 4, 1, 5]))
 }
 
 /// Unpacks and interleave 64-bit integers from the low half of `a` and `b`.
@@ -1734,7 +1564,7 @@ pub unsafe fn _mm_unpacklo_epi32(a: __m128i, b: __m128i) -> __m128i {
 #[cfg_attr(all(test, not(target_os = "windows")), assert_instr(movlhps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpacklo_epi64(a: __m128i, b: __m128i) -> __m128i {
-    transmute::<i64x2, _>(simd_shuffle2(a.as_i64x2(), b.as_i64x2(), [0, 2]))
+    transmute::<i64x2, _>(simd_shuffle2!(a.as_i64x2(), b.as_i64x2(), [0, 2]))
 }
 
 /// Returns a new vector with the low element of `a` replaced by the sum of the
@@ -2690,7 +2520,7 @@ pub unsafe fn _mm_storeu_pd(mem_addr: *mut f64, a: __m128d) {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_store1_pd(mem_addr: *mut f64, a: __m128d) {
-    let b: __m128d = simd_shuffle2(a, a, [0, 0]);
+    let b: __m128d = simd_shuffle2!(a, a, [0, 0]);
     *(mem_addr as *mut __m128d) = b;
 }
 
@@ -2704,7 +2534,7 @@ pub unsafe fn _mm_store1_pd(mem_addr: *mut f64, a: __m128d) {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_store_pd1(mem_addr: *mut f64, a: __m128d) {
-    let b: __m128d = simd_shuffle2(a, a, [0, 0]);
+    let b: __m128d = simd_shuffle2!(a, a, [0, 0]);
     *(mem_addr as *mut __m128d) = b;
 }
 
@@ -2719,7 +2549,7 @@ pub unsafe fn _mm_store_pd1(mem_addr: *mut f64, a: __m128d) {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_storer_pd(mem_addr: *mut f64, a: __m128d) {
-    let b: __m128d = simd_shuffle2(a, a, [1, 0]);
+    let b: __m128d = simd_shuffle2!(a, a, [1, 0]);
     *(mem_addr as *mut __m128d) = b;
 }
 
@@ -2783,7 +2613,7 @@ pub unsafe fn _mm_load_pd1(mem_addr: *const f64) -> __m128d {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_loadr_pd(mem_addr: *const f64) -> __m128d {
     let a = _mm_load_pd(mem_addr);
-    simd_shuffle2(a, a, [1, 0])
+    simd_shuffle2!(a, a, [1, 0])
 }
 
 /// Loads 128-bits (composed of 2 packed double-precision (64-bit)
@@ -2814,21 +2644,17 @@ pub unsafe fn _mm_loadu_pd(mem_addr: *const f64) -> __m128d {
 #[target_feature(enable = "sse2")]
 #[cfg_attr(
     all(test, any(not(target_os = "windows"), target_arch = "x86")),
-    assert_instr(shufps, imm8 = 1)
+    cfg_attr(test, assert_instr(shufps, MASK = 2)) // FIXME shufpd expected
 )]
 #[cfg_attr(
     all(test, all(target_os = "windows", target_arch = "x86_64")),
-    assert_instr(shufpd, imm8 = 1)
+    cfg_attr(test, assert_instr(shufpd, MASK = 1))
 )]
-#[rustc_args_required_const(2)]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_shuffle_pd(a: __m128d, b: __m128d, imm8: i32) -> __m128d {
-    match imm8 & 0b11 {
-        0b00 => simd_shuffle2(a, b, [0, 2]),
-        0b01 => simd_shuffle2(a, b, [1, 2]),
-        0b10 => simd_shuffle2(a, b, [0, 3]),
-        _ => simd_shuffle2(a, b, [1, 3]),
-    }
+pub unsafe fn _mm_shuffle_pd<const MASK: i32>(a: __m128d, b: __m128d) -> __m128d {
+    static_assert_imm8!(MASK);
+    simd_shuffle2!(a, b, <const MASK: i32> [MASK as u32 & 0b1, ((MASK as u32 >> 1) & 0b1) + 2])
 }
 
 /// Constructs a 128-bit floating-point vector of `[2 x double]`. The lower
@@ -2952,7 +2778,7 @@ pub unsafe fn _mm_undefined_si128() -> __m128i {
 #[cfg_attr(test, assert_instr(unpckhpd))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpackhi_pd(a: __m128d, b: __m128d) -> __m128d {
-    simd_shuffle2(a, b, [1, 3])
+    simd_shuffle2!(a, b, [1, 3])
 }
 
 /// The resulting `__m128d` element is composed by the high-order values of
@@ -2967,7 +2793,7 @@ pub unsafe fn _mm_unpackhi_pd(a: __m128d, b: __m128d) -> __m128d {
 #[cfg_attr(all(test, not(target_os = "windows")), assert_instr(movlhps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpacklo_pd(a: __m128d, b: __m128d) -> __m128d {
-    simd_shuffle2(a, b, [0, 2])
+    simd_shuffle2!(a, b, [0, 2])
 }
 
 #[allow(improper_ctypes)]
@@ -3505,7 +3331,7 @@ mod tests {
         let a = _mm_setr_epi8(
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
         );
-        let r = _mm_slli_si128(a, 1);
+        let r = _mm_slli_si128::<1>(a);
         let e = _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
         assert_eq_m128i(r, e);
 
@@ -3513,7 +3339,7 @@ mod tests {
         let a = _mm_setr_epi8(
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
         );
-        let r = _mm_slli_si128(a, 15);
+        let r = _mm_slli_si128::<15>(a);
         let e = _mm_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
         assert_eq_m128i(r, e);
 
@@ -3521,21 +3347,7 @@ mod tests {
         let a = _mm_setr_epi8(
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
         );
-        let r = _mm_slli_si128(a, 16);
-        assert_eq_m128i(r, _mm_set1_epi8(0));
-
-        #[rustfmt::skip]
-        let a = _mm_setr_epi8(
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-        );
-        let r = _mm_slli_si128(a, -1);
-        assert_eq_m128i(_mm_set1_epi8(0), r);
-
-        #[rustfmt::skip]
-        let a = _mm_setr_epi8(
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-        );
-        let r = _mm_slli_si128(a, -0x80000000);
+        let r = _mm_slli_si128::<16>(a);
         assert_eq_m128i(r, _mm_set1_epi8(0));
     }
 
@@ -3545,7 +3357,7 @@ mod tests {
         let a = _mm_setr_epi16(
             0xFFFF as u16 as i16, 0x0FFF, 0x00FF, 0x000F, 0, 0, 0, 0,
         );
-        let r = _mm_slli_epi16(a, 4);
+        let r = _mm_slli_epi16::<4>(a);
 
         #[rustfmt::skip]
         let e = _mm_setr_epi16(
@@ -3566,7 +3378,7 @@ mod tests {
 
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_slli_epi32() {
-        let r = _mm_slli_epi32(_mm_set1_epi32(0xFFFF), 4);
+        let r = _mm_slli_epi32::<4>(_mm_set1_epi32(0xFFFF));
         assert_eq_m128i(r, _mm_set1_epi32(0xFFFF0));
     }
 
@@ -3580,7 +3392,7 @@ mod tests {
 
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_slli_epi64() {
-        let r = _mm_slli_epi64(_mm_set1_epi64x(0xFFFFFFFF), 4);
+        let r = _mm_slli_epi64::<4>(_mm_set1_epi64x(0xFFFFFFFF));
         assert_eq_m128i(r, _mm_set1_epi64x(0xFFFFFFFF0));
     }
 
@@ -3594,7 +3406,7 @@ mod tests {
 
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_srai_epi16() {
-        let r = _mm_srai_epi16(_mm_set1_epi16(-1), 1);
+        let r = _mm_srai_epi16::<1>(_mm_set1_epi16(-1));
         assert_eq_m128i(r, _mm_set1_epi16(-1));
     }
 
@@ -3608,7 +3420,7 @@ mod tests {
 
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_srai_epi32() {
-        let r = _mm_srai_epi32(_mm_set1_epi32(-1), 1);
+        let r = _mm_srai_epi32::<1>(_mm_set1_epi32(-1));
         assert_eq_m128i(r, _mm_set1_epi32(-1));
     }
 
@@ -3626,7 +3438,7 @@ mod tests {
         let a = _mm_setr_epi8(
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
         );
-        let r = _mm_srli_si128(a, 1);
+        let r = _mm_srli_si128::<1>(a);
         #[rustfmt::skip]
         let e = _mm_setr_epi8(
             2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 0,
@@ -3637,7 +3449,7 @@ mod tests {
         let a = _mm_setr_epi8(
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
         );
-        let r = _mm_srli_si128(a, 15);
+        let r = _mm_srli_si128::<15>(a);
         let e = _mm_setr_epi8(16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         assert_eq_m128i(r, e);
 
@@ -3645,21 +3457,7 @@ mod tests {
         let a = _mm_setr_epi8(
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
         );
-        let r = _mm_srli_si128(a, 16);
-        assert_eq_m128i(r, _mm_set1_epi8(0));
-
-        #[rustfmt::skip]
-        let a = _mm_setr_epi8(
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-        );
-        let r = _mm_srli_si128(a, -1);
-        assert_eq_m128i(r, _mm_set1_epi8(0));
-
-        #[rustfmt::skip]
-        let a = _mm_setr_epi8(
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-        );
-        let r = _mm_srli_si128(a, -0x80000000);
+        let r = _mm_srli_si128::<16>(a);
         assert_eq_m128i(r, _mm_set1_epi8(0));
     }
 
@@ -3669,7 +3467,7 @@ mod tests {
         let a = _mm_setr_epi16(
             0xFFFF as u16 as i16, 0x0FFF, 0x00FF, 0x000F, 0, 0, 0, 0,
         );
-        let r = _mm_srli_epi16(a, 4);
+        let r = _mm_srli_epi16::<4>(a);
         #[rustfmt::skip]
         let e = _mm_setr_epi16(
             0xFFF as u16 as i16, 0xFF as u16 as i16, 0xF, 0, 0, 0, 0, 0,
@@ -3688,7 +3486,7 @@ mod tests {
 
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_srli_epi32() {
-        let r = _mm_srli_epi32(_mm_set1_epi32(0xFFFF), 4);
+        let r = _mm_srli_epi32::<4>(_mm_set1_epi32(0xFFFF));
         assert_eq_m128i(r, _mm_set1_epi32(0xFFF));
     }
 
@@ -3702,7 +3500,7 @@ mod tests {
 
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_srli_epi64() {
-        let r = _mm_srli_epi64(_mm_set1_epi64x(0xFFFFFFFF), 4);
+        let r = _mm_srli_epi64::<4>(_mm_set1_epi64x(0xFFFFFFFF));
         assert_eq_m128i(r, _mm_set1_epi64x(0xFFFFFFF));
     }
 
@@ -4077,8 +3875,8 @@ mod tests {
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_extract_epi16() {
         let a = _mm_setr_epi16(-1, 1, 2, 3, 4, 5, 6, 7);
-        let r1 = _mm_extract_epi16(a, 0);
-        let r2 = _mm_extract_epi16(a, 11);
+        let r1 = _mm_extract_epi16::<0>(a);
+        let r2 = _mm_extract_epi16::<3>(a);
         assert_eq!(r1, 0xFFFF);
         assert_eq!(r2, 3);
     }
@@ -4086,7 +3884,7 @@ mod tests {
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_insert_epi16() {
         let a = _mm_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7);
-        let r = _mm_insert_epi16(a, 9, 0);
+        let r = _mm_insert_epi16::<0>(a, 9);
         let e = _mm_setr_epi16(9, 1, 2, 3, 4, 5, 6, 7);
         assert_eq_m128i(r, e);
     }
@@ -4107,7 +3905,7 @@ mod tests {
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_shuffle_epi32() {
         let a = _mm_setr_epi32(5, 10, 15, 20);
-        let r = _mm_shuffle_epi32(a, 0b00_01_01_11);
+        let r = _mm_shuffle_epi32::<0b00_01_01_11>(a);
         let e = _mm_setr_epi32(20, 10, 10, 5);
         assert_eq_m128i(r, e);
     }
@@ -4115,7 +3913,7 @@ mod tests {
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_shufflehi_epi16() {
         let a = _mm_setr_epi16(1, 2, 3, 4, 5, 10, 15, 20);
-        let r = _mm_shufflehi_epi16(a, 0b00_01_01_11);
+        let r = _mm_shufflehi_epi16::<0b00_01_01_11>(a);
         let e = _mm_setr_epi16(1, 2, 3, 4, 20, 10, 10, 5);
         assert_eq_m128i(r, e);
     }
@@ -4123,7 +3921,7 @@ mod tests {
     #[simd_test(enable = "sse2")]
     unsafe fn test_mm_shufflelo_epi16() {
         let a = _mm_setr_epi16(5, 10, 15, 20, 1, 2, 3, 4);
-        let r = _mm_shufflelo_epi16(a, 0b00_01_01_11);
+        let r = _mm_shufflelo_epi16::<0b00_01_01_11>(a);
         let e = _mm_setr_epi16(20, 10, 10, 5, 1, 2, 3, 4);
         assert_eq_m128i(r, e);
     }
@@ -5041,7 +4839,7 @@ mod tests {
         let a = _mm_setr_pd(1., 2.);
         let b = _mm_setr_pd(3., 4.);
         let expected = _mm_setr_pd(1., 3.);
-        let r = _mm_shuffle_pd(a, b, 0);
+        let r = _mm_shuffle_pd::<0b00_00_00_00>(a, b);
         assert_eq_m128d(r, expected);
     }
 

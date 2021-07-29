@@ -1,6 +1,6 @@
 use expect_test::expect;
 
-use super::{check_infer, check_infer_with_mismatches};
+use super::{check_infer, check_infer_with_mismatches, check_types};
 
 #[test]
 fn infer_block_expr_type_mismatch() {
@@ -55,7 +55,7 @@ fn coerce_places() {
         impl<'a, 'b: 'a, T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<&'a U> for &'b T {}
         impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<*mut U> for *mut T {}
         "#,
-        expect![[r"
+        expect![[r#"
             30..31 '_': &[T]
             44..55 '{ loop {} }': T
             46..53 'loop {}': !
@@ -64,43 +64,43 @@ fn coerce_places() {
             81..92 '{ loop {} }': T
             83..90 'loop {}': !
             88..90 '{}': ()
-            121..132 '{ loop {} }': *mut [T; _]
+            121..132 '{ loop {} }': *mut [T; 2]
             123..130 'loop {}': !
             128..130 '{}': ()
             159..172 '{     gen() }': *mut [U]
-            165..168 'gen': fn gen<U>() -> *mut [U; _]
-            165..170 'gen()': *mut [U; _]
+            165..168 'gen': fn gen<U>() -> *mut [U; 2]
+            165..170 'gen()': *mut [U; 2]
             185..419 '{     ...rr); }': ()
-            195..198 'arr': &[u8; _]
-            211..215 '&[1]': &[u8; _]
-            212..215 '[1]': [u8; _]
+            195..198 'arr': &[u8; 1]
+            211..215 '&[1]': &[u8; 1]
+            212..215 '[1]': [u8; 1]
             213..214 '1': u8
             226..227 'a': &[u8]
-            236..239 'arr': &[u8; _]
+            236..239 'arr': &[u8; 1]
             249..250 'b': u8
             253..254 'f': fn f<u8>(&[u8]) -> u8
             253..259 'f(arr)': u8
-            255..258 'arr': &[u8; _]
+            255..258 'arr': &[u8; 1]
             269..270 'c': &[u8]
             279..286 '{ arr }': &[u8]
-            281..284 'arr': &[u8; _]
+            281..284 'arr': &[u8; 1]
             296..297 'd': u8
             300..301 'g': fn g<u8>(S<&[u8]>) -> u8
             300..315 'g(S { a: arr })': u8
             302..314 'S { a: arr }': S<&[u8]>
-            309..312 'arr': &[u8; _]
-            325..326 'e': [&[u8]; _]
-            340..345 '[arr]': [&[u8]; _]
-            341..344 'arr': &[u8; _]
-            355..356 'f': [&[u8]; _]
-            370..378 '[arr; 2]': [&[u8]; _]
-            371..374 'arr': &[u8; _]
+            309..312 'arr': &[u8; 1]
+            325..326 'e': [&[u8]; 1]
+            340..345 '[arr]': [&[u8]; 1]
+            341..344 'arr': &[u8; 1]
+            355..356 'f': [&[u8]; 2]
+            370..378 '[arr; 2]': [&[u8]; 2]
+            371..374 'arr': &[u8; 1]
             376..377 '2': usize
             388..389 'g': (&[u8], &[u8])
             406..416 '(arr, arr)': (&[u8], &[u8])
-            407..410 'arr': &[u8; _]
-            412..415 'arr': &[u8; _]
-        "]],
+            407..410 'arr': &[u8; 1]
+            412..415 'arr': &[u8; 1]
+        "#]],
     );
 }
 
@@ -113,17 +113,17 @@ fn infer_let_stmt_coerce() {
             let x: *const [isize] = &[1];
         }
         ",
-        expect![[r"
+        expect![[r#"
             10..75 '{     ...[1]; }': ()
             20..21 'x': &[isize]
-            34..38 '&[1]': &[isize; _]
-            35..38 '[1]': [isize; _]
+            34..38 '&[1]': &[isize; 1]
+            35..38 '[1]': [isize; 1]
             36..37 '1': isize
             48..49 'x': *const [isize]
-            68..72 '&[1]': &[isize; _]
-            69..72 '[1]': [isize; _]
+            68..72 '&[1]': &[isize; 1]
+            69..72 '[1]': [isize; 1]
             70..71 '1': isize
-        "]],
+        "#]],
     );
 }
 
@@ -159,7 +159,7 @@ fn infer_custom_coerce_unsized() {
         impl<'a, 'b: 'a, T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<&'a U> for &'b T {}
         impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<*mut U> for *mut T {}
         "#,
-        expect![[r"
+        expect![[r#"
             257..258 'x': A<[T]>
             278..283 '{ x }': A<[T]>
             280..281 'x': A<[T]>
@@ -169,23 +169,23 @@ fn infer_custom_coerce_unsized() {
             333..334 'x': C<[T]>
             354..359 '{ x }': C<[T]>
             356..357 'x': C<[T]>
-            369..370 'a': A<[u8; _]>
-            384..385 'b': B<[u8; _]>
-            399..400 'c': C<[u8; _]>
+            369..370 'a': A<[u8; 2]>
+            384..385 'b': B<[u8; 2]>
+            399..400 'c': C<[u8; 2]>
             414..480 '{     ...(c); }': ()
             424..425 'd': A<[{unknown}]>
             428..432 'foo1': fn foo1<{unknown}>(A<[{unknown}]>) -> A<[{unknown}]>
             428..435 'foo1(a)': A<[{unknown}]>
-            433..434 'a': A<[u8; _]>
+            433..434 'a': A<[u8; 2]>
             445..446 'e': B<[u8]>
             449..453 'foo2': fn foo2<u8>(B<[u8]>) -> B<[u8]>
             449..456 'foo2(b)': B<[u8]>
-            454..455 'b': B<[u8; _]>
+            454..455 'b': B<[u8; 2]>
             466..467 'f': C<[u8]>
             470..474 'foo3': fn foo3<u8>(C<[u8]>) -> C<[u8]>
             470..477 'foo3(c)': C<[u8]>
-            475..476 'c': C<[u8; _]>
-        "]],
+            475..476 'c': C<[u8; 2]>
+        "#]],
     );
 }
 
@@ -208,7 +208,7 @@ fn infer_if_coerce() {
         #[lang = "unsize"]
         pub trait Unsize<T: ?Sized> {}
         "#,
-        expect![[r"
+        expect![[r#"
             10..11 'x': &[T]
             27..38 '{ loop {} }': &[T]
             29..36 'loop {}': !
@@ -220,14 +220,14 @@ fn infer_if_coerce() {
             71..96 '{     ...     }': &[i32]
             81..84 'foo': fn foo<i32>(&[i32]) -> &[i32]
             81..90 'foo(&[1])': &[i32]
-            85..89 '&[1]': &[i32; _]
-            86..89 '[1]': [i32; _]
+            85..89 '&[1]': &[i32; 1]
+            86..89 '[1]': [i32; 1]
             87..88 '1': i32
-            102..122 '{     ...     }': &[i32; _]
-            112..116 '&[1]': &[i32; _]
-            113..116 '[1]': [i32; _]
+            102..122 '{     ...     }': &[i32; 1]
+            112..116 '&[1]': &[i32; 1]
+            113..116 '[1]': [i32; 1]
             114..115 '1': i32
-        "]],
+        "#]],
     );
 }
 
@@ -254,7 +254,7 @@ fn infer_if_else_coerce() {
         impl<'a, 'b: 'a, T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<&'a U> for &'b T {}
         impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<*mut U> for *mut T {}
         "#,
-        expect![[r"
+        expect![[r#"
             10..11 'x': &[T]
             27..38 '{ loop {} }': &[T]
             29..36 'loop {}': !
@@ -263,17 +263,17 @@ fn infer_if_else_coerce() {
             59..60 'x': &[i32]
             63..122 'if tru...     }': &[i32]
             66..70 'true': bool
-            71..91 '{     ...     }': &[i32; _]
-            81..85 '&[1]': &[i32; _]
-            82..85 '[1]': [i32; _]
+            71..91 '{     ...     }': &[i32; 1]
+            81..85 '&[1]': &[i32; 1]
+            82..85 '[1]': [i32; 1]
             83..84 '1': i32
             97..122 '{     ...     }': &[i32]
             107..110 'foo': fn foo<i32>(&[i32]) -> &[i32]
             107..116 'foo(&[1])': &[i32]
-            111..115 '&[1]': &[i32; _]
-            112..115 '[1]': [i32; _]
+            111..115 '&[1]': &[i32; 1]
+            112..115 '[1]': [i32; 1]
             113..114 '1': i32
-        "]],
+        "#]],
     )
 }
 
@@ -295,7 +295,7 @@ fn infer_match_first_coerce() {
         #[lang = "unsize"]
         pub trait Unsize<T: ?Sized> {}
         "#,
-        expect![[r"
+        expect![[r#"
             10..11 'x': &[T]
             27..38 '{ loop {} }': &[T]
             29..36 'loop {}': !
@@ -309,19 +309,19 @@ fn infer_match_first_coerce() {
             87..88 '2': i32
             92..95 'foo': fn foo<i32>(&[i32]) -> &[i32]
             92..101 'foo(&[2])': &[i32]
-            96..100 '&[2]': &[i32; _]
-            97..100 '[2]': [i32; _]
+            96..100 '&[2]': &[i32; 1]
+            97..100 '[2]': [i32; 1]
             98..99 '2': i32
             111..112 '1': i32
             111..112 '1': i32
-            116..120 '&[1]': &[i32; _]
-            117..120 '[1]': [i32; _]
+            116..120 '&[1]': &[i32; 1]
+            117..120 '[1]': [i32; 1]
             118..119 '1': i32
             130..131 '_': i32
-            135..139 '&[3]': &[i32; _]
-            136..139 '[3]': [i32; _]
+            135..139 '&[3]': &[i32; 1]
+            136..139 '[3]': [i32; 1]
             137..138 '3': i32
-    "]],
+        "#]],
     );
 }
 
@@ -348,7 +348,7 @@ fn infer_match_second_coerce() {
         impl<'a, 'b: 'a, T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<&'a U> for &'b T {}
         impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<*mut U> for *mut T {}
         "#,
-        expect![[r"
+        expect![[r#"
             10..11 'x': &[T]
             27..38 '{ loop {} }': &[T]
             29..36 'loop {}': !
@@ -360,21 +360,21 @@ fn infer_match_second_coerce() {
             75..76 'i': i32
             87..88 '1': i32
             87..88 '1': i32
-            92..96 '&[1]': &[i32; _]
-            93..96 '[1]': [i32; _]
+            92..96 '&[1]': &[i32; 1]
+            93..96 '[1]': [i32; 1]
             94..95 '1': i32
             106..107 '2': i32
             106..107 '2': i32
             111..114 'foo': fn foo<i32>(&[i32]) -> &[i32]
             111..120 'foo(&[2])': &[i32]
-            115..119 '&[2]': &[i32; _]
-            116..119 '[2]': [i32; _]
+            115..119 '&[2]': &[i32; 1]
+            116..119 '[2]': [i32; 1]
             117..118 '2': i32
             130..131 '_': i32
-            135..139 '&[3]': &[i32; _]
-            136..139 '[3]': [i32; _]
+            135..139 '&[3]': &[i32; 1]
+            136..139 '[3]': [i32; 1]
             137..138 '3': i32
-    "]],
+        "#]],
     );
 }
 
@@ -685,15 +685,15 @@ fn coerce_unsize_array() {
             let f: &[usize] = &[1, 2, 3];
         }
         "#,
-        expect![[r"
+        expect![[r#"
             161..198 '{     ... 3]; }': ()
             171..172 'f': &[usize]
-            185..195 '&[1, 2, 3]': &[usize; _]
-            186..195 '[1, 2, 3]': [usize; _]
+            185..195 '&[1, 2, 3]': &[usize; 3]
+            186..195 '[1, 2, 3]': [usize; 3]
             187..188 '1': usize
             190..191 '2': usize
             193..194 '3': usize
-        "]],
+        "#]],
     );
 }
 
@@ -832,11 +832,9 @@ fn coerce_unsize_super_trait_cycle() {
     );
 }
 
-#[ignore]
 #[test]
 fn coerce_unsize_generic() {
-    // FIXME: Implement this
-    // https://doc.rust-lang.org/reference/type-coercions.html#unsized-coercions
+    // FIXME: fix the type mismatches here
     check_infer_with_mismatches(
         r#"
         #[lang = "unsize"]
@@ -854,7 +852,154 @@ fn coerce_unsize_generic() {
             let _: &Bar<[usize]> = &Bar(Foo { t: [1, 2, 3] });
         }
         "#,
-        expect![[r"
-        "]],
+        expect![[r#"
+            209..317 '{     ... }); }': ()
+            219..220 '_': &Foo<[usize]>
+            238..259 '&Foo {..., 3] }': &Foo<[usize]>
+            239..259 'Foo { ..., 3] }': Foo<[usize]>
+            248..257 '[1, 2, 3]': [usize; 3]
+            249..250 '1': usize
+            252..253 '2': usize
+            255..256 '3': usize
+            269..270 '_': &Bar<[usize]>
+            288..314 '&Bar(F... 3] })': &Bar<[i32; 3]>
+            289..292 'Bar': Bar<[i32; 3]>(Foo<[i32; 3]>) -> Bar<[i32; 3]>
+            289..314 'Bar(Fo... 3] })': Bar<[i32; 3]>
+            293..313 'Foo { ..., 3] }': Foo<[i32; 3]>
+            302..311 '[1, 2, 3]': [i32; 3]
+            303..304 '1': i32
+            306..307 '2': i32
+            309..310 '3': i32
+            248..257: expected [usize], got [usize; 3]
+            288..314: expected &Bar<[usize]>, got &Bar<[i32; 3]>
+        "#]],
+    );
+}
+
+#[test]
+fn coerce_unsize_apit() {
+    // FIXME: #8984
+    check_infer_with_mismatches(
+        r#"
+#[lang = "sized"]
+pub trait Sized {}
+#[lang = "unsize"]
+pub trait Unsize<T> {}
+#[lang = "coerce_unsized"]
+pub trait CoerceUnsized<T> {}
+
+impl<T: Unsize<U>, U> CoerceUnsized<&U> for &T {}
+
+trait Foo {}
+
+fn test(f: impl Foo) {
+    let _: &dyn Foo = &f;
+}
+        "#,
+        expect![[r#"
+            210..211 'f': impl Foo
+            223..252 '{     ... &f; }': ()
+            233..234 '_': &dyn Foo
+            247..249 '&f': &impl Foo
+            248..249 'f': impl Foo
+            247..249: expected &dyn Foo, got &impl Foo
+        "#]],
+    );
+}
+
+#[test]
+fn infer_two_closures_lub() {
+    check_types(
+        r#"
+fn foo(c: i32) {
+    let add = |a: i32, b: i32| a + b;
+    let sub = |a, b| a - b;
+            //^ |i32, i32| -> i32
+    if c > 42 { add } else { sub };
+  //^ fn(i32, i32) -> i32
+}
+        "#,
+    )
+}
+
+#[test]
+fn infer_match_diverging_branch_1() {
+    check_types(
+        r#"
+enum Result<T> { Ok(T), Err }
+fn parse<T>() -> T { loop {} }
+
+fn test() -> i32 {
+    let a = match parse() {
+        Ok(val) => val,
+        Err => return 0,
+    };
+    a
+  //^ i32
+}
+        "#,
+    )
+}
+
+#[test]
+fn infer_match_diverging_branch_2() {
+    // same as 1 except for order of branches
+    check_types(
+        r#"
+enum Result<T> { Ok(T), Err }
+fn parse<T>() -> T { loop {} }
+
+fn test() -> i32 {
+    let a = match parse() {
+        Err => return 0,
+        Ok(val) => val,
+    };
+    a
+  //^ i32
+}
+        "#,
+    )
+}
+
+#[test]
+fn panic_macro() {
+    check_infer_with_mismatches(
+        r#"
+mod panic {
+    #[macro_export]
+    pub macro panic_2015 {
+        () => (
+            $crate::panicking::panic()
+        ),
+    }
+}
+
+mod panicking {
+    pub fn panic() -> ! { loop {} }
+}
+
+#[rustc_builtin_macro = "core_panic"]
+macro_rules! panic {
+    // Expands to either `$crate::panic::panic_2015` or `$crate::panic::panic_2021`
+    // depending on the edition of the caller.
+    ($($arg:tt)*) => {
+        /* compiler built-in */
+    };
+}
+
+fn main() {
+    panic!()
+}
+        "#,
+        expect![[r#"
+            174..185 '{ loop {} }': !
+            176..183 'loop {}': !
+            181..183 '{}': ()
+            !0..24 '$crate...:panic': fn panic() -> !
+            !0..26 '$crate...anic()': !
+            !0..26 '$crate...anic()': !
+            !0..28 '$crate...015!()': !
+            454..470 '{     ...c!() }': ()
+        "#]],
     );
 }

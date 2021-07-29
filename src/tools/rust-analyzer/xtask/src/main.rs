@@ -18,7 +18,6 @@ mod install;
 mod release;
 mod dist;
 mod metrics;
-mod pre_cache;
 
 use anyhow::{bail, Result};
 use std::{
@@ -27,8 +26,6 @@ use std::{
 };
 use walkdir::{DirEntry, WalkDir};
 use xshell::{cmd, cp, pushd, pushenv};
-
-use crate::dist::DistCmd;
 
 fn main() -> Result<()> {
     let _d = pushd(project_root())?;
@@ -41,12 +38,9 @@ fn main() -> Result<()> {
         }
         flags::XtaskCmd::Install(cmd) => cmd.run(),
         flags::XtaskCmd::FuzzTests(_) => run_fuzzer(),
-        flags::XtaskCmd::PreCache(cmd) => cmd.run(),
         flags::XtaskCmd::Release(cmd) => cmd.run(),
         flags::XtaskCmd::Promote(cmd) => cmd.run(),
-        flags::XtaskCmd::Dist(flags) => {
-            DistCmd { nightly: flags.nightly, client_version: flags.client }.run()
-        }
+        flags::XtaskCmd::Dist(cmd) => cmd.run(),
         flags::XtaskCmd::Metrics(cmd) => cmd.run(),
         flags::XtaskCmd::Bb(cmd) => {
             {
@@ -112,7 +106,7 @@ fn run_fuzzer() -> Result<()> {
 }
 
 fn date_iso() -> Result<String> {
-    let res = cmd!("date --iso --utc").read()?;
+    let res = cmd!("date -u +%Y-%m-%d").read()?;
     Ok(res)
 }
 

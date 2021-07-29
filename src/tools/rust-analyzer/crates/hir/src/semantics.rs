@@ -11,7 +11,7 @@ use hir_def::{
     AsMacroCall, FunctionId, TraitId, VariantId,
 };
 use hir_expand::{name::AsName, ExpansionInfo};
-use hir_ty::associated_type_shorthand_candidates;
+use hir_ty::{associated_type_shorthand_candidates, Interner};
 use itertools::Itertools;
 use rustc_hash::{FxHashMap, FxHashSet};
 use syntax::{
@@ -120,10 +120,10 @@ impl<'db, DB: HirDatabase> Semantics<'db, DB> {
     pub fn speculative_expand(
         &self,
         actual_macro_call: &ast::MacroCall,
-        hypothetical_args: &ast::TokenTree,
+        speculative_args: &ast::TokenTree,
         token_to_map: SyntaxToken,
     ) -> Option<(SyntaxNode, SyntaxToken)> {
-        self.imp.speculative_expand(actual_macro_call, hypothetical_args, token_to_map)
+        self.imp.speculative_expand(actual_macro_call, speculative_args, token_to_map)
     }
 
     pub fn descend_into_macros(&self, token: SyntaxToken) -> SyntaxToken {
@@ -196,6 +196,10 @@ impl<'db, DB: HirDatabase> Semantics<'db, DB> {
         self.imp.resolve_label(lifetime)
     }
 
+    pub fn resolve_type(&self, ty: &ast::Type) -> Option<Type> {
+        self.imp.resolve_type(ty)
+    }
+
     pub fn type_of_expr(&self, expr: &ast::Expr) -> Option<Type> {
         self.imp.type_of_expr(expr)
     }
@@ -223,7 +227,7 @@ impl<'db, DB: HirDatabase> Semantics<'db, DB> {
     pub fn resolve_record_field(
         &self,
         field: &ast::RecordExprField,
-    ) -> Option<(Field, Option<Local>)> {
+    ) -> Option<(Field, Option<Local>, Type)> {
         self.imp.resolve_record_field(field)
     }
 
@@ -331,7 +335,7 @@ impl<'db> SemanticsImpl<'db> {
     fn speculative_expand(
         &self,
         actual_macro_call: &ast::MacroCall,
-        hypothetical_args: &ast::TokenTree,
+        speculative_args: &ast::TokenTree,
         token_to_map: SyntaxToken,
     ) -> Option<(SyntaxNode, SyntaxToken)> {
         let sa = self.analyze(actual_macro_call.syntax());
@@ -340,10 +344,10 @@ impl<'db> SemanticsImpl<'db> {
         let macro_call_id = macro_call.as_call_id(self.db.upcast(), krate, |path| {
             sa.resolver.resolve_path_as_macro(self.db.upcast(), &path)
         })?;
-        hir_expand::db::expand_hypothetical(
+        hir_expand::db::expand_speculative(
             self.db.upcast(),
             macro_call_id,
-            hypothetical_args,
+            speculative_args,
             token_to_map,
         )
     }
@@ -357,7 +361,7 @@ impl<'db> SemanticsImpl<'db> {
         let sa = self.analyze(&parent);
 
         let token = successors(Some(InFile::new(sa.file_id, token)), |token| {
-            self.db.check_canceled();
+            self.db.unwind_if_cancelled();
             let macro_call = token.value.ancestors().find_map(ast::MacroCall::cast)?;
             let tt = macro_call.token_tree()?;
             if !tt.syntax().text_range().contains_range(token.value.text_range()) {
@@ -476,6 +480,14 @@ impl<'db> SemanticsImpl<'db> {
         ToDef::to_def(self, src)
     }
 
+    fn resolve_type(&self, ty: &ast::Type) -> Option<Type> {
+        let scope = self.scope(ty.syntax());
+        let ctx = body::LowerCtx::new(self.db.upcast(), scope.file_id);
+        let ty = hir_ty::TyLoweringContext::new(self.db, &scope.resolver)
+            .lower_ty(&crate::TypeRef::from_ast(&ctx, ty.clone()));
+        Type::new_with_resolver(self.db, &scope.resolver, ty)
+    }
+
     fn type_of_expr(&self, expr: &ast::Expr) -> Option<Type> {
         self.analyze(expr.syntax()).type_of_expr(self.db, expr)
     }
@@ -489,13 +501,12 @@ impl<'db> SemanticsImpl<'db> {
     }
 
     fn resolve_method_call(&self, call: &ast::MethodCallExpr) -> Option<FunctionId> {
-        self.analyze(call.syntax()).resolve_method_call(self.db, call)
+        self.analyze(call.syntax()).resolve_method_call(self.db, call).map(|(id, _)| id)
     }
 
     fn resolve_method_call_as_callable(&self, call: &ast::MethodCallExpr) -> Option<Callable> {
-        // FIXME: this erases Substs
-        let func = self.resolve_method_call(call)?;
-        let (ty, _) = self.db.value_ty(func.into()).into_value_and_skipped_binders();
+        let (func, subst) = self.analyze(call.syntax()).resolve_method_call(self.db, call)?;
+        let ty = self.db.value_ty(func.into()).substitute(&Interner, &subst);
         let resolver = self.analyze(call.syntax()).resolver;
         let ty = Type::new_with_resolver(self.db, &resolver, ty)?;
         let mut res = ty.as_callable(self.db)?;
@@ -507,7 +518,10 @@ impl<'db> SemanticsImpl<'db> {
         self.analyze(field.syntax()).resolve_field(self.db, field)
     }
 
-    fn resolve_record_field(&self, field: &ast::RecordExprField) -> Option<(Field, Option<Local>)> {
+    fn resolve_record_field(
+        &self,
+        field: &ast::RecordExprField,
+    ) -> Option<(Field, Option<Local>, Type)> {
         self.analyze(field.syntax()).resolve_record_field(self.db, field)
     }
 

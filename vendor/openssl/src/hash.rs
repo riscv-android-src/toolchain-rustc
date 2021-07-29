@@ -1,13 +1,14 @@
-use ffi;
+use cfg_if::cfg_if;
+use std::ffi::CString;
 use std::fmt;
 use std::io;
 use std::io::prelude::*;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 
-use error::ErrorStack;
-use nid::Nid;
-use {cvt, cvt_p};
+use crate::error::ErrorStack;
+use crate::nid::Nid;
+use crate::{cvt, cvt_p};
 
 cfg_if! {
     if #[cfg(ossl110)] {
@@ -38,6 +39,24 @@ impl MessageDigest {
     pub fn from_nid(type_: Nid) -> Option<MessageDigest> {
         unsafe {
             let ptr = ffi::EVP_get_digestbynid(type_.as_raw());
+            if ptr.is_null() {
+                None
+            } else {
+                Some(MessageDigest(ptr))
+            }
+        }
+    }
+
+    /// Returns the `MessageDigest` corresponding to an algorithm name.
+    ///
+    /// This corresponds to [`EVP_get_digestbyname`].
+    ///
+    /// [`EVP_get_digestbyname`]: https://www.openssl.org/docs/man1.1.0/crypto/EVP_DigestInit.html
+    pub fn from_name(name: &str) -> Option<MessageDigest> {
+        ffi::init();
+        let name = CString::new(name).ok()?;
+        unsafe {
+            let ptr = ffi::EVP_get_digestbyname(name.as_ptr());
             if ptr.is_null() {
                 None
             } else {
@@ -104,8 +123,14 @@ impl MessageDigest {
         unsafe { MessageDigest(ffi::EVP_shake256()) }
     }
 
+    #[cfg(not(osslconf = "OPENSSL_NO_RMD160"))]
     pub fn ripemd160() -> MessageDigest {
         unsafe { MessageDigest(ffi::EVP_ripemd160()) }
+    }
+
+    #[cfg(all(any(ossl111, libressl291), not(osslconf = "OPENSSL_NO_SM3")))]
+    pub fn sm3() -> MessageDigest {
+        unsafe { MessageDigest(ffi::EVP_sm3()) }
     }
 
     #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -370,7 +395,7 @@ impl AsRef<[u8]> for DigestBytes {
 }
 
 impl fmt::Debug for DigestBytes {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, fmt)
     }
 }
@@ -606,11 +631,32 @@ mod tests {
         }
     }
 
+    #[cfg(all(any(ossl111, libressl291), not(osslconf = "OPENSSL_NO_SM3")))]
+    #[test]
+    fn test_sm3() {
+        let tests = [(
+            "616263",
+            "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0",
+        )];
+
+        for test in tests.iter() {
+            hash_test(MessageDigest::sm3(), test);
+        }
+    }
+
     #[test]
     fn from_nid() {
         assert_eq!(
             MessageDigest::from_nid(Nid::SHA256).unwrap().as_ptr(),
             MessageDigest::sha256().as_ptr()
         );
+    }
+
+    #[test]
+    fn from_name() {
+        assert_eq!(
+            MessageDigest::from_name("SHA256").unwrap().as_ptr(),
+            MessageDigest::sha256().as_ptr()
+        )
     }
 }

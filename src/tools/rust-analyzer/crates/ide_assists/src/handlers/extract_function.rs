@@ -10,18 +10,18 @@ use ide_db::{
 use itertools::Itertools;
 use stdx::format_to;
 use syntax::{
-    algo::SyntaxRewriter,
     ast::{
         self,
         edit::{AstNodeEdit, IndentLevel},
         AstNode,
     },
+    ted,
     SyntaxKind::{self, BLOCK_EXPR, BREAK_EXPR, COMMENT, PATH_EXPR, RETURN_EXPR},
     SyntaxNode, SyntaxToken, TextRange, TextSize, TokenAtOffset, WalkEvent, T,
 };
 
 use crate::{
-    assist_context::{AssistContext, Assists},
+    assist_context::{AssistContext, Assists, TreeMutator},
     AssistId,
 };
 
@@ -642,6 +642,10 @@ fn vars_used_in_body(ctx: &AssistContext, body: &FunctionBody) -> Vec<Local> {
         .collect()
 }
 
+fn body_contains_await(body: &FunctionBody) -> bool {
+    body.descendants().any(|d| matches!(d.kind(), SyntaxKind::AWAIT_EXPR))
+}
+
 /// find `self` param, that was not defined inside `body`
 ///
 /// It should skip `self` params from impls inside `body`
@@ -956,10 +960,10 @@ fn format_replacement(ctx: &AssistContext, fun: &Function, indent: IndentLevel) 
     let args = fun.params.iter().map(|param| param.to_arg(ctx));
     let args = make::arg_list(args);
     let call_expr = if fun.self_param.is_some() {
-        let self_arg = make::expr_path(make_path_from_text("self"));
+        let self_arg = make::expr_path(make::ext::ident_path("self"));
         make::expr_method_call(self_arg, &fun.name, args)
     } else {
-        let func = make::expr_path(make_path_from_text(&fun.name));
+        let func = make::expr_path(make::ext::ident_path(&fun.name));
         make::expr_call(func, args)
     };
 
@@ -1054,11 +1058,11 @@ impl FlowHandler {
                 make::expr_if(condition, block, None)
             }
             FlowHandler::IfOption { action } => {
-                let path = make_path_from_text("Some");
+                let path = make::ext::ident_path("Some");
                 let value_pat = make::ident_pat(make::name("value"));
                 let pattern = make::tuple_struct_pat(path, iter::once(value_pat.into()));
                 let cond = make::condition(call_expr, Some(pattern.into()));
-                let value = make::expr_path(make_path_from_text("value"));
+                let value = make::expr_path(make::ext::ident_path("value"));
                 let action_expr = action.make_result_handler(Some(value));
                 let action_stmt = make::expr_stmt(action_expr);
                 let then = make::block_expr(iter::once(action_stmt.into()), None);
@@ -1068,14 +1072,14 @@ impl FlowHandler {
                 let some_name = "value";
 
                 let some_arm = {
-                    let path = make_path_from_text("Some");
+                    let path = make::ext::ident_path("Some");
                     let value_pat = make::ident_pat(make::name(some_name));
                     let pat = make::tuple_struct_pat(path, iter::once(value_pat.into()));
-                    let value = make::expr_path(make_path_from_text(some_name));
+                    let value = make::expr_path(make::ext::ident_path(some_name));
                     make::match_arm(iter::once(pat.into()), value)
                 };
                 let none_arm = {
-                    let path = make_path_from_text("None");
+                    let path = make::ext::ident_path("None");
                     let pat = make::path_pat(path);
                     make::match_arm(iter::once(pat), none.make_result_handler(None))
                 };
@@ -1087,17 +1091,17 @@ impl FlowHandler {
                 let err_name = "value";
 
                 let ok_arm = {
-                    let path = make_path_from_text("Ok");
+                    let path = make::ext::ident_path("Ok");
                     let value_pat = make::ident_pat(make::name(ok_name));
                     let pat = make::tuple_struct_pat(path, iter::once(value_pat.into()));
-                    let value = make::expr_path(make_path_from_text(ok_name));
+                    let value = make::expr_path(make::ext::ident_path(ok_name));
                     make::match_arm(iter::once(pat.into()), value)
                 };
                 let err_arm = {
-                    let path = make_path_from_text("Err");
+                    let path = make::ext::ident_path("Err");
                     let value_pat = make::ident_pat(make::name(err_name));
                     let pat = make::tuple_struct_pat(path, iter::once(value_pat.into()));
-                    let value = make::expr_path(make_path_from_text(err_name));
+                    let value = make::expr_path(make::ext::ident_path(err_name));
                     make::match_arm(iter::once(pat.into()), err.make_result_handler(Some(value)))
                 };
                 let arms = make::match_arm_list(vec![ok_arm, err_arm]);
@@ -1107,13 +1111,9 @@ impl FlowHandler {
     }
 }
 
-fn make_path_from_text(text: &str) -> ast::Path {
-    make::path_unqualified(make::path_segment(make::name_ref(text)))
-}
-
 fn path_expr_from_local(ctx: &AssistContext, var: Local) -> ast::Expr {
     let name = var.name(ctx.db()).unwrap().to_string();
-    make::expr_path(make_path_from_text(&name))
+    make::expr_path(make::ext::ident_path(&name))
 }
 
 fn format_function(
@@ -1127,9 +1127,10 @@ fn format_function(
     let params = make_param_list(ctx, module, fun);
     let ret_ty = make_ret_ty(ctx, module, fun);
     let body = make_body(ctx, old_indent, new_indent, fun);
+    let async_kw = if body_contains_await(&fun.body) { "async " } else { "" };
     match ctx.config.snippet_cap {
-        Some(_) => format_to!(fn_def, "\n\n{}fn $0{}{}", new_indent, fun.name, params),
-        None => format_to!(fn_def, "\n\n{}fn {}{}", new_indent, fun.name, params),
+        Some(_) => format_to!(fn_def, "\n\n{}{}fn $0{}{}", new_indent, async_kw, fun.name, params),
+        None => format_to!(fn_def, "\n\n{}{}fn {}{}", new_indent, async_kw, fun.name, params),
     }
     if let Some(ret_ty) = ret_ty {
         format_to!(fn_def, " {}", ret_ty);
@@ -1179,37 +1180,29 @@ fn make_ret_ty(ctx: &AssistContext, module: hir::Module, fun: &Function) -> Opti
             fun_ty.make_ty(ctx, module)
         }
         FlowHandler::Try { kind: TryKind::Option } => {
-            make::ty_generic(make::name_ref("Option"), iter::once(fun_ty.make_ty(ctx, module)))
+            make::ext::ty_option(fun_ty.make_ty(ctx, module))
         }
         FlowHandler::Try { kind: TryKind::Result { ty: parent_ret_ty } } => {
             let handler_ty = parent_ret_ty
-                .type_parameters()
+                .type_arguments()
                 .nth(1)
                 .map(|ty| make_ty(&ty, ctx, module))
                 .unwrap_or_else(make::ty_unit);
-            make::ty_generic(
-                make::name_ref("Result"),
-                vec![fun_ty.make_ty(ctx, module), handler_ty],
-            )
+            make::ext::ty_result(fun_ty.make_ty(ctx, module), handler_ty)
         }
-        FlowHandler::If { .. } => make::ty("bool"),
+        FlowHandler::If { .. } => make::ext::ty_bool(),
         FlowHandler::IfOption { action } => {
             let handler_ty = action
                 .expr_ty(ctx)
                 .map(|ty| make_ty(&ty, ctx, module))
                 .unwrap_or_else(make::ty_unit);
-            make::ty_generic(make::name_ref("Option"), iter::once(handler_ty))
+            make::ext::ty_option(handler_ty)
         }
-        FlowHandler::MatchOption { .. } => {
-            make::ty_generic(make::name_ref("Option"), iter::once(fun_ty.make_ty(ctx, module)))
-        }
+        FlowHandler::MatchOption { .. } => make::ext::ty_option(fun_ty.make_ty(ctx, module)),
         FlowHandler::MatchResult { err } => {
             let handler_ty =
                 err.expr_ty(ctx).map(|ty| make_ty(&ty, ctx, module)).unwrap_or_else(make::ty_unit);
-            make::ty_generic(
-                make::name_ref("Result"),
-                vec![fun_ty.make_ty(ctx, module), handler_ty],
-            )
+            make::ext::ty_result(fun_ty.make_ty(ctx, module), handler_ty)
         }
     };
     Some(make::ret_type(ret_ty))
@@ -1296,7 +1289,7 @@ fn make_body(
                     TryKind::Option => "Some",
                     TryKind::Result { .. } => "Ok",
                 };
-                let func = make::expr_path(make_path_from_text(constructor));
+                let func = make::expr_path(make::ext::ident_path(constructor));
                 let args = make::arg_list(iter::once(tail_expr));
                 make::expr_call(func, args)
             })
@@ -1306,16 +1299,16 @@ fn make_body(
             with_tail_expr(block, lit_false.into())
         }
         FlowHandler::IfOption { .. } => {
-            let none = make::expr_path(make_path_from_text("None"));
+            let none = make::expr_path(make::ext::ident_path("None"));
             with_tail_expr(block, none)
         }
         FlowHandler::MatchOption { .. } => map_tail_expr(block, |tail_expr| {
-            let some = make::expr_path(make_path_from_text("Some"));
+            let some = make::expr_path(make::ext::ident_path("Some"));
             let args = make::arg_list(iter::once(tail_expr));
             make::expr_call(some, args)
         }),
         FlowHandler::MatchResult { .. } => map_tail_expr(block, |tail_expr| {
-            let ok = make::expr_path(make_path_from_text("Ok"));
+            let ok = make::expr_path(make::ext::ident_path("Ok"));
             let args = make::arg_list(iter::once(tail_expr));
             make::expr_call(ok, args)
         }),
@@ -1361,12 +1354,16 @@ fn rewrite_body_segment(
     syntax: &SyntaxNode,
 ) -> SyntaxNode {
     let syntax = fix_param_usages(ctx, params, syntax);
-    update_external_control_flow(handler, &syntax)
+    update_external_control_flow(handler, &syntax);
+    syntax
 }
 
 /// change all usages to account for added `&`/`&mut` for some params
 fn fix_param_usages(ctx: &AssistContext, params: &[Param], syntax: &SyntaxNode) -> SyntaxNode {
-    let mut rewriter = SyntaxRewriter::default();
+    let mut usages_for_param: Vec<(&Param, Vec<ast::Expr>)> = Vec::new();
+
+    let tm = TreeMutator::new(syntax);
+
     for param in params {
         if !param.kind().is_ref() {
             continue;
@@ -1376,101 +1373,100 @@ fn fix_param_usages(ctx: &AssistContext, params: &[Param], syntax: &SyntaxNode) 
         let usages = usages
             .iter()
             .filter(|reference| syntax.text_range().contains_range(reference.range))
-            .filter_map(|reference| path_element_of_reference(syntax, reference));
-        for path in usages {
-            match path.syntax().ancestors().skip(1).find_map(ast::Expr::cast) {
+            .filter_map(|reference| path_element_of_reference(syntax, reference))
+            .map(|expr| tm.make_mut(&expr));
+
+        usages_for_param.push((param, usages.collect()));
+    }
+
+    let res = tm.make_syntax_mut(syntax);
+
+    for (param, usages) in usages_for_param {
+        for usage in usages {
+            match usage.syntax().ancestors().skip(1).find_map(ast::Expr::cast) {
                 Some(ast::Expr::MethodCallExpr(_)) | Some(ast::Expr::FieldExpr(_)) => {
                     // do nothing
                 }
                 Some(ast::Expr::RefExpr(node))
                     if param.kind() == ParamKind::MutRef && node.mut_token().is_some() =>
                 {
-                    rewriter.replace_ast(&node.clone().into(), &node.expr().unwrap());
+                    ted::replace(node.syntax(), node.expr().unwrap().syntax());
                 }
                 Some(ast::Expr::RefExpr(node))
                     if param.kind() == ParamKind::SharedRef && node.mut_token().is_none() =>
                 {
-                    rewriter.replace_ast(&node.clone().into(), &node.expr().unwrap());
+                    ted::replace(node.syntax(), node.expr().unwrap().syntax());
                 }
                 Some(_) | None => {
-                    rewriter.replace_ast(&path, &make::expr_prefix(T![*], path.clone()));
+                    let p = &make::expr_prefix(T![*], usage.clone()).clone_for_update();
+                    ted::replace(usage.syntax(), p.syntax())
                 }
-            };
+            }
         }
     }
 
-    rewriter.rewrite(syntax)
+    res
 }
 
-fn update_external_control_flow(handler: &FlowHandler, syntax: &SyntaxNode) -> SyntaxNode {
-    let mut rewriter = SyntaxRewriter::default();
-
+fn update_external_control_flow(handler: &FlowHandler, syntax: &SyntaxNode) {
     let mut nested_loop = None;
     let mut nested_scope = None;
     for event in syntax.preorder() {
-        let node = match event {
-            WalkEvent::Enter(e) => {
-                match e.kind() {
-                    SyntaxKind::LOOP_EXPR | SyntaxKind::WHILE_EXPR | SyntaxKind::FOR_EXPR => {
-                        if nested_loop.is_none() {
-                            nested_loop = Some(e.clone());
-                        }
+        match event {
+            WalkEvent::Enter(e) => match e.kind() {
+                SyntaxKind::LOOP_EXPR | SyntaxKind::WHILE_EXPR | SyntaxKind::FOR_EXPR => {
+                    if nested_loop.is_none() {
+                        nested_loop = Some(e.clone());
                     }
-                    SyntaxKind::FN
-                    | SyntaxKind::CONST
-                    | SyntaxKind::STATIC
-                    | SyntaxKind::IMPL
-                    | SyntaxKind::MODULE => {
-                        if nested_scope.is_none() {
-                            nested_scope = Some(e.clone());
-                        }
-                    }
-                    _ => {}
                 }
-                e
-            }
+                SyntaxKind::FN
+                | SyntaxKind::CONST
+                | SyntaxKind::STATIC
+                | SyntaxKind::IMPL
+                | SyntaxKind::MODULE => {
+                    if nested_scope.is_none() {
+                        nested_scope = Some(e.clone());
+                    }
+                }
+                _ => {}
+            },
             WalkEvent::Leave(e) => {
+                if nested_scope.is_none() {
+                    if let Some(expr) = ast::Expr::cast(e.clone()) {
+                        match expr {
+                            ast::Expr::ReturnExpr(return_expr) if nested_scope.is_none() => {
+                                let expr = return_expr.expr();
+                                if let Some(replacement) = make_rewritten_flow(handler, expr) {
+                                    ted::replace(return_expr.syntax(), replacement.syntax())
+                                }
+                            }
+                            ast::Expr::BreakExpr(break_expr) if nested_loop.is_none() => {
+                                let expr = break_expr.expr();
+                                if let Some(replacement) = make_rewritten_flow(handler, expr) {
+                                    ted::replace(break_expr.syntax(), replacement.syntax())
+                                }
+                            }
+                            ast::Expr::ContinueExpr(continue_expr) if nested_loop.is_none() => {
+                                if let Some(replacement) = make_rewritten_flow(handler, None) {
+                                    ted::replace(continue_expr.syntax(), replacement.syntax())
+                                }
+                            }
+                            _ => {
+                                // do nothing
+                            }
+                        }
+                    }
+                }
+
                 if nested_loop.as_ref() == Some(&e) {
                     nested_loop = None;
                 }
                 if nested_scope.as_ref() == Some(&e) {
                     nested_scope = None;
                 }
-                continue;
             }
         };
-        if nested_scope.is_some() {
-            continue;
-        }
-        let expr = match ast::Expr::cast(node) {
-            Some(e) => e,
-            None => continue,
-        };
-        match expr {
-            ast::Expr::ReturnExpr(return_expr) if nested_scope.is_none() => {
-                let expr = return_expr.expr();
-                if let Some(replacement) = make_rewritten_flow(handler, expr) {
-                    rewriter.replace_ast(&return_expr.into(), &replacement);
-                }
-            }
-            ast::Expr::BreakExpr(break_expr) if nested_loop.is_none() => {
-                let expr = break_expr.expr();
-                if let Some(replacement) = make_rewritten_flow(handler, expr) {
-                    rewriter.replace_ast(&break_expr.into(), &replacement);
-                }
-            }
-            ast::Expr::ContinueExpr(continue_expr) if nested_loop.is_none() => {
-                if let Some(replacement) = make_rewritten_flow(handler, None) {
-                    rewriter.replace_ast(&continue_expr.into(), &replacement);
-                }
-            }
-            _ => {
-                // do nothing
-            }
-        }
     }
-
-    rewriter.rewrite(syntax)
 }
 
 fn make_rewritten_flow(handler: &FlowHandler, arg_expr: Option<ast::Expr>) -> Option<ast::Expr> {
@@ -1480,16 +1476,16 @@ fn make_rewritten_flow(handler: &FlowHandler, arg_expr: Option<ast::Expr>) -> Op
         FlowHandler::IfOption { .. } => {
             let expr = arg_expr.unwrap_or_else(|| make::expr_tuple(Vec::new()));
             let args = make::arg_list(iter::once(expr));
-            make::expr_call(make::expr_path(make_path_from_text("Some")), args)
+            make::expr_call(make::expr_path(make::ext::ident_path("Some")), args)
         }
-        FlowHandler::MatchOption { .. } => make::expr_path(make_path_from_text("None")),
+        FlowHandler::MatchOption { .. } => make::expr_path(make::ext::ident_path("None")),
         FlowHandler::MatchResult { .. } => {
             let expr = arg_expr.unwrap_or_else(|| make::expr_tuple(Vec::new()));
             let args = make::arg_list(iter::once(expr));
-            make::expr_call(make::expr_path(make_path_from_text("Err")), args)
+            make::expr_call(make::expr_path(make::ext::ident_path("Err")), args)
         }
     };
-    Some(make::expr_return(Some(value)))
+    Some(make::expr_return(Some(value)).clone_for_update())
 }
 
 #[cfg(test)]
@@ -3572,6 +3568,62 @@ fn $0fun_name(n: i32) -> i32 {
     let k = n * m!(n);
     k
 }",
+        );
+    }
+
+    #[test]
+    fn extract_with_await() {
+        check_assist(
+            extract_function,
+            r#"fn main() {
+    $0some_function().await;$0
+}
+
+async fn some_function() {
+
+}
+"#,
+            r#"
+fn main() {
+    fun_name();
+}
+
+async fn $0fun_name() {
+    some_function().await;
+}
+
+async fn some_function() {
+
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn extract_with_await_in_args() {
+        check_assist(
+            extract_function,
+            r#"fn main() {
+    $0function_call("a", some_function().await);$0
+}
+
+async fn some_function() {
+
+}
+"#,
+            r#"
+fn main() {
+    fun_name();
+}
+
+async fn $0fun_name() {
+    function_call("a", some_function().await);
+}
+
+async fn some_function() {
+
+}
+"#,
         );
     }
 }

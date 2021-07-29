@@ -12,7 +12,7 @@
 
 [package]
 name = "curl-sys"
-version = "0.4.39+curl-7.74.0"
+version = "0.4.42+curl-7.76.0"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 build = "build.rs"
 links = "curl"
@@ -57,6 +57,7 @@ spnego = []
 ssl = ["openssl-sys"]
 static-curl = []
 static-ssl = ["openssl-sys/vendored"]
+upkeep_7_62_0 = []
 zlib-ng-compat = ["libz-sys/zlib-ng", "static-curl"]
 [target."cfg(all(unix, not(target_os = \"macos\")))".dependencies.openssl-sys]
 version = "0.9"

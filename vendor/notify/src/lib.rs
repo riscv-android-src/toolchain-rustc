@@ -4,7 +4,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! notify = "5.0.0-pre.7"
+//! notify = "5.0.0-pre.9"
 //! ```
 //!
 //! ## Serde
@@ -12,7 +12,7 @@
 //! Events are serialisable via [serde] if the `serde` feature is enabled:
 //!
 //! ```toml
-//! notify = { version = "5.0.0-pre.7", features = ["serde"] }
+//! notify = { version = "5.0.0-pre.9", features = ["serde"] }
 //! ```
 //!
 //! [serde]: https://serde.rs
@@ -95,8 +95,6 @@
 //! # }
 //! ```
 
-// FIXME: `anymap` crate triggers this lint and we cannot do anything here.
-#![allow(where_clauses_object_safety)]
 #![deny(missing_docs)]
 
 pub use config::{Config, RecursiveMode};

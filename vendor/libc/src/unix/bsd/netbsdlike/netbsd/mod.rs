@@ -7,7 +7,7 @@ pub type fsfilcnt_t = u64;
 pub type idtype_t = ::c_int;
 pub type mqd_t = ::c_int;
 type __pthread_spin_t = __cpu_simple_lock_nv_t;
-pub type vm_size_t = ::uintptr_t;
+pub type vm_size_t = ::uintptr_t; // FIXME: deprecated since long time
 pub type lwpid_t = ::c_uint;
 pub type shmatt_t = ::c_uint;
 
@@ -403,6 +403,16 @@ s! {
         pub p_align: Elf64_Xword,
     }
 
+    pub struct Aux32Info {
+        pub a_type: Elf32_Word,
+        pub a_v: Elf32_Word,
+    }
+
+    pub struct Aux64Info {
+        pub a_type: Elf64_Word,
+        pub a_v: Elf64_Xword,
+    }
+
     // link.h
 
     pub struct dl_phdr_info {
@@ -427,7 +437,7 @@ s_no_extra_traits! {
         pub ut_session: u16,
         pub ut_type: u16,
         pub ut_pid: ::pid_t,
-        pub ut_exit: __exit_status,
+        pub ut_exit: __exit_status, // FIXME: when anonymous struct are supported
         pub ut_ss: sockaddr_storage,
         pub ut_tv: ::timeval,
         pub ut_pad: [u8; _UTX_PADSIZE],
@@ -2037,6 +2047,8 @@ extern "C" {
 
     pub fn dup3(src: ::c_int, dst: ::c_int, flags: ::c_int) -> ::c_int;
 
+    pub fn kqueue1(flags: ::c_int) -> ::c_int;
+
     pub fn sendmmsg(
         sockfd: ::c_int,
         msgvec: *mut ::mmsghdr,
@@ -2072,6 +2084,10 @@ extern "C" {
         data: *mut ::c_void,
     ) -> ::c_int;
 
+    // dlfcn.h
+
+    pub fn _dlauxinfo() -> *mut ::c_void;
+
     pub fn iconv_open(tocode: *const ::c_char, fromcode: *const ::c_char) -> iconv_t;
     pub fn iconv(
         cd: iconv_t,
@@ -2081,6 +2097,9 @@ extern "C" {
         outbytesleft: *mut ::size_t,
     ) -> ::size_t;
     pub fn iconv_close(cd: iconv_t) -> ::c_int;
+
+    // Added in `NetBSD` 7.0
+    pub fn explicit_memset(b: *mut ::c_void, c: ::c_int, len: ::size_t);
 }
 
 #[link(name = "util")]

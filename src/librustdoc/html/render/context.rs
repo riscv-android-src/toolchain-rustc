@@ -19,6 +19,7 @@ use super::write_shared::write_shared;
 use super::{print_sidebar, settings, AllTypes, NameDoc, StylePath, BASIC_KEYWORDS};
 
 use crate::clean;
+use crate::clean::ExternalCrate;
 use crate::config::RenderOptions;
 use crate::docfs::{DocFS, PathError};
 use crate::error::Error;
@@ -87,6 +88,8 @@ crate struct SharedContext<'tcx> {
     crate include_sources: bool,
     /// The local file sources we've emitted and their respective url-paths.
     crate local_sources: FxHashMap<PathBuf, String>,
+    /// Show the memory layout of types in the docs.
+    pub(super) show_type_layout: bool,
     /// Whether the collapsed pass ran
     collapsed: bool,
     /// The base-URL of the issue tracker for when an item has been tagged with
@@ -131,8 +134,8 @@ impl SharedContext<'_> {
         Ok(())
     }
 
-    /// Based on whether the `collapse-docs` pass was run, return either the `doc_value` or the
-    /// `collapsed_doc_value` of the given item.
+    /// Returns the `collapsed_doc_value` of the given item if this is the main crate, otherwise
+    /// returns the `doc_value`.
     crate fn maybe_collapsed_doc_value<'a>(&self, item: &'a clean::Item) -> Option<String> {
         if self.collapsed { item.collapsed_doc_value() } else { item.doc_value() }
     }
@@ -151,7 +154,7 @@ impl<'tcx> Context<'tcx> {
         &self.cache
     }
 
-    fn sess(&self) -> &'tcx Session {
+    pub(super) fn sess(&self) -> &'tcx Session {
         &self.shared.tcx.sess
     }
 
@@ -194,8 +197,15 @@ impl<'tcx> Context<'tcx> {
             )
         };
         let keywords = make_item_keywords(it);
+        let name;
+        let tyname_s = if it.is_crate() {
+            name = format!("{} crate", tyname);
+            name.as_str()
+        } else {
+            tyname.as_str()
+        };
         let page = layout::Page {
-            css_class: tyname.as_str(),
+            css_class: tyname_s,
             root_path: &self.root_path(),
             static_root_path: self.shared.static_root_path.as_deref(),
             title: &title,
@@ -211,11 +221,11 @@ impl<'tcx> Context<'tcx> {
                 &self.shared.layout,
                 &page,
                 |buf: &mut _| print_sidebar(self, it, buf),
-                |buf: &mut _| print_item(self, it, buf),
+                |buf: &mut _| print_item(self, it, buf, &page),
                 &self.shared.style_files,
             )
         } else {
-            if let Some(&(ref names, ty)) = self.cache.paths.get(&it.def_id) {
+            if let Some(&(ref names, ty)) = self.cache.paths.get(&it.def_id.expect_real()) {
                 let mut path = String::new();
                 for name in &names[..names.len() - 1] {
                     path.push_str(name);
@@ -287,7 +297,7 @@ impl<'tcx> Context<'tcx> {
 
         // We can safely ignore synthetic `SourceFile`s.
         let file = match item.span(self.tcx()).filename(self.sess()) {
-            FileName::Real(ref path) => path.local_path().to_path_buf(),
+            FileName::Real(ref path) => path.local_path_if_available().to_path_buf(),
             _ => return None,
         };
         let file = &file;
@@ -301,12 +311,16 @@ impl<'tcx> Context<'tcx> {
             }
         } else {
             let (krate, src_root) = match *self.cache.extern_locations.get(&cnum)? {
-                (name, ref src, ExternalLocation::Local) => (name, src),
-                (name, ref src, ExternalLocation::Remote(ref s)) => {
-                    root = s.to_string();
-                    (name, src)
+                ExternalLocation::Local => {
+                    let e = ExternalCrate { crate_num: cnum };
+                    (e.name(self.tcx()), e.src_root(self.tcx()))
                 }
-                (_, _, ExternalLocation::Unknown) => return None,
+                ExternalLocation::Remote(ref s) => {
+                    root = s.to_string();
+                    let e = ExternalCrate { crate_num: cnum };
+                    (e.name(self.tcx()), e.src_root(self.tcx()))
+                }
+                ExternalLocation::Unknown => return None,
             };
 
             sources::clean_path(&src_root, file, false, |component| {
@@ -365,11 +379,12 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
             generate_search_filter,
             unstable_features,
             generate_redirect_map,
+            show_type_layout,
             ..
         } = options;
 
         let src_root = match krate.src {
-            FileName::Real(ref p) => match p.local_path().parent() {
+            FileName::Real(ref p) => match p.local_path_if_available().parent() {
                 Some(p) => p.to_path_buf(),
                 None => PathBuf::new(),
             },
@@ -438,6 +453,7 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
             all: RefCell::new(AllTypes::new()),
             errors: receiver,
             redirections: if generate_redirect_map { Some(Default::default()) } else { None },
+            show_type_layout,
         };
 
         // Add the default themes to the `Vec` of stylepaths
@@ -511,7 +527,7 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
         };
         let sidebar = if let Some(ref version) = self.cache.crate_version {
             format!(
-                "<p class=\"location\">Crate {}</p>\
+                "<h2 class=\"location\">Crate {}</h2>\
                      <div class=\"block version\">\
                          <p>Version {}</p>\
                      </div>\
@@ -538,7 +554,7 @@ impl<'tcx> FormatRenderer<'tcx> for Context<'tcx> {
         page.root_path = "./";
 
         let mut style_files = self.shared.style_files.clone();
-        let sidebar = "<p class=\"location\">Settings</p><div class=\"sidebar-elems\"></div>";
+        let sidebar = "<h2 class=\"location\">Settings</h2><div class=\"sidebar-elems\"></div>";
         style_files.push(StylePath { path: PathBuf::from("settings.css"), disabled: false });
         let v = layout::render(
             &self.shared.layout,

@@ -229,15 +229,7 @@ pub fn run(config: Config, testpaths: &TestPaths, revision: Option<&str>) {
         print!("\n\n");
     }
     debug!("running {:?}", testpaths.file.display());
-    let mut props = TestProps::from_file(&testpaths.file, revision, &config);
-
-    // Currently, incremental is soft disabled unless this environment
-    // variable is set. A bunch of our tests assume it's enabled, though - so
-    // just enable it for our tests.
-    //
-    // This is deemed preferable to ignoring those tests; we still want to test
-    // incremental somewhat, as users can opt in to it.
-    props.rustc_env.push((String::from("RUSTC_FORCE_INCREMENTAL"), String::from("1")));
+    let props = TestProps::from_file(&testpaths.file, revision, &config);
 
     let cx = TestCx { config: &config, props: &props, testpaths, revision };
     create_dir_all(&cx.output_base_dir()).unwrap();
@@ -248,11 +240,7 @@ pub fn run(config: Config, testpaths: &TestPaths, revision: Option<&str>) {
         assert!(!props.revisions.is_empty(), "Incremental tests require revisions.");
         cx.init_incremental_test();
         for revision in &props.revisions {
-            let mut revision_props = TestProps::from_file(&testpaths.file, Some(revision), &config);
-            // See above - need to enable it explicitly for now.
-            revision_props
-                .rustc_env
-                .push((String::from("RUSTC_FORCE_INCREMENTAL"), String::from("1")));
+            let revision_props = TestProps::from_file(&testpaths.file, Some(revision), &config);
             let rev_cx = TestCx {
                 config: &config,
                 props: &revision_props,
@@ -271,6 +259,7 @@ pub fn run(config: Config, testpaths: &TestPaths, revision: Option<&str>) {
 pub fn compute_stamp_hash(config: &Config) -> String {
     let mut hash = DefaultHasher::new();
     config.stage_id.hash(&mut hash);
+    config.run.hash(&mut hash);
 
     match config.debugger {
         Some(Debugger::Cdb) => {
@@ -329,6 +318,7 @@ enum TestOutput {
 enum WillExecute {
     Yes,
     No,
+    Disabled,
 }
 
 /// Should `--emit metadata` be used?
@@ -369,14 +359,17 @@ impl<'test> TestCx<'test> {
     }
 
     fn should_run(&self, pm: Option<PassMode>) -> WillExecute {
-        match self.config.mode {
-            Ui if pm == Some(PassMode::Run) || self.props.fail_mode == Some(FailMode::Run) => {
-                WillExecute::Yes
-            }
-            MirOpt if pm == Some(PassMode::Run) => WillExecute::Yes,
-            Ui | MirOpt => WillExecute::No,
+        let test_should_run = match self.config.mode {
+            Ui if pm == Some(PassMode::Run) || self.props.fail_mode == Some(FailMode::Run) => true,
+            MirOpt if pm == Some(PassMode::Run) => true,
+            Ui | MirOpt => false,
             mode => panic!("unimplemented for mode {:?}", mode),
-        }
+        };
+        if test_should_run { self.run_if_enabled() } else { WillExecute::No }
+    }
+
+    fn run_if_enabled(&self) -> WillExecute {
+        if self.config.run_enabled() { WillExecute::Yes } else { WillExecute::Disabled }
     }
 
     fn should_run_successfully(&self, pm: Option<PassMode>) -> bool {
@@ -451,10 +444,15 @@ impl<'test> TestCx<'test> {
 
     fn run_rfail_test(&self) {
         let pm = self.pass_mode();
-        let proc_res = self.compile_test(WillExecute::Yes, self.should_emit_metadata(pm));
+        let should_run = self.run_if_enabled();
+        let proc_res = self.compile_test(should_run, self.should_emit_metadata(pm));
 
         if !proc_res.status.success() {
             self.fatal_proc_rec("compilation failed!", &proc_res);
+        }
+
+        if let WillExecute::Disabled = should_run {
+            return;
         }
 
         let proc_res = self.exec_compiled_test();
@@ -495,10 +493,15 @@ impl<'test> TestCx<'test> {
 
     fn run_rpass_test(&self) {
         let emit_metadata = self.should_emit_metadata(self.pass_mode());
-        let proc_res = self.compile_test(WillExecute::Yes, emit_metadata);
+        let should_run = self.run_if_enabled();
+        let proc_res = self.compile_test(should_run, emit_metadata);
 
         if !proc_res.status.success() {
             self.fatal_proc_rec("compilation failed!", &proc_res);
+        }
+
+        if let WillExecute::Disabled = should_run {
+            return;
         }
 
         // FIXME(#41968): Move this check to tidy?
@@ -522,10 +525,15 @@ impl<'test> TestCx<'test> {
             return self.run_rpass_test();
         }
 
-        let mut proc_res = self.compile_test(WillExecute::Yes, EmitMetadata::No);
+        let should_run = self.run_if_enabled();
+        let mut proc_res = self.compile_test(should_run, EmitMetadata::No);
 
         if !proc_res.status.success() {
             self.fatal_proc_rec("compilation failed!", &proc_res);
+        }
+
+        if let WillExecute::Disabled = should_run {
+            return;
         }
 
         let mut new_config = self.config.clone();
@@ -744,9 +752,13 @@ impl<'test> TestCx<'test> {
 
     fn run_debuginfo_cdb_test_no_opt(&self) {
         // compile test file (it should have 'compile-flags:-g' in the header)
-        let compile_result = self.compile_test(WillExecute::Yes, EmitMetadata::No);
+        let should_run = self.run_if_enabled();
+        let compile_result = self.compile_test(should_run, EmitMetadata::No);
         if !compile_result.status.success() {
             self.fatal_proc_rec("compilation failed!", &compile_result);
+        }
+        if let WillExecute::Disabled = should_run {
+            return;
         }
 
         let exe_file = self.make_exe_name();
@@ -838,9 +850,13 @@ impl<'test> TestCx<'test> {
         let mut cmds = commands.join("\n");
 
         // compile test file (it should have 'compile-flags:-g' in the header)
-        let compiler_run_result = self.compile_test(WillExecute::Yes, EmitMetadata::No);
+        let should_run = self.run_if_enabled();
+        let compiler_run_result = self.compile_test(should_run, EmitMetadata::No);
         if !compiler_run_result.status.success() {
             self.fatal_proc_rec("compilation failed!", &compiler_run_result);
+        }
+        if let WillExecute::Disabled = should_run {
+            return;
         }
 
         let exe_file = self.make_exe_name();
@@ -1056,9 +1072,13 @@ impl<'test> TestCx<'test> {
 
     fn run_debuginfo_lldb_test_no_opt(&self) {
         // compile test file (it should have 'compile-flags:-g' in the header)
-        let compile_result = self.compile_test(WillExecute::Yes, EmitMetadata::No);
+        let should_run = self.run_if_enabled();
+        let compile_result = self.compile_test(should_run, EmitMetadata::No);
         if !compile_result.status.success() {
             self.fatal_proc_rec("compilation failed!", &compile_result);
+        }
+        if let WillExecute::Disabled = should_run {
+            return;
         }
 
         let exe_file = self.make_exe_name();
@@ -1543,7 +1563,9 @@ impl<'test> TestCx<'test> {
         // Only use `make_exe_name` when the test ends up being executed.
         let output_file = match will_execute {
             WillExecute::Yes => TargetLocation::ThisFile(self.make_exe_name()),
-            WillExecute::No => TargetLocation::ThisDirectory(self.output_base_dir()),
+            WillExecute::No | WillExecute::Disabled => {
+                TargetLocation::ThisDirectory(self.output_base_dir())
+            }
         };
 
         let allow_unused = match self.config.mode {
@@ -1763,6 +1785,9 @@ impl<'test> TestCx<'test> {
                 get_lib_name(&aux_path.trim_end_matches(".rs").replace('-', "_"), is_dylib);
             rustc.arg("--extern").arg(format!("{}={}/{}", aux_name, aux_dir.display(), lib_name));
         }
+        if !self.props.aux_crates.is_empty() {
+            rustc.arg("-Zunstable-options");
+        }
 
         aux_dir
     }
@@ -1784,9 +1809,7 @@ impl<'test> TestCx<'test> {
     /// Returns whether or not it is a dylib.
     fn build_auxiliary(&self, source_path: &str, aux_dir: &Path) -> bool {
         let aux_testpaths = self.compute_aux_test_paths(source_path);
-        let mut aux_props =
-            self.props.from_aux_file(&aux_testpaths.file, self.revision, self.config);
-        aux_props.rustc_env.push((String::from("RUSTC_FORCE_INCREMENTAL"), String::from("1")));
+        let aux_props = self.props.from_aux_file(&aux_testpaths.file, self.revision, self.config);
         let aux_output = TargetLocation::ThisDirectory(self.aux_output_dir_name());
         let aux_cx = TestCx {
             config: self.config,
@@ -1815,6 +1838,7 @@ impl<'test> TestCx<'test> {
             || self.config.target.contains("nvptx")
             || self.is_vxworks_pure_static()
             || self.config.target.contains("sgx")
+            || self.config.target.contains("bpf")
         {
             // We primarily compile all auxiliary libraries as dynamic libraries
             // to avoid code size bloat and large binaries as much as possible
@@ -2307,7 +2331,11 @@ impl<'test> TestCx<'test> {
         // For now, though…
         if let Some(rev) = self.revision {
             let prefixes = format!("CHECK,{}", rev);
-            filecheck.args(&["--check-prefixes", &prefixes]);
+            if self.config.llvm_version.unwrap_or(0) >= 130000 {
+                filecheck.args(&["--allow-unused-prefixes", "--check-prefixes", &prefixes]);
+            } else {
+                filecheck.args(&["--check-prefixes", &prefixes]);
+            }
         }
         self.compose_and_run(filecheck, "", None, None)
     }
@@ -2463,6 +2491,7 @@ impl<'test> TestCx<'test> {
 
         {
             let mut diff_output = File::create(&diff_filename).unwrap();
+            let mut wrote_data = false;
             for entry in walkdir::WalkDir::new(out_dir) {
                 let entry = entry.expect("failed to read file");
                 let extension = entry.path().extension().and_then(|p| p.to_str());
@@ -2475,16 +2504,27 @@ impl<'test> TestCx<'test> {
                         if let Ok(s) = std::fs::read(&expected_path) { s } else { continue };
                     let actual_path = entry.path();
                     let actual = std::fs::read(&actual_path).unwrap();
-                    diff_output
-                        .write_all(&unified_diff::diff(
-                            &expected,
-                            &expected_path.to_string_lossy(),
-                            &actual,
-                            &actual_path.to_string_lossy(),
-                            3,
-                        ))
-                        .unwrap();
+                    let diff = unified_diff::diff(
+                        &expected,
+                        &expected_path.to_string_lossy(),
+                        &actual,
+                        &actual_path.to_string_lossy(),
+                        3,
+                    );
+                    wrote_data |= !diff.is_empty();
+                    diff_output.write_all(&diff).unwrap();
                 }
+            }
+
+            if !wrote_data {
+                println!("note: diff is identical to nightly rustdoc");
+                assert!(diff_output.metadata().unwrap().len() == 0);
+                return;
+            } else if self.config.verbose {
+                eprintln!("printing diff:");
+                let mut buf = Vec::new();
+                diff_output.read_to_end(&mut buf).unwrap();
+                std::io::stderr().lock().write_all(&mut buf).unwrap();
             }
         }
 
@@ -2651,12 +2691,11 @@ impl<'test> TestCx<'test> {
 
         let mut tested = 0;
         for _ in res.stdout.split('\n').filter(|s| s.starts_with("test ")).inspect(|s| {
-            let tmp: Vec<&str> = s.split(" - ").collect();
-            if tmp.len() == 2 {
-                let path = tmp[0].rsplit("test ").next().unwrap();
+            if let Some((left, right)) = s.split_once(" - ") {
+                let path = left.rsplit("test ").next().unwrap();
                 if let Some(ref mut v) = files.get_mut(&path.replace('\\', "/")) {
                     tested += 1;
-                    let mut iter = tmp[1].split("(line ");
+                    let mut iter = right.split("(line ");
                     iter.next();
                     let line = iter
                         .next()
@@ -3629,6 +3668,12 @@ impl<'test> TestCx<'test> {
             .unwrap()
             .join("library");
         normalize_path(&src_dir, "$SRC_DIR");
+
+        if let Some(virtual_rust_source_base_dir) =
+            option_env!("CFG_VIRTUAL_RUST_SOURCE_BASE_DIR").map(PathBuf::from)
+        {
+            normalize_path(&virtual_rust_source_base_dir.join("library"), "$SRC_DIR");
+        }
 
         // Paths into the build directory
         let test_build_dir = &self.config.build_base;

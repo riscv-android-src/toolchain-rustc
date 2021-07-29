@@ -1,7 +1,6 @@
 //! Completion of names from the current scope, e.g. locals and imported items.
 
 use hir::ScopeDef;
-use syntax::AstNode;
 
 use crate::{CompletionContext, Completions};
 
@@ -9,16 +8,36 @@ pub(crate) fn complete_unqualified_path(acc: &mut Completions, ctx: &CompletionC
     if !ctx.is_trivial_path {
         return;
     }
-    if ctx.record_lit_syntax.is_some()
-        || ctx.record_pat_syntax.is_some()
-        || ctx.attribute_under_caret.is_some()
-        || ctx.mod_declaration_under_caret.is_some()
-    {
+    if ctx.is_path_disallowed() || ctx.expects_item() {
         return;
     }
 
-    if let Some(ty) = &ctx.expected_type {
-        super::complete_enum_variants(acc, ctx, ty, |acc, ctx, variant, path| {
+    if ctx.expects_assoc_item() {
+        ctx.scope.process_all_names(&mut |name, def| {
+            if let ScopeDef::MacroDef(macro_def) = def {
+                acc.add_macro(ctx, Some(name.clone()), macro_def);
+            }
+            if let ScopeDef::ModuleDef(hir::ModuleDef::Module(_)) = def {
+                acc.add_resolution(ctx, name, &def);
+            }
+        });
+        return;
+    }
+
+    if ctx.expects_use_tree() {
+        cov_mark::hit!(only_completes_modules_in_import);
+        ctx.scope.process_all_names(&mut |name, res| {
+            if let ScopeDef::ModuleDef(hir::ModuleDef::Module(_)) = res {
+                acc.add_resolution(ctx, name, &res);
+            }
+        });
+        return;
+    }
+
+    if let Some(hir::Adt::Enum(e)) =
+        ctx.expected_type.as_ref().and_then(|ty| ty.strip_references().as_adt())
+    {
+        super::complete_enum_variants(acc, ctx, e, |acc, ctx, variant, path| {
             acc.add_qualified_enum_variant(ctx, variant, path)
         });
     }
@@ -28,15 +47,7 @@ pub(crate) fn complete_unqualified_path(acc: &mut Completions, ctx: &CompletionC
             cov_mark::hit!(skip_lifetime_completion);
             return;
         }
-        if ctx.use_item_syntax.is_some() {
-            if let (ScopeDef::Unknown, Some(name_ref)) = (&res, &ctx.name_ref_syntax) {
-                if name_ref.syntax().text() == name.to_string().as_str() {
-                    cov_mark::hit!(self_fulfilling_completion);
-                    return;
-                }
-            }
-        }
-        acc.add_resolution(ctx, name.to_string(), &res);
+        acc.add_resolution(ctx, name, &res);
     });
 }
 
@@ -59,15 +70,17 @@ mod tests {
     }
 
     #[test]
-    fn self_fulfilling_completion() {
-        cov_mark::check!(self_fulfilling_completion);
+    fn only_completes_modules_in_import() {
+        cov_mark::check!(only_completes_modules_in_import);
         check(
             r#"
-use foo$0
-use std::collections;
+use f$0
+
+struct Foo;
+mod foo {}
 "#,
             expect![[r#"
-                ?? collections
+                md foo
             "#]],
         );
     }
@@ -84,7 +97,7 @@ fn quux(x: Option<Enum>) {
     }
 }
 "#,
-            expect![[""]],
+            expect![[r#""#]],
         );
     }
 
@@ -100,7 +113,7 @@ fn quux(x: Option<Enum>) {
     }
 }
 "#,
-            expect![[""]],
+            expect![[r#""#]],
         );
     }
 
@@ -372,10 +385,11 @@ fn foo() {
 fn foo() { let x: $0 }
 
 //- /std/lib.rs crate:std
-#[prelude_import]
-use prelude::*;
-
-mod prelude { struct Option; }
+pub mod prelude {
+    pub mod rust_2018 {
+        pub struct Option;
+    }
+}
 "#,
             expect![[r#"
                 fn foo()  fn()
@@ -393,12 +407,10 @@ mod prelude { struct Option; }
 fn f() {$0}
 
 //- /std/lib.rs crate:std
-#[prelude_import]
-pub use prelude::*;
-
-#[macro_use]
-mod prelude {
-    pub use crate::concat;
+pub mod prelude {
+    pub mod rust_2018 {
+        pub use crate::concat;
+    }
 }
 
 mod macros {
@@ -423,16 +435,18 @@ mod macros {
 fn foo() { let x: $0 }
 
 //- /core/lib.rs crate:core
-#[prelude_import]
-use prelude::*;
-
-mod prelude { struct Option; }
+pub mod prelude {
+    pub mod rust_2018 {
+        pub struct Option;
+    }
+}
 
 //- /std/lib.rs crate:std deps:core
-#[prelude_import]
-use prelude::*;
-
-mod prelude { struct String; }
+pub mod prelude {
+    pub mod rust_2018 {
+        pub struct String;
+    }
+}
 "#,
             expect![[r#"
                 fn foo()  fn()
@@ -649,7 +663,7 @@ fn f() {}
     }
 
     #[test]
-    fn completes_type_or_trait_in_impl_block() {
+    fn completes_target_type_or_trait_in_impl_block() {
         check(
             r#"
 trait MyTrait {}
@@ -661,6 +675,43 @@ impl My$0
                 sp Self
                 tt MyTrait
                 st MyStruct
+            "#]],
+        )
+    }
+
+    #[test]
+    fn completes_in_assoc_item_list() {
+        check(
+            r#"
+macro_rules! foo {}
+mod bar {}
+
+struct MyStruct {}
+impl MyStruct {
+    $0
+}
+"#,
+            expect![[r#"
+                md bar
+                ma foo! macro_rules! foo
+            "#]],
+        )
+    }
+
+    // FIXME: The completions here currently come from `macro_in_item_position`, but they shouldn't
+    #[test]
+    fn completes_in_item_list() {
+        check(
+            r#"
+struct MyStruct {}
+macro_rules! foo {}
+mod bar {}
+
+$0
+"#,
+            expect![[r#"
+                md bar
+                ma foo!(…) macro_rules! foo
             "#]],
         )
     }

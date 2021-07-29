@@ -22,7 +22,9 @@ pub struct Build {
 pub struct Artifacts {
     include_dir: PathBuf,
     lib_dir: PathBuf,
+    bin_dir: PathBuf,
     libs: Vec<String>,
+    target: String,
 }
 
 impl Build {
@@ -53,6 +55,7 @@ impl Build {
         let host = &self.host.as_ref().expect("HOST dir not set")[..];
         if host.contains("dragonfly")
             || host.contains("freebsd")
+            || host.contains("openbsd")
             || host.contains("solaris")
             || host.contains("illumos")
         {
@@ -60,6 +63,53 @@ impl Build {
         } else {
             Command::new("make")
         }
+    }
+
+    #[cfg(windows)]
+    fn check_env_var(&self, var_name: &str) -> Option<bool> {
+        env::var_os(var_name).map(|s| {
+            if s == "1" {
+                // a message to stdout, let user know asm is force enabled
+                println!(
+                    "{}: nasm.exe is force enabled by the \
+                    'OPENSSL_RUST_USE_NASM' env var.",
+                    env!("CARGO_PKG_NAME")
+                );
+                true
+            } else if s == "0" {
+                // a message to stdout, let user know asm is force disabled
+                println!(
+                    "{}: nasm.exe is force disabled by the \
+                    'OPENSSL_RUST_USE_NASM' env var.",
+                    env!("CARGO_PKG_NAME")
+                );
+                false
+            } else {
+                panic!(
+                    "The environment variable {} is set to an unacceptable value: {:?}",
+                    var_name, s
+                );
+            }
+        })
+    }
+
+    #[cfg(windows)]
+    fn is_nasm_ready(&self) -> bool {
+        self.check_env_var("OPENSSL_RUST_USE_NASM")
+            .unwrap_or_else(|| {
+                // On Windows, use cmd `where` command to check if nasm is installed
+                let wherenasm = Command::new("cmd")
+                    .args(&["/C", "where nasm"])
+                    .output()
+                    .expect("Failed to execute `cmd`.");
+                wherenasm.status.success()
+            })
+    }
+
+    #[cfg(not(windows))]
+    fn is_nasm_ready(&self) -> bool {
+        // We assume that nobody would run nasm.exe on a non-windows system.
+        false
     }
 
     pub fn build(&mut self) -> Artifacts {
@@ -94,6 +144,7 @@ impl Build {
         configure
             // No shared objects, we just want static libraries
             .arg("no-dso")
+            .arg("no-shared")
             // Should be off by default on OpenSSL 1.1.0, but let's be extra sure
             .arg("no-ssl3")
             // No need to build tests, we won't run them anyway
@@ -143,17 +194,18 @@ impl Build {
         }
 
         if target.contains("msvc") {
-            // On MSVC we need nasm.exe to compile the assembly files, but let's
-            // just pessimistically assume for now that's not available.
-            configure.arg("no-asm");
-
-            let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or(String::new());
-            if features.contains("crt-static") {
-                configure.arg("no-shared");
+            // On MSVC we need nasm.exe to compile the assembly files.
+            // ASM compiling will be enabled if nasm.exe is installed, unless
+            // the environment variable `OPENSSL_RUST_USE_NASM` is set.
+            if self.is_nasm_ready() {
+                // a message to stdout, let user know asm is enabled
+                println!(
+                    "{}: Enable the assembly language routines in building OpenSSL.",
+                    env!("CARGO_PKG_NAME")
+                );
+            } else {
+                configure.arg("no-asm");
             }
-        } else {
-            // Never shared on non-MSVC
-            configure.arg("no-shared");
         }
 
         let os = match target {
@@ -176,6 +228,8 @@ impl Build {
             "arm-unknown-linux-musleabihf" => "linux-armv4",
             "armv6-unknown-freebsd" => "BSD-generic32",
             "armv7-unknown-freebsd" => "BSD-generic32",
+            "armv7-unknown-linux-gnueabi" => "linux-armv4",
+            "armv7-unknown-linux-musleabi" => "linux-armv4",
             "armv7-unknown-linux-gnueabihf" => "linux-armv4",
             "armv7-unknown-linux-musleabihf" => "linux-armv4",
             "asmjs-unknown-emscripten" => "gcc",
@@ -210,10 +264,12 @@ impl Build {
             "x86_64-unknown-illumos" => "solaris64-x86_64-gcc",
             "x86_64-unknown-linux-gnu" => "linux-x86_64",
             "x86_64-unknown-linux-musl" => "linux-x86_64",
+            "x86_64-unknown-openbsd" => "BSD-x86_64",
             "x86_64-unknown-netbsd" => "BSD-x86_64",
             "x86_64-sun-solaris" => "solaris64-x86_64-gcc",
             "wasm32-unknown-emscripten" => "gcc",
             "wasm32-unknown-unknown" => "gcc",
+            "wasm32-wasi" => "gcc",
             "aarch64-apple-ios" => "ios64-cross",
             "x86_64-apple-ios" => "iossimulator-xcrun",
             _ => panic!("don't know how to configure OpenSSL for {}", target),
@@ -401,8 +457,10 @@ impl Build {
 
         Artifacts {
             lib_dir: install_dir.join("lib"),
+            bin_dir: install_dir.join("bin"),
             include_dir: install_dir.join("include"),
             libs: libs,
+            target: target.to_string(),
         }
     }
 
@@ -451,7 +509,6 @@ fn cp_r(src: &Path, dst: &Path) {
 
 fn apply_patches(target: &str, inner: &Path) {
     apply_patches_musl(target, inner);
-    apply_patches_aarch64_apple_darwin(target, inner);
 }
 
 fn apply_patches_musl(target: &str, inner: &Path) {
@@ -467,40 +524,6 @@ fn apply_patches_musl(target: &str, inner: &Path) {
     let buf = buf
         .replace("asm/unistd.h", "sys/syscall.h")
         .replace("__NR_getrandom", "SYS_getrandom");
-
-    fs::write(path, buf).unwrap();
-}
-
-fn apply_patches_aarch64_apple_darwin(target: &str, inner: &Path) {
-    if target != "aarch64-apple-darwin" {
-        return;
-    }
-
-    // Apply build system changes to allow configuring and building
-    // for Apple's ARM64 platform.
-    // https://github.com/openssl/openssl/pull/12369
-
-    let path = inner.join("Configurations/10-main.conf");
-    let mut buf = fs::read_to_string(&path).unwrap();
-
-    assert!(
-        !buf.contains("darwin64-arm64-cc"),
-        "{} already contains instructions for aarch64-apple-darwin",
-        path.display(),
-    );
-
-    const PATCH: &str = r#"
-    "darwin64-arm64-cc" => {
-        inherit_from     => [ "darwin-common", asm("aarch64_asm") ],
-        CFLAGS           => add("-Wall"),
-        cflags           => add("-arch arm64"),
-        lib_cppflags     => add("-DL_ENDIAN"),
-        bn_ops           => "SIXTY_FOUR_BIT_LONG",
-        perlasm_scheme   => "ios64",
-    },"#;
-
-    let x86_64_stanza = buf.find(r#"    "darwin64-x86_64-cc""#).unwrap();
-    buf.insert_str(x86_64_stanza, PATCH);
 
     fs::write(path, buf).unwrap();
 }
@@ -545,5 +568,8 @@ impl Artifacts {
         }
         println!("cargo:include={}", self.include_dir.display());
         println!("cargo:lib={}", self.lib_dir.display());
+        if self.target.contains("msvc") {
+            println!("cargo:rustc-link-lib=user32");
+        }
     }
 }

@@ -148,8 +148,8 @@ pub unsafe fn _mm_rcp_ps(a: __m128) -> __m128 {
     rcpps(a)
 }
 
-/// Returns the approximate reciprocal square root of the fist single-precision
-/// (32-bit) floating-point elements in `a`, the other elements are unchanged.
+/// Returns the approximate reciprocal square root of the first single-precision
+/// (32-bit) floating-point element in `a`, the other elements are unchanged.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_rsqrt_ss)
 #[inline]
@@ -350,7 +350,7 @@ pub unsafe fn _mm_cmple_ss(a: __m128, b: __m128) -> __m128 {
 #[cfg_attr(test, assert_instr(cmpltss))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_cmpgt_ss(a: __m128, b: __m128) -> __m128 {
-    simd_shuffle4(a, cmpss(b, a, 1), [4, 1, 2, 3])
+    simd_shuffle4!(a, cmpss(b, a, 1), [4, 1, 2, 3])
 }
 
 /// Compares the lowest `f32` of both inputs for greater than or equal. The
@@ -364,7 +364,7 @@ pub unsafe fn _mm_cmpgt_ss(a: __m128, b: __m128) -> __m128 {
 #[cfg_attr(test, assert_instr(cmpless))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_cmpge_ss(a: __m128, b: __m128) -> __m128 {
-    simd_shuffle4(a, cmpss(b, a, 2), [4, 1, 2, 3])
+    simd_shuffle4!(a, cmpss(b, a, 2), [4, 1, 2, 3])
 }
 
 /// Compares the lowest `f32` of both inputs for inequality. The lowest 32 bits
@@ -420,7 +420,7 @@ pub unsafe fn _mm_cmpnle_ss(a: __m128, b: __m128) -> __m128 {
 #[cfg_attr(test, assert_instr(cmpnltss))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_cmpngt_ss(a: __m128, b: __m128) -> __m128 {
-    simd_shuffle4(a, cmpss(b, a, 5), [4, 1, 2, 3])
+    simd_shuffle4!(a, cmpss(b, a, 5), [4, 1, 2, 3])
 }
 
 /// Compares the lowest `f32` of both inputs for not-greater-than-or-equal. The
@@ -434,7 +434,7 @@ pub unsafe fn _mm_cmpngt_ss(a: __m128, b: __m128) -> __m128 {
 #[cfg_attr(test, assert_instr(cmpnless))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_cmpnge_ss(a: __m128, b: __m128) -> __m128 {
-    simd_shuffle4(a, cmpss(b, a, 6), [4, 1, 2, 3])
+    simd_shuffle4!(a, cmpss(b, a, 6), [4, 1, 2, 3])
 }
 
 /// Checks if the lowest `f32` of both inputs are ordered. The lowest 32 bits of
@@ -992,7 +992,7 @@ pub const fn _MM_SHUFFLE(z: u32, y: u32, x: u32, w: u32) -> i32 {
 }
 
 /// Shuffles packed single-precision (32-bit) floating-point elements in `a` and
-/// `b` using `mask`.
+/// `b` using `MASK`.
 ///
 /// The lower half of result takes values from `a` and the higher half from
 /// `b`. Mask is split to 2 control bits each to index the element from inputs.
@@ -1006,53 +1006,21 @@ pub const fn _MM_SHUFFLE(z: u32, y: u32, x: u32, w: u32) -> i32 {
 /// does not cause a problem in C, however Rust's commitment to strong typing does not allow this.
 #[inline]
 #[target_feature(enable = "sse")]
-#[cfg_attr(test, assert_instr(shufps, mask = 3))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(shufps, MASK = 3))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_shuffle_ps(a: __m128, b: __m128, mask: i32) -> __m128 {
-    let mask = (mask & 0xFF) as u8;
-
-    macro_rules! shuffle_done {
-        ($x01:expr, $x23:expr, $x45:expr, $x67:expr) => {
-            simd_shuffle4(a, b, [$x01, $x23, $x45, $x67])
-        };
-    }
-    macro_rules! shuffle_x67 {
-        ($x01:expr, $x23:expr, $x45:expr) => {
-            match (mask >> 6) & 0b11 {
-                0b00 => shuffle_done!($x01, $x23, $x45, 4),
-                0b01 => shuffle_done!($x01, $x23, $x45, 5),
-                0b10 => shuffle_done!($x01, $x23, $x45, 6),
-                _ => shuffle_done!($x01, $x23, $x45, 7),
-            }
-        };
-    }
-    macro_rules! shuffle_x45 {
-        ($x01:expr, $x23:expr) => {
-            match (mask >> 4) & 0b11 {
-                0b00 => shuffle_x67!($x01, $x23, 4),
-                0b01 => shuffle_x67!($x01, $x23, 5),
-                0b10 => shuffle_x67!($x01, $x23, 6),
-                _ => shuffle_x67!($x01, $x23, 7),
-            }
-        };
-    }
-    macro_rules! shuffle_x23 {
-        ($x01:expr) => {
-            match (mask >> 2) & 0b11 {
-                0b00 => shuffle_x45!($x01, 0),
-                0b01 => shuffle_x45!($x01, 1),
-                0b10 => shuffle_x45!($x01, 2),
-                _ => shuffle_x45!($x01, 3),
-            }
-        };
-    }
-    match mask & 0b11 {
-        0b00 => shuffle_x23!(0),
-        0b01 => shuffle_x23!(1),
-        0b10 => shuffle_x23!(2),
-        _ => shuffle_x23!(3),
-    }
+pub unsafe fn _mm_shuffle_ps<const MASK: i32>(a: __m128, b: __m128) -> __m128 {
+    static_assert_imm8!(MASK);
+    simd_shuffle4!(
+        a,
+        b,
+        <const MASK: i32> [
+            MASK as u32 & 0b11,
+            (MASK as u32 >> 2) & 0b11,
+            ((MASK as u32 >> 4) & 0b11) + 4,
+            ((MASK as u32 >> 6) & 0b11) + 4,
+        ],
+    )
 }
 
 /// Unpacks and interleave single-precision (32-bit) floating-point elements
@@ -1064,7 +1032,7 @@ pub unsafe fn _mm_shuffle_ps(a: __m128, b: __m128, mask: i32) -> __m128 {
 #[cfg_attr(test, assert_instr(unpckhps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpackhi_ps(a: __m128, b: __m128) -> __m128 {
-    simd_shuffle4(a, b, [2, 6, 3, 7])
+    simd_shuffle4!(a, b, [2, 6, 3, 7])
 }
 
 /// Unpacks and interleave single-precision (32-bit) floating-point elements
@@ -1076,7 +1044,7 @@ pub unsafe fn _mm_unpackhi_ps(a: __m128, b: __m128) -> __m128 {
 #[cfg_attr(test, assert_instr(unpcklps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_unpacklo_ps(a: __m128, b: __m128) -> __m128 {
-    simd_shuffle4(a, b, [0, 4, 1, 5])
+    simd_shuffle4!(a, b, [0, 4, 1, 5])
 }
 
 /// Combine higher half of `a` and `b`. The highwe half of `b` occupies the
@@ -1089,7 +1057,7 @@ pub unsafe fn _mm_unpacklo_ps(a: __m128, b: __m128) -> __m128 {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_movehl_ps(a: __m128, b: __m128) -> __m128 {
     // TODO; figure why this is a different instruction on Windows?
-    simd_shuffle4(a, b, [6, 7, 2, 3])
+    simd_shuffle4!(a, b, [6, 7, 2, 3])
 }
 
 /// Combine lower half of `a` and `b`. The lower half of `b` occupies the
@@ -1101,7 +1069,7 @@ pub unsafe fn _mm_movehl_ps(a: __m128, b: __m128) -> __m128 {
 #[cfg_attr(all(test, not(target_os = "windows")), assert_instr(movlhps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_movelh_ps(a: __m128, b: __m128) -> __m128 {
-    simd_shuffle4(a, b, [0, 1, 4, 5])
+    simd_shuffle4!(a, b, [0, 1, 4, 5])
 }
 
 /// Returns a mask of the most significant bit of each element in `a`.
@@ -1233,7 +1201,7 @@ pub unsafe fn _mm_loadu_ps(p: *const f32) -> __m128 {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_loadr_ps(p: *const f32) -> __m128 {
     let a = _mm_load_ps(p);
-    simd_shuffle4(a, a, [3, 2, 1, 0])
+    simd_shuffle4!(a, a, [3, 2, 1, 0])
 }
 
 /// Loads unaligned 64-bits of integer data from memory into new vector.
@@ -1285,7 +1253,7 @@ pub unsafe fn _mm_store_ss(p: *mut f32, a: __m128) {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_store1_ps(p: *mut f32, a: __m128) {
-    let b: __m128 = simd_shuffle4(a, a, [0, 0, 0, 0]);
+    let b: __m128 = simd_shuffle4!(a, a, [0, 0, 0, 0]);
     *(p as *mut __m128) = b;
 }
 
@@ -1361,7 +1329,7 @@ pub unsafe fn _mm_storeu_ps(p: *mut f32, a: __m128) {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_storer_ps(p: *mut f32, a: __m128) {
-    let b: __m128 = simd_shuffle4(a, a, [3, 2, 1, 0]);
+    let b: __m128 = simd_shuffle4!(a, a, [3, 2, 1, 0]);
     *(p as *mut __m128) = b;
 }
 
@@ -1379,7 +1347,7 @@ pub unsafe fn _mm_storer_ps(p: *mut f32, a: __m128) {
 #[cfg_attr(test, assert_instr(movss))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_move_ss(a: __m128, b: __m128) -> __m128 {
-    simd_shuffle4(a, b, [4, 1, 2, 3])
+    simd_shuffle4!(a, b, [4, 1, 2, 3])
 }
 
 /// Performs a serializing operation on all store-to-memory instructions that
@@ -1725,9 +1693,17 @@ pub const _MM_HINT_T2: i32 = 1;
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub const _MM_HINT_NTA: i32 = 0;
 
-/// Fetch the cache line that contains address `p` using the given `strategy`.
+/// See [`_mm_prefetch`](fn._mm_prefetch.html).
+#[stable(feature = "simd_x86", since = "1.27.0")]
+pub const _MM_HINT_ET0: i32 = 7;
+
+/// See [`_mm_prefetch`](fn._mm_prefetch.html).
+#[stable(feature = "simd_x86", since = "1.27.0")]
+pub const _MM_HINT_ET1: i32 = 6;
+
+/// Fetch the cache line that contains address `p` using the given `STRATEGY`.
 ///
-/// The `strategy` must be one of:
+/// The `STRATEGY` must be one of:
 ///
 /// * [`_MM_HINT_T0`](constant._MM_HINT_T0.html): Fetch into all levels of the
 ///   cache hierarchy.
@@ -1741,6 +1717,10 @@ pub const _MM_HINT_NTA: i32 = 0;
 ///   non-temporal access (NTA) hint. It may be a place closer than main memory
 ///   but outside of the cache hierarchy. This is used to reduce access latency
 ///   without polluting the cache.
+///
+/// * [`_MM_HINT_ET0`](constant._MM_HINT_ET0.html) and
+///   [`_MM_HINT_ET1`](constant._MM_HINT_ET1.html) are similar to `_MM_HINT_T0`
+///   and `_MM_HINT_T1` but indicate an anticipation to write to the address.
 ///
 /// The actual implementation depends on the particular CPU. This instruction
 /// is considered a hint, so the CPU is also free to simply ignore the request.
@@ -1765,28 +1745,16 @@ pub const _MM_HINT_NTA: i32 = 0;
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_prefetch)
 #[inline]
 #[target_feature(enable = "sse")]
-#[cfg_attr(test, assert_instr(prefetcht0, strategy = _MM_HINT_T0))]
-#[cfg_attr(test, assert_instr(prefetcht1, strategy = _MM_HINT_T1))]
-#[cfg_attr(test, assert_instr(prefetcht2, strategy = _MM_HINT_T2))]
-#[cfg_attr(test, assert_instr(prefetchnta, strategy = _MM_HINT_NTA))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(prefetcht0, STRATEGY = _MM_HINT_T0))]
+#[cfg_attr(test, assert_instr(prefetcht1, STRATEGY = _MM_HINT_T1))]
+#[cfg_attr(test, assert_instr(prefetcht2, STRATEGY = _MM_HINT_T2))]
+#[cfg_attr(test, assert_instr(prefetchnta, STRATEGY = _MM_HINT_NTA))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_prefetch(p: *const i8, strategy: i32) {
-    // The `strategy` must be a compile-time constant, so we use a short form
-    // of `constify_imm8!` for now.
-    // We use the `llvm.prefetch` instrinsic with `rw` = 0 (read), and
-    // `cache type` = 1 (data cache). `locality` is based on our `strategy`.
-    macro_rules! pref {
-        ($imm8:expr) => {
-            match $imm8 {
-                0 => prefetch(p, 0, 0, 1),
-                1 => prefetch(p, 0, 1, 1),
-                2 => prefetch(p, 0, 2, 1),
-                _ => prefetch(p, 0, 3, 1),
-            }
-        };
-    }
-    pref!(strategy)
+pub unsafe fn _mm_prefetch<const STRATEGY: i32>(p: *const i8) {
+    // We use the `llvm.prefetch` instrinsic with `cache type` = 1 (data cache).
+    // `locality` and `rw` are based on our `STRATEGY`.
+    prefetch(p, (STRATEGY >> 2) & 1, STRATEGY & 3, 1);
 }
 
 /// Returns vector of type __m128 with undefined elements.
@@ -2976,7 +2944,7 @@ mod tests {
     unsafe fn test_mm_shuffle_ps() {
         let a = _mm_setr_ps(1.0, 2.0, 3.0, 4.0);
         let b = _mm_setr_ps(5.0, 6.0, 7.0, 8.0);
-        let r = _mm_shuffle_ps(a, b, 0b00_01_01_11);
+        let r = _mm_shuffle_ps::<0b00_01_01_11>(a, b);
         assert_eq_m128(r, _mm_setr_ps(4.0, 2.0, 6.0, 5.0));
     }
 

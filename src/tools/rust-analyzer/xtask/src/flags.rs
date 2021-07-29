@@ -28,7 +28,6 @@ xflags::xflags! {
         }
 
         cmd fuzz-tests {}
-        cmd pre-cache {}
 
         cmd release {
             optional --dry-run
@@ -37,8 +36,7 @@ xflags::xflags! {
             optional --dry-run
         }
         cmd dist {
-            optional --nightly
-            optional --client version: String
+            optional --client-patch-version version: String
         }
         cmd metrics {
             optional --dry-run
@@ -63,7 +61,6 @@ pub enum XtaskCmd {
     Help(Help),
     Install(Install),
     FuzzTests(FuzzTests),
-    PreCache(PreCache),
     Release(Release),
     Promote(Promote),
     Dist(Dist),
@@ -86,13 +83,7 @@ pub struct Install {
 }
 
 #[derive(Debug)]
-pub struct Lint;
-
-#[derive(Debug)]
 pub struct FuzzTests;
-
-#[derive(Debug)]
-pub struct PreCache;
 
 #[derive(Debug)]
 pub struct Release {
@@ -106,8 +97,7 @@ pub struct Promote {
 
 #[derive(Debug)]
 pub struct Dist {
-    pub nightly: bool,
-    pub client: Option<String>,
+    pub client_patch_version: Option<String>,
 }
 
 #[derive(Debug)]

@@ -1,7 +1,6 @@
-use ffi;
+use crate::stack::Stackable;
 use foreign_types::ForeignTypeRef;
 use libc::c_ulong;
-use stack::Stackable;
 use std::ffi::CStr;
 use std::str;
 
@@ -44,6 +43,10 @@ impl SrtpProfileId {
     pub const SRTP_AES128_F8_SHA1_32: SrtpProfileId = SrtpProfileId(ffi::SRTP_AES128_F8_SHA1_32);
     pub const SRTP_NULL_SHA1_80: SrtpProfileId = SrtpProfileId(ffi::SRTP_NULL_SHA1_80);
     pub const SRTP_NULL_SHA1_32: SrtpProfileId = SrtpProfileId(ffi::SRTP_NULL_SHA1_32);
+    #[cfg(ossl110)]
+    pub const SRTP_AEAD_AES_128_GCM: SrtpProfileId = SrtpProfileId(ffi::SRTP_AEAD_AES_128_GCM);
+    #[cfg(ossl110)]
+    pub const SRTP_AEAD_AES_256_GCM: SrtpProfileId = SrtpProfileId(ffi::SRTP_AEAD_AES_256_GCM);
 
     /// Creates a `SrtpProfileId` from an integer representation.
     pub fn from_raw(value: c_ulong) -> SrtpProfileId {

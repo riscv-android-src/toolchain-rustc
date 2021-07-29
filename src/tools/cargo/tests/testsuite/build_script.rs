@@ -1,8 +1,8 @@
 //! Tests for build.rs scripts.
 
-use cargo_test_support::paths::CargoPathExt;
 use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_manifest, cross_compile, is_coarse_mtime, project};
+use cargo_test_support::{lines_match, paths::CargoPathExt};
 use cargo_test_support::{rustc_host, sleep_ms, slow_cpu_multiplier, symlink_supported};
 use cargo_util::paths::remove_dir_all;
 use std::env;
@@ -162,6 +162,393 @@ fn custom_build_env_var_rustc_linker() {
     // no crate type set => linker never called => build succeeds if and
     // only if build.rs succeeds, despite linker binary not existing.
     p.cargo("build --target").arg(&target).run();
+}
+
+#[cargo_test]
+fn custom_build_env_var_rustc_linker_bad_host_target() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                [target.{}]
+                linker = "/path/to/linker"
+                "#,
+                target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // build.rs should fail since host == target when no target is set
+    p.cargo("build --verbose")
+        .with_status(101)
+        .with_stderr_contains(
+            "\
+[COMPILING] foo v0.0.1 ([CWD])
+[RUNNING] `rustc --crate-name build_script_build build.rs [..]--crate-type bin [..]-C linker=[..]/path/to/linker [..]`
+[ERROR] linker `[..]/path/to/linker` not found
+"
+        )
+        .run();
+}
+
+#[cargo_test]
+fn custom_build_env_var_rustc_linker_host_target() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                target-applies-to-host = false
+                [target.{}]
+                linker = "/path/to/linker"
+                "#,
+                target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // no crate type set => linker never called => build succeeds if and
+    // only if build.rs succeeds, despite linker binary not existing.
+    if cargo_test_support::is_nightly() {
+        p.cargo("build -Z target-applies-to-host --target")
+            .arg(&target)
+            .masquerade_as_nightly_cargo()
+            .run();
+    }
+}
+
+#[cargo_test]
+fn custom_build_env_var_rustc_linker_host_target_env() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                [target.{}]
+                linker = "/path/to/linker"
+                "#,
+                target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // no crate type set => linker never called => build succeeds if and
+    // only if build.rs succeeds, despite linker binary not existing.
+    if cargo_test_support::is_nightly() {
+        p.cargo("build -Z target-applies-to-host --target")
+            .env("CARGO_TARGET_APPLIES_TO_HOST", "false")
+            .arg(&target)
+            .masquerade_as_nightly_cargo()
+            .run();
+    }
+}
+
+#[cargo_test]
+fn custom_build_invalid_host_config_feature_flag() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                [target.{}]
+                linker = "/path/to/linker"
+                "#,
+                target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // build.rs should fail due to -Zhost-config being set without -Ztarget-applies-to-host
+    if cargo_test_support::is_nightly() {
+        p.cargo("build -Z host-config --target")
+            .arg(&target)
+            .masquerade_as_nightly_cargo()
+            .with_status(101)
+            .with_stderr_contains(
+                "\
+error: the -Zhost-config flag requires the -Ztarget-applies-to-host flag to be set
+",
+            )
+            .run();
+    }
+}
+
+#[cargo_test]
+fn custom_build_env_var_rustc_linker_host_target_with_bad_host_config() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                target-applies-to-host = true
+                [host]
+                linker = "/path/to/host/linker"
+                [target.{}]
+                linker = "/path/to/target/linker"
+                "#,
+                target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/target/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // build.rs should fail due to bad target linker being set
+    if cargo_test_support::is_nightly() {
+        p.cargo("build -Z target-applies-to-host -Z host-config --verbose --target")
+            .arg(&target)
+            .masquerade_as_nightly_cargo()
+            .with_status(101)
+            .with_stderr_contains(
+                "\
+[COMPILING] foo v0.0.1 ([CWD])
+[RUNNING] `rustc --crate-name build_script_build build.rs [..]--crate-type bin [..]-C linker=[..]/path/to/target/linker [..]`
+[ERROR] linker `[..]/path/to/target/linker` not found
+"
+            )
+            .run();
+    }
+}
+
+#[cargo_test]
+fn custom_build_env_var_rustc_linker_bad_host() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                [host]
+                linker = "/path/to/host/linker"
+                [target.{}]
+                linker = "/path/to/target/linker"
+                "#,
+                target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/target/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // build.rs should fail due to bad host linker being set
+    if cargo_test_support::is_nightly() {
+        p.cargo("build -Z target-applies-to-host -Z host-config --verbose --target")
+            .arg(&target)
+            .masquerade_as_nightly_cargo()
+            .with_status(101)
+            .with_stderr_contains(
+                "\
+[COMPILING] foo v0.0.1 ([CWD])
+[RUNNING] `rustc --crate-name build_script_build build.rs [..]--crate-type bin [..]-C linker=[..]/path/to/host/linker [..]`
+[ERROR] linker `[..]/path/to/host/linker` not found
+"
+            )
+            .run();
+    }
+}
+
+#[cargo_test]
+fn custom_build_env_var_rustc_linker_bad_host_with_arch() {
+    let target = rustc_host();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                [host]
+                linker = "/path/to/host/linker"
+                [host.{}]
+                linker = "/path/to/host/arch/linker"
+                [target.{}]
+                linker = "/path/to/target/linker"
+                "#,
+                target, target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/target/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // build.rs should fail due to bad host linker being set
+    if cargo_test_support::is_nightly() {
+        p.cargo("build -Z target-applies-to-host -Z host-config --verbose --target")
+            .arg(&target)
+            .masquerade_as_nightly_cargo()
+            .with_status(101)
+            .with_stderr_contains(
+                "\
+[COMPILING] foo v0.0.1 ([CWD])
+[RUNNING] `rustc --crate-name build_script_build build.rs [..]--crate-type bin [..]-C linker=[..]/path/to/host/arch/linker [..]`
+[ERROR] linker `[..]/path/to/host/arch/linker` not found
+"
+            )
+            .run();
+    }
+}
+
+#[cargo_test]
+fn custom_build_env_var_rustc_linker_cross_arch_host() {
+    let target = rustc_host();
+    let cross_target = cross_compile::alternate();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                [host.{}]
+                linker = "/path/to/host/arch/linker"
+                [target.{}]
+                linker = "/path/to/target/linker"
+                "#,
+                cross_target, target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/target/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // build.rs should fail due to bad host linker being set
+    if cargo_test_support::is_nightly() {
+        p.cargo("build -Z target-applies-to-host -Z host-config --verbose --target")
+            .arg(&target)
+            .masquerade_as_nightly_cargo()
+            .run();
+    }
+}
+
+#[cargo_test]
+fn custom_build_env_var_rustc_linker_bad_cross_arch_host() {
+    let target = rustc_host();
+    let cross_target = cross_compile::alternate();
+    let p = project()
+        .file(
+            ".cargo/config",
+            &format!(
+                r#"
+                [host]
+                linker = "/path/to/host/linker"
+                [host.{}]
+                linker = "/path/to/host/arch/linker"
+                [target.{}]
+                linker = "/path/to/target/linker"
+                "#,
+                cross_target, target
+            ),
+        )
+        .file(
+            "build.rs",
+            r#"
+            use std::env;
+
+            fn main() {
+                assert!(env::var("RUSTC_LINKER").unwrap().ends_with("/path/to/target/linker"));
+            }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    // build.rs should fail due to bad host linker being set
+    if cargo_test_support::is_nightly() {
+        p.cargo("build -Z target-applies-to-host -Z host-config --verbose --target")
+            .arg(&target)
+            .masquerade_as_nightly_cargo()
+            .with_status(101)
+            .with_stderr_contains(
+                "\
+[COMPILING] foo v0.0.1 ([CWD])
+[RUNNING] `rustc --crate-name build_script_build build.rs [..]--crate-type bin [..]-C linker=[..]/path/to/host/linker [..]`
+[ERROR] linker `[..]/path/to/host/linker` not found
+"
+            )
+            .run();
+    }
 }
 
 #[cargo_test]
@@ -2600,6 +2987,118 @@ fn fresh_builds_possible_with_multiple_metadata_overrides() {
 ",
         )
         .run();
+}
+
+#[cargo_test]
+fn generate_good_d_files() {
+    // this is here to stop regression on an issue where build.rs rerun-if-changed paths aren't
+    // made absolute properly, which in turn interacts poorly with the dep-info-basedir setting,
+    // and the dep-info files have other-crate-relative paths spat out in them
+    let p = project()
+        .file(
+            "awoo/Cargo.toml",
+            r#"
+                [project]
+                name = "awoo"
+                version = "0.5.0"
+                build = "build.rs"
+            "#,
+        )
+        .file("awoo/src/lib.rs", "")
+        .file(
+            "awoo/build.rs",
+            r#"
+                fn main() {
+                    println!("cargo:rerun-if-changed=build.rs");
+                    println!("cargo:rerun-if-changed=barkbarkbark");
+                }
+            "#,
+        )
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "meow"
+                version = "0.5.0"
+                [dependencies]
+                awoo = { path = "awoo" }
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build -v").run();
+
+    let dot_d_path = p.bin("meow").with_extension("d");
+    println!("*meow at* {:?}", dot_d_path);
+    let dot_d = fs::read_to_string(&dot_d_path).unwrap();
+
+    println!("*.d file content*: {}", &dot_d);
+
+    #[cfg(windows)]
+    assert!(
+        lines_match(
+            "[..]\\target\\debug\\meow.exe: [..]\\awoo\\barkbarkbark [..]\\awoo\\build.rs[..]",
+            &dot_d
+        ) || lines_match(
+            "[..]\\target\\debug\\meow.exe: [..]\\awoo\\build.rs [..]\\awoo\\barkbarkbark[..]",
+            &dot_d
+        )
+    );
+    #[cfg(not(windows))]
+    assert!(
+        lines_match(
+            "[..]/target/debug/meow: [..]/awoo/barkbarkbark [..]/awoo/build.rs[..]",
+            &dot_d
+        ) || lines_match(
+            "[..]/target/debug/meow: [..]/awoo/build.rs [..]/awoo/barkbarkbark[..]",
+            &dot_d
+        )
+    );
+
+    // paths relative to dependency roots should not be allowed
+    assert!(!dot_d
+        .split_whitespace()
+        .any(|v| v == "barkbarkbark" || v == "build.rs"));
+
+    p.change_file(
+        ".cargo/config.toml",
+        r#"
+        [build]
+        dep-info-basedir="."
+    "#,
+    );
+    p.cargo("build -v").run();
+
+    let dot_d = fs::read_to_string(&dot_d_path).unwrap();
+
+    println!("*.d file content with dep-info-basedir*: {}", &dot_d);
+
+    #[cfg(windows)]
+    assert!(
+        lines_match(
+            "target\\debug\\meow.exe: [..]awoo\\barkbarkbark [..]awoo\\build.rs[..]",
+            &dot_d
+        ) || lines_match(
+            "target\\debug\\meow.exe: [..]awoo\\build.rs [..]awoo\\barkbarkbark[..]",
+            &dot_d
+        )
+    );
+    #[cfg(not(windows))]
+    assert!(
+        lines_match(
+            "target/debug/meow: [..]awoo/barkbarkbark [..]awoo/build.rs[..]",
+            &dot_d
+        ) || lines_match(
+            "target/debug/meow: [..]awoo/build.rs [..]awoo/barkbarkbark[..]",
+            &dot_d
+        )
+    );
+
+    // paths relative to dependency roots should not be allowed
+    assert!(!dot_d
+        .split_whitespace()
+        .any(|v| v == "barkbarkbark" || v == "build.rs"));
 }
 
 #[cargo_test]

@@ -10,6 +10,7 @@ mod autoderef;
 mod builder;
 mod chalk_db;
 mod chalk_ext;
+pub mod consteval;
 mod infer;
 mod interner;
 mod lower;
@@ -20,6 +21,7 @@ mod utils;
 mod walk;
 pub mod db;
 pub mod diagnostics;
+pub mod diagnostics_sink;
 pub mod display;
 pub mod method_resolution;
 pub mod primitive;
@@ -37,9 +39,13 @@ use chalk_ir::{
     interner::HasInterner,
     UintTy,
 };
-use hir_def::{expr::ExprId, type_ref::Rawness, TypeParamId};
+use hir_def::{
+    expr::ExprId,
+    type_ref::{ConstScalar, Rawness},
+    TypeParamId,
+};
 
-use crate::{db::HirDatabase, display::HirDisplay, utils::generics};
+use crate::{db::HirDatabase, utils::generics};
 
 pub use autoderef::autoderef;
 pub use builder::TyBuilder;
@@ -108,6 +114,7 @@ pub type FnSig = chalk_ir::FnSig<Interner>;
 
 pub type InEnvironment<T> = chalk_ir::InEnvironment<T>;
 pub type DomainGoal = chalk_ir::DomainGoal<Interner>;
+pub type Goal = chalk_ir::Goal<Interner>;
 pub type AliasEq = chalk_ir::AliasEq<Interner>;
 pub type Solution = chalk_solve::Solution<Interner>;
 pub type ConstrainedSubst = chalk_ir::ConstrainedSubst<Interner>;
@@ -162,6 +169,7 @@ pub fn make_canonical<T: HasInterner<Interner = Interner>>(
     Canonical { value, binders: chalk_ir::CanonicalVarKinds::from_iter(&Interner, kinds) }
 }
 
+// FIXME: get rid of this, just replace it by FnPointer
 /// A function signature as seen by type inference: Several parameter types and
 /// one return type.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -195,6 +203,17 @@ impl CallableSig {
                 .map(|arg| arg.assert_ty_ref(&Interner).clone())
                 .collect(),
             is_varargs: fn_ptr.sig.variadic,
+        }
+    }
+
+    pub fn to_fn_ptr(&self) -> FnPointer {
+        FnPointer {
+            num_binders: 0,
+            sig: FnSig { abi: (), safety: Safety::Safe, variadic: self.is_varargs },
+            substitution: FnSubst(Substitution::from_iter(
+                &Interner,
+                self.params_and_return.iter().cloned(),
+            )),
         }
     }
 
@@ -250,7 +269,9 @@ pub fn dummy_usize_const() -> Const {
     let usize_ty = chalk_ir::TyKind::Scalar(Scalar::Uint(UintTy::Usize)).intern(&Interner);
     chalk_ir::ConstData {
         ty: usize_ty,
-        value: chalk_ir::ConstValue::Concrete(chalk_ir::ConcreteConst { interned: () }),
+        value: chalk_ir::ConstValue::Concrete(chalk_ir::ConcreteConst {
+            interned: ConstScalar::Unknown,
+        }),
     }
     .intern(&Interner)
 }
@@ -306,4 +327,132 @@ pub(crate) fn fold_tys<T: HasInterner<Interner = Interner> + Fold<Interner>>(
         }
     }
     t.fold_with(&mut TyFolder(f), binders).expect("fold failed unexpectedly")
+}
+
+/// 'Canonicalizes' the `t` by replacing any errors with new variables. Also
+/// ensures there are no unbound variables or inference variables anywhere in
+/// the `t`.
+pub fn replace_errors_with_variables<T>(t: &T) -> Canonical<T::Result>
+where
+    T: HasInterner<Interner = Interner> + Fold<Interner> + Clone,
+    T::Result: HasInterner<Interner = Interner>,
+{
+    use chalk_ir::{
+        fold::{Folder, SuperFold},
+        Fallible, NoSolution,
+    };
+    struct ErrorReplacer {
+        vars: usize,
+    }
+    impl<'i> Folder<'i, Interner> for ErrorReplacer {
+        fn as_dyn(&mut self) -> &mut dyn Folder<'i, Interner> {
+            self
+        }
+
+        fn interner(&self) -> &'i Interner {
+            &Interner
+        }
+
+        fn fold_ty(&mut self, ty: Ty, outer_binder: DebruijnIndex) -> Fallible<Ty> {
+            if let TyKind::Error = ty.kind(&Interner) {
+                let index = self.vars;
+                self.vars += 1;
+                Ok(TyKind::BoundVar(BoundVar::new(outer_binder, index)).intern(&Interner))
+            } else {
+                let ty = ty.super_fold_with(self.as_dyn(), outer_binder)?;
+                Ok(ty)
+            }
+        }
+
+        fn fold_inference_ty(
+            &mut self,
+            _var: InferenceVar,
+            _kind: TyVariableKind,
+            _outer_binder: DebruijnIndex,
+        ) -> Fallible<Ty> {
+            if cfg!(debug_assertions) {
+                // we don't want to just panic here, because then the error message
+                // won't contain the whole thing, which would not be very helpful
+                Err(NoSolution)
+            } else {
+                Ok(TyKind::Error.intern(&Interner))
+            }
+        }
+
+        fn fold_free_var_ty(
+            &mut self,
+            _bound_var: BoundVar,
+            _outer_binder: DebruijnIndex,
+        ) -> Fallible<Ty> {
+            if cfg!(debug_assertions) {
+                // we don't want to just panic here, because then the error message
+                // won't contain the whole thing, which would not be very helpful
+                Err(NoSolution)
+            } else {
+                Ok(TyKind::Error.intern(&Interner))
+            }
+        }
+
+        fn fold_inference_const(
+            &mut self,
+            _ty: Ty,
+            _var: InferenceVar,
+            _outer_binder: DebruijnIndex,
+        ) -> Fallible<Const> {
+            if cfg!(debug_assertions) {
+                Err(NoSolution)
+            } else {
+                Ok(dummy_usize_const())
+            }
+        }
+
+        fn fold_free_var_const(
+            &mut self,
+            _ty: Ty,
+            _bound_var: BoundVar,
+            _outer_binder: DebruijnIndex,
+        ) -> Fallible<Const> {
+            if cfg!(debug_assertions) {
+                Err(NoSolution)
+            } else {
+                Ok(dummy_usize_const())
+            }
+        }
+
+        fn fold_inference_lifetime(
+            &mut self,
+            _var: InferenceVar,
+            _outer_binder: DebruijnIndex,
+        ) -> Fallible<Lifetime> {
+            if cfg!(debug_assertions) {
+                Err(NoSolution)
+            } else {
+                Ok(static_lifetime())
+            }
+        }
+
+        fn fold_free_var_lifetime(
+            &mut self,
+            _bound_var: BoundVar,
+            _outer_binder: DebruijnIndex,
+        ) -> Fallible<Lifetime> {
+            if cfg!(debug_assertions) {
+                Err(NoSolution)
+            } else {
+                Ok(static_lifetime())
+            }
+        }
+    }
+    let mut error_replacer = ErrorReplacer { vars: 0 };
+    let value = match t.clone().fold_with(&mut error_replacer, DebruijnIndex::INNERMOST) {
+        Ok(t) => t,
+        Err(_) => panic!("Encountered unbound or inference vars in {:?}", t),
+    };
+    let kinds = (0..error_replacer.vars).map(|_| {
+        chalk_ir::CanonicalVarKind::new(
+            chalk_ir::VariableKind::Ty(TyVariableKind::General),
+            chalk_ir::UniverseIndex::ROOT,
+        )
+    });
+    Canonical { value, binders: chalk_ir::CanonicalVarKinds::from_iter(&Interner, kinds) }
 }

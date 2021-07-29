@@ -6,8 +6,7 @@ use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
-use rustc_hir::def_id::{CrateNum, DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
-use rustc_hir::{intravisit, HirId};
+use rustc_hir::{intravisit, HirId, CRATE_HIR_ID};
 use rustc_middle::hir::map::Map;
 use rustc_middle::lint::LevelAndSource;
 use rustc_middle::lint::LintDiagnosticBuilder;
@@ -28,10 +27,9 @@ use tracing::debug;
 
 use std::cmp;
 
-fn lint_levels(tcx: TyCtxt<'_>, cnum: CrateNum) -> LintLevelMap {
-    assert_eq!(cnum, LOCAL_CRATE);
+fn lint_levels(tcx: TyCtxt<'_>, (): ()) -> LintLevelMap {
     let store = unerased_lint_store(tcx);
-    let crate_attrs = tcx.get_attrs(DefId { krate: cnum, index: CRATE_DEF_INDEX });
+    let crate_attrs = tcx.hir().attrs(CRATE_HIR_ID);
     let levels = LintLevelsBuilder::new(tcx.sess, false, &store, crate_attrs);
     let mut builder = LintLevelMapBuilder { levels, tcx, store };
     let krate = tcx.hir().krate();
@@ -90,7 +88,7 @@ impl<'s> LintLevelsBuilder<'s> {
         self.sets.lint_cap = sess.opts.lint_cap.unwrap_or(Level::Forbid);
 
         for &(ref lint_name, level) in &sess.opts.lint_opts {
-            store.check_lint_name_cmdline(sess, &lint_name, level);
+            store.check_lint_name_cmdline(sess, &lint_name, Some(level));
             let orig_level = level;
 
             // If the cap is less than this specified level, e.g., if we've got
@@ -108,6 +106,16 @@ impl<'s> LintLevelsBuilder<'s> {
                 self.check_gated_lint(id, DUMMY_SP);
                 let src = LintLevelSource::CommandLine(lint_flag_val, orig_level);
                 specs.insert(id, (level, src));
+            }
+        }
+
+        for lint_name in &sess.opts.force_warns {
+            let valid = store.check_lint_name_cmdline(sess, lint_name, None);
+            if valid {
+                let lints = store
+                    .find_lints(lint_name)
+                    .unwrap_or_else(|_| bug!("A valid lint failed to produce a lint ids"));
+                self.sets.force_warns.extend(&lints);
             }
         }
 
@@ -144,6 +152,9 @@ impl<'s> LintLevelsBuilder<'s> {
                     LintLevelSource::Default => false,
                     LintLevelSource::Node(symbol, _, _) => self.store.is_lint_group(symbol),
                     LintLevelSource::CommandLine(symbol, _) => self.store.is_lint_group(symbol),
+                    LintLevelSource::ForceWarn(_symbol) => {
+                        bug!("forced warn lint returned a forbid lint level")
+                    }
                 };
                 debug!(
                     "fcw_warning={:?}, specs.get(&id) = {:?}, old_src={:?}, id_name={:?}",
@@ -168,6 +179,7 @@ impl<'s> LintLevelsBuilder<'s> {
                         LintLevelSource::CommandLine(_, _) => {
                             diag_builder.note("`forbid` lint level was set on command line");
                         }
+                        _ => bug!("forced warn lint returned a forbid lint level"),
                     }
                     diag_builder.emit();
                 };

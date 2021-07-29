@@ -113,44 +113,21 @@ pub unsafe fn _mm256_or_ps(a: __m256, b: __m256) -> __m256 {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_shuffle_pd)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vshufpd, imm8 = 0x1))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vshufpd, MASK = 3))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_shuffle_pd(a: __m256d, b: __m256d, imm8: i32) -> __m256d {
-    let imm8 = (imm8 & 0xFF) as u8;
-    macro_rules! shuffle4 {
-        ($a:expr, $b:expr, $c:expr, $d:expr) => {
-            simd_shuffle4(a, b, [$a, $b, $c, $d])
-        };
-    }
-    macro_rules! shuffle3 {
-        ($a:expr, $b:expr, $c:expr) => {
-            match (imm8 >> 3) & 0x1 {
-                0 => shuffle4!($a, $b, $c, 6),
-                _ => shuffle4!($a, $b, $c, 7),
-            }
-        };
-    }
-    macro_rules! shuffle2 {
-        ($a:expr, $b:expr) => {
-            match (imm8 >> 2) & 0x1 {
-                0 => shuffle3!($a, $b, 2),
-                _ => shuffle3!($a, $b, 3),
-            }
-        };
-    }
-    macro_rules! shuffle1 {
-        ($a:expr) => {
-            match (imm8 >> 1) & 0x1 {
-                0 => shuffle2!($a, 4),
-                _ => shuffle2!($a, 5),
-            }
-        };
-    }
-    match imm8 & 0x1 {
-        0 => shuffle1!(0),
-        _ => shuffle1!(1),
-    }
+pub unsafe fn _mm256_shuffle_pd<const MASK: i32>(a: __m256d, b: __m256d) -> __m256d {
+    static_assert_imm8!(MASK);
+    simd_shuffle4!(
+        a,
+        b,
+        <const MASK: i32> [
+            MASK as u32 & 0b1,
+            ((MASK as u32 >> 1) & 0b1) + 4,
+            ((MASK as u32 >> 2) & 0b1) + 2,
+            ((MASK as u32 >> 3) & 0b1) + 6,
+        ],
+    )
 }
 
 /// Shuffles single-precision (32-bit) floating-point elements in `a` within
@@ -159,61 +136,25 @@ pub unsafe fn _mm256_shuffle_pd(a: __m256d, b: __m256d, imm8: i32) -> __m256d {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_shuffle_ps)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vshufps, imm8 = 0x0))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vshufps, MASK = 3))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_shuffle_ps(a: __m256, b: __m256, imm8: i32) -> __m256 {
-    let imm8 = (imm8 & 0xFF) as u8;
-    macro_rules! shuffle4 {
-        (
-            $a:expr,
-            $b:expr,
-            $c:expr,
-            $d:expr,
-            $e:expr,
-            $f:expr,
-            $g:expr,
-            $h:expr
-        ) => {
-            simd_shuffle8(a, b, [$a, $b, $c, $d, $e, $f, $g, $h])
-        };
-    }
-    macro_rules! shuffle3 {
-        ($a:expr, $b:expr, $c:expr, $e:expr, $f:expr, $g:expr) => {
-            match (imm8 >> 6) & 0x3 {
-                0 => shuffle4!($a, $b, $c, 8, $e, $f, $g, 12),
-                1 => shuffle4!($a, $b, $c, 9, $e, $f, $g, 13),
-                2 => shuffle4!($a, $b, $c, 10, $e, $f, $g, 14),
-                _ => shuffle4!($a, $b, $c, 11, $e, $f, $g, 15),
-            }
-        };
-    }
-    macro_rules! shuffle2 {
-        ($a:expr, $b:expr, $e:expr, $f:expr) => {
-            match (imm8 >> 4) & 0x3 {
-                0 => shuffle3!($a, $b, 8, $e, $f, 12),
-                1 => shuffle3!($a, $b, 9, $e, $f, 13),
-                2 => shuffle3!($a, $b, 10, $e, $f, 14),
-                _ => shuffle3!($a, $b, 11, $e, $f, 15),
-            }
-        };
-    }
-    macro_rules! shuffle1 {
-        ($a:expr, $e:expr) => {
-            match (imm8 >> 2) & 0x3 {
-                0 => shuffle2!($a, 0, $e, 4),
-                1 => shuffle2!($a, 1, $e, 5),
-                2 => shuffle2!($a, 2, $e, 6),
-                _ => shuffle2!($a, 3, $e, 7),
-            }
-        };
-    }
-    match imm8 & 0x3 {
-        0 => shuffle1!(0, 4),
-        1 => shuffle1!(1, 5),
-        2 => shuffle1!(2, 6),
-        _ => shuffle1!(3, 7),
-    }
+pub unsafe fn _mm256_shuffle_ps<const MASK: i32>(a: __m256, b: __m256) -> __m256 {
+    static_assert_imm8!(MASK);
+    simd_shuffle8!(
+        a,
+        b,
+        <const MASK: i32> [
+            MASK as u32 & 0b11,
+            (MASK as u32 >> 2) & 0b11,
+            ((MASK as u32 >> 4) & 0b11) + 8,
+            ((MASK as u32 >> 6) & 0b11) + 8,
+            (MASK as u32 & 0b11) + 4,
+            ((MASK as u32 >> 2) & 0b11) + 4,
+            ((MASK as u32 >> 4) & 0b11) + 12,
+            ((MASK as u32 >> 6) & 0b11) + 12,
+        ],
+    )
 }
 
 /// Computes the bitwise NOT of packed double-precision (64-bit) floating-point
@@ -255,7 +196,7 @@ pub unsafe fn _mm256_andnot_ps(a: __m256, b: __m256) -> __m256 {
 #[cfg_attr(test, assert_instr(vmaxpd))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_max_pd(a: __m256d, b: __m256d) -> __m256d {
-    simd_fmax(a, b)
+    vmaxpd(a, b)
 }
 
 /// Compares packed single-precision (32-bit) floating-point elements in `a`
@@ -267,7 +208,7 @@ pub unsafe fn _mm256_max_pd(a: __m256d, b: __m256d) -> __m256d {
 #[cfg_attr(test, assert_instr(vmaxps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_max_ps(a: __m256, b: __m256) -> __m256 {
-    simd_fmax(a, b)
+    vmaxps(a, b)
 }
 
 /// Compares packed double-precision (64-bit) floating-point elements
@@ -279,7 +220,7 @@ pub unsafe fn _mm256_max_ps(a: __m256, b: __m256) -> __m256 {
 #[cfg_attr(test, assert_instr(vminpd))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_min_pd(a: __m256d, b: __m256d) -> __m256d {
-    simd_fmin(a, b)
+    vminpd(a, b)
 }
 
 /// Compares packed single-precision (32-bit) floating-point elements in `a`
@@ -291,7 +232,7 @@ pub unsafe fn _mm256_min_pd(a: __m256d, b: __m256d) -> __m256d {
 #[cfg_attr(test, assert_instr(vminps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_min_ps(a: __m256, b: __m256) -> __m256 {
-    simd_fmin(a, b)
+    vminps(a, b)
 }
 
 /// Multiplies packed double-precision (64-bit) floating-point elements
@@ -391,7 +332,7 @@ pub unsafe fn _mm256_div_pd(a: __m256d, b: __m256d) -> __m256d {
 }
 
 /// Rounds packed double-precision (64-bit) floating point elements in `a`
-/// according to the flag `b`. The value of `b` may be as follows:
+/// according to the flag `ROUNDING`. The value of `ROUNDING` may be as follows:
 ///
 /// - `0x00`: Round to the nearest whole number.
 /// - `0x01`: Round down, toward negative infinity.
@@ -405,16 +346,12 @@ pub unsafe fn _mm256_div_pd(a: __m256d, b: __m256d) -> __m256d {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_round_pd)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vroundpd, b = 0x3))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(vroundpd, ROUNDING = 0x3))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_round_pd(a: __m256d, b: i32) -> __m256d {
-    macro_rules! call {
-        ($imm8:expr) => {
-            roundpd256(a, $imm8)
-        };
-    }
-    constify_imm8!(b, call)
+pub unsafe fn _mm256_round_pd<const ROUNDING: i32>(a: __m256d) -> __m256d {
+    static_assert_imm4!(ROUNDING);
+    roundpd256(a, ROUNDING)
 }
 
 /// Rounds packed double-precision (64-bit) floating point elements in `a`
@@ -442,7 +379,7 @@ pub unsafe fn _mm256_floor_pd(a: __m256d) -> __m256d {
 }
 
 /// Rounds packed single-precision (32-bit) floating point elements in `a`
-/// according to the flag `b`. The value of `b` may be as follows:
+/// according to the flag `ROUNDING`. The value of `ROUNDING` may be as follows:
 ///
 /// - `0x00`: Round to the nearest whole number.
 /// - `0x01`: Round down, toward negative infinity.
@@ -456,16 +393,12 @@ pub unsafe fn _mm256_floor_pd(a: __m256d) -> __m256d {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_round_ps)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vroundps, b = 0x00))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(vroundps, ROUNDING = 0x00))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_round_ps(a: __m256, b: i32) -> __m256 {
-    macro_rules! call {
-        ($imm8:expr) => {
-            roundps256(a, $imm8)
-        };
-    }
-    constify_imm8!(b, call)
+pub unsafe fn _mm256_round_ps<const ROUNDING: i32>(a: __m256) -> __m256 {
+    static_assert_imm4!(ROUNDING);
+    roundps256(a, ROUNDING)
 }
 
 /// Rounds packed single-precision (32-bit) floating point elements in `a`
@@ -525,44 +458,21 @@ pub unsafe fn _mm256_sqrt_pd(a: __m256d) -> __m256d {
 // Note: LLVM7 prefers single-precision blend instructions when
 // possible, see: https://bugs.llvm.org/show_bug.cgi?id=38194
 // #[cfg_attr(test, assert_instr(vblendpd, imm8 = 9))]
-#[cfg_attr(test, assert_instr(vblendps, imm8 = 9))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vblendps, IMM4 = 9))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_blend_pd(a: __m256d, b: __m256d, imm8: i32) -> __m256d {
-    let imm8 = (imm8 & 0xFF) as u8;
-    macro_rules! blend4 {
-        ($a:expr, $b:expr, $c:expr, $d:expr) => {
-            simd_shuffle4(a, b, [$a, $b, $c, $d])
-        };
-    }
-    macro_rules! blend3 {
-        ($a:expr, $b:expr, $c:expr) => {
-            match imm8 & 0x8 {
-                0 => blend4!($a, $b, $c, 3),
-                _ => blend4!($a, $b, $c, 7),
-            }
-        };
-    }
-    macro_rules! blend2 {
-        ($a:expr, $b:expr) => {
-            match imm8 & 0x4 {
-                0 => blend3!($a, $b, 2),
-                _ => blend3!($a, $b, 6),
-            }
-        };
-    }
-    macro_rules! blend1 {
-        ($a:expr) => {
-            match imm8 & 0x2 {
-                0 => blend2!($a, 1),
-                _ => blend2!($a, 5),
-            }
-        };
-    }
-    match imm8 & 0x1 {
-        0 => blend1!(0),
-        _ => blend1!(4),
-    }
+pub unsafe fn _mm256_blend_pd<const IMM4: i32>(a: __m256d, b: __m256d) -> __m256d {
+    static_assert_imm4!(IMM4);
+    simd_shuffle4!(
+        a,
+        b,
+        <const IMM4: i32> [
+            ((IMM4 as u32 >> 0) & 1) * 4 + 0,
+            ((IMM4 as u32 >> 1) & 1) * 4 + 1,
+            ((IMM4 as u32 >> 2) & 1) * 4 + 2,
+            ((IMM4 as u32 >> 3) & 1) * 4 + 3,
+        ],
+    )
 }
 
 /// Blends packed single-precision (32-bit) floating-point elements from
@@ -571,61 +481,25 @@ pub unsafe fn _mm256_blend_pd(a: __m256d, b: __m256d, imm8: i32) -> __m256d {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_blend_ps)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vblendps, imm8 = 9))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vblendps, IMM8 = 9))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_blend_ps(a: __m256, b: __m256, imm8: i32) -> __m256 {
-    let imm8 = (imm8 & 0xFF) as u8;
-    macro_rules! blend4 {
-        (
-            $a:expr,
-            $b:expr,
-            $c:expr,
-            $d:expr,
-            $e:expr,
-            $f:expr,
-            $g:expr,
-            $h:expr
-        ) => {
-            simd_shuffle8(a, b, [$a, $b, $c, $d, $e, $f, $g, $h])
-        };
-    }
-    macro_rules! blend3 {
-        ($a:expr, $b:expr, $c:expr, $d:expr, $e:expr, $f:expr) => {
-            match (imm8 >> 6) & 0b11 {
-                0b00 => blend4!($a, $b, $c, $d, $e, $f, 6, 7),
-                0b01 => blend4!($a, $b, $c, $d, $e, $f, 14, 7),
-                0b10 => blend4!($a, $b, $c, $d, $e, $f, 6, 15),
-                _ => blend4!($a, $b, $c, $d, $e, $f, 14, 15),
-            }
-        };
-    }
-    macro_rules! blend2 {
-        ($a:expr, $b:expr, $c:expr, $d:expr) => {
-            match (imm8 >> 4) & 0b11 {
-                0b00 => blend3!($a, $b, $c, $d, 4, 5),
-                0b01 => blend3!($a, $b, $c, $d, 12, 5),
-                0b10 => blend3!($a, $b, $c, $d, 4, 13),
-                _ => blend3!($a, $b, $c, $d, 12, 13),
-            }
-        };
-    }
-    macro_rules! blend1 {
-        ($a:expr, $b:expr) => {
-            match (imm8 >> 2) & 0b11 {
-                0b00 => blend2!($a, $b, 2, 3),
-                0b01 => blend2!($a, $b, 10, 3),
-                0b10 => blend2!($a, $b, 2, 11),
-                _ => blend2!($a, $b, 10, 11),
-            }
-        };
-    }
-    match imm8 & 0b11 {
-        0b00 => blend1!(0, 1),
-        0b01 => blend1!(8, 1),
-        0b10 => blend1!(0, 9),
-        _ => blend1!(8, 9),
-    }
+pub unsafe fn _mm256_blend_ps<const IMM8: i32>(a: __m256, b: __m256) -> __m256 {
+    static_assert_imm8!(IMM8);
+    simd_shuffle8!(
+        a,
+        b,
+        <const IMM8: i32> [
+            ((IMM8 as u32 >> 0) & 1) * 8 + 0,
+            ((IMM8 as u32 >> 1) & 1) * 8 + 1,
+            ((IMM8 as u32 >> 2) & 1) * 8 + 2,
+            ((IMM8 as u32 >> 3) & 1) * 8 + 3,
+            ((IMM8 as u32 >> 4) & 1) * 8 + 4,
+            ((IMM8 as u32 >> 5) & 1) * 8 + 5,
+            ((IMM8 as u32 >> 6) & 1) * 8 + 6,
+            ((IMM8 as u32 >> 7) & 1) * 8 + 7,
+        ],
+    )
 }
 
 /// Blends packed double-precision (64-bit) floating-point elements from
@@ -660,16 +534,12 @@ pub unsafe fn _mm256_blendv_ps(a: __m256, b: __m256, c: __m256) -> __m256 {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_dp_ps)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vdpps, imm8 = 0x0))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vdpps, IMM8 = 0x0))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_dp_ps(a: __m256, b: __m256, imm8: i32) -> __m256 {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vdpps(a, b, $imm8)
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm256_dp_ps<const IMM8: i32>(a: __m256, b: __m256) -> __m256 {
+    static_assert_imm8!(IMM8);
+    vdpps(a, b, IMM8)
 }
 
 /// Horizontal addition of adjacent pairs in the two packed vectors
@@ -858,82 +728,66 @@ pub const _CMP_TRUE_US: i32 = 0x1f;
 
 /// Compares packed double-precision (64-bit) floating-point
 /// elements in `a` and `b` based on the comparison operand
-/// specified by `imm8`.
+/// specified by `IMM5`.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_cmp_pd)
 #[inline]
 #[target_feature(enable = "avx,sse2")]
-#[cfg_attr(test, assert_instr(vcmpeqpd, imm8 = 0))] // TODO Validate vcmppd
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vcmpeqpd, IMM5 = 0))] // TODO Validate vcmppd
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_cmp_pd(a: __m128d, b: __m128d, imm8: i32) -> __m128d {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vcmppd(a, b, $imm8)
-        };
-    }
-    constify_imm6!(imm8, call)
+pub unsafe fn _mm_cmp_pd<const IMM5: i32>(a: __m128d, b: __m128d) -> __m128d {
+    static_assert_imm5!(IMM5);
+    vcmppd(a, b, IMM5 as i8)
 }
 
 /// Compares packed double-precision (64-bit) floating-point
 /// elements in `a` and `b` based on the comparison operand
-/// specified by `imm8`.
+/// specified by `IMM5`.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_cmp_pd)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vcmpeqpd, imm8 = 0))] // TODO Validate vcmppd
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vcmpeqpd, IMM5 = 0))] // TODO Validate vcmppd
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_cmp_pd(a: __m256d, b: __m256d, imm8: i32) -> __m256d {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vcmppd256(a, b, $imm8)
-        };
-    }
-    constify_imm6!(imm8, call)
+pub unsafe fn _mm256_cmp_pd<const IMM5: i32>(a: __m256d, b: __m256d) -> __m256d {
+    static_assert_imm5!(IMM5);
+    vcmppd256(a, b, IMM5 as u8)
 }
 
 /// Compares packed single-precision (32-bit) floating-point
 /// elements in `a` and `b` based on the comparison operand
-/// specified by `imm8`.
+/// specified by `IMM5`.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_cmp_ps)
 #[inline]
 #[target_feature(enable = "avx,sse")]
-#[cfg_attr(test, assert_instr(vcmpeqps, imm8 = 0))] // TODO Validate vcmpps
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vcmpeqps, IMM5 = 0))] // TODO Validate vcmpps
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_cmp_ps(a: __m128, b: __m128, imm8: i32) -> __m128 {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vcmpps(a, b, $imm8)
-        };
-    }
-    constify_imm6!(imm8, call)
+pub unsafe fn _mm_cmp_ps<const IMM5: i32>(a: __m128, b: __m128) -> __m128 {
+    static_assert_imm5!(IMM5);
+    vcmpps(a, b, IMM5 as i8)
 }
 
 /// Compares packed single-precision (32-bit) floating-point
 /// elements in `a` and `b` based on the comparison operand
-/// specified by `imm8`.
+/// specified by `IMM5`.
 ///
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_cmp_ps)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vcmpeqps, imm8 = 0))] // TODO Validate vcmpps
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vcmpeqps, IMM5 = 0))] // TODO Validate vcmpps
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_cmp_ps(a: __m256, b: __m256, imm8: i32) -> __m256 {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vcmpps256(a, b, $imm8)
-        };
-    }
-    constify_imm6!(imm8, call)
+pub unsafe fn _mm256_cmp_ps<const IMM5: i32>(a: __m256, b: __m256) -> __m256 {
+    static_assert_imm5!(IMM5);
+    vcmpps256(a, b, IMM5 as u8)
 }
 
 /// Compares the lower double-precision (64-bit) floating-point element in
-/// `a` and `b` based on the comparison operand specified by `imm8`,
+/// `a` and `b` based on the comparison operand specified by `IMM5`,
 /// store the result in the lower element of returned vector,
 /// and copies the upper element from `a` to the upper element of returned
 /// vector.
@@ -941,20 +795,16 @@ pub unsafe fn _mm256_cmp_ps(a: __m256, b: __m256, imm8: i32) -> __m256 {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_cmp_sd)
 #[inline]
 #[target_feature(enable = "avx,sse2")]
-#[cfg_attr(test, assert_instr(vcmpeqsd, imm8 = 0))] // TODO Validate vcmpsd
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vcmpeqsd, IMM5 = 0))] // TODO Validate vcmpsd
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_cmp_sd(a: __m128d, b: __m128d, imm8: i32) -> __m128d {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vcmpsd(a, b, $imm8)
-        };
-    }
-    constify_imm6!(imm8, call)
+pub unsafe fn _mm_cmp_sd<const IMM5: i32>(a: __m128d, b: __m128d) -> __m128d {
+    static_assert_imm5!(IMM5);
+    vcmpsd(a, b, IMM5 as i8)
 }
 
 /// Compares the lower single-precision (32-bit) floating-point element in
-/// `a` and `b` based on the comparison operand specified by `imm8`,
+/// `a` and `b` based on the comparison operand specified by `IMM5`,
 /// store the result in the lower element of returned vector,
 /// and copies the upper 3 packed elements from `a` to the upper elements of
 /// returned vector.
@@ -962,16 +812,12 @@ pub unsafe fn _mm_cmp_sd(a: __m128d, b: __m128d, imm8: i32) -> __m128d {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_cmp_ss)
 #[inline]
 #[target_feature(enable = "avx,sse")]
-#[cfg_attr(test, assert_instr(vcmpeqss, imm8 = 0))] // TODO Validate vcmpss
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vcmpeqss, IMM5 = 0))] // TODO Validate vcmpss
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_cmp_ss(a: __m128, b: __m128, imm8: i32) -> __m128 {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vcmpss(a, b, $imm8)
-        };
-    }
-    constify_imm6!(imm8, call)
+pub unsafe fn _mm_cmp_ss<const IMM5: i32>(a: __m128, b: __m128) -> __m128 {
+    static_assert_imm5!(IMM5);
+    vcmpss(a, b, IMM5 as i8)
 }
 
 /// Converts packed 32-bit integers in `a` to packed double-precision (64-bit)
@@ -1078,15 +924,17 @@ pub unsafe fn _mm256_cvttps_epi32(a: __m256) -> __m256i {
 #[target_feature(enable = "avx")]
 #[cfg_attr(
     all(test, not(target_os = "windows")),
-    assert_instr(vextractf128, imm8 = 1)
+    assert_instr(vextractf128, IMM1 = 1)
 )]
-#[rustc_args_required_const(1)]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_extractf128_ps(a: __m256, imm8: i32) -> __m128 {
-    match imm8 & 1 {
-        0 => simd_shuffle4(a, _mm256_undefined_ps(), [0, 1, 2, 3]),
-        _ => simd_shuffle4(a, _mm256_undefined_ps(), [4, 5, 6, 7]),
-    }
+pub unsafe fn _mm256_extractf128_ps<const IMM1: i32>(a: __m256) -> __m128 {
+    static_assert_imm1!(IMM1);
+    simd_shuffle4!(
+        a,
+        _mm256_undefined_ps(),
+        <const IMM1: i32> [[0, 1, 2, 3], [4, 5, 6, 7]][IMM1 as usize],
+    )
 }
 
 /// Extracts 128 bits (composed of 2 packed double-precision (64-bit)
@@ -1097,15 +945,13 @@ pub unsafe fn _mm256_extractf128_ps(a: __m256, imm8: i32) -> __m128 {
 #[target_feature(enable = "avx")]
 #[cfg_attr(
     all(test, not(target_os = "windows")),
-    assert_instr(vextractf128, imm8 = 1)
+    assert_instr(vextractf128, IMM1 = 1)
 )]
-#[rustc_args_required_const(1)]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_extractf128_pd(a: __m256d, imm8: i32) -> __m128d {
-    match imm8 & 1 {
-        0 => simd_shuffle2(a, _mm256_undefined_pd(), [0, 1]),
-        _ => simd_shuffle2(a, _mm256_undefined_pd(), [2, 3]),
-    }
+pub unsafe fn _mm256_extractf128_pd<const IMM1: i32>(a: __m256d) -> __m128d {
+    static_assert_imm1!(IMM1);
+    simd_shuffle2!(a, _mm256_undefined_pd(), <const IMM1: i32> [[0, 1], [2, 3]][IMM1 as usize])
 }
 
 /// Extracts 128 bits (composed of integer data) from `a`, selected with `imm8`.
@@ -1115,16 +961,17 @@ pub unsafe fn _mm256_extractf128_pd(a: __m256d, imm8: i32) -> __m128d {
 #[target_feature(enable = "avx")]
 #[cfg_attr(
     all(test, not(target_os = "windows")),
-    assert_instr(vextractf128, imm8 = 1)
+    assert_instr(vextractf128, IMM1 = 1)
 )]
-#[rustc_args_required_const(1)]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_extractf128_si256(a: __m256i, imm8: i32) -> __m128i {
-    let b = _mm256_undefined_si256().as_i64x4();
-    let dst: i64x2 = match imm8 & 1 {
-        0 => simd_shuffle2(a.as_i64x4(), b, [0, 1]),
-        _ => simd_shuffle2(a.as_i64x4(), b, [2, 3]),
-    };
+pub unsafe fn _mm256_extractf128_si256<const IMM1: i32>(a: __m256i) -> __m128i {
+    static_assert_imm1!(IMM1);
+    let dst: i64x2 = simd_shuffle2!(
+        a.as_i64x4(),
+        _mm256_undefined_si256().as_i64x4(),
+        <const IMM1: i32> [[0, 1], [2, 3]][IMM1 as usize],
+    );
     transmute(dst)
 }
 
@@ -1181,57 +1028,25 @@ pub unsafe fn _mm_permutevar_ps(a: __m128, b: __m128i) -> __m128 {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_permute_ps)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vpermilps, imm8 = 9))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(vpermilps, IMM8 = 9))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_permute_ps(a: __m256, imm8: i32) -> __m256 {
-    let imm8 = (imm8 & 0xFF) as u8;
-    let undefined = _mm256_undefined_ps();
-    macro_rules! shuffle4 {
-        ($a:expr, $b:expr, $c:expr, $d:expr) => {
-            simd_shuffle8(
-                a,
-                undefined,
-                [$a, $b, $c, $d, $a + 4, $b + 4, $c + 4, $d + 4],
-            )
-        };
-    }
-    macro_rules! shuffle3 {
-        ($a:expr, $b:expr, $c:expr) => {
-            match (imm8 >> 6) & 0b11 {
-                0b00 => shuffle4!($a, $b, $c, 0),
-                0b01 => shuffle4!($a, $b, $c, 1),
-                0b10 => shuffle4!($a, $b, $c, 2),
-                _ => shuffle4!($a, $b, $c, 3),
-            }
-        };
-    }
-    macro_rules! shuffle2 {
-        ($a:expr, $b:expr) => {
-            match (imm8 >> 4) & 0b11 {
-                0b00 => shuffle3!($a, $b, 0),
-                0b01 => shuffle3!($a, $b, 1),
-                0b10 => shuffle3!($a, $b, 2),
-                _ => shuffle3!($a, $b, 3),
-            }
-        };
-    }
-    macro_rules! shuffle1 {
-        ($a:expr) => {
-            match (imm8 >> 2) & 0b11 {
-                0b00 => shuffle2!($a, 0),
-                0b01 => shuffle2!($a, 1),
-                0b10 => shuffle2!($a, 2),
-                _ => shuffle2!($a, 3),
-            }
-        };
-    }
-    match imm8 & 0b11 {
-        0b00 => shuffle1!(0),
-        0b01 => shuffle1!(1),
-        0b10 => shuffle1!(2),
-        _ => shuffle1!(3),
-    }
+pub unsafe fn _mm256_permute_ps<const IMM8: i32>(a: __m256) -> __m256 {
+    static_assert_imm8!(IMM8);
+    simd_shuffle8!(
+        a,
+        _mm256_undefined_ps(),
+        <const IMM8: i32> [
+            (IMM8 as u32 >> 0) & 0b11,
+            (IMM8 as u32 >> 2) & 0b11,
+            (IMM8 as u32 >> 4) & 0b11,
+            (IMM8 as u32 >> 6) & 0b11,
+            ((IMM8 as u32 >> 0) & 0b11) + 4,
+            ((IMM8 as u32 >> 2) & 0b11) + 4,
+            ((IMM8 as u32 >> 4) & 0b11) + 4,
+            ((IMM8 as u32 >> 6) & 0b11) + 4,
+        ],
+    )
 }
 
 /// Shuffles single-precision (32-bit) floating-point elements in `a`
@@ -1240,53 +1055,21 @@ pub unsafe fn _mm256_permute_ps(a: __m256, imm8: i32) -> __m256 {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_permute_ps)
 #[inline]
 #[target_feature(enable = "avx,sse")]
-#[cfg_attr(test, assert_instr(vpermilps, imm8 = 9))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(vpermilps, IMM8 = 9))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_permute_ps(a: __m128, imm8: i32) -> __m128 {
-    let imm8 = (imm8 & 0xFF) as u8;
-    let undefined = _mm_undefined_ps();
-    macro_rules! shuffle4 {
-        ($a:expr, $b:expr, $c:expr, $d:expr) => {
-            simd_shuffle4(a, undefined, [$a, $b, $c, $d])
-        };
-    }
-    macro_rules! shuffle3 {
-        ($a:expr, $b:expr, $c:expr) => {
-            match (imm8 >> 6) & 0b11 {
-                0b00 => shuffle4!($a, $b, $c, 0),
-                0b01 => shuffle4!($a, $b, $c, 1),
-                0b10 => shuffle4!($a, $b, $c, 2),
-                _ => shuffle4!($a, $b, $c, 3),
-            }
-        };
-    }
-    macro_rules! shuffle2 {
-        ($a:expr, $b:expr) => {
-            match (imm8 >> 4) & 0b11 {
-                0b00 => shuffle3!($a, $b, 0),
-                0b01 => shuffle3!($a, $b, 1),
-                0b10 => shuffle3!($a, $b, 2),
-                _ => shuffle3!($a, $b, 3),
-            }
-        };
-    }
-    macro_rules! shuffle1 {
-        ($a:expr) => {
-            match (imm8 >> 2) & 0b11 {
-                0b00 => shuffle2!($a, 0),
-                0b01 => shuffle2!($a, 1),
-                0b10 => shuffle2!($a, 2),
-                _ => shuffle2!($a, 3),
-            }
-        };
-    }
-    match imm8 & 0b11 {
-        0b00 => shuffle1!(0),
-        0b01 => shuffle1!(1),
-        0b10 => shuffle1!(2),
-        _ => shuffle1!(3),
-    }
+pub unsafe fn _mm_permute_ps<const IMM8: i32>(a: __m128) -> __m128 {
+    static_assert_imm8!(IMM8);
+    simd_shuffle4!(
+        a,
+        _mm_undefined_ps(),
+        <const IMM8: i32> [
+            (IMM8 as u32 >> 0) & 0b11,
+            (IMM8 as u32 >> 2) & 0b11,
+            (IMM8 as u32 >> 4) & 0b11,
+            (IMM8 as u32 >> 6) & 0b11,
+        ],
+    )
 }
 
 /// Shuffles double-precision (64-bit) floating-point elements in `a`
@@ -1319,45 +1102,21 @@ pub unsafe fn _mm_permutevar_pd(a: __m128d, b: __m128i) -> __m128d {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_permute_pd)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vpermilpd, imm8 = 0x1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(vpermilpd, IMM4 = 0x1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_permute_pd(a: __m256d, imm8: i32) -> __m256d {
-    let imm8 = (imm8 & 0xFF) as u8;
-    let undefined = _mm256_undefined_pd();
-    macro_rules! shuffle4 {
-        ($a:expr, $b:expr, $c:expr, $d:expr) => {
-            simd_shuffle4(a, undefined, [$a, $b, $c, $d])
-        };
-    }
-    macro_rules! shuffle3 {
-        ($a:expr, $b:expr, $c:expr) => {
-            match (imm8 >> 3) & 0x1 {
-                0 => shuffle4!($a, $b, $c, 2),
-                _ => shuffle4!($a, $b, $c, 3),
-            }
-        };
-    }
-    macro_rules! shuffle2 {
-        ($a:expr, $b:expr) => {
-            match (imm8 >> 2) & 0x1 {
-                0 => shuffle3!($a, $b, 2),
-                _ => shuffle3!($a, $b, 3),
-            }
-        };
-    }
-    macro_rules! shuffle1 {
-        ($a:expr) => {
-            match (imm8 >> 1) & 0x1 {
-                0 => shuffle2!($a, 0),
-                _ => shuffle2!($a, 1),
-            }
-        };
-    }
-    match imm8 & 0x1 {
-        0 => shuffle1!(0),
-        _ => shuffle1!(1),
-    }
+pub unsafe fn _mm256_permute_pd<const IMM4: i32>(a: __m256d) -> __m256d {
+    static_assert_imm4!(IMM4);
+    simd_shuffle4!(
+        a,
+        _mm256_undefined_pd(),
+        <const IMM4: i32> [
+            ((IMM4 as u32 >> 0) & 1),
+            ((IMM4 as u32 >> 1) & 1),
+            ((IMM4 as u32 >> 2) & 1) + 2,
+            ((IMM4 as u32 >> 3) & 1) + 2,
+        ],
+    )
 }
 
 /// Shuffles double-precision (64-bit) floating-point elements in `a`
@@ -1366,29 +1125,16 @@ pub unsafe fn _mm256_permute_pd(a: __m256d, imm8: i32) -> __m256d {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm_permute_pd)
 #[inline]
 #[target_feature(enable = "avx,sse2")]
-#[cfg_attr(test, assert_instr(vpermilpd, imm8 = 0x1))]
-#[rustc_args_required_const(1)]
+#[cfg_attr(test, assert_instr(vpermilpd, IMM2 = 0x1))]
+#[rustc_legacy_const_generics(1)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_permute_pd(a: __m128d, imm8: i32) -> __m128d {
-    let imm8 = (imm8 & 0xFF) as u8;
-    let undefined = _mm_undefined_pd();
-    macro_rules! shuffle2 {
-        ($a:expr, $b:expr) => {
-            simd_shuffle2(a, undefined, [$a, $b])
-        };
-    }
-    macro_rules! shuffle1 {
-        ($a:expr) => {
-            match (imm8 >> 1) & 0x1 {
-                0 => shuffle2!($a, 0),
-                _ => shuffle2!($a, 1),
-            }
-        };
-    }
-    match imm8 & 0x1 {
-        0 => shuffle1!(0),
-        _ => shuffle1!(1),
-    }
+pub unsafe fn _mm_permute_pd<const IMM2: i32>(a: __m128d) -> __m128d {
+    static_assert_imm2!(IMM2);
+    simd_shuffle2!(
+        a,
+        _mm_undefined_pd(),
+        <const IMM2: i32> [(IMM2 as u32) & 1, (IMM2 as u32 >> 1) & 1],
+    )
 }
 
 /// Shuffles 256 bits (composed of 8 packed single-precision (32-bit)
@@ -1397,16 +1143,12 @@ pub unsafe fn _mm_permute_pd(a: __m128d, imm8: i32) -> __m128d {
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_permute2f128_ps)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vperm2f128, imm8 = 0x5))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vperm2f128, IMM8 = 0x5))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_permute2f128_ps(a: __m256, b: __m256, imm8: i32) -> __m256 {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vperm2f128ps256(a, b, $imm8)
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm256_permute2f128_ps<const IMM8: i32>(a: __m256, b: __m256) -> __m256 {
+    static_assert_imm8!(IMM8);
+    vperm2f128ps256(a, b, IMM8 as i8)
 }
 
 /// Shuffles 256 bits (composed of 4 packed double-precision (64-bit)
@@ -1415,16 +1157,12 @@ pub unsafe fn _mm256_permute2f128_ps(a: __m256, b: __m256, imm8: i32) -> __m256 
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_permute2f128_pd)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vperm2f128, imm8 = 0x31))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vperm2f128, IMM8 = 0x31))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_permute2f128_pd(a: __m256d, b: __m256d, imm8: i32) -> __m256d {
-    macro_rules! call {
-        ($imm8:expr) => {
-            vperm2f128pd256(a, b, $imm8)
-        };
-    }
-    constify_imm8!(imm8, call)
+pub unsafe fn _mm256_permute2f128_pd<const IMM8: i32>(a: __m256d, b: __m256d) -> __m256d {
+    static_assert_imm8!(IMM8);
+    vperm2f128pd256(a, b, IMM8 as i8)
 }
 
 /// Shuffles 128-bits (composed of integer data) selected by `imm8`
@@ -1433,19 +1171,12 @@ pub unsafe fn _mm256_permute2f128_pd(a: __m256d, b: __m256d, imm8: i32) -> __m25
 /// [Intel's documentation](https://software.intel.com/sites/landingpage/IntrinsicsGuide/#text=_mm256_permute2f128_si256)
 #[inline]
 #[target_feature(enable = "avx")]
-#[cfg_attr(test, assert_instr(vperm2f128, imm8 = 0x31))]
-#[rustc_args_required_const(2)]
+#[cfg_attr(test, assert_instr(vperm2f128, IMM8 = 0x31))]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_permute2f128_si256(a: __m256i, b: __m256i, imm8: i32) -> __m256i {
-    let a = a.as_i32x8();
-    let b = b.as_i32x8();
-    macro_rules! call {
-        ($imm8:expr) => {
-            vperm2f128si256(a, b, $imm8)
-        };
-    }
-    let r = constify_imm8!(imm8, call);
-    transmute(r)
+pub unsafe fn _mm256_permute2f128_si256<const IMM8: i32>(a: __m256i, b: __m256i) -> __m256i {
+    static_assert_imm8!(IMM8);
+    transmute(vperm2f128si256(a.as_i32x8(), b.as_i32x8(), IMM8 as i8))
 }
 
 /// Broadcasts a single-precision (32-bit) floating-point element from memory
@@ -1520,16 +1251,17 @@ pub unsafe fn _mm256_broadcast_pd(a: &__m128d) -> __m256d {
 #[target_feature(enable = "avx")]
 #[cfg_attr(
     all(test, not(target_os = "windows")),
-    assert_instr(vinsertf128, imm8 = 1)
+    assert_instr(vinsertf128, IMM1 = 1)
 )]
-#[rustc_args_required_const(2)]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_insertf128_ps(a: __m256, b: __m128, imm8: i32) -> __m256 {
-    let b = _mm256_castps128_ps256(b);
-    match imm8 & 1 {
-        0 => simd_shuffle8(a, b, [8, 9, 10, 11, 4, 5, 6, 7]),
-        _ => simd_shuffle8(a, b, [0, 1, 2, 3, 8, 9, 10, 11]),
-    }
+pub unsafe fn _mm256_insertf128_ps<const IMM1: i32>(a: __m256, b: __m128) -> __m256 {
+    static_assert_imm1!(IMM1);
+    simd_shuffle8!(
+        a,
+        _mm256_castps128_ps256(b),
+        <const IMM1: i32> [[8, 9, 10, 11, 4, 5, 6, 7], [0, 1, 2, 3, 8, 9, 10, 11]][IMM1 as usize],
+    )
 }
 
 /// Copies `a` to result, then inserts 128 bits (composed of 2 packed
@@ -1541,15 +1273,17 @@ pub unsafe fn _mm256_insertf128_ps(a: __m256, b: __m128, imm8: i32) -> __m256 {
 #[target_feature(enable = "avx")]
 #[cfg_attr(
     all(test, not(target_os = "windows")),
-    assert_instr(vinsertf128, imm8 = 1)
+    assert_instr(vinsertf128, IMM1 = 1)
 )]
-#[rustc_args_required_const(2)]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_insertf128_pd(a: __m256d, b: __m128d, imm8: i32) -> __m256d {
-    match imm8 & 1 {
-        0 => simd_shuffle4(a, _mm256_castpd128_pd256(b), [4, 5, 2, 3]),
-        _ => simd_shuffle4(a, _mm256_castpd128_pd256(b), [0, 1, 4, 5]),
-    }
+pub unsafe fn _mm256_insertf128_pd<const IMM1: i32>(a: __m256d, b: __m128d) -> __m256d {
+    static_assert_imm1!(IMM1);
+    simd_shuffle4!(
+        a,
+        _mm256_castpd128_pd256(b),
+        <const IMM1: i32> [[4, 5, 2, 3], [0, 1, 4, 5]][IMM1 as usize],
+    )
 }
 
 /// Copies `a` to result, then inserts 128 bits from `b` into result
@@ -1560,16 +1294,17 @@ pub unsafe fn _mm256_insertf128_pd(a: __m256d, b: __m128d, imm8: i32) -> __m256d
 #[target_feature(enable = "avx")]
 #[cfg_attr(
     all(test, not(target_os = "windows")),
-    assert_instr(vinsertf128, imm8 = 1)
+    assert_instr(vinsertf128, IMM1 = 1)
 )]
-#[rustc_args_required_const(2)]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_insertf128_si256(a: __m256i, b: __m128i, imm8: i32) -> __m256i {
-    let b = _mm256_castsi128_si256(b).as_i64x4();
-    let dst: i64x4 = match imm8 & 1 {
-        0 => simd_shuffle4(a.as_i64x4(), b, [4, 5, 2, 3]),
-        _ => simd_shuffle4(a.as_i64x4(), b, [0, 1, 4, 5]),
-    };
+pub unsafe fn _mm256_insertf128_si256<const IMM1: i32>(a: __m256i, b: __m128i) -> __m256i {
+    static_assert_imm1!(IMM1);
+    let dst: i64x4 = simd_shuffle4!(
+        a.as_i64x4(),
+        _mm256_castsi128_si256(b).as_i64x4(),
+        <const IMM1: i32> [[4, 5, 2, 3], [0, 1, 4, 5]][IMM1 as usize],
+    );
     transmute(dst)
 }
 
@@ -1580,16 +1315,11 @@ pub unsafe fn _mm256_insertf128_si256(a: __m256i, b: __m128i, imm8: i32) -> __m2
 #[inline]
 #[target_feature(enable = "avx")]
 // This intrinsic has no corresponding instruction.
-#[rustc_args_required_const(2)]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_insert_epi8(a: __m256i, i: i8, index: i32) -> __m256i {
-    let a = a.as_i8x32();
-    macro_rules! call {
-        ($index:expr) => {
-            simd_insert(a, $index, i)
-        };
-    }
-    transmute(constify_imm5!(index, call))
+pub unsafe fn _mm256_insert_epi8<const INDEX: i32>(a: __m256i, i: i8) -> __m256i {
+    static_assert_imm5!(INDEX);
+    transmute(simd_insert(a.as_i8x32(), INDEX as u32, i))
 }
 
 /// Copies `a` to result, and inserts the 16-bit integer `i` into result
@@ -1599,16 +1329,11 @@ pub unsafe fn _mm256_insert_epi8(a: __m256i, i: i8, index: i32) -> __m256i {
 #[inline]
 #[target_feature(enable = "avx")]
 // This intrinsic has no corresponding instruction.
-#[rustc_args_required_const(2)]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_insert_epi16(a: __m256i, i: i16, index: i32) -> __m256i {
-    let a = a.as_i16x16();
-    macro_rules! call {
-        ($index:expr) => {
-            simd_insert(a, $index, i)
-        };
-    }
-    transmute(constify_imm4!((index & 15), call))
+pub unsafe fn _mm256_insert_epi16<const INDEX: i32>(a: __m256i, i: i16) -> __m256i {
+    static_assert_imm4!(INDEX);
+    transmute(simd_insert(a.as_i16x16(), INDEX as u32, i))
 }
 
 /// Copies `a` to result, and inserts the 32-bit integer `i` into result
@@ -1618,16 +1343,11 @@ pub unsafe fn _mm256_insert_epi16(a: __m256i, i: i16, index: i32) -> __m256i {
 #[inline]
 #[target_feature(enable = "avx")]
 // This intrinsic has no corresponding instruction.
-#[rustc_args_required_const(2)]
+#[rustc_legacy_const_generics(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm256_insert_epi32(a: __m256i, i: i32, index: i32) -> __m256i {
-    let a = a.as_i32x8();
-    macro_rules! call {
-        ($index:expr) => {
-            simd_insert(a, $index, i)
-        };
-    }
-    transmute(constify_imm3!(index, call))
+pub unsafe fn _mm256_insert_epi32<const INDEX: i32>(a: __m256i, i: i32) -> __m256i {
+    static_assert_imm3!(INDEX);
+    transmute(simd_insert(a.as_i32x8(), INDEX as u32, i))
 }
 
 /// Loads 256-bits (composed of 4 packed double-precision (64-bit)
@@ -1919,7 +1639,7 @@ pub unsafe fn _mm_maskstore_ps(mem_addr: *mut f32, mask: __m128i, a: __m128) {
 #[cfg_attr(test, assert_instr(vmovshdup))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_movehdup_ps(a: __m256) -> __m256 {
-    simd_shuffle8(a, a, [1, 1, 3, 3, 5, 5, 7, 7])
+    simd_shuffle8!(a, a, [1, 1, 3, 3, 5, 5, 7, 7])
 }
 
 /// Duplicate even-indexed single-precision (32-bit) floating-point elements
@@ -1931,7 +1651,7 @@ pub unsafe fn _mm256_movehdup_ps(a: __m256) -> __m256 {
 #[cfg_attr(test, assert_instr(vmovsldup))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_moveldup_ps(a: __m256) -> __m256 {
-    simd_shuffle8(a, a, [0, 0, 2, 2, 4, 4, 6, 6])
+    simd_shuffle8!(a, a, [0, 0, 2, 2, 4, 4, 6, 6])
 }
 
 /// Duplicate even-indexed double-precision (64-bit) floating-point elements
@@ -1943,7 +1663,7 @@ pub unsafe fn _mm256_moveldup_ps(a: __m256) -> __m256 {
 #[cfg_attr(test, assert_instr(vmovddup))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_movedup_pd(a: __m256d) -> __m256d {
-    simd_shuffle4(a, a, [0, 0, 2, 2])
+    simd_shuffle4!(a, a, [0, 0, 2, 2])
 }
 
 /// Loads 256-bits of integer data from unaligned memory into result.
@@ -2036,7 +1756,7 @@ pub unsafe fn _mm256_rsqrt_ps(a: __m256) -> __m256 {
 #[cfg_attr(test, assert_instr(vunpckhpd))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_unpackhi_pd(a: __m256d, b: __m256d) -> __m256d {
-    simd_shuffle4(a, b, [1, 5, 3, 7])
+    simd_shuffle4!(a, b, [1, 5, 3, 7])
 }
 
 /// Unpacks and interleave single-precision (32-bit) floating-point elements
@@ -2048,7 +1768,7 @@ pub unsafe fn _mm256_unpackhi_pd(a: __m256d, b: __m256d) -> __m256d {
 #[cfg_attr(test, assert_instr(vunpckhps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_unpackhi_ps(a: __m256, b: __m256) -> __m256 {
-    simd_shuffle8(a, b, [2, 10, 3, 11, 6, 14, 7, 15])
+    simd_shuffle8!(a, b, [2, 10, 3, 11, 6, 14, 7, 15])
 }
 
 /// Unpacks and interleave double-precision (64-bit) floating-point elements
@@ -2060,7 +1780,7 @@ pub unsafe fn _mm256_unpackhi_ps(a: __m256, b: __m256) -> __m256 {
 #[cfg_attr(test, assert_instr(vunpcklpd))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_unpacklo_pd(a: __m256d, b: __m256d) -> __m256d {
-    simd_shuffle4(a, b, [0, 4, 2, 6])
+    simd_shuffle4!(a, b, [0, 4, 2, 6])
 }
 
 /// Unpacks and interleave single-precision (32-bit) floating-point elements
@@ -2072,7 +1792,7 @@ pub unsafe fn _mm256_unpacklo_pd(a: __m256d, b: __m256d) -> __m256d {
 #[cfg_attr(test, assert_instr(vunpcklps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_unpacklo_ps(a: __m256, b: __m256) -> __m256 {
-    simd_shuffle8(a, b, [0, 8, 1, 9, 4, 12, 5, 13])
+    simd_shuffle8!(a, b, [0, 8, 1, 9, 4, 12, 5, 13])
 }
 
 /// Computes the bitwise AND of 256 bits (representing integer data) in `a` and
@@ -2852,7 +2572,7 @@ pub unsafe fn _mm256_castsi256_pd(a: __m256i) -> __m256d {
 // instructions, thus it has zero latency.
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_castps256_ps128(a: __m256) -> __m128 {
-    simd_shuffle4(a, a, [0, 1, 2, 3])
+    simd_shuffle4!(a, a, [0, 1, 2, 3])
 }
 
 /// Casts vector of type __m256d to type __m128d.
@@ -2864,7 +2584,7 @@ pub unsafe fn _mm256_castps256_ps128(a: __m256) -> __m128 {
 // instructions, thus it has zero latency.
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_castpd256_pd128(a: __m256d) -> __m128d {
-    simd_shuffle2(a, a, [0, 1])
+    simd_shuffle2!(a, a, [0, 1])
 }
 
 /// Casts vector of type __m256i to type __m128i.
@@ -2877,7 +2597,7 @@ pub unsafe fn _mm256_castpd256_pd128(a: __m256d) -> __m128d {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_castsi256_si128(a: __m256i) -> __m128i {
     let a = a.as_i64x4();
-    let dst: i64x2 = simd_shuffle2(a, a, [0, 1]);
+    let dst: i64x2 = simd_shuffle2!(a, a, [0, 1]);
     transmute(dst)
 }
 
@@ -2891,8 +2611,8 @@ pub unsafe fn _mm256_castsi256_si128(a: __m256i) -> __m128i {
 // instructions, thus it has zero latency.
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_castps128_ps256(a: __m128) -> __m256 {
-    // FIXME simd_shuffle8(a, a, [0, 1, 2, 3, -1, -1, -1, -1])
-    simd_shuffle8(a, a, [0, 1, 2, 3, 0, 0, 0, 0])
+    // FIXME simd_shuffle8!(a, a, [0, 1, 2, 3, -1, -1, -1, -1])
+    simd_shuffle8!(a, a, [0, 1, 2, 3, 0, 0, 0, 0])
 }
 
 /// Casts vector of type __m128d to type __m256d;
@@ -2905,8 +2625,8 @@ pub unsafe fn _mm256_castps128_ps256(a: __m128) -> __m256 {
 // instructions, thus it has zero latency.
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_castpd128_pd256(a: __m128d) -> __m256d {
-    // FIXME simd_shuffle4(a, a, [0, 1, -1, -1])
-    simd_shuffle4(a, a, [0, 1, 0, 0])
+    // FIXME simd_shuffle4!(a, a, [0, 1, -1, -1])
+    simd_shuffle4!(a, a, [0, 1, 0, 0])
 }
 
 /// Casts vector of type __m128i to type __m256i;
@@ -2920,8 +2640,8 @@ pub unsafe fn _mm256_castpd128_pd256(a: __m128d) -> __m256d {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_castsi128_si256(a: __m128i) -> __m256i {
     let a = a.as_i64x2();
-    // FIXME simd_shuffle4(a, a, [0, 1, -1, -1])
-    let dst: i64x4 = simd_shuffle4(a, a, [0, 1, 0, 0]);
+    // FIXME simd_shuffle4!(a, a, [0, 1, -1, -1])
+    let dst: i64x4 = simd_shuffle4!(a, a, [0, 1, 0, 0]);
     transmute(dst)
 }
 
@@ -2936,7 +2656,7 @@ pub unsafe fn _mm256_castsi128_si256(a: __m128i) -> __m256i {
 // instructions, thus it has zero latency.
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_zextps128_ps256(a: __m128) -> __m256 {
-    simd_shuffle8(a, _mm_setzero_ps(), [0, 1, 2, 3, 4, 5, 6, 7])
+    simd_shuffle8!(a, _mm_setzero_ps(), [0, 1, 2, 3, 4, 5, 6, 7])
 }
 
 /// Constructs a 256-bit integer vector from a 128-bit integer vector.
@@ -2951,7 +2671,7 @@ pub unsafe fn _mm256_zextps128_ps256(a: __m128) -> __m256 {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_zextsi128_si256(a: __m128i) -> __m256i {
     let b = _mm_setzero_si128().as_i64x2();
-    let dst: i64x4 = simd_shuffle4(a.as_i64x2(), b, [0, 1, 2, 3]);
+    let dst: i64x4 = simd_shuffle4!(a.as_i64x2(), b, [0, 1, 2, 3]);
     transmute(dst)
 }
 
@@ -2967,7 +2687,7 @@ pub unsafe fn _mm256_zextsi128_si256(a: __m128i) -> __m256i {
 // instructions, thus it has zero latency.
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_zextpd128_pd256(a: __m128d) -> __m256d {
-    simd_shuffle4(a, _mm_setzero_pd(), [0, 1, 2, 3])
+    simd_shuffle4!(a, _mm_setzero_pd(), [0, 1, 2, 3])
 }
 
 /// Returns vector of type `__m256` with undefined elements.
@@ -3012,7 +2732,7 @@ pub unsafe fn _mm256_undefined_si256() -> __m256i {
 #[cfg_attr(test, assert_instr(vinsertf128))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_set_m128(hi: __m128, lo: __m128) -> __m256 {
-    simd_shuffle8(lo, hi, [0, 1, 2, 3, 4, 5, 6, 7])
+    simd_shuffle8!(lo, hi, [0, 1, 2, 3, 4, 5, 6, 7])
 }
 
 /// Sets packed __m256d returned vector with the supplied values.
@@ -3086,7 +2806,7 @@ pub unsafe fn _mm256_setr_m128i(lo: __m128i, hi: __m128i) -> __m256i {
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_loadu2_m128(hiaddr: *const f32, loaddr: *const f32) -> __m256 {
     let a = _mm256_castps128_ps256(_mm_loadu_ps(loaddr));
-    _mm256_insertf128_ps(a, _mm_loadu_ps(hiaddr), 1)
+    _mm256_insertf128_ps::<1>(a, _mm_loadu_ps(hiaddr))
 }
 
 /// Loads two 128-bit values (composed of 2 packed double-precision (64-bit)
@@ -3101,7 +2821,7 @@ pub unsafe fn _mm256_loadu2_m128(hiaddr: *const f32, loaddr: *const f32) -> __m2
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_loadu2_m128d(hiaddr: *const f64, loaddr: *const f64) -> __m256d {
     let a = _mm256_castpd128_pd256(_mm_loadu_pd(loaddr));
-    _mm256_insertf128_pd(a, _mm_loadu_pd(hiaddr), 1)
+    _mm256_insertf128_pd::<1>(a, _mm_loadu_pd(hiaddr))
 }
 
 /// Loads two 128-bit values (composed of integer data) from memory, and combine
@@ -3115,7 +2835,7 @@ pub unsafe fn _mm256_loadu2_m128d(hiaddr: *const f64, loaddr: *const f64) -> __m
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm256_loadu2_m128i(hiaddr: *const __m128i, loaddr: *const __m128i) -> __m256i {
     let a = _mm256_castsi128_si256(_mm_loadu_si128(loaddr));
-    _mm256_insertf128_si256(a, _mm_loadu_si128(hiaddr), 1)
+    _mm256_insertf128_si256::<1>(a, _mm_loadu_si128(hiaddr))
 }
 
 /// Stores the high and low 128-bit halves (each composed of 4 packed
@@ -3131,7 +2851,7 @@ pub unsafe fn _mm256_loadu2_m128i(hiaddr: *const __m128i, loaddr: *const __m128i
 pub unsafe fn _mm256_storeu2_m128(hiaddr: *mut f32, loaddr: *mut f32, a: __m256) {
     let lo = _mm256_castps256_ps128(a);
     _mm_storeu_ps(loaddr, lo);
-    let hi = _mm256_extractf128_ps(a, 1);
+    let hi = _mm256_extractf128_ps::<1>(a);
     _mm_storeu_ps(hiaddr, hi);
 }
 
@@ -3148,7 +2868,7 @@ pub unsafe fn _mm256_storeu2_m128(hiaddr: *mut f32, loaddr: *mut f32, a: __m256)
 pub unsafe fn _mm256_storeu2_m128d(hiaddr: *mut f64, loaddr: *mut f64, a: __m256d) {
     let lo = _mm256_castpd256_pd128(a);
     _mm_storeu_pd(loaddr, lo);
-    let hi = _mm256_extractf128_pd(a, 1);
+    let hi = _mm256_extractf128_pd::<1>(a);
     _mm_storeu_pd(hiaddr, hi);
 }
 
@@ -3164,7 +2884,7 @@ pub unsafe fn _mm256_storeu2_m128d(hiaddr: *mut f64, loaddr: *mut f64, a: __m256
 pub unsafe fn _mm256_storeu2_m128i(hiaddr: *mut __m128i, loaddr: *mut __m128i, a: __m256i) {
     let lo = _mm256_castsi256_si128(a);
     _mm_storeu_si128(loaddr, lo);
-    let hi = _mm256_extractf128_si256(a, 1);
+    let hi = _mm256_extractf128_si256::<1>(a);
     _mm_storeu_si128(hiaddr, hi);
 }
 
@@ -3314,6 +3034,14 @@ extern "C" {
     fn movmskpd256(a: __m256d) -> i32;
     #[link_name = "llvm.x86.avx.movmsk.ps.256"]
     fn movmskps256(a: __m256) -> i32;
+    #[link_name = "llvm.x86.avx.min.ps.256"]
+    fn vminps(a: __m256, b: __m256) -> __m256;
+    #[link_name = "llvm.x86.avx.max.ps.256"]
+    fn vmaxps(a: __m256, b: __m256) -> __m256;
+    #[link_name = "llvm.x86.avx.min.pd.256"]
+    fn vminpd(a: __m256d, b: __m256d) -> __m256d;
+    #[link_name = "llvm.x86.avx.max.pd.256"]
+    fn vmaxpd(a: __m256d, b: __m256d) -> __m256d;
 }
 
 #[cfg(test)]
@@ -3381,7 +3109,7 @@ mod tests {
     unsafe fn test_mm256_shuffle_pd() {
         let a = _mm256_setr_pd(1., 4., 5., 8.);
         let b = _mm256_setr_pd(2., 3., 6., 7.);
-        let r = _mm256_shuffle_pd(a, b, 0xF);
+        let r = _mm256_shuffle_pd::<0b11_11_11_11>(a, b);
         let e = _mm256_setr_pd(4., 3., 8., 7.);
         assert_eq_m256d(r, e);
     }
@@ -3390,7 +3118,7 @@ mod tests {
     unsafe fn test_mm256_shuffle_ps() {
         let a = _mm256_setr_ps(1., 4., 5., 8., 9., 12., 13., 16.);
         let b = _mm256_setr_ps(2., 3., 6., 7., 10., 11., 14., 15.);
-        let r = _mm256_shuffle_ps(a, b, 0x0F);
+        let r = _mm256_shuffle_ps::<0b00_00_11_11>(a, b);
         let e = _mm256_setr_ps(8., 8., 2., 2., 16., 16., 10., 10.);
         assert_eq_m256(r, e);
     }
@@ -3418,6 +3146,23 @@ mod tests {
         let r = _mm256_max_pd(a, b);
         let e = _mm256_setr_pd(2., 4., 6., 8.);
         assert_eq_m256d(r, e);
+        // > If the values being compared are both 0.0s (of either sign), the
+        // > value in the second operand (source operand) is returned.
+        let w = _mm256_max_pd(_mm256_set1_pd(0.0), _mm256_set1_pd(-0.0));
+        let x = _mm256_max_pd(_mm256_set1_pd(-0.0), _mm256_set1_pd(0.0));
+        let wu: [u64; 4] = transmute(w);
+        let xu: [u64; 4] = transmute(x);
+        assert_eq!(wu, [0x8000_0000_0000_0000u64; 4]);
+        assert_eq!(xu, [0u64; 4]);
+        // > If only one value is a NaN (SNaN or QNaN) for this instruction, the
+        // > second operand (source operand), either a NaN or a valid
+        // > floating-point value, is written to the result.
+        let y = _mm256_max_pd(_mm256_set1_pd(f64::NAN), _mm256_set1_pd(0.0));
+        let z = _mm256_max_pd(_mm256_set1_pd(0.0), _mm256_set1_pd(f64::NAN));
+        let yf: [f64; 4] = transmute(y);
+        let zf: [f64; 4] = transmute(z);
+        assert_eq!(yf, [0.0; 4]);
+        assert!(zf.iter().all(|f| f.is_nan()), "{:?}", zf);
     }
 
     #[simd_test(enable = "avx")]
@@ -3427,6 +3172,23 @@ mod tests {
         let r = _mm256_max_ps(a, b);
         let e = _mm256_setr_ps(2., 4., 6., 8., 10., 12., 14., 16.);
         assert_eq_m256(r, e);
+        // > If the values being compared are both 0.0s (of either sign), the
+        // > value in the second operand (source operand) is returned.
+        let w = _mm256_max_ps(_mm256_set1_ps(0.0), _mm256_set1_ps(-0.0));
+        let x = _mm256_max_ps(_mm256_set1_ps(-0.0), _mm256_set1_ps(0.0));
+        let wu: [u32; 8] = transmute(w);
+        let xu: [u32; 8] = transmute(x);
+        assert_eq!(wu, [0x8000_0000u32; 8]);
+        assert_eq!(xu, [0u32; 8]);
+        // > If only one value is a NaN (SNaN or QNaN) for this instruction, the
+        // > second operand (source operand), either a NaN or a valid
+        // > floating-point value, is written to the result.
+        let y = _mm256_max_ps(_mm256_set1_ps(f32::NAN), _mm256_set1_ps(0.0));
+        let z = _mm256_max_ps(_mm256_set1_ps(0.0), _mm256_set1_ps(f32::NAN));
+        let yf: [f32; 8] = transmute(y);
+        let zf: [f32; 8] = transmute(z);
+        assert_eq!(yf, [0.0; 8]);
+        assert!(zf.iter().all(|f| f.is_nan()), "{:?}", zf);
     }
 
     #[simd_test(enable = "avx")]
@@ -3436,6 +3198,23 @@ mod tests {
         let r = _mm256_min_pd(a, b);
         let e = _mm256_setr_pd(1., 3., 5., 7.);
         assert_eq_m256d(r, e);
+        // > If the values being compared are both 0.0s (of either sign), the
+        // > value in the second operand (source operand) is returned.
+        let w = _mm256_min_pd(_mm256_set1_pd(0.0), _mm256_set1_pd(-0.0));
+        let x = _mm256_min_pd(_mm256_set1_pd(-0.0), _mm256_set1_pd(0.0));
+        let wu: [u64; 4] = transmute(w);
+        let xu: [u64; 4] = transmute(x);
+        assert_eq!(wu, [0x8000_0000_0000_0000u64; 4]);
+        assert_eq!(xu, [0u64; 4]);
+        // > If only one value is a NaN (SNaN or QNaN) for this instruction, the
+        // > second operand (source operand), either a NaN or a valid
+        // > floating-point value, is written to the result.
+        let y = _mm256_min_pd(_mm256_set1_pd(f64::NAN), _mm256_set1_pd(0.0));
+        let z = _mm256_min_pd(_mm256_set1_pd(0.0), _mm256_set1_pd(f64::NAN));
+        let yf: [f64; 4] = transmute(y);
+        let zf: [f64; 4] = transmute(z);
+        assert_eq!(yf, [0.0; 4]);
+        assert!(zf.iter().all(|f| f.is_nan()), "{:?}", zf);
     }
 
     #[simd_test(enable = "avx")]
@@ -3445,6 +3224,23 @@ mod tests {
         let r = _mm256_min_ps(a, b);
         let e = _mm256_setr_ps(1., 3., 5., 7., 9., 11., 13., 15.);
         assert_eq_m256(r, e);
+        // > If the values being compared are both 0.0s (of either sign), the
+        // > value in the second operand (source operand) is returned.
+        let w = _mm256_min_ps(_mm256_set1_ps(0.0), _mm256_set1_ps(-0.0));
+        let x = _mm256_min_ps(_mm256_set1_ps(-0.0), _mm256_set1_ps(0.0));
+        let wu: [u32; 8] = transmute(w);
+        let xu: [u32; 8] = transmute(x);
+        assert_eq!(wu, [0x8000_0000u32; 8]);
+        assert_eq!(xu, [0u32; 8]);
+        // > If only one value is a NaN (SNaN or QNaN) for this instruction, the
+        // > second operand (source operand), either a NaN or a valid
+        // > floating-point value, is written to the result.
+        let y = _mm256_min_ps(_mm256_set1_ps(f32::NAN), _mm256_set1_ps(0.0));
+        let z = _mm256_min_ps(_mm256_set1_ps(0.0), _mm256_set1_ps(f32::NAN));
+        let yf: [f32; 8] = transmute(y);
+        let zf: [f32; 8] = transmute(z);
+        assert_eq!(yf, [0.0; 8]);
+        assert!(zf.iter().all(|f| f.is_nan()), "{:?}", zf);
     }
 
     #[simd_test(enable = "avx")]
@@ -3504,9 +3300,9 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm256_round_pd() {
         let a = _mm256_setr_pd(1.55, 2.2, 3.99, -1.2);
-        let result_closest = _mm256_round_pd(a, 0b00000000);
-        let result_down = _mm256_round_pd(a, 0b00000001);
-        let result_up = _mm256_round_pd(a, 0b00000010);
+        let result_closest = _mm256_round_pd::<0b0000>(a);
+        let result_down = _mm256_round_pd::<0b0001>(a);
+        let result_up = _mm256_round_pd::<0b0010>(a);
         let expected_closest = _mm256_setr_pd(2., 2., 4., -1.);
         let expected_down = _mm256_setr_pd(1., 2., 3., -2.);
         let expected_up = _mm256_setr_pd(2., 3., 4., -1.);
@@ -3534,9 +3330,9 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm256_round_ps() {
         let a = _mm256_setr_ps(1.55, 2.2, 3.99, -1.2, 1.55, 2.2, 3.99, -1.2);
-        let result_closest = _mm256_round_ps(a, 0b00000000);
-        let result_down = _mm256_round_ps(a, 0b00000001);
-        let result_up = _mm256_round_ps(a, 0b00000010);
+        let result_closest = _mm256_round_ps::<0b0000>(a);
+        let result_down = _mm256_round_ps::<0b0001>(a);
+        let result_up = _mm256_round_ps::<0b0010>(a);
         let expected_closest = _mm256_setr_ps(2., 2., 4., -1., 2., 2., 4., -1.);
         let expected_down = _mm256_setr_ps(1., 2., 3., -2., 1., 2., 3., -2.);
         let expected_up = _mm256_setr_ps(2., 3., 4., -1., 2., 3., 4., -1.);
@@ -3599,11 +3395,11 @@ mod tests {
     unsafe fn test_mm256_blend_pd() {
         let a = _mm256_setr_pd(4., 9., 16., 25.);
         let b = _mm256_setr_pd(4., 3., 2., 5.);
-        let r = _mm256_blend_pd(a, b, 0x0);
+        let r = _mm256_blend_pd::<0x0>(a, b);
         assert_eq_m256d(r, _mm256_setr_pd(4., 9., 16., 25.));
-        let r = _mm256_blend_pd(a, b, 0x3);
+        let r = _mm256_blend_pd::<0x3>(a, b);
         assert_eq_m256d(r, _mm256_setr_pd(4., 3., 16., 25.));
-        let r = _mm256_blend_pd(a, b, 0xF);
+        let r = _mm256_blend_pd::<0xF>(a, b);
         assert_eq_m256d(r, _mm256_setr_pd(4., 3., 2., 5.));
     }
 
@@ -3611,11 +3407,11 @@ mod tests {
     unsafe fn test_mm256_blend_ps() {
         let a = _mm256_setr_ps(1., 4., 5., 8., 9., 12., 13., 16.);
         let b = _mm256_setr_ps(2., 3., 6., 7., 10., 11., 14., 15.);
-        let r = _mm256_blend_ps(a, b, 0x0);
+        let r = _mm256_blend_ps::<0x0>(a, b);
         assert_eq_m256(r, _mm256_setr_ps(1., 4., 5., 8., 9., 12., 13., 16.));
-        let r = _mm256_blend_ps(a, b, 0x3);
+        let r = _mm256_blend_ps::<0x3>(a, b);
         assert_eq_m256(r, _mm256_setr_ps(2., 3., 5., 8., 9., 12., 13., 16.));
-        let r = _mm256_blend_ps(a, b, 0xF);
+        let r = _mm256_blend_ps::<0xF>(a, b);
         assert_eq_m256(r, _mm256_setr_ps(2., 3., 6., 7., 9., 12., 13., 16.));
     }
 
@@ -3646,7 +3442,7 @@ mod tests {
     unsafe fn test_mm256_dp_ps() {
         let a = _mm256_setr_ps(4., 9., 16., 25., 4., 9., 16., 25.);
         let b = _mm256_setr_ps(4., 3., 2., 5., 8., 9., 64., 50.);
-        let r = _mm256_dp_ps(a, b, 0xFF);
+        let r = _mm256_dp_ps::<0xFF>(a, b);
         let e = _mm256_setr_ps(200., 200., 200., 200., 2387., 2387., 2387., 2387.);
         assert_eq_m256(r, e);
     }
@@ -3731,7 +3527,7 @@ mod tests {
     unsafe fn test_mm_cmp_pd() {
         let a = _mm_setr_pd(4., 9.);
         let b = _mm_setr_pd(4., 3.);
-        let r = _mm_cmp_pd(a, b, _CMP_GE_OS);
+        let r = _mm_cmp_pd::<_CMP_GE_OS>(a, b);
         assert!(get_m128d(r, 0).is_nan());
         assert!(get_m128d(r, 1).is_nan());
     }
@@ -3740,7 +3536,7 @@ mod tests {
     unsafe fn test_mm256_cmp_pd() {
         let a = _mm256_setr_pd(1., 2., 3., 4.);
         let b = _mm256_setr_pd(5., 6., 7., 8.);
-        let r = _mm256_cmp_pd(a, b, _CMP_GE_OS);
+        let r = _mm256_cmp_pd::<_CMP_GE_OS>(a, b);
         let e = _mm256_set1_pd(0.);
         assert_eq_m256d(r, e);
     }
@@ -3749,7 +3545,7 @@ mod tests {
     unsafe fn test_mm_cmp_ps() {
         let a = _mm_setr_ps(4., 3., 2., 5.);
         let b = _mm_setr_ps(4., 9., 16., 25.);
-        let r = _mm_cmp_ps(a, b, _CMP_GE_OS);
+        let r = _mm_cmp_ps::<_CMP_GE_OS>(a, b);
         assert!(get_m128(r, 0).is_nan());
         assert_eq!(get_m128(r, 1), 0.);
         assert_eq!(get_m128(r, 2), 0.);
@@ -3760,7 +3556,7 @@ mod tests {
     unsafe fn test_mm256_cmp_ps() {
         let a = _mm256_setr_ps(1., 2., 3., 4., 1., 2., 3., 4.);
         let b = _mm256_setr_ps(5., 6., 7., 8., 5., 6., 7., 8.);
-        let r = _mm256_cmp_ps(a, b, _CMP_GE_OS);
+        let r = _mm256_cmp_ps::<_CMP_GE_OS>(a, b);
         let e = _mm256_set1_ps(0.);
         assert_eq_m256(r, e);
     }
@@ -3769,7 +3565,7 @@ mod tests {
     unsafe fn test_mm_cmp_sd() {
         let a = _mm_setr_pd(4., 9.);
         let b = _mm_setr_pd(4., 3.);
-        let r = _mm_cmp_sd(a, b, _CMP_GE_OS);
+        let r = _mm_cmp_sd::<_CMP_GE_OS>(a, b);
         assert!(get_m128d(r, 0).is_nan());
         assert_eq!(get_m128d(r, 1), 9.);
     }
@@ -3778,7 +3574,7 @@ mod tests {
     unsafe fn test_mm_cmp_ss() {
         let a = _mm_setr_ps(4., 3., 2., 5.);
         let b = _mm_setr_ps(4., 9., 16., 25.);
-        let r = _mm_cmp_ss(a, b, _CMP_GE_OS);
+        let r = _mm_cmp_ss::<_CMP_GE_OS>(a, b);
         assert!(get_m128(r, 0).is_nan());
         assert_eq!(get_m128(r, 1), 3.);
         assert_eq!(get_m128(r, 2), 2.);
@@ -3852,7 +3648,7 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm256_extractf128_ps() {
         let a = _mm256_setr_ps(4., 3., 2., 5., 8., 9., 64., 50.);
-        let r = _mm256_extractf128_ps(a, 0);
+        let r = _mm256_extractf128_ps::<0>(a);
         let e = _mm_setr_ps(4., 3., 2., 5.);
         assert_eq_m128(r, e);
     }
@@ -3860,7 +3656,7 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm256_extractf128_pd() {
         let a = _mm256_setr_pd(4., 3., 2., 5.);
-        let r = _mm256_extractf128_pd(a, 0);
+        let r = _mm256_extractf128_pd::<0>(a);
         let e = _mm_setr_pd(4., 3.);
         assert_eq_m128d(r, e);
     }
@@ -3868,7 +3664,7 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm256_extractf128_si256() {
         let a = _mm256_setr_epi64x(4, 3, 2, 5);
-        let r = _mm256_extractf128_si256(a, 0);
+        let r = _mm256_extractf128_si256::<0>(a);
         let e = _mm_setr_epi64x(4, 3);
         assert_eq_m128i(r, e);
     }
@@ -3904,7 +3700,7 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm256_permute_ps() {
         let a = _mm256_setr_ps(4., 3., 2., 5., 8., 9., 64., 50.);
-        let r = _mm256_permute_ps(a, 0x1b);
+        let r = _mm256_permute_ps::<0x1b>(a);
         let e = _mm256_setr_ps(5., 2., 3., 4., 50., 64., 9., 8.);
         assert_eq_m256(r, e);
     }
@@ -3912,7 +3708,7 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm_permute_ps() {
         let a = _mm_setr_ps(4., 3., 2., 5.);
-        let r = _mm_permute_ps(a, 0x1b);
+        let r = _mm_permute_ps::<0x1b>(a);
         let e = _mm_setr_ps(5., 2., 3., 4.);
         assert_eq_m128(r, e);
     }
@@ -3938,7 +3734,7 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm256_permute_pd() {
         let a = _mm256_setr_pd(4., 3., 2., 5.);
-        let r = _mm256_permute_pd(a, 5);
+        let r = _mm256_permute_pd::<5>(a);
         let e = _mm256_setr_pd(3., 4., 5., 2.);
         assert_eq_m256d(r, e);
     }
@@ -3946,7 +3742,7 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm_permute_pd() {
         let a = _mm_setr_pd(4., 3.);
-        let r = _mm_permute_pd(a, 1);
+        let r = _mm_permute_pd::<1>(a);
         let e = _mm_setr_pd(3., 4.);
         assert_eq_m128d(r, e);
     }
@@ -3955,7 +3751,7 @@ mod tests {
     unsafe fn test_mm256_permute2f128_ps() {
         let a = _mm256_setr_ps(1., 2., 3., 4., 1., 2., 3., 4.);
         let b = _mm256_setr_ps(5., 6., 7., 8., 5., 6., 7., 8.);
-        let r = _mm256_permute2f128_ps(a, b, 0x13);
+        let r = _mm256_permute2f128_ps::<0x13>(a, b);
         let e = _mm256_setr_ps(5., 6., 7., 8., 1., 2., 3., 4.);
         assert_eq_m256(r, e);
     }
@@ -3964,7 +3760,7 @@ mod tests {
     unsafe fn test_mm256_permute2f128_pd() {
         let a = _mm256_setr_pd(1., 2., 3., 4.);
         let b = _mm256_setr_pd(5., 6., 7., 8.);
-        let r = _mm256_permute2f128_pd(a, b, 0x31);
+        let r = _mm256_permute2f128_pd::<0x31>(a, b);
         let e = _mm256_setr_pd(3., 4., 7., 8.);
         assert_eq_m256d(r, e);
     }
@@ -3973,7 +3769,7 @@ mod tests {
     unsafe fn test_mm256_permute2f128_si256() {
         let a = _mm256_setr_epi32(1, 2, 3, 4, 1, 2, 3, 4);
         let b = _mm256_setr_epi32(5, 6, 7, 8, 5, 6, 7, 8);
-        let r = _mm256_permute2f128_si256(a, b, 0x20);
+        let r = _mm256_permute2f128_si256::<0x20>(a, b);
         let e = _mm256_setr_epi32(1, 2, 3, 4, 5, 6, 7, 8);
         assert_eq_m256i(r, e);
     }
@@ -4019,7 +3815,7 @@ mod tests {
     unsafe fn test_mm256_insertf128_ps() {
         let a = _mm256_setr_ps(4., 3., 2., 5., 8., 9., 64., 50.);
         let b = _mm_setr_ps(4., 9., 16., 25.);
-        let r = _mm256_insertf128_ps(a, b, 0);
+        let r = _mm256_insertf128_ps::<0>(a, b);
         let e = _mm256_setr_ps(4., 9., 16., 25., 8., 9., 64., 50.);
         assert_eq_m256(r, e);
     }
@@ -4028,7 +3824,7 @@ mod tests {
     unsafe fn test_mm256_insertf128_pd() {
         let a = _mm256_setr_pd(1., 2., 3., 4.);
         let b = _mm_setr_pd(5., 6.);
-        let r = _mm256_insertf128_pd(a, b, 0);
+        let r = _mm256_insertf128_pd::<0>(a, b);
         let e = _mm256_setr_pd(5., 6., 3., 4.);
         assert_eq_m256d(r, e);
     }
@@ -4037,7 +3833,7 @@ mod tests {
     unsafe fn test_mm256_insertf128_si256() {
         let a = _mm256_setr_epi64x(1, 2, 3, 4);
         let b = _mm_setr_epi64x(5, 6);
-        let r = _mm256_insertf128_si256(a, b, 0);
+        let r = _mm256_insertf128_si256::<0>(a, b);
         let e = _mm256_setr_epi64x(5, 6, 3, 4);
         assert_eq_m256i(r, e);
     }
@@ -4051,7 +3847,7 @@ mod tests {
             17, 18, 19, 20, 21, 22, 23, 24,
             25, 26, 27, 28, 29, 30, 31, 32,
         );
-        let r = _mm256_insert_epi8(a, 0, 31);
+        let r = _mm256_insert_epi8::<31>(a, 0);
         #[rustfmt::skip]
         let e = _mm256_setr_epi8(
             1, 2, 3, 4, 5, 6, 7, 8,
@@ -4069,7 +3865,7 @@ mod tests {
             0, 1, 2, 3, 4, 5, 6, 7,
             8, 9, 10, 11, 12, 13, 14, 15,
         );
-        let r = _mm256_insert_epi16(a, 0, 15);
+        let r = _mm256_insert_epi16::<15>(a, 0);
         #[rustfmt::skip]
         let e = _mm256_setr_epi16(
             0, 1, 2, 3, 4, 5, 6, 7,
@@ -4081,7 +3877,7 @@ mod tests {
     #[simd_test(enable = "avx")]
     unsafe fn test_mm256_insert_epi32() {
         let a = _mm256_setr_epi32(1, 2, 3, 4, 5, 6, 7, 8);
-        let r = _mm256_insert_epi32(a, 0, 7);
+        let r = _mm256_insert_epi32::<7>(a, 0);
         let e = _mm256_setr_epi32(1, 2, 3, 4, 5, 6, 7, 0);
         assert_eq_m256i(r, e);
     }

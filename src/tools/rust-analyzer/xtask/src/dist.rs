@@ -7,26 +7,30 @@ use std::{
 
 use anyhow::Result;
 use flate2::{write::GzEncoder, Compression};
-use xshell::{cmd, cp, mkdir_p, pushd, pushenv, read_file, rm_rf, write_file};
+use xshell::{cmd, mkdir_p, pushd, pushenv, read_file, rm_rf, write_file};
 
-use crate::{date_iso, project_root};
+use crate::{date_iso, flags, project_root};
 
-pub(crate) struct DistCmd {
-    pub(crate) nightly: bool,
-    pub(crate) client_version: Option<String>,
-}
-
-impl DistCmd {
+impl flags::Dist {
     pub(crate) fn run(self) -> Result<()> {
+        let stable =
+            std::env::var("GITHUB_REF").unwrap_or_default().as_str() == "refs/heads/release";
+
         let dist = project_root().join("dist");
         rm_rf(&dist)?;
         mkdir_p(&dist)?;
 
-        if let Some(version) = self.client_version {
-            let release_tag = if self.nightly { "nightly".to_string() } else { date_iso()? };
+        if let Some(patch_version) = self.client_patch_version {
+            let version = if stable {
+                format!("0.2.{}", patch_version)
+            } else {
+                // A hack to make VS Code prefer nightly over stable.
+                format!("0.3.{}", patch_version)
+            };
+            let release_tag = if stable { date_iso()? } else { "nightly".to_string() };
             dist_client(&version, &release_tag)?;
         }
-        let release_channel = if self.nightly { "nightly" } else { "stable" };
+        let release_channel = if stable { "stable" } else { "nightly" };
         dist_server(release_channel)?;
         Ok(())
     }
@@ -62,6 +66,13 @@ fn dist_client(version: &str, release_tag: &str) -> Result<()> {
 
 fn dist_server(release_channel: &str) -> Result<()> {
     let _e = pushenv("RUST_ANALYZER_CHANNEL", release_channel);
+    let _e = pushenv("CARGO_PROFILE_RELEASE_LTO", "thin");
+
+    // Uncomment to enable debug info for releases. Note that:
+    //   * debug info is split on windows and macs, so it does nothing for those platforms,
+    //   * on Linux, this blows up the binary size from 8MB to 43MB, which is unreasonable.
+    // let _e = pushenv("CARGO_PROFILE_RELEASE_DEBUG", "1");
+
     let target = get_target();
     if target.contains("-linux-gnu") || target.contains("-linux-musl") {
         env::set_var("CC", "clang");
@@ -74,24 +85,6 @@ fn dist_server(release_channel: &str) -> Result<()> {
         Path::new("target").join(&target).join("release").join(format!("rust-analyzer{}", suffix));
     let dst = Path::new("dist").join(format!("rust-analyzer-{}{}", target, suffix));
     gzip(&src, &dst.with_extension("gz"))?;
-
-    // FIXME: the old names are temporarily kept for client compatibility, but they should be removed
-    // Remove this block after a couple of releases
-    match target.as_ref() {
-        "x86_64-unknown-linux-gnu" => {
-            cp(&src, "dist/rust-analyzer-linux")?;
-            gzip(&src, Path::new("dist/rust-analyzer-linux.gz"))?;
-        }
-        "x86_64-pc-windows-msvc" => {
-            cp(&src, "dist/rust-analyzer-windows.exe")?;
-            gzip(&src, Path::new("dist/rust-analyzer-windows.gz"))?;
-        }
-        "x86_64-apple-darwin" => {
-            cp(&src, "dist/rust-analyzer-mac")?;
-            gzip(&src, Path::new("dist/rust-analyzer-mac.gz"))?;
-        }
-        _ => {}
-    }
 
     Ok(())
 }

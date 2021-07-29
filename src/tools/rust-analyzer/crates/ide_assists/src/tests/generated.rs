@@ -50,7 +50,6 @@ trait Trait {
 impl Trait for () {
     type X = ();
     fn foo(&self) {}$0
-
 }
 "#####,
         r#####"
@@ -456,8 +455,8 @@ enum Action { Move { distance: u32 }, Stop }
 
 fn handle(action: Action) {
     match action {
-        $0Action::Move { distance } => {}
-        Action::Stop => {}
+        $0Action::Move { distance } => todo!(),
+        Action::Stop => todo!(),
     }
 }
 "#####,
@@ -787,8 +786,8 @@ struct Person {
 
 impl Person {
     /// Get a reference to the person's name.
-    fn name(&self) -> &String {
-        &self.name
+    fn $0name(&self) -> &str {
+        self.name.as_str()
     }
 }
 "#####,
@@ -811,7 +810,7 @@ struct Person {
 
 impl Person {
     /// Get a mutable reference to the person's name.
-    fn name_mut(&mut self) -> &mut String {
+    fn $0name_mut(&mut self) -> &mut String {
         &mut self.name
     }
 }
@@ -1531,7 +1530,7 @@ enum Result<T, E> { Ok(T), Err(E) }
 fn main() {
     let x: Result<i32, i32> = Result::Ok(92);
     let y = match x {
-        Ok(a) => a,
+        Ok(it) => it,
         $0_ => unreachable!(),
     };
 }

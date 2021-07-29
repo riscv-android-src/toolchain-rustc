@@ -55,12 +55,14 @@ pub(crate) fn prepare_rename(
     match def {
         Definition::SelfType(_) => bail!("Cannot rename `Self`"),
         Definition::ModuleDef(ModuleDef::BuiltinType(_)) => bail!("Cannot rename builtin type"),
-        _ => {}
+        Definition::ModuleDef(ModuleDef::Module(_)) => (),
+        _ => {
+            let nav = def
+                .try_to_nav(sema.db)
+                .ok_or_else(|| format_err!("No references found at position"))?;
+            nav.focus_range.ok_or_else(|| format_err!("No identifier available to rename"))?;
+        }
     };
-    let nav =
-        def.try_to_nav(sema.db).ok_or_else(|| format_err!("No references found at position"))?;
-    nav.focus_range.ok_or_else(|| format_err!("No identifier available to rename"))?;
-
     let name_like = sema
         .find_node_at_offset_with_descend(&syntax, position.offset)
         .ok_or_else(|| format_err!("No references found at position"))?;
@@ -168,7 +170,17 @@ fn find_definition(
             NameClass::classify(sema, &name).map(|class| class.referenced_or_defined(sema.db))
         }
         ast::NameLike::NameRef(name_ref) => {
-            NameRefClass::classify(sema, &name_ref).map(|class| class.referenced(sema.db))
+            if let Some(def) =
+                NameRefClass::classify(sema, &name_ref).map(|class| class.referenced(sema.db))
+            {
+                // if the name differs from the definitions name it has to be an alias
+                if def.name(sema.db).map_or(false, |it| it.to_string() != name_ref.text()) {
+                    bail!("Renaming aliases is currently unsupported");
+                }
+                Some(def)
+            } else {
+                None
+            }
         }
         ast::NameLike::Lifetime(lifetime) => NameRefClass::classify_lifetime(sema, &lifetime)
             .map(|class| NameRefClass::referenced(class, sema.db))
@@ -1886,6 +1898,44 @@ impl Foo {
 }
 "#,
             "error: Cannot rename `Self`",
+        );
+    }
+
+    #[test]
+    fn test_rename_ignores_self_ty() {
+        check(
+            "Fo0",
+            r#"
+struct $0Foo;
+
+impl Foo where Self: {}
+"#,
+            r#"
+struct Fo0;
+
+impl Fo0 where Self: {}
+"#,
+        );
+    }
+
+    #[test]
+    fn test_rename_fails_on_aliases() {
+        check(
+            "Baz",
+            r#"
+struct Foo;
+use Foo as Bar$0;
+"#,
+            "error: Renaming aliases is currently unsupported",
+        );
+        check(
+            "Baz",
+            r#"
+struct Foo;
+use Foo as Bar;
+use Bar$0;
+"#,
+            "error: Renaming aliases is currently unsupported",
         );
     }
 }

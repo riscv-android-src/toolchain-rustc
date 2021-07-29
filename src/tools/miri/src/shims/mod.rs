@@ -29,7 +29,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         abi: Abi,
         args: &[OpTy<'tcx, Tag>],
         ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
-        unwind: Option<mir::BasicBlock>,
+        unwind: StackPopUnwind,
     ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>> {
         let this = self.eval_context_mut();
         trace!("eval_fn_call: {:#?}, {:?}", instance, ret.map(|p| p.0));
@@ -64,7 +64,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         ptr_op: &OpTy<'tcx, Tag>,
         align_op: &OpTy<'tcx, Tag>,
         ret: Option<(&PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
-        unwind: Option<mir::BasicBlock>,
+        unwind: StackPopUnwind,
     ) -> InterpResult<'tcx, bool> {
         let this = self.eval_context_mut();
         let (dest, ret) = ret.unwrap();
@@ -74,8 +74,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             return Ok(false);
         }
 
-        let req_align = this
-            .force_bits(this.read_scalar(align_op)?.check_init()?, this.pointer_size())?;
+        let req_align =
+            this.force_bits(this.read_scalar(align_op)?.check_init()?, this.pointer_size())?;
 
         // Stop if the alignment is not a power of two.
         if !req_align.is_power_of_two() {

@@ -4,7 +4,7 @@ import { log } from "./util";
 
 export type UpdatesChannel = "stable" | "nightly";
 
-export const NIGHTLY_TAG = "nightly";
+const NIGHTLY_TAG = "nightly";
 
 export type RunnableEnvCfg = undefined | Record<string, string> | { mask?: string; env: Record<string, string> }[];
 
@@ -34,7 +34,7 @@ export class Config {
     readonly globalStoragePath: string;
 
     constructor(ctx: vscode.ExtensionContext) {
-        this.globalStoragePath = ctx.globalStoragePath;
+        this.globalStoragePath = ctx.globalStorageUri.fsPath;
         vscode.workspace.onDidChangeConfiguration(this.onDidChangeConfiguration, this, ctx.subscriptions);
         this.refreshLogging();
     }
@@ -115,6 +115,7 @@ export class Config {
             typeHints: this.get<boolean>("inlayHints.typeHints"),
             parameterHints: this.get<boolean>("inlayHints.parameterHints"),
             chainingHints: this.get<boolean>("inlayHints.chainingHints"),
+            smallerHints: this.get<boolean>("inlayHints.smallerHints"),
             maxLength: this.get<null | number>("inlayHints.maxLength"),
         };
     }
@@ -134,8 +135,12 @@ export class Config {
     }
 
     get debug() {
-        // "/rustc/<id>" used by suggestions only.
-        const { ["/rustc/<id>"]: _, ...sourceFileMap } = this.get<Record<string, string>>("debug.sourceFileMap");
+        let sourceFileMap = this.get<Record<string, string> | "auto">("debug.sourceFileMap");
+        if (sourceFileMap !== "auto") {
+            // "/rustc/<id>" used by suggestions only.
+            const { ["/rustc/<id>"]: _, ...trimmed } = this.get<Record<string, string>>("debug.sourceFileMap");
+            sourceFileMap = trimmed;
+        }
 
         return {
             engine: this.get<string>("debug.engine"),
@@ -160,9 +165,14 @@ export class Config {
         return {
             enable: this.get<boolean>("hoverActions.enable"),
             implementations: this.get<boolean>("hoverActions.implementations"),
+            references: this.get<boolean>("hoverActions.references"),
             run: this.get<boolean>("hoverActions.run"),
             debug: this.get<boolean>("hoverActions.debug"),
             gotoTypeDef: this.get<boolean>("hoverActions.gotoTypeDef"),
         };
+    }
+
+    get currentExtensionIsNightly() {
+        return this.package.releaseTag === NIGHTLY_TAG;
     }
 }

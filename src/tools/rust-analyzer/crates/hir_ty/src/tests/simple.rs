@@ -11,7 +11,7 @@ fn test() {
     let x = box 1;
     let t = (x, box x, box &1, box [1]);
     t;
-} //^ (Box<i32>, Box<Box<i32>>, Box<&i32>, Box<[i32; _]>)
+} //^ (Box<i32>, Box<Box<i32>>, Box<&i32>, Box<[i32; 1]>)
 
 //- /std.rs crate:std
 #[prelude_import] use prelude::*;
@@ -36,7 +36,7 @@ fn test() {
     let x = box 1;
     let t = (x, box x, box &1, box [1]);
     t;
-} //^ (Box<i32, {unknown}>, Box<Box<i32, {unknown}>, {unknown}>, Box<&i32, {unknown}>, Box<[i32; _], {unknown}>)
+} //^ (Box<i32, {unknown}>, Box<Box<i32, {unknown}>, {unknown}>, Box<&i32, {unknown}>, Box<[i32; 1], {unknown}>)
 
 //- /std.rs crate:std
 #[prelude_import] use prelude::*;
@@ -488,23 +488,34 @@ fn infer_literals() {
                 mod foo {}
             "#;
             br#"yolo"#;
+            let a = b"a\x20b\
+            c";
+            let b = br"g\
+h";
+            let c = br#"x"\"yb"#;
         }
         "##,
         expect![[r##"
-            10..216 '{     ...o"#; }': ()
-            16..20 '5i32': i32
-            26..30 '5f32': f32
-            36..40 '5f64': f64
-            46..53 '"hello"': &str
-            59..67 'b"bytes"': &[u8; _]
-            73..76 ''c'': char
-            82..86 'b'b'': u8
-            92..96 '3.14': f64
-            102..106 '5000': i32
-            112..117 'false': bool
-            123..127 'true': bool
-            133..197 'r#"   ...    "#': &str
-            203..213 'br#"yolo"#': &[u8; _]
+            18..478 '{     ...     }': ()
+            32..36 '5i32': i32
+            50..54 '5f32': f32
+            68..72 '5f64': f64
+            86..93 '"hello"': &str
+            107..115 'b"bytes"': &[u8; 5]
+            129..132 ''c'': char
+            146..150 'b'b'': u8
+            164..168 '3.14': f64
+            182..186 '5000': i32
+            200..205 'false': bool
+            219..223 'true': bool
+            237..333 'r#"   ...    "#': &str
+            347..357 'br#"yolo"#': &[u8; 4]
+            375..376 'a': &[u8; 4]
+            379..403 'b"a\x2...    c"': &[u8; 4]
+            421..422 'b': &[u8; 4]
+            425..433 'br"g\ h"': &[u8; 4]
+            451..452 'c': &[u8; 6]
+            455..467 'br#"x"\"yb"#': &[u8; 6]
         "##]],
     );
 }
@@ -1224,61 +1235,69 @@ fn infer_array() {
 
             let b = [a, ["b"]];
             let x: [u8; 0] = [];
+            // FIXME: requires const evaluation/taking type from rhs somehow
+            let y: [u8; 2+2] = [1,2,3,4];
         }
         "#,
         expect![[r#"
             8..9 'x': &str
             17..18 'y': isize
-            27..292 '{     ... []; }': ()
-            37..38 'a': [&str; _]
-            41..44 '[x]': [&str; _]
+            27..395 '{     ...,4]; }': ()
+            37..38 'a': [&str; 1]
+            41..44 '[x]': [&str; 1]
             42..43 'x': &str
-            54..55 'b': [[&str; _]; _]
-            58..64 '[a, a]': [[&str; _]; _]
-            59..60 'a': [&str; _]
-            62..63 'a': [&str; _]
-            74..75 'c': [[[&str; _]; _]; _]
-            78..84 '[b, b]': [[[&str; _]; _]; _]
-            79..80 'b': [[&str; _]; _]
-            82..83 'b': [[&str; _]; _]
-            95..96 'd': [isize; _]
-            99..111 '[y, 1, 2, 3]': [isize; _]
+            54..55 'b': [[&str; 1]; 2]
+            58..64 '[a, a]': [[&str; 1]; 2]
+            59..60 'a': [&str; 1]
+            62..63 'a': [&str; 1]
+            74..75 'c': [[[&str; 1]; 2]; 2]
+            78..84 '[b, b]': [[[&str; 1]; 2]; 2]
+            79..80 'b': [[&str; 1]; 2]
+            82..83 'b': [[&str; 1]; 2]
+            95..96 'd': [isize; 4]
+            99..111 '[y, 1, 2, 3]': [isize; 4]
             100..101 'y': isize
             103..104 '1': isize
             106..107 '2': isize
             109..110 '3': isize
-            121..122 'd': [isize; _]
-            125..137 '[1, y, 2, 3]': [isize; _]
+            121..122 'd': [isize; 4]
+            125..137 '[1, y, 2, 3]': [isize; 4]
             126..127 '1': isize
             129..130 'y': isize
             132..133 '2': isize
             135..136 '3': isize
-            147..148 'e': [isize; _]
-            151..154 '[y]': [isize; _]
+            147..148 'e': [isize; 1]
+            151..154 '[y]': [isize; 1]
             152..153 'y': isize
-            164..165 'f': [[isize; _]; _]
-            168..174 '[d, d]': [[isize; _]; _]
-            169..170 'd': [isize; _]
-            172..173 'd': [isize; _]
-            184..185 'g': [[isize; _]; _]
-            188..194 '[e, e]': [[isize; _]; _]
-            189..190 'e': [isize; _]
-            192..193 'e': [isize; _]
-            205..206 'h': [i32; _]
-            209..215 '[1, 2]': [i32; _]
+            164..165 'f': [[isize; 4]; 2]
+            168..174 '[d, d]': [[isize; 4]; 2]
+            169..170 'd': [isize; 4]
+            172..173 'd': [isize; 4]
+            184..185 'g': [[isize; 1]; 2]
+            188..194 '[e, e]': [[isize; 1]; 2]
+            189..190 'e': [isize; 1]
+            192..193 'e': [isize; 1]
+            205..206 'h': [i32; 2]
+            209..215 '[1, 2]': [i32; 2]
             210..211 '1': i32
             213..214 '2': i32
-            225..226 'i': [&str; _]
-            229..239 '["a", "b"]': [&str; _]
+            225..226 'i': [&str; 2]
+            229..239 '["a", "b"]': [&str; 2]
             230..233 '"a"': &str
             235..238 '"b"': &str
-            250..251 'b': [[&str; _]; _]
-            254..264 '[a, ["b"]]': [[&str; _]; _]
-            255..256 'a': [&str; _]
-            258..263 '["b"]': [&str; _]
+            250..251 'b': [[&str; 1]; 2]
+            254..264 '[a, ["b"]]': [[&str; 1]; 2]
+            255..256 'a': [&str; 1]
+            258..263 '["b"]': [&str; 1]
             259..262 '"b"': &str
-            274..275 'x': [u8; _]
-            287..289 '[]': [u8; _]
+            274..275 'x': [u8; 0]
+            287..289 '[]': [u8; 0]
+            368..369 'y': [u8; _]
+            383..392 '[1,2,3,4]': [u8; 4]
+            384..385 '1': u8
+            386..387 '2': u8
+            388..389 '3': u8
+            390..391 '4': u8
         "#]],
     );
 }
@@ -2373,40 +2392,40 @@ fn infer_operator_overload() {
             320..422 '{     ...     }': V2
             334..335 'x': f32
             338..342 'self': V2
-            338..344 'self.0': [f32; _]
+            338..344 'self.0': [f32; 2]
             338..347 'self.0[0]': {unknown}
             338..358 'self.0...s.0[0]': f32
             345..346 '0': i32
             350..353 'rhs': V2
-            350..355 'rhs.0': [f32; _]
+            350..355 'rhs.0': [f32; 2]
             350..358 'rhs.0[0]': {unknown}
             356..357 '0': i32
             372..373 'y': f32
             376..380 'self': V2
-            376..382 'self.0': [f32; _]
+            376..382 'self.0': [f32; 2]
             376..385 'self.0[1]': {unknown}
             376..396 'self.0...s.0[1]': f32
             383..384 '1': i32
             388..391 'rhs': V2
-            388..393 'rhs.0': [f32; _]
+            388..393 'rhs.0': [f32; 2]
             388..396 'rhs.0[1]': {unknown}
             394..395 '1': i32
-            406..408 'V2': V2([f32; _]) -> V2
+            406..408 'V2': V2([f32; 2]) -> V2
             406..416 'V2([x, y])': V2
-            409..415 '[x, y]': [f32; _]
+            409..415 '[x, y]': [f32; 2]
             410..411 'x': f32
             413..414 'y': f32
             436..519 '{     ... vb; }': ()
             446..448 'va': V2
-            451..453 'V2': V2([f32; _]) -> V2
+            451..453 'V2': V2([f32; 2]) -> V2
             451..465 'V2([0.0, 1.0])': V2
-            454..464 '[0.0, 1.0]': [f32; _]
+            454..464 '[0.0, 1.0]': [f32; 2]
             455..458 '0.0': f32
             460..463 '1.0': f32
             475..477 'vb': V2
-            480..482 'V2': V2([f32; _]) -> V2
+            480..482 'V2': V2([f32; 2]) -> V2
             480..494 'V2([0.0, 1.0])': V2
-            483..493 '[0.0, 1.0]': [f32; _]
+            483..493 '[0.0, 1.0]': [f32; 2]
             484..487 '0.0': f32
             489..492 '1.0': f32
             505..506 'r': V2
@@ -2557,8 +2576,8 @@ fn test() {
             658..661 'vec': Vec<i32, Global>
             664..679 '<[_]>::into_vec': fn into_vec<i32, Global>(Box<[i32], Global>) -> Vec<i32, Global>
             664..691 '<[_]>:...1i32])': Vec<i32, Global>
-            680..690 'box [1i32]': Box<[i32; _], Global>
-            684..690 '[1i32]': [i32; _]
+            680..690 'box [1i32]': Box<[i32; 1], Global>
+            684..690 '[1i32]': [i32; 1]
             685..689 '1i32': i32
         "#]],
     )
@@ -2614,4 +2633,102 @@ fn f() {
             155..157 '()': ()
         "#]],
     )
+}
+
+#[test]
+fn infer_boxed_self_receiver() {
+    check_infer(
+        r#"
+#[lang = "deref"]
+pub trait Deref {
+    type Target;
+    fn deref(&self) -> &Self::Target;
+}
+
+struct Box<T>(T);
+
+impl<T> Deref for Box<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target;
+}
+
+struct Foo<T>(T);
+
+impl<T> Foo<T> {
+    fn get_inner<'a>(self: &'a Box<Self>) -> &'a T {}
+
+    fn get_self<'a>(self: &'a Box<Self>) -> &'a Self {}
+
+    fn into_inner(self: Box<Self>) -> Self {}
+}
+
+fn main() {
+    let boxed = Box(Foo(0_i32));
+
+    let bad1 = boxed.get_inner();
+    let good1 = Foo::get_inner(&boxed);
+
+    let bad2 = boxed.get_self();
+    let good2 = Foo::get_self(&boxed);
+
+    let inner = boxed.into_inner();
+}
+        "#,
+        expect![[r#"
+            67..71 'self': &Self
+            175..179 'self': &Box<T>
+            259..263 'self': &Box<Foo<T>>
+            289..291 '{}': ()
+            313..317 'self': &Box<Foo<T>>
+            346..348 '{}': ()
+            368..372 'self': Box<Foo<T>>
+            393..395 '{}': ()
+            409..630 '{     ...r(); }': ()
+            419..424 'boxed': Box<Foo<i32>>
+            427..430 'Box': Box<Foo<i32>>(Foo<i32>) -> Box<Foo<i32>>
+            427..442 'Box(Foo(0_i32))': Box<Foo<i32>>
+            431..434 'Foo': Foo<i32>(i32) -> Foo<i32>
+            431..441 'Foo(0_i32)': Foo<i32>
+            435..440 '0_i32': i32
+            453..457 'bad1': &i32
+            460..465 'boxed': Box<Foo<i32>>
+            460..477 'boxed....nner()': &i32
+            487..492 'good1': &i32
+            495..509 'Foo::get_inner': fn get_inner<i32>(&Box<Foo<i32>>) -> &i32
+            495..517 'Foo::g...boxed)': &i32
+            510..516 '&boxed': &Box<Foo<i32>>
+            511..516 'boxed': Box<Foo<i32>>
+            528..532 'bad2': &Foo<i32>
+            535..540 'boxed': Box<Foo<i32>>
+            535..551 'boxed....self()': &Foo<i32>
+            561..566 'good2': &Foo<i32>
+            569..582 'Foo::get_self': fn get_self<i32>(&Box<Foo<i32>>) -> &Foo<i32>
+            569..590 'Foo::g...boxed)': &Foo<i32>
+            583..589 '&boxed': &Box<Foo<i32>>
+            584..589 'boxed': Box<Foo<i32>>
+            601..606 'inner': Foo<i32>
+            609..614 'boxed': Box<Foo<i32>>
+            609..627 'boxed....nner()': Foo<i32>
+        "#]],
+    );
+}
+
+#[test]
+fn prelude_2015() {
+    check_types(
+        r#"
+//- /main.rs edition:2015 crate:main deps:core
+fn f() {
+    Rust;
+     //^ Rust
+}
+
+//- /core.rs crate:core
+pub mod prelude {
+    pub mod rust_2015 {
+        pub struct Rust;
+    }
+}
+    "#,
+    );
 }

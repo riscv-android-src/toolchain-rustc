@@ -15,7 +15,6 @@ pub mod args;
 pub mod cmath;
 pub mod condvar;
 pub mod env;
-pub mod ext;
 pub mod fd;
 pub mod fs;
 pub mod futex;
@@ -149,6 +148,7 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
         libc::ETIMEDOUT => ErrorKind::TimedOut,
         libc::EEXIST => ErrorKind::AlreadyExists,
         libc::ENOSYS => ErrorKind::Unsupported,
+        libc::ENOMEM => ErrorKind::OutOfMemory,
 
         // These two constants can have the same value on some systems,
         // but different values on others, so we can't use a match
@@ -210,7 +210,6 @@ cfg_if::cfg_if! {
     if #[cfg(target_os = "android")] {
         #[link(name = "dl")]
         #[link(name = "log")]
-        #[link(name = "gcc")]
         extern "C" {}
     } else if #[cfg(target_os = "freebsd")] {
         #[link(name = "execinfo")]

@@ -1,12 +1,12 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::snippet_opt;
+use clippy_utils::ty::same_type_and_consts;
 use clippy_utils::{in_macro, meets_msrv, msrvs};
 use if_chain::if_chain;
 use rustc_errors::Applicability;
-use rustc_hir as hir;
-use rustc_hir::def::DefKind;
 use rustc_hir::{
-    def,
+    self as hir,
+    def::{self, DefKind},
     def_id::LocalDefId,
     intravisit::{walk_ty, NestedVisitorMap, Visitor},
     Expr, ExprKind, FnRetTy, FnSig, GenericArg, HirId, Impl, ImplItemKind, Item, ItemKind, Node, Path, PathSegment,
@@ -14,7 +14,7 @@ use rustc_hir::{
 };
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::hir::map::Map;
-use rustc_middle::ty::{AssocKind, Ty, TyS};
+use rustc_middle::ty::{AssocKind, Ty};
 use rustc_semver::RustcVersion;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::{BytePos, Span};
@@ -356,7 +356,7 @@ impl<'tcx> Visitor<'tcx> for SkipTyCollector {
     fn visit_ty(&mut self, hir_ty: &hir::Ty<'_>) {
         self.types_to_skip.push(hir_ty.hir_id);
 
-        walk_ty(self, hir_ty)
+        walk_ty(self, hir_ty);
     }
 
     fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
@@ -385,7 +385,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LintTyCollector<'a, 'tcx> {
             }
         }
 
-        walk_ty(self, hir_ty)
+        walk_ty(self, hir_ty);
     }
 
     fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
@@ -459,7 +459,7 @@ fn in_impl(cx: &LateContext<'tcx>, hir_ty: &hir::Ty<'_>) -> bool {
 
 fn should_lint_ty(hir_ty: &hir::Ty<'_>, ty: Ty<'_>, self_ty: Ty<'_>) -> bool {
     if_chain! {
-        if TyS::same_type(ty, self_ty);
+        if same_type_and_consts(ty, self_ty);
         if let TyKind::Path(QPath::Resolved(_, path)) = hir_ty.kind;
         then {
             !matches!(path.res, def::Res::SelfTy(..))

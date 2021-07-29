@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "salsa"
-version = "0.16.0"
+version = "0.17.0-pre.1"
 authors = ["Salsa developers"]
 description = "A generic framework for on-demand, incrementalized computation (experimental)"
 license = "Apache-2.0 OR MIT"
@@ -41,7 +41,7 @@ version = "0.11.0"
 version = "1.0"
 
 [dependencies.salsa-macros]
-version = "0.16.0"
+version = "0.17.0-pre.1"
 
 [dependencies.smallvec]
 version = "1.0.0"

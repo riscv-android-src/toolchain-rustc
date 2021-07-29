@@ -1,6 +1,6 @@
 use crate::git::repo;
 use crate::paths;
-use cargo_util::Sha256;
+use cargo_util::{registry::make_dep_path, Sha256};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::BTreeMap;
@@ -178,12 +178,7 @@ impl RegistryBuilder {
         }
 
         if self.replace_crates_io {
-            init_registry(
-                registry_path(),
-                dl_url().into_string(),
-                api_url(),
-                api_path(),
-            );
+            init_registry(registry_path(), dl_url().into(), api_url(), api_path());
         }
 
         if self.alternative {
@@ -632,12 +627,7 @@ impl Package {
         }
         let line = json.to_string();
 
-        let file = match self.name.len() {
-            1 => format!("1/{}", self.name),
-            2 => format!("2/{}", self.name),
-            3 => format!("3/{}/{}", &self.name[..1], self.name),
-            _ => format!("{}/{}/{}", &self.name[0..2], &self.name[2..4], self.name),
-        };
+        let file = make_dep_path(&self.name, false);
 
         let registry_path = if self.alternative {
             alt_registry_path()

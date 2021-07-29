@@ -1,17 +1,17 @@
 //! PKCS #12 archives.
 
-use ffi;
 use foreign_types::{ForeignType, ForeignTypeRef};
 use libc::c_int;
 use std::ffi::CString;
 use std::ptr;
 
-use error::ErrorStack;
-use nid::Nid;
-use pkey::{HasPrivate, PKey, PKeyRef, Private};
-use stack::Stack;
-use x509::{X509Ref, X509};
-use {cvt, cvt_p};
+use crate::error::ErrorStack;
+use crate::nid::Nid;
+use crate::pkey::{HasPrivate, PKey, PKeyRef, Private};
+use crate::stack::Stack;
+use crate::util::ForeignTypeExt;
+use crate::x509::{X509Ref, X509};
+use crate::{cvt, cvt_p};
 
 foreign_type_and_impl_send_sync! {
     type CType = ffi::PKCS12;
@@ -52,11 +52,7 @@ impl Pkcs12Ref {
             let pkey = PKey::from_ptr(pkey);
             let cert = X509::from_ptr(cert);
 
-            let chain = if chain.is_null() {
-                None
-            } else {
-                Some(Stack::from_ptr(chain))
-            };
+            let chain = Stack::from_ptr_opt(chain);
 
             Ok(ParsedPkcs12 { pkey, cert, chain })
         }
@@ -200,15 +196,13 @@ impl Pkcs12Builder {
 
 #[cfg(test)]
 mod test {
-    use hash::MessageDigest;
-    use hex;
-
-    use asn1::Asn1Time;
-    use nid::Nid;
-    use pkey::PKey;
-    use rsa::Rsa;
-    use x509::extension::KeyUsage;
-    use x509::{X509Name, X509};
+    use crate::asn1::Asn1Time;
+    use crate::hash::MessageDigest;
+    use crate::nid::Nid;
+    use crate::pkey::PKey;
+    use crate::rsa::Rsa;
+    use crate::x509::extension::KeyUsage;
+    use crate::x509::{X509Name, X509};
 
     use super::*;
 

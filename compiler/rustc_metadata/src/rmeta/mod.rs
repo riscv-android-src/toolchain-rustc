@@ -52,7 +52,7 @@ const METADATA_VERSION: u8 = 5;
 /// This header is followed by the position of the `CrateRoot`,
 /// which is encoded as a 32-bit big-endian unsigned integer,
 /// and further followed by the rustc version string.
-crate const METADATA_HEADER: &[u8; 8] = &[b'r', b'u', b's', b't', 0, 0, 0, METADATA_VERSION];
+pub const METADATA_HEADER: &[u8] = &[b'r', b'u', b's', b't', 0, 0, 0, METADATA_VERSION];
 
 /// Additional metadata for a `Lazy<T>` where `T` may not be `Sized`,
 /// e.g. for `Lazy<[T]>`, this is the length (count of `T` values).
@@ -209,7 +209,6 @@ crate struct CrateRoot<'tcx> {
     has_global_allocator: bool,
     has_panic_handler: bool,
     has_default_lib_allocator: bool,
-    plugin_registrar_fn: Option<DefIndex>,
 
     crate_deps: Lazy<[CrateDep]>,
     dylib_dependency_formats: Lazy<[Option<LinkagePreference>]>,
@@ -258,15 +257,15 @@ crate struct TraitImpls {
 
 /// Define `LazyTables` and `TableBuilders` at the same time.
 macro_rules! define_tables {
-    ($($name:ident: Table<DefIndex, $T:ty>),+ $(,)?) => {
+    ($($name:ident: Table<$IDX:ty, $T:ty>),+ $(,)?) => {
         #[derive(MetadataEncodable, MetadataDecodable)]
         crate struct LazyTables<'tcx> {
-            $($name: Lazy!(Table<DefIndex, $T>)),+
+            $($name: Lazy!(Table<$IDX, $T>)),+
         }
 
         #[derive(Default)]
         struct TableBuilders<'tcx> {
-            $($name: TableBuilder<DefIndex, $T>),+
+            $($name: TableBuilder<$IDX, $T>),+
         }
 
         impl TableBuilders<'tcx> {
@@ -315,6 +314,7 @@ define_tables! {
     // definitions from any given crate.
     def_keys: Table<DefIndex, Lazy<DefKey>>,
     def_path_hashes: Table<DefIndex, Lazy<DefPathHash>>,
+    proc_macro_quoted_spans: Table<usize, Lazy<Span>>,
 }
 
 #[derive(Copy, Clone, MetadataEncodable, MetadataDecodable)]

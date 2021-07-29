@@ -554,13 +554,14 @@ impl<'tcx> CPlace<'tcx> {
                 let src_align = src_layout.align.abi.bytes() as u8;
                 let dst_align = dst_layout.align.abi.bytes() as u8;
                 fx.bcx.emit_small_memory_copy(
-                    fx.cx.module.target_config(),
+                    fx.module.target_config(),
                     to_addr,
                     from_addr,
                     size,
                     dst_align,
                     src_align,
                     true,
+                    MemFlags::trusted(),
                 );
             }
             CValueInner::ByRef(_, Some(_)) => todo!(),

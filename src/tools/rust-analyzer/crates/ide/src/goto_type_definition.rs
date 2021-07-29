@@ -1,3 +1,4 @@
+use ide_db::base_db::Upcast;
 use ide_db::RootDatabase;
 use syntax::{ast, match_ast, AstNode, SyntaxKind::*, SyntaxToken, TokenAtOffset, T};
 
@@ -30,6 +31,8 @@ pub(crate) fn goto_type_definition(
                 ast::Expr(it) => sema.type_of_expr(&it)?,
                 ast::Pat(it) => sema.type_of_pat(&it)?,
                 ast::SelfParam(it) => sema.type_of_self(&it)?,
+                ast::Type(it) => sema.resolve_type(&it)?,
+                ast::RecordField(it) => sema.to_def(&it).map(|d| d.ty(db.upcast()))?,
                 _ => return None,
             }
         };
@@ -148,5 +151,46 @@ impl Foo {
 }
 "#,
         )
+    }
+
+    #[test]
+    fn goto_def_for_type_fallback() {
+        check(
+            r#"
+struct Foo;
+     //^^^
+impl Foo$0 {}
+"#,
+        )
+    }
+
+    #[test]
+    fn goto_def_for_struct_field() {
+        check(
+            r#"
+struct Bar;
+     //^^^
+
+struct Foo {
+    bar$0: Bar,
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_def_for_enum_struct_field() {
+        check(
+            r#"
+struct Bar;
+     //^^^
+
+enum Foo {
+    Bar {
+        bar$0: Bar
+    },
+}
+"#,
+        );
     }
 }

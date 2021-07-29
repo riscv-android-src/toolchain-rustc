@@ -11,7 +11,7 @@ use std::iter::repeat;
 use std::path::{Path, PathBuf};
 
 use filetime::FileTime;
-use tar::{Archive, Builder, EntryType, Header};
+use tar::{Archive, Builder, EntryType, Header, HeaderMode};
 use tempfile::{Builder as TempBuilder, TempDir};
 
 macro_rules! t {
@@ -241,6 +241,76 @@ fn extracting_directories() {
     let mut ar = Archive::new(rdr);
     t!(ar.unpack(td.path()));
     check_dirtree(&td);
+}
+
+#[test]
+fn extracting_duplicate_file_fail() {
+    let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
+    let path_present = td.path().join("a");
+    t!(File::create(path_present));
+
+    let rdr = Cursor::new(tar!("reading_files.tar"));
+    let mut ar = Archive::new(rdr);
+    ar.set_overwrite(false);
+    if let Err(err) = ar.unpack(td.path()) {
+        if err.kind() == std::io::ErrorKind::AlreadyExists {
+            // as expected with overwrite false
+            return;
+        }
+        panic!("unexpected error: {:?}", err);
+    }
+    panic!(
+        "unpack() should have returned an error of kind {:?}, returned Ok",
+        std::io::ErrorKind::AlreadyExists
+    )
+}
+
+#[test]
+fn extracting_duplicate_file_succeed() {
+    let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
+    let path_present = td.path().join("a");
+    t!(File::create(path_present));
+
+    let rdr = Cursor::new(tar!("reading_files.tar"));
+    let mut ar = Archive::new(rdr);
+    ar.set_overwrite(true);
+    t!(ar.unpack(td.path()));
+}
+
+#[test]
+#[cfg(unix)]
+fn extracting_duplicate_link_fail() {
+    let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
+    let path_present = td.path().join("lnk");
+    t!(std::os::unix::fs::symlink("file", path_present));
+
+    let rdr = Cursor::new(tar!("link.tar"));
+    let mut ar = Archive::new(rdr);
+    ar.set_overwrite(false);
+    if let Err(err) = ar.unpack(td.path()) {
+        if err.kind() == std::io::ErrorKind::AlreadyExists {
+            // as expected with overwrite false
+            return;
+        }
+        panic!("unexpected error: {:?}", err);
+    }
+    panic!(
+        "unpack() should have returned an error of kind {:?}, returned Ok",
+        std::io::ErrorKind::AlreadyExists
+    )
+}
+
+#[test]
+#[cfg(unix)]
+fn extracting_duplicate_link_succeed() {
+    let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
+    let path_present = td.path().join("lnk");
+    t!(std::os::unix::fs::symlink("file", path_present));
+
+    let rdr = Cursor::new(tar!("link.tar"));
+    let mut ar = Archive::new(rdr);
+    ar.set_overwrite(true);
+    t!(ar.unpack(td.path()));
 }
 
 #[test]
@@ -576,6 +646,27 @@ fn file_times() {
 }
 
 #[test]
+fn zero_file_times() {
+    let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
+
+    let mut ar = Builder::new(Vec::new());
+    ar.mode(HeaderMode::Deterministic);
+    let path = td.path().join("tmpfile");
+    t!(File::create(&path));
+    t!(ar.append_path_with_name(&path, "a"));
+
+    let data = t!(ar.into_inner());
+    let mut ar = Archive::new(&data[..]);
+    assert!(ar.unpack(td.path()).is_ok());
+
+    let meta = fs::metadata(td.path().join("a")).unwrap();
+    let mtime = FileTime::from_last_modification_time(&meta);
+    let atime = FileTime::from_last_access_time(&meta);
+    assert!(mtime.unix_seconds() != 0);
+    assert!(atime.unix_seconds() != 0);
+}
+
+#[test]
 fn backslash_treated_well() {
     // Insert a file into an archive with a backslash
     let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
@@ -649,6 +740,26 @@ fn unpack_links() {
         Path::new("file")
     );
     t!(File::open(td.path().join("lnk")));
+}
+
+#[test]
+fn pax_size() {
+    let mut ar = Archive::new(tar!("pax_size.tar"));
+    let mut entries = t!(ar.entries());
+    let mut entry = t!(entries.next().unwrap());
+    let mut attributes = t!(entry.pax_extensions()).unwrap();
+
+    let _first = t!(attributes.next().unwrap());
+    let _second = t!(attributes.next().unwrap());
+    let _third = t!(attributes.next().unwrap());
+    let fourth = t!(attributes.next().unwrap());
+    assert!(attributes.next().is_none());
+
+    assert_eq!(fourth.key(), Ok("size"));
+    assert_eq!(fourth.value(), Ok("4"));
+
+    assert_eq!(entry.header().size().unwrap(), 0);
+    assert_eq!(entry.size(), 4);
 }
 
 #[test]
@@ -845,6 +956,20 @@ fn extract_sparse() {
 }
 
 #[test]
+fn sparse_with_trailing() {
+    let rdr = Cursor::new(tar!("sparse-1.tar"));
+    let mut ar = Archive::new(rdr);
+    let mut entries = t!(ar.entries());
+    let mut a = t!(entries.next().unwrap());
+    let mut s = String::new();
+    t!(a.read_to_string(&mut s));
+    assert_eq!(0x100_00c, s.len());
+    assert_eq!(&s[..0xc], "0MB through\n");
+    assert!(s[0xc..0x100_000].chars().all(|x| x == '\u{0}'));
+    assert_eq!(&s[0x100_000..], "1MB through\n");
+}
+
+#[test]
 fn path_separators() {
     let mut ar = Builder::new(Vec::new());
     let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
@@ -1030,5 +1155,44 @@ fn unpack_path_larger_than_windows_max_path() {
     let rdr = Cursor::new(tar!("7z_long_path.tar"));
     let mut ar = Archive::new(rdr);
     // should unpack path greater than windows MAX_PATH length of 260 characters
+    assert!(ar.unpack(td.path()).is_ok());
+}
+
+#[test]
+fn append_long_multibyte() {
+    let mut x = tar::Builder::new(Vec::new());
+    let mut name = String::new();
+    let data: &[u8] = &[];
+    for _ in 0..512 {
+        name.push('a');
+        name.push('𑢮');
+        x.append_data(&mut Header::new_gnu(), &name, data).unwrap();
+        name.pop();
+    }
+}
+
+#[test]
+fn read_only_directory_containing_files() {
+    let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
+
+    let mut b = Builder::new(Vec::<u8>::new());
+
+    let mut h = Header::new_gnu();
+    t!(h.set_path("dir/"));
+    h.set_size(0);
+    h.set_entry_type(EntryType::dir());
+    h.set_mode(0o444);
+    h.set_cksum();
+    t!(b.append(&h, "".as_bytes()));
+
+    let mut h = Header::new_gnu();
+    t!(h.set_path("dir/file"));
+    h.set_size(2);
+    h.set_entry_type(EntryType::file());
+    h.set_cksum();
+    t!(b.append(&h, "hi".as_bytes()));
+
+    let contents = t!(b.into_inner());
+    let mut ar = Archive::new(&contents[..]);
     assert!(ar.unpack(td.path()).is_ok());
 }

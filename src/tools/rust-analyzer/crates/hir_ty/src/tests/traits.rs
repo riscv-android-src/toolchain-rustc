@@ -20,11 +20,12 @@ fn test() {
 } //^ u64
 
 //- /core.rs crate:core
-#[prelude_import] use future::*;
-mod future {
-    #[lang = "future_trait"]
-    trait Future {
-        type Output;
+pub mod prelude {
+    pub mod rust_2018 {
+        #[lang = "future_trait"]
+        pub trait Future {
+            type Output;
+        }
     }
 }
 "#,
@@ -136,17 +137,15 @@ fn test() {
 } //^ i32
 
 //- /core.rs crate:core
-#[prelude_import] use ops::*;
-mod ops {
-    trait Try {
+pub mod ops {
+    pub trait Try {
         type Ok;
         type Error;
     }
 }
 
-#[prelude_import] use result::*;
-mod result {
-    enum Result<O, E> {
+pub mod result {
+    pub enum Result<O, E> {
         Ok(O),
         Err(E)
     }
@@ -154,6 +153,69 @@ mod result {
     impl<O, E> crate::ops::Try for Result<O, E> {
         type Ok = O;
         type Error = E;
+    }
+}
+
+pub mod prelude {
+    pub mod rust_2018 {
+        pub use crate::{result::*, ops::*};
+    }
+}
+"#,
+    );
+}
+
+#[test]
+fn infer_try_trait_v2() {
+    check_types(
+        r#"
+//- /main.rs crate:main deps:core
+fn test() {
+    let r: Result<i32, u64> = Result::Ok(1);
+    let v = r?;
+    v;
+} //^ i32
+
+//- /core.rs crate:core
+mod ops {
+    mod try_trait {
+        pub trait Try: FromResidual {
+            type Output;
+            type Residual;
+        }
+        pub trait FromResidual<R = <Self as Try>::Residual> {}
+    }
+
+    pub use self::try_trait::FromResidual;
+    pub use self::try_trait::Try;
+}
+
+mov convert {
+    pub trait From<T> {}
+    impl<T> From<T> for T {}
+}
+
+pub mod result {
+    use crate::convert::From;
+    use crate::ops::{Try, FromResidual};
+
+    pub enum Infallible {}
+    pub enum Result<O, E> {
+        Ok(O),
+        Err(E)
+    }
+
+    impl<O, E> Try for Result<O, E> {
+        type Output = O;
+        type Error = Result<Infallible, E>;
+    }
+
+    impl<T, E, F: From<E>> FromResidual<Result<Infallible, E>> for Result<T, F> {}
+}
+
+pub mod prelude {
+    pub mod rust_2018 {
+        pub use crate::result::*;
     }
 }
 "#,
@@ -165,6 +227,7 @@ fn infer_for_loop() {
     check_types(
         r#"
 //- /main.rs crate:main deps:core,alloc
+#![no_std]
 use alloc::collections::Vec;
 
 fn test() {
@@ -176,14 +239,19 @@ fn test() {
 }
 
 //- /core.rs crate:core
-#[prelude_import] use iter::*;
-mod iter {
-    trait IntoIterator {
+pub mod iter {
+    pub trait IntoIterator {
         type Item;
+    }
+}
+pub mod prelude {
+    pub mod rust_2018 {
+        pub use crate::iter::*;
     }
 }
 
 //- /alloc.rs crate:alloc deps:core
+#![no_std]
 mod collections {
     struct Vec<T> {}
     impl<T> Vec<T> {
@@ -531,7 +599,7 @@ fn indexing_arrays() {
         expect![[r#"
             10..26 '{ &mut...[2]; }': ()
             12..23 '&mut [9][2]': &mut {unknown}
-            17..20 '[9]': [i32; _]
+            17..20 '[9]': [i32; 1]
             17..23 '[9][2]': {unknown}
             18..19 '9': i32
             21..22 '2': i32
@@ -3041,7 +3109,7 @@ fn infer_fn_trait_arg() {
 
 #[test]
 fn infer_box_fn_arg() {
-    // The type mismatch is a bug
+    // The type mismatch is because we don't define Unsize and CoerceUnsized
     check_infer_with_mismatches(
         r#"
 //- /lib.rs deps:std
@@ -3101,10 +3169,10 @@ fn foo() {
             555..557 'ps': {unknown}
             559..561 '{}': ()
             568..569 'f': Box<dyn FnOnce(&Option<i32>)>
-            568..573 'f(&s)': FnOnce::Output<dyn FnOnce(&Option<i32>), (&Option<i32>,)>
+            568..573 'f(&s)': ()
             570..572 '&s': &Option<i32>
             571..572 's': Option<i32>
-            549..562: expected Box<dyn FnOnce(&Option<i32>)>, got Box<|_| -> ()>
+            549..562: expected Box<dyn FnOnce(&Option<i32>)>, got Box<|{unknown}| -> ()>
         "#]],
     );
 }
@@ -3473,4 +3541,202 @@ fn main(){
             338..341 'num': u32
         "#]],
     )
+}
+
+#[test]
+fn array_length() {
+    check_infer(
+        r#"
+trait T {
+    type Output;
+    fn do_thing(&self) -> Self::Output;
+}
+
+impl T for [u8; 4] {
+    type Output = usize;
+    fn do_thing(&self) -> Self::Output {
+        2
+    }
+}
+
+impl T for [u8; 2] {
+    type Output = u8;
+    fn do_thing(&self) -> Self::Output {
+        2
+    }
+}
+
+fn main() {
+    let v = [0u8; 2];
+    let v2 = v.do_thing();
+    let v3 = [0u8; 4];
+    let v4 = v3.do_thing();
+}
+"#,
+        expect![[r#"
+            44..48 'self': &Self
+            133..137 'self': &[u8; 4]
+            155..172 '{     ...     }': usize
+            165..166 '2': usize
+            236..240 'self': &[u8; 2]
+            258..275 '{     ...     }': u8
+            268..269 '2': u8
+            289..392 '{     ...g(); }': ()
+            299..300 'v': [u8; 2]
+            303..311 '[0u8; 2]': [u8; 2]
+            304..307 '0u8': u8
+            309..310 '2': usize
+            321..323 'v2': u8
+            326..327 'v': [u8; 2]
+            326..338 'v.do_thing()': u8
+            348..350 'v3': [u8; 4]
+            353..361 '[0u8; 4]': [u8; 4]
+            354..357 '0u8': u8
+            359..360 '4': usize
+            371..373 'v4': usize
+            376..378 'v3': [u8; 4]
+            376..389 'v3.do_thing()': usize
+        "#]],
+    )
+}
+
+// FIXME: We should infer the length of the returned array :)
+#[test]
+fn const_generics() {
+    check_infer(
+        r#"
+trait T {
+    type Output;
+    fn do_thing(&self) -> Self::Output;
+}
+
+impl<const L: usize> T for [u8; L] {
+    type Output = [u8; L];
+    fn do_thing(&self) -> Self::Output {
+        *self
+    }
+}
+
+fn main() {
+    let v = [0u8; 2];
+    let v2 = v.do_thing();
+}
+"#,
+        expect![[r#"
+            44..48 'self': &Self
+            151..155 'self': &[u8; _]
+            173..194 '{     ...     }': [u8; _]
+            183..188 '*self': [u8; _]
+            184..188 'self': &[u8; _]
+            208..260 '{     ...g(); }': ()
+            218..219 'v': [u8; 2]
+            222..230 '[0u8; 2]': [u8; 2]
+            223..226 '0u8': u8
+            228..229 '2': usize
+            240..242 'v2': [u8; _]
+            245..246 'v': [u8; 2]
+            245..257 'v.do_thing()': [u8; _]
+        "#]],
+    )
+}
+
+#[test]
+fn fn_returning_unit() {
+    check_infer_with_mismatches(
+        r#"
+#[lang = "fn_once"]
+trait FnOnce<Args> {
+    type Output;
+}
+
+fn test<F: FnOnce()>(f: F) {
+    let _: () = f();
+}"#,
+        expect![[r#"
+            82..83 'f': F
+            88..112 '{     ...f(); }': ()
+            98..99 '_': ()
+            106..107 'f': F
+            106..109 'f()': ()
+        "#]],
+    );
+}
+
+#[test]
+fn trait_in_scope_of_trait_impl() {
+    check_infer(
+        r#"
+mod foo {
+    pub trait Foo {
+        fn foo(self);
+        fn bar(self) -> usize { 0 }
+    }
+}
+impl foo::Foo for u32 {
+    fn foo(self) {
+        let _x = self.bar();
+    }
+}
+    "#,
+        expect![[r#"
+            45..49 'self': Self
+            67..71 'self': Self
+            82..87 '{ 0 }': usize
+            84..85 '0': usize
+            131..135 'self': u32
+            137..173 '{     ...     }': ()
+            151..153 '_x': usize
+            156..160 'self': u32
+            156..166 'self.bar()': usize
+        "#]],
+    );
+}
+
+#[test]
+fn infer_async_ret_type() {
+    check_types(
+        r#"
+//- /main.rs crate:main deps:core
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+use Result::*;
+
+
+struct Fooey;
+
+impl Fooey {
+    fn collect<B: Convert>(self) -> B {
+        B::new()
+    }
+}
+
+trait Convert {
+    fn new() -> Self;
+}
+impl Convert for u32 {
+    fn new() -> Self {
+        0
+    }
+}
+
+async fn get_accounts() -> Result<u32, ()> {
+    let ret = Fooey.collect();
+    //                      ^ u32
+    Ok(ret)
+}
+
+//- /core.rs crate:core
+#[prelude_import] use future::*;
+mod future {
+    #[lang = "future_trait"]
+    trait Future {
+        type Output;
+    }
+}
+"#,
+    );
 }

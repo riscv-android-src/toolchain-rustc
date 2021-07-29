@@ -143,7 +143,8 @@ impl WorkspaceBuildData {
             cmd.env("RA_RUSTC_WRAPPER", "1");
         }
 
-        cmd.args(&["check", "--workspace", "--message-format=json", "--manifest-path"])
+        cmd.current_dir(cargo_toml.parent().unwrap());
+        cmd.args(&["check", "--quiet", "--workspace", "--message-format=json", "--manifest-path"])
             .arg(cargo_toml.as_ref());
 
         // --all-targets includes tests, benches and examples in addition to the
@@ -213,7 +214,7 @@ impl WorkspaceBuildData {
                             acc
                         };
                         let package_build_data =
-                            res.per_package.entry(package_id.repr.clone()).or_default();
+                            res.per_package.entry(package_id.repr).or_default();
                         // cargo_metadata crate returns default (empty) path for
                         // older cargos, which is not absolute, so work around that.
                         if !out_dir.as_str().is_empty() {
@@ -236,13 +237,13 @@ impl WorkspaceBuildData {
                             {
                                 let filename = AbsPathBuf::assert(PathBuf::from(&filename));
                                 let package_build_data =
-                                    res.per_package.entry(package_id.repr.clone()).or_default();
+                                    res.per_package.entry(package_id.repr).or_default();
                                 package_build_data.proc_macro_dylib_path = Some(filename);
                             }
                         }
                     }
                     Message::CompilerMessage(message) => {
-                        progress(message.target.name.clone());
+                        progress(message.target.name);
                     }
                     Message::BuildFinished(_) => {}
                     Message::TextLine(_) => {}

@@ -28,9 +28,12 @@ use rustc_middle::ty::codec::TyEncoder;
 use rustc_middle::ty::{self, SymbolName, Ty, TyCtxt};
 use rustc_serialize::{opaque, Encodable, Encoder};
 use rustc_session::config::CrateType;
-use rustc_span::hygiene::{ExpnDataEncodeMode, HygieneEncodeContext, MacroKind};
 use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::{self, ExternalSource, FileName, SourceFile, Span, SyntaxContext};
+use rustc_span::{
+    hygiene::{ExpnDataEncodeMode, HygieneEncodeContext, MacroKind},
+    RealFileName,
+};
 use rustc_target::abi::VariantIdx;
 use std::hash::Hash;
 use std::num::NonZeroUsize;
@@ -466,7 +469,6 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
         let source_map = self.tcx.sess.source_map();
         let all_source_files = source_map.files();
 
-        let (working_dir, _cwd_remapped) = self.tcx.sess.working_dir.clone();
         // By replacing the `Option` with `None`, we ensure that we can't
         // accidentally serialize any more `Span`s after the source map encoding
         // is done.
@@ -485,18 +487,41 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             })
             .map(|(_, source_file)| {
                 let mut adapted = match source_file.name {
-                    // This path of this SourceFile has been modified by
-                    // path-remapping, so we use it verbatim (and avoid
-                    // cloning the whole map in the process).
-                    _ if source_file.name_was_remapped => source_file.clone(),
-
-                    // Otherwise expand all paths to absolute paths because
-                    // any relative paths are potentially relative to a
-                    // wrong directory.
-                    FileName::Real(ref name) => {
-                        let name = name.stable_name();
+                    FileName::Real(ref realname) => {
                         let mut adapted = (**source_file).clone();
-                        adapted.name = Path::new(&working_dir).join(name).into();
+                        adapted.name = FileName::Real(match realname {
+                            RealFileName::LocalPath(path_to_file) => {
+                                // Prepend path of working directory onto potentially
+                                // relative paths, because they could become relative
+                                // to a wrong directory.
+                                let working_dir = &self.tcx.sess.working_dir;
+                                match working_dir {
+                                    RealFileName::LocalPath(absolute) => {
+                                        // If working_dir has not been remapped, then we emit a
+                                        // LocalPath variant as it's likely to be a valid path
+                                        RealFileName::LocalPath(
+                                            Path::new(absolute).join(path_to_file),
+                                        )
+                                    }
+                                    RealFileName::Remapped { local_path: _, virtual_name } => {
+                                        // If working_dir has been remapped, then we emit
+                                        // Remapped variant as the expanded path won't be valid
+                                        RealFileName::Remapped {
+                                            local_path: None,
+                                            virtual_name: Path::new(virtual_name)
+                                                .join(path_to_file),
+                                        }
+                                    }
+                                }
+                            }
+                            RealFileName::Remapped { local_path: _, virtual_name } => {
+                                RealFileName::Remapped {
+                                    // We do not want any local path to be exported into metadata
+                                    local_path: None,
+                                    virtual_name: virtual_name.clone(),
+                                }
+                            }
+                        });
                         adapted.name_hash = {
                             let mut hasher: StableHasher = StableHasher::new();
                             adapted.name.hash(&mut hasher);
@@ -653,7 +678,6 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             has_global_allocator: tcx.has_global_allocator(LOCAL_CRATE),
             has_panic_handler: tcx.has_panic_handler(LOCAL_CRATE),
             has_default_lib_allocator,
-            plugin_registrar_fn: tcx.plugin_registrar_fn(LOCAL_CRATE).map(|id| id.index),
             proc_macro_data,
             compiler_builtins: tcx.sess.contains_name(&attrs, sym::compiler_builtins),
             needs_allocator: tcx.sess.contains_name(&attrs, sym::needs_allocator),
@@ -919,7 +943,7 @@ impl EncodeContext<'a, 'tcx> {
             });
             record!(self.tables.span[def_id] <- tcx.def_span(def_id));
             record!(self.tables.attributes[def_id] <- tcx.get_attrs(def_id));
-            record!(self.tables.expn_that_defined[def_id] <- self.tcx.expansion_that_defined(def_id));
+            record!(self.tables.expn_that_defined[def_id] <- self.tcx.expn_that_defined(def_id));
             if should_encode_visibility(def_kind) {
                 record!(self.tables.visibility[def_id] <- self.tcx.visibility(def_id));
             }
@@ -945,13 +969,12 @@ impl EncodeContext<'a, 'tcx> {
                 record!(self.tables.super_predicates[def_id] <- self.tcx.super_predicates_of(def_id));
             }
         }
-        let inherent_impls = tcx.crate_inherent_impls(LOCAL_CRATE);
+        let inherent_impls = tcx.crate_inherent_impls(());
         for (def_id, implementations) in inherent_impls.inherent_impls.iter() {
-            assert!(def_id.is_local());
             if implementations.is_empty() {
                 continue;
             }
-            record!(self.tables.inherent_impls[def_id] <- implementations.iter().map(|&def_id| {
+            record!(self.tables.inherent_impls[def_id.to_def_id()] <- implementations.iter().map(|&def_id| {
                 assert!(def_id.is_local());
                 def_id.index
             }));
@@ -1238,7 +1261,7 @@ impl EncodeContext<'a, 'tcx> {
 
         let mut keys_and_jobs = self
             .tcx
-            .mir_keys(LOCAL_CRATE)
+            .mir_keys(())
             .iter()
             .filter_map(|&def_id| {
                 let (encode_const, encode_opt) = should_encode_mir(self.tcx, def_id);
@@ -1576,9 +1599,14 @@ impl EncodeContext<'a, 'tcx> {
             let tcx = self.tcx;
             let hir = tcx.hir();
 
-            let proc_macro_decls_static = tcx.proc_macro_decls_static(LOCAL_CRATE).unwrap().index;
+            let proc_macro_decls_static = tcx.proc_macro_decls_static(()).unwrap().local_def_index;
             let stability = tcx.lookup_stability(DefId::local(CRATE_DEF_INDEX)).copied();
             let macros = self.lazy(hir.krate().proc_macros.iter().map(|p| p.owner.local_def_index));
+            let spans = self.tcx.sess.parse_sess.proc_macro_quoted_spans();
+            for (i, span) in spans.into_iter().enumerate() {
+                let span = self.lazy(span);
+                self.tables.proc_macro_quoted_spans.set(i, span);
+            }
 
             record!(self.tables.def_kind[LOCAL_CRATE.as_def_id()] <- DefKind::Mod);
             record!(self.tables.span[LOCAL_CRATE.as_def_id()] <- tcx.def_span(LOCAL_CRATE.as_def_id()));
@@ -1646,7 +1674,7 @@ impl EncodeContext<'a, 'tcx> {
             .iter()
             .map(|&cnum| {
                 let dep = CrateDep {
-                    name: self.tcx.original_crate_name(cnum),
+                    name: self.tcx.crate_name(cnum),
                     hash: self.tcx.crate_hash(cnum),
                     host_hash: self.tcx.crate_host_hash(cnum),
                     kind: self.tcx.dep_kind(cnum),
@@ -1768,7 +1796,7 @@ impl EncodeContext<'a, 'tcx> {
 
     fn encode_dylib_dependency_formats(&mut self) -> Lazy<[Option<LinkagePreference>]> {
         empty_proc_macro!(self);
-        let formats = self.tcx.dependency_formats(LOCAL_CRATE);
+        let formats = self.tcx.dependency_formats(());
         for (ty, arr) in formats.iter() {
             if *ty != CrateType::Dylib {
                 continue;
@@ -1998,7 +2026,7 @@ fn prefetch_mir(tcx: TyCtxt<'_>) {
         return;
     }
 
-    par_iter(tcx.mir_keys(LOCAL_CRATE)).for_each(|&def_id| {
+    par_iter(tcx.mir_keys(())).for_each(|&def_id| {
         let (encode_const, encode_opt) = should_encode_mir(tcx, def_id);
 
         if encode_const {

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::*;
 
-use crate::common::{CompareMode, Config, Debugger, FailMode, Mode, PassMode};
+use crate::common::{CompareMode, Config, Debugger, FailMode, Mode, PanicStrategy, PassMode};
 use crate::util;
 use crate::{extract_cdb_version, extract_gdb_version};
 
@@ -50,6 +50,15 @@ impl EarlyProps {
         let has_msan = util::MSAN_SUPPORTED_TARGETS.contains(&&*config.target);
         let has_tsan = util::TSAN_SUPPORTED_TARGETS.contains(&&*config.target);
         let has_hwasan = util::HWASAN_SUPPORTED_TARGETS.contains(&&*config.target);
+        // for `-Z gcc-ld=lld`
+        let has_rust_lld = config
+            .compile_lib_path
+            .join("rustlib")
+            .join(&config.target)
+            .join("bin")
+            .join("gcc-ld")
+            .join(if config.host.contains("windows") { "ld.exe" } else { "ld" })
+            .exists();
 
         iter_header(testfile, None, rdr, &mut |ln| {
             // we should check if any only-<platform> exists and if it exists
@@ -85,6 +94,10 @@ impl EarlyProps {
                     props.ignore = true;
                 }
 
+                if !config.run_enabled() && config.parse_name_directive(ln, "needs-run-enabled") {
+                    props.ignore = true;
+                }
+
                 if !rustc_has_sanitizer_support
                     && config.parse_name_directive(ln, "needs-sanitizer-support")
                 {
@@ -111,6 +124,12 @@ impl EarlyProps {
                     props.ignore = true;
                 }
 
+                if config.target_panic == PanicStrategy::Abort
+                    && config.parse_name_directive(ln, "needs-unwind")
+                {
+                    props.ignore = true;
+                }
+
                 if config.target == "wasm32-unknown-unknown" && config.parse_check_run_results(ln) {
                     props.ignore = true;
                 }
@@ -124,6 +143,10 @@ impl EarlyProps {
                 }
 
                 if config.debugger == Some(Debugger::Lldb) && ignore_lldb(config, ln) {
+                    props.ignore = true;
+                }
+
+                if !has_rust_lld && config.parse_name_directive(ln, "needs-rust-lld") {
                     props.ignore = true;
                 }
             }
@@ -428,6 +451,9 @@ impl TestProps {
 
                 if let Some(edition) = config.parse_edition(ln) {
                     self.compile_flags.push(format!("--edition={}", edition));
+                    if edition == "2021" {
+                        self.compile_flags.push("-Zunstable-options".to_string());
+                    }
                 }
 
                 config.parse_and_update_revisions(ln, &mut self.revisions);
@@ -866,6 +892,7 @@ impl Config {
             name == util::get_arch(&self.target) ||             // architecture
             name == util::get_pointer_width(&self.target) ||    // pointer width
             name == self.stage_id.split('-').next().unwrap() || // stage
+            name == self.channel ||                             // channel
             (self.target != self.host && name == "cross-compile") ||
             (name == "endian-big" && util::is_big_endian(&self.target)) ||
             (self.remote_test_client.is_some() && name == "remote") ||

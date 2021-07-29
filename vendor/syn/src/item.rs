@@ -1100,8 +1100,8 @@ pub mod parsing {
                 {
                     input.parse().map(Item::Trait)
                 } else if lookahead.peek(Token![impl]) {
-                    let allow_const_impl = true;
-                    if let Some(item) = parse_impl(input, allow_const_impl)? {
+                    let allow_verbatim_impl = true;
+                    if let Some(item) = parse_impl(input, allow_verbatim_impl)? {
                         Ok(Item::Impl(item))
                     } else {
                         Ok(Item::Verbatim(verbatim::between(begin, input)))
@@ -1138,8 +1138,8 @@ pub mod parsing {
             } else if lookahead.peek(Token![impl])
                 || lookahead.peek(Token![default]) && !ahead.peek2(Token![!])
             {
-                let allow_const_impl = true;
-                if let Some(item) = parse_impl(input, allow_const_impl)? {
+                let allow_verbatim_impl = true;
+                if let Some(item) = parse_impl(input, allow_verbatim_impl)? {
                     Ok(Item::Impl(item))
                 } else {
                     Ok(Item::Verbatim(verbatim::between(begin, input)))
@@ -2451,13 +2451,14 @@ pub mod parsing {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "parsing")))]
     impl Parse for ItemImpl {
         fn parse(input: ParseStream) -> Result<Self> {
-            let allow_const_impl = false;
-            parse_impl(input, allow_const_impl).map(Option::unwrap)
+            let allow_verbatim_impl = false;
+            parse_impl(input, allow_verbatim_impl).map(Option::unwrap)
         }
     }
 
-    fn parse_impl(input: ParseStream, allow_const_impl: bool) -> Result<Option<ItemImpl>> {
+    fn parse_impl(input: ParseStream, allow_verbatim_impl: bool) -> Result<Option<ItemImpl>> {
         let mut attrs = input.call(Attribute::parse_outer)?;
+        let has_visibility = allow_verbatim_impl && input.parse::<Visibility>()?.is_some();
         let defaultness: Option<Token![default]> = input.parse()?;
         let unsafety: Option<Token![unsafe]> = input.parse()?;
         let impl_token: Token![impl] = input.parse()?;
@@ -2468,7 +2469,8 @@ pub mod parsing {
                 || (input.peek2(Ident) || input.peek2(Lifetime))
                     && (input.peek3(Token![:])
                         || input.peek3(Token![,])
-                        || input.peek3(Token![>]))
+                        || input.peek3(Token![>])
+                        || input.peek3(Token![=]))
                 || input.peek2(Token![const]));
         let mut generics: Generics = if has_generics {
             input.parse()?
@@ -2476,7 +2478,7 @@ pub mod parsing {
             Generics::default()
         };
 
-        let is_const_impl = allow_const_impl
+        let is_const_impl = allow_verbatim_impl
             && (input.peek(Token![const]) || input.peek(Token![?]) && input.peek2(Token![const]));
         if is_const_impl {
             input.parse::<Option<Token![?]>>()?;
@@ -2490,6 +2492,8 @@ pub mod parsing {
             None
         };
 
+        #[cfg(not(feature = "printing"))]
+        let first_ty_span = input.span();
         let mut first_ty: Type = input.parse()?;
         let self_ty: Type;
         let trait_;
@@ -2510,6 +2514,11 @@ pub mod parsing {
                 } else {
                     unreachable!()
                 }
+            } else if !allow_verbatim_impl {
+                #[cfg(feature = "printing")]
+                return Err(Error::new_spanned(first_ty_ref, "expected trait path"));
+                #[cfg(not(feature = "printing"))]
+                return Err(Error::new(first_ty_span, "expected trait path"));
             } else {
                 trait_ = None;
             }
@@ -2534,7 +2543,7 @@ pub mod parsing {
             items.push(content.parse()?);
         }
 
-        if is_const_impl || is_impl_for && trait_.is_none() {
+        if has_visibility || is_const_impl || is_impl_for && trait_.is_none() {
             Ok(None)
         } else {
             Ok(Some(ItemImpl {

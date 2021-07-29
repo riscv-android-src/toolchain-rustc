@@ -8,7 +8,6 @@
 #![feature(box_syntax)]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
-#![cfg_attr(bootstrap, feature(or_patterns))]
 #![feature(test)]
 #![feature(crate_visibility_modifier)]
 #![feature(never_type)]
@@ -32,7 +31,6 @@ extern crate tracing;
 // Dependencies listed in Cargo.toml do not need `extern crate`.
 
 extern crate rustc_ast;
-extern crate rustc_ast_lowering;
 extern crate rustc_ast_pretty;
 extern crate rustc_attr;
 extern crate rustc_data_structures;
@@ -81,6 +79,8 @@ use rustc_middle::ty::TyCtxt;
 use rustc_session::config::{make_crate_type_option, ErrorOutputType, RustcOptGroup};
 use rustc_session::getopts;
 use rustc_session::{early_error, early_warn};
+
+use crate::clean::utils::DOC_RUST_LANG_ORG_CHANNEL;
 
 /// A macro to create a FxHashMap.
 ///
@@ -511,6 +511,14 @@ fn opts() -> Vec<RustcOptGroup> {
                 "LEVEL",
             )
         }),
+        unstable("force-warns", |o| {
+            o.optopt(
+                "",
+                "force-warns",
+                "Lints that will warn even if allowed somewhere else",
+                "LINTS",
+            )
+        }),
         unstable("index-page", |o| {
             o.optopt("", "index-page", "Markdown file to be used as index page", "PATH")
         }),
@@ -582,9 +590,6 @@ fn opts() -> Vec<RustcOptGroup> {
                 "Generate JSON file at the top level instead of generating HTML redirection files",
             )
         }),
-        unstable("print", |o| {
-            o.optmulti("", "print", "Rustdoc information to print on stdout", "[unversioned-files]")
-        }),
         unstable("emit", |o| {
             o.optmulti(
                 "",
@@ -592,6 +597,10 @@ fn opts() -> Vec<RustcOptGroup> {
                 "Comma separated list of types of output for rustdoc to emit",
                 "[unversioned-shared-resources,toolchain-shared-resources,invocation-specific]",
             )
+        }),
+        unstable("no-run", |o| o.optflag("", "no-run", "Compile doctests without running them")),
+        unstable("show-type-layout", |o| {
+            o.optflag("", "show-type-layout", "Include the memory layout of types in the docs")
         }),
     ]
 }
@@ -603,7 +612,10 @@ fn usage(argv0: &str) {
     }
     println!("{}", options.usage(&format!("{} [options] <input>", argv0)));
     println!("    @path               Read newline separated options from `path`\n");
-    println!("More information available at https://doc.rust-lang.org/rustdoc/what-is-rustdoc.html")
+    println!(
+        "More information available at {}/rustdoc/what-is-rustdoc.html",
+        DOC_RUST_LANG_ORG_CHANNEL
+    );
 }
 
 /// A result type used by several functions under `main()`.
@@ -701,6 +713,7 @@ fn main_options(options: config::Options) -> MainResult {
     let default_passes = options.default_passes;
     let output_format = options.output_format;
     // FIXME: fix this clone (especially render_options)
+    let externs = options.externs.clone();
     let manual_passes = options.manual_passes.clone();
     let render_options = options.render_options.clone();
     let config = core::create_config(options);
@@ -718,7 +731,7 @@ fn main_options(options: config::Options) -> MainResult {
             // We need to hold on to the complete resolver, so we cause everything to be
             // cloned for the analysis passes to use. Suboptimal, but necessary in the
             // current architecture.
-            let resolver = core::create_resolver(queries, &sess);
+            let resolver = core::create_resolver(externs, queries, &sess);
 
             if sess.has_errors() {
                 sess.fatal("Compilation failed, aborting rustdoc");

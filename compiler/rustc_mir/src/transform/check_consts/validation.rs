@@ -10,9 +10,7 @@ use rustc_middle::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceC
 use rustc_middle::mir::*;
 use rustc_middle::ty::cast::CastTy;
 use rustc_middle::ty::subst::GenericArgKind;
-use rustc_middle::ty::{
-    self, adjustment::PointerCast, Instance, InstanceDef, Ty, TyCtxt, TypeAndMut,
-};
+use rustc_middle::ty::{self, adjustment::PointerCast, Instance, InstanceDef, Ty, TyCtxt};
 use rustc_middle::ty::{Binder, TraitPredicate, TraitRef};
 use rustc_span::{sym, Span, Symbol};
 use rustc_trait_selection::traits::error_reporting::InferCtxtExt;
@@ -358,10 +356,9 @@ impl Validator<'mir, 'tcx> {
     }
 
     fn check_static(&mut self, def_id: DefId, span: Span) {
-        assert!(
-            !self.tcx.is_thread_local_static(def_id),
-            "tls access is checked in `Rvalue::ThreadLocalRef"
-        );
+        if self.tcx.is_thread_local_static(def_id) {
+            self.tcx.sess.delay_span_bug(span, "tls access is checked in `Rvalue::ThreadLocalRef");
+        }
         self.check_op_spanned(ops::StaticAccess, span)
     }
 
@@ -636,17 +633,9 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
                 _,
             ) => self.check_op(ops::FnPtrCast),
 
-            Rvalue::Cast(CastKind::Pointer(PointerCast::Unsize), _, cast_ty) => {
-                if let Some(TypeAndMut { ty, .. }) = cast_ty.builtin_deref(true) {
-                    let unsized_ty = self.tcx.struct_tail_erasing_lifetimes(ty, self.param_env);
-
-                    // Casting/coercing things to slices is fine.
-                    if let ty::Slice(_) | ty::Str = unsized_ty.kind() {
-                        return;
-                    }
-                }
-
-                self.check_op(ops::UnsizingCast);
+            Rvalue::Cast(CastKind::Pointer(PointerCast::Unsize), _, _) => {
+                // Nothing to check here (`check_local_or_return_ty` ensures no trait objects occur
+                // in the type of any local, which also excludes casts).
             }
 
             Rvalue::Cast(CastKind::Misc, ref operand, cast_ty) => {
@@ -740,13 +729,11 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
                 let base_ty = Place::ty_from(place_local, proj_base, self.body, self.tcx).ty;
                 if let ty::RawPtr(_) = base_ty.kind() {
                     if proj_base.is_empty() {
-                        if let (local, []) = (place_local, proj_base) {
-                            let decl = &self.body.local_decls[local];
-                            if let Some(box LocalInfo::StaticRef { def_id, .. }) = decl.local_info {
-                                let span = decl.source_info.span;
-                                self.check_static(def_id, span);
-                                return;
-                            }
+                        let decl = &self.body.local_decls[place_local];
+                        if let Some(box LocalInfo::StaticRef { def_id, .. }) = decl.local_info {
+                            let span = decl.source_info.span;
+                            self.check_static(def_id, span);
+                            return;
                         }
                     }
                     self.check_op(ops::RawPtrDeref);
@@ -763,12 +750,8 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
             | ProjectionElem::Field(..)
             | ProjectionElem::Index(_) => {
                 let base_ty = Place::ty_from(place_local, proj_base, self.body, self.tcx).ty;
-                match base_ty.ty_adt_def() {
-                    Some(def) if def.is_union() => {
-                        self.check_op(ops::UnionAccess);
-                    }
-
-                    _ => {}
+                if base_ty.is_union() {
+                    self.check_op(ops::UnionAccess);
                 }
             }
         }

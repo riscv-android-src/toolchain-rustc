@@ -100,21 +100,24 @@ impl Inotify {
         // https://github.com/rust-lang/rust/issues/12148
         let fd = unsafe {
             let fd = ffi::inotify_init();
-            fcntl(fd, F_SETFD, FD_CLOEXEC);
-            fcntl(fd, F_SETFL, O_NONBLOCK);
+            if fd == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if fcntl(fd, F_SETFD, FD_CLOEXEC) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if fcntl(fd, F_SETFL, O_NONBLOCK) == -1 {
+                return Err(io::Error::last_os_error());
+            }
             fd
         };
 
-        match fd {
-            -1 => Err(io::Error::last_os_error()),
-            _  =>
-                Ok(Inotify {
-                    fd: Arc::new(FdGuard {
-                        fd,
-                        close_on_drop: AtomicBool::new(true),
-                    }),
-                }),
-        }
+        Ok(Inotify {
+            fd: Arc::new(FdGuard {
+                fd,
+                close_on_drop: AtomicBool::new(true),
+            }),
+        })
     }
 
     /// Adds or updates a watch for the given path
@@ -285,11 +288,23 @@ impl Inotify {
         -> io::Result<Events<'a>>
     {
         unsafe {
-            fcntl(**self.fd, F_SETFL, fcntl(**self.fd, F_GETFL) & !O_NONBLOCK)
+            let res = fcntl(**self.fd, F_GETFL);
+            if res == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if fcntl(**self.fd, F_SETFL, res & !O_NONBLOCK) == -1 {
+                return Err(io::Error::last_os_error());
+            }
         };
         let result = self.read_events(buffer);
         unsafe {
-            fcntl(**self.fd, F_SETFL, fcntl(**self.fd, F_GETFL) | O_NONBLOCK)
+            let res = fcntl(**self.fd, F_GETFL);
+            if res == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if fcntl(**self.fd, F_SETFL, res | O_NONBLOCK) == -1 {
+                return Err(io::Error::last_os_error());
+            }
         };
 
         result
@@ -302,9 +317,9 @@ impl Inotify {
     /// you need a method that will block until at least one event is available,
     /// please consider [`read_events_blocking`].
     ///
-    /// Please note that inotify will merge identical unread events into a
-    /// single event. This means this method can not be used to count the number
-    /// of file system events.
+    /// Please note that inotify will merge identical successive unread events 
+    /// into a single event. This means this method can not be used to count the 
+    /// number of file system events.
     ///
     /// The `buffer` argument, as the name indicates, is used as a buffer for
     /// the inotify events. Its contents may be overwritten.

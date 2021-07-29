@@ -54,9 +54,8 @@ impl Display<'_> {
                     member
                 }
                 'a'..='z' | 'A'..='Z' | '_' => {
-                    let mut ident = take_ident(&mut read);
-                    ident.set_span(span);
-                    Member::Named(ident)
+                    let ident = take_ident(&mut read);
+                    Member::Named(Ident::new(&ident, span))
                 }
                 _ => continue,
             };
@@ -65,9 +64,6 @@ impl Display<'_> {
                 Member::Named(ident) => ident.clone(),
             };
             let mut formatvar = local.clone();
-            if formatvar.to_string().starts_with("r#") {
-                formatvar = format_ident!("r_{}", formatvar);
-            }
             if formatvar.to_string().starts_with('_') {
                 // Work around leading underscore being rejected by 1.40 and
                 // older compilers. https://github.com/rust-lang/rust/pull/66847
@@ -102,7 +98,7 @@ fn explicit_named_args(input: ParseStream) -> Result<Set<Ident>> {
     while !input.is_empty() {
         if input.peek(Token![,]) && input.peek2(Ident::peek_any) && input.peek3(Token![=]) {
             input.parse::<Token![,]>()?;
-            let ident = input.call(Ident::parse_any)?;
+            let ident: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
             named_args.insert(ident);
         } else {
@@ -127,13 +123,8 @@ fn take_int(read: &mut &str) -> String {
     int
 }
 
-fn take_ident(read: &mut &str) -> Ident {
+fn take_ident(read: &mut &str) -> String {
     let mut ident = String::new();
-    let raw = read.starts_with("r#");
-    if raw {
-        ident.push_str("r#");
-        *read = &read[2..];
-    }
     for (i, ch) in read.char_indices() {
         match ch {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => ident.push(ch),
@@ -143,5 +134,5 @@ fn take_ident(read: &mut &str) -> Ident {
             }
         }
     }
-    Ident::parse_any.parse_str(&ident).unwrap()
+    ident
 }

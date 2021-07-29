@@ -86,8 +86,6 @@ fn bug_651() {
 
 #[test]
 fn recursive_vars() {
-    cov_mark::check!(type_var_cycles_resolve_completely);
-    cov_mark::check!(type_var_cycles_resolve_as_possible);
     check_infer(
         r#"
         fn test() {
@@ -97,12 +95,12 @@ fn recursive_vars() {
         "#,
         expect![[r#"
             10..47 '{     ...&y]; }': ()
-            20..21 'y': &{unknown}
-            24..31 'unknown': &{unknown}
-            37..44 '[y, &y]': [&&{unknown}; _]
-            38..39 'y': &{unknown}
-            41..43 '&y': &&{unknown}
-            42..43 'y': &{unknown}
+            20..21 'y': {unknown}
+            24..31 'unknown': {unknown}
+            37..44 '[y, &y]': [{unknown}; 2]
+            38..39 'y': {unknown}
+            41..43 '&y': &{unknown}
+            42..43 'y': {unknown}
         "#]],
     );
 }
@@ -119,19 +117,19 @@ fn recursive_vars_2() {
         "#,
         expect![[r#"
             10..79 '{     ...x)]; }': ()
-            20..21 'x': &&{unknown}
-            24..31 'unknown': &&{unknown}
-            41..42 'y': &&{unknown}
-            45..52 'unknown': &&{unknown}
-            58..76 '[(x, y..., &x)]': [(&&&{unknown}, &&&{unknown}); _]
-            59..65 '(x, y)': (&&&{unknown}, &&&{unknown})
-            60..61 'x': &&{unknown}
-            63..64 'y': &&{unknown}
-            67..75 '(&y, &x)': (&&&{unknown}, &&&{unknown})
-            68..70 '&y': &&&{unknown}
-            69..70 'y': &&{unknown}
-            72..74 '&x': &&&{unknown}
-            73..74 'x': &&{unknown}
+            20..21 'x': &{unknown}
+            24..31 'unknown': &{unknown}
+            41..42 'y': {unknown}
+            45..52 'unknown': {unknown}
+            58..76 '[(x, y..., &x)]': [(&{unknown}, {unknown}); 2]
+            59..65 '(x, y)': (&{unknown}, {unknown})
+            60..61 'x': &{unknown}
+            63..64 'y': {unknown}
+            67..75 '(&y, &x)': (&{unknown}, {unknown})
+            68..70 '&y': &{unknown}
+            69..70 'y': {unknown}
+            72..74 '&x': &&{unknown}
+            73..74 'x': &{unknown}
         "#]],
     );
 }
@@ -165,7 +163,6 @@ fn infer_std_crash_1() {
 
 #[test]
 fn infer_std_crash_2() {
-    cov_mark::check!(type_var_resolves_to_int_var);
     // caused "equating two type variables, ...", taken from std
     check_infer(
         r#"
@@ -175,8 +172,8 @@ fn infer_std_crash_2() {
         "#,
         expect![[r#"
             22..52 '{     ...n']; }': ()
-            28..49 '&[0, b...b'\n']': &[u8; _]
-            29..49 '[0, b'...b'\n']': [u8; _]
+            28..49 '&[0, b...b'\n']': &[u8; 4]
+            29..49 '[0, b'...b'\n']': [u8; 4]
             30..31 '0': u8
             33..38 'b'\n'': u8
             40..41 '1': u8
@@ -257,27 +254,27 @@ fn infer_std_crash_5() {
         expect![[r#"
             26..322 '{     ...   } }': ()
             32..320 'for co...     }': ()
-            36..43 'content': &{unknown}
+            36..43 'content': {unknown}
             47..60 'doesnt_matter': {unknown}
             61..320 '{     ...     }': ()
-            75..79 'name': &&{unknown}
-            82..166 'if doe...     }': &&{unknown}
+            75..79 'name': &{unknown}
+            82..166 'if doe...     }': &{unknown}
             85..98 'doesnt_matter': bool
-            99..128 '{     ...     }': &&{unknown}
-            113..118 'first': &&{unknown}
-            134..166 '{     ...     }': &&{unknown}
-            148..156 '&content': &&{unknown}
-            149..156 'content': &{unknown}
+            99..128 '{     ...     }': &{unknown}
+            113..118 'first': &{unknown}
+            134..166 '{     ...     }': &{unknown}
+            148..156 '&content': &{unknown}
+            149..156 'content': {unknown}
             181..188 'content': &{unknown}
             191..313 'if ICE...     }': &{unknown}
             194..231 'ICE_RE..._VALUE': {unknown}
             194..247 'ICE_RE...&name)': bool
-            241..246 '&name': &&&{unknown}
-            242..246 'name': &&{unknown}
-            248..276 '{     ...     }': &&{unknown}
-            262..266 'name': &&{unknown}
-            282..313 '{     ...     }': &{unknown}
-            296..303 'content': &{unknown}
+            241..246 '&name': &&{unknown}
+            242..246 'name': &{unknown}
+            248..276 '{     ...     }': &{unknown}
+            262..266 'name': &{unknown}
+            282..313 '{     ...     }': {unknown}
+            296..303 'content': {unknown}
         "#]],
     );
 }
@@ -336,8 +333,8 @@ fn infer_array_macro_call() {
         expect![[r#"
             !0..4 '0u32': u32
             44..69 '{     ...()]; }': ()
-            54..55 'a': [u32; _]
-            58..66 '[bar!()]': [u32; _]
+            54..55 'a': [u32; 1]
+            58..66 '[bar!()]': [u32; 1]
         "#]],
     );
 }
@@ -429,11 +426,12 @@ fn test() {
 
 //- /std.rs crate:std
 #[prelude_import]
-use prelude::*;
-
+use self::prelude::rust_2018::*;
 pub mod prelude {
-    pub use crate::iter::Iterator;
-    pub use crate::option::Option;
+    pub mod rust_2018 {
+        pub use crate::iter::Iterator;
+        pub use crate::option::Option;
+    }
 }
 
 pub mod iter {
@@ -1010,5 +1008,92 @@ fn lifetime_from_chalk_during_deref() {
           //^^^^^^^^^^^^^^^^^^^ ()
         }
         "#,
+    )
+}
+
+#[test]
+fn issue_8686() {
+    check_infer(
+        r#"
+pub trait Try: FromResidual {
+    type Output;
+    type Residual;
+}
+pub trait FromResidual<R = <Self as Try>::Residual> {
+     fn from_residual(residual: R) -> Self;
+}
+
+struct ControlFlow<B, C>;
+impl<B, C> Try for ControlFlow<B, C> {
+    type Output = C;
+    type Residual = ControlFlow<B, !>;
+}
+impl<B, C> FromResidual for ControlFlow<B, C> {
+    fn from_residual(r: ControlFlow<B, !>) -> Self { ControlFlow }
+}
+
+fn test() {
+    ControlFlow::from_residual(ControlFlow::<u32, !>);
+}
+        "#,
+        expect![[r#"
+            144..152 'residual': R
+            365..366 'r': ControlFlow<B, !>
+            395..410 '{ ControlFlow }': ControlFlow<B, C>
+            397..408 'ControlFlow': ControlFlow<B, C>
+            424..482 '{     ...!>); }': ()
+            430..456 'Contro...sidual': fn from_residual<ControlFlow<u32, {unknown}>, ControlFlow<u32, !>>(ControlFlow<u32, !>) -> ControlFlow<u32, {unknown}>
+            430..479 'Contro...2, !>)': ControlFlow<u32, {unknown}>
+            457..478 'Contro...32, !>': ControlFlow<u32, !>
+        "#]],
+    );
+}
+
+#[test]
+fn cfg_tail() {
+    // https://github.com/rust-analyzer/rust-analyzer/issues/8378
+    check_infer(
+        r#"
+        fn fake_tail(){
+            { "first" }
+            #[cfg(never)] 9
+        }
+        fn multiple_fake(){
+            { "fake" }
+            { "fake" }
+            { "second" }
+            #[cfg(never)] { 11 }
+            #[cfg(never)] 12;
+            #[cfg(never)] 13
+        }
+        fn no_normal_tail(){
+            { "third" }
+            #[cfg(never)] 14;
+            #[cfg(never)] 15;
+        }
+        fn no_actual_tail(){
+            { "fourth" };
+            #[cfg(never)] 14;
+            #[cfg(never)] 15
+        }
+        "#,
+        expect![[r#"
+            14..53 '{     ...)] 9 }': &str
+            20..31 '{ "first" }': &str
+            22..29 '"first"': &str
+            72..190 '{     ...] 13 }': &str
+            78..88 '{ "fake" }': &str
+            80..86 '"fake"': &str
+            93..103 '{ "fake" }': &str
+            95..101 '"fake"': &str
+            108..120 '{ "second" }': &str
+            110..118 '"second"': &str
+            210..273 '{     ... 15; }': &str
+            216..227 '{ "third" }': &str
+            218..225 '"third"': &str
+            293..357 '{     ...] 15 }': ()
+            299..311 '{ "fourth" }': &str
+            301..309 '"fourth"': &str
+        "#]],
     )
 }

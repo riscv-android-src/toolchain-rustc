@@ -274,9 +274,6 @@ declare_features! (
     /// Allows using non lexical lifetimes (RFC 2094).
     (active, nll, "1.0.0", Some(43234), None),
 
-    /// Allows the definition of `const` functions with some advanced features.
-    (active, const_fn, "1.2.0", Some(57563), None),
-
     /// Allows associated type defaults.
     (active, associated_type_defaults, "1.2.0", Some(29661), None),
 
@@ -475,9 +472,6 @@ declare_features! (
     /// Allows explicit discriminants on non-unit enum variants.
     (active, arbitrary_enum_discriminant, "1.37.0", Some(60553), None),
 
-    /// Allows `impl Trait` with multiple unrelated lifetimes.
-    (active, member_constraints, "1.37.0", Some(61997), None),
-
     /// Allows `async || body` closures.
     (active, async_closure, "1.37.0", Some(62290), None),
 
@@ -604,9 +598,6 @@ declare_features! (
     /// Allows capturing disjoint fields in a closure/generator (RFC 2229).
     (active, capture_disjoint_fields, "1.49.0", Some(53488), None),
 
-    /// Allows arbitrary expressions in key-value attributes at parse time.
-    (active, extended_key_value_attributes, "1.50.0", Some(78835), None),
-
     /// Allows const generics to have default values (e.g. `struct Foo<const N: usize = 3>(...);`).
     (active, const_generics_defaults, "1.51.0", Some(44580), None),
 
@@ -650,11 +641,29 @@ declare_features! (
     /// Allows trait bounds in `const fn`.
     (active, const_fn_trait_bound, "1.53.0", Some(57563), None),
 
-    /// Allows unsizing coercions in `const fn`.
-    (active, const_fn_unsize, "1.53.0", Some(64992), None),
+    /// Allows `async {}` expressions in const contexts.
+    (active, const_async_blocks, "1.53.0", Some(85368), None),
 
     /// Allows using imported `main` function
     (active, imported_main, "1.53.0", Some(28937), None),
+
+    /// Allows specifying modifiers in the link attribute: `#[link(modifiers = "...")]`
+    (active, native_link_modifiers, "1.53.0", Some(81490), None),
+
+    /// Allows specifying the bundle link modifier
+    (active, native_link_modifiers_bundle, "1.53.0", Some(81490), None),
+
+    /// Allows specifying the verbatim link modifier
+    (active, native_link_modifiers_verbatim, "1.53.0", Some(81490), None),
+
+    /// Allows specifying the whole-archive link modifier
+    (active, native_link_modifiers_whole_archive, "1.53.0", Some(81490), None),
+
+    /// Allows specifying the as-needed link modifier
+    (active, native_link_modifiers_as_needed, "1.53.0", Some(81490), None),
+
+    /// Allows unnamed fields of struct and union type
+    (active, unnamed_fields, "1.53.0", Some(49804), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates
@@ -680,9 +689,10 @@ pub const INCOMPLETE_FEATURES: &[Symbol] = &[
     sym::repr128,
     sym::unsized_locals,
     sym::capture_disjoint_fields,
-    sym::const_generics_defaults,
     sym::inherent_associated_types,
     sym::type_alias_impl_trait,
+    sym::rustc_insignificant_dtor,
+    sym::unnamed_fields,
 ];
 
 /// Some features are not allowed to be used together at the same time, if

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 pub use self::canonical_url::CanonicalUrl;
 pub use self::config::{homedir, Config, ConfigValue};
+pub(crate) use self::counter::MetricsCounter;
 pub use self::dependency_queue::DependencyQueue;
 pub use self::diagnostic_server::RustfixDiagnosticServer;
 pub use self::errors::{internal, CargoResult, CliResult, Test};
@@ -19,6 +20,7 @@ pub use self::progress::{Progress, ProgressStyle};
 pub use self::queue::Queue;
 pub use self::restricted_names::validate_package_name;
 pub use self::rustc::Rustc;
+pub use self::semver_ext::{OptVersionReq, VersionExt, VersionReqExt};
 pub use self::to_semver::ToSemver;
 pub use self::vcs::{existing_vcs_repo, FossilRepo, GitRepo, HgRepo, PijulRepo};
 pub use self::workspace::{
@@ -29,6 +31,7 @@ pub use self::workspace::{
 mod canonical_url;
 pub mod command_prelude;
 pub mod config;
+mod counter;
 pub mod cpu;
 mod dependency_queue;
 pub mod diagnostic_server;
@@ -51,6 +54,7 @@ mod progress;
 mod queue;
 pub mod restricted_names;
 pub mod rustc;
+mod semver_ext;
 pub mod to_semver;
 pub mod toml;
 mod vcs;

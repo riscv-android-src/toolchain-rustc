@@ -55,11 +55,10 @@
 //! assert_eq!(&orig_key[..], &key_to_wrap[..]);
 //! ```
 //!
-use ffi;
 use libc::{c_int, c_uint};
 use std::{mem, ptr};
 
-use symm::Mode;
+use crate::symm::Mode;
 
 /// Provides Error handling for parsing keys.
 #[derive(Debug)]
@@ -208,7 +207,7 @@ pub fn wrap_key(
 /// # Panics
 ///
 /// Panics if either `out` or `in_` do not have sizes that are a multiple of 8, or
-/// if `in` is not 8 bytes longer than `in_`
+/// if `in_` is not 8 bytes longer than `out`
 pub fn unwrap_key(
     key: &AesKey,
     iv: Option<[u8; 8]>,
@@ -240,7 +239,7 @@ mod test {
     use hex::FromHex;
 
     use super::*;
-    use symm::Mode;
+    use crate::symm::Mode;
 
     // From https://www.mgp25.com/AESIGE/
     #[test]

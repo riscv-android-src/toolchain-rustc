@@ -12,7 +12,7 @@ use rustc_session::config::{
 };
 use rustc_session::lint::Level;
 use rustc_session::search_paths::SearchPath;
-use rustc_session::utils::{CanonicalizedPath, NativeLibKind};
+use rustc_session::utils::{CanonicalizedPath, NativeLib, NativeLibKind};
 use rustc_session::{build_session, getopts, DiagnosticOutput, Session};
 use rustc_span::edition::{Edition, DEFAULT_EDITION};
 use rustc_span::symbol::sym;
@@ -252,7 +252,8 @@ fn test_lints_tracking_hash_different_construction_order() {
         (String::from("d"), Level::Forbid),
     ];
 
-    assert_same_hash(&v1, &v2);
+    // The hash should be order-dependent
+    assert_different_hash(&v1, &v2);
 }
 
 #[test]
@@ -303,38 +304,122 @@ fn test_native_libs_tracking_hash_different_values() {
     let mut v2 = Options::default();
     let mut v3 = Options::default();
     let mut v4 = Options::default();
+    let mut v5 = Options::default();
 
     // Reference
     v1.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), None, NativeLibKind::Framework),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     // Change label
     v2.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("X"), None, NativeLibKind::Framework),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("X"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     // Change kind
     v3.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), None, NativeLibKind::StaticBundle),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     // Change new-name
     v4.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), Some(String::from("X")), NativeLibKind::Framework),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: Some(String::from("X")),
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
+    ];
+
+    // Change verbatim
+    v5.libs = vec![
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: Some(true),
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     assert_different_hash(&v1, &v2);
     assert_different_hash(&v1, &v3);
     assert_different_hash(&v1, &v4);
+    assert_different_hash(&v1, &v5);
 }
 
 #[test]
@@ -345,26 +430,72 @@ fn test_native_libs_tracking_hash_different_order() {
 
     // Reference
     v1.libs = vec![
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), None, NativeLibKind::Framework),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     v2.libs = vec![
-        (String::from("b"), None, NativeLibKind::Framework),
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("c"), None, NativeLibKind::Unspecified),
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
     ];
 
     v3.libs = vec![
-        (String::from("c"), None, NativeLibKind::Unspecified),
-        (String::from("a"), None, NativeLibKind::StaticBundle),
-        (String::from("b"), None, NativeLibKind::Framework),
+        NativeLib {
+            name: String::from("c"),
+            new_name: None,
+            kind: NativeLibKind::Unspecified,
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("a"),
+            new_name: None,
+            kind: NativeLibKind::Static { bundle: None, whole_archive: None },
+            verbatim: None,
+        },
+        NativeLib {
+            name: String::from("b"),
+            new_name: None,
+            kind: NativeLibKind::Framework { as_needed: None },
+            verbatim: None,
+        },
     ];
 
-    assert_same_hash(&v1, &v2);
-    assert_same_hash(&v1, &v3);
-    assert_same_hash(&v2, &v3);
+    // The hash should be order-dependent
+    assert_different_hash(&v1, &v2);
+    assert_different_hash(&v1, &v3);
+    assert_different_hash(&v2, &v3);
 }
 
 #[test]
@@ -580,7 +711,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(mir_emit_retag, true);
     tracked!(mir_opt_level, Some(4));
     tracked!(mutable_noalias, Some(true));
-    tracked!(new_llvm_pass_manager, true);
+    tracked!(new_llvm_pass_manager, Some(true));
     tracked!(no_codegen, true);
     tracked!(no_generate_arange_section, true);
     tracked!(no_link, true);
@@ -595,6 +726,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(profile_emit, Some(PathBuf::from("abc")));
     tracked!(relax_elf_relocations, Some(true));
     tracked!(relro_level, Some(RelroLevel::Full));
+    tracked!(simulate_remapped_rust_src_base, Some(PathBuf::from("/rustc/abc")));
     tracked!(report_delayed_bugs, true);
     tracked!(sanitizer, SanitizerSet::ADDRESS);
     tracked!(sanitizer_memory_track_origins, 2);
@@ -606,6 +738,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(symbol_mangling_version, Some(SymbolManglingVersion::V0));
     tracked!(teach, true);
     tracked!(thinlto, Some(true));
+    tracked!(thir_unsafeck, true);
     tracked!(tune_cpu, Some(String::from("abc")));
     tracked!(tls_model, Some(TlsModel::GeneralDynamic));
     tracked!(trap_unreachable, Some(false));

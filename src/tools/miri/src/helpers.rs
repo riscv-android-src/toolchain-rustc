@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use log::trace;
 
-use rustc_middle::mir;
-use rustc_middle::ty::{self, List, TyCtxt, layout::TyAndLayout};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
-use rustc_target::abi::{LayoutOf, Size, FieldsShape, Variants};
+use rustc_middle::mir;
+use rustc_middle::ty::{self, layout::TyAndLayout, List, TyCtxt};
+use rustc_target::abi::{Align, FieldsShape, LayoutOf, Size, Variants};
 use rustc_target::spec::abi::Abi;
 
 use rand::RngCore;
@@ -19,10 +19,8 @@ impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mi
 
 /// Gets an instance for a path.
 fn try_resolve_did<'mir, 'tcx>(tcx: TyCtxt<'tcx>, path: &[&str]) -> Option<DefId> {
-    tcx.crates()
-        .iter()
-        .find(|&&krate| tcx.original_crate_name(krate).as_str() == path[0])
-        .and_then(|krate| {
+    tcx.crates().iter().find(|&&krate| tcx.crate_name(krate).as_str() == path[0]).and_then(
+        |krate| {
             let krate = DefId { krate: *krate, index: CRATE_DEF_INDEX };
             let mut items = tcx.item_children(krate);
             let mut path_it = path.iter().skip(1).peekable();
@@ -40,7 +38,8 @@ fn try_resolve_did<'mir, 'tcx>(tcx: TyCtxt<'tcx>, path: &[&str]) -> Option<DefId
                 }
             }
             None
-        })
+        },
+    )
 }
 
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
@@ -53,10 +52,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     /// Evaluates the scalar at the specified path. Returns Some(val)
     /// if the path could be resolved, and None otherwise
-    fn eval_path_scalar(
-        &mut self,
-        path: &[&str],
-    ) -> InterpResult<'tcx, ScalarMaybeUninit<Tag>> {
+    fn eval_path_scalar(&mut self, path: &[&str]) -> InterpResult<'tcx, ScalarMaybeUninit<Tag>> {
         let this = self.eval_context_mut();
         let instance = this.resolve_path(path);
         let cid = GlobalId { instance, promoted: None };
@@ -67,9 +63,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     /// Helper function to get a `libc` constant as a `Scalar`.
     fn eval_libc(&mut self, name: &str) -> InterpResult<'tcx, Scalar<Tag>> {
-        self.eval_context_mut()
-            .eval_path_scalar(&["libc", name])?
-            .check_init()
+        self.eval_context_mut().eval_path_scalar(&["libc", name])?.check_init()
     }
 
     /// Helper function to get a `libc` constant as an `i32`.
@@ -101,7 +95,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// Helper function to get the `TyAndLayout` of a `windows` type
     fn windows_ty_layout(&mut self, name: &str) -> InterpResult<'tcx, TyAndLayout<'tcx>> {
         let this = self.eval_context_mut();
-        let ty = this.resolve_path(&["std", "sys", "windows", "c", name]).ty(*this.tcx, ty::ParamEnv::reveal_all());
+        let ty = this
+            .resolve_path(&["std", "sys", "windows", "c", name])
+            .ty(*this.tcx, ty::ParamEnv::reveal_all());
         this.layout_of(ty)
     }
 
@@ -144,7 +140,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let mut data = vec![0; usize::try_from(len).unwrap()];
 
-        if this.machine.communicate {
+        if this.machine.communicate() {
             // Fill the buffer using the host's rng.
             getrandom::getrandom(&mut data)
                 .map_err(|err| err_unsup_format!("host getrandom failed: {}", err))?;
@@ -169,8 +165,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
         let param_env = ty::ParamEnv::reveal_all(); // in Miri this is always the param_env we use... and this.param_env is private.
         let callee_abi = f.ty(*this.tcx, param_env).fn_sig(*this.tcx).abi();
-        if callee_abi != caller_abi {
-            throw_ub_format!("calling a function with ABI {} using caller ABI {}", callee_abi.name(), caller_abi.name())
+        if this.machine.enforce_abi && callee_abi != caller_abi {
+            throw_ub_format!(
+                "calling a function with ABI {} using caller ABI {}",
+                callee_abi.name(),
+                caller_abi.name()
+            )
         }
 
         // Push frame.
@@ -181,9 +181,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let mut callee_args = this.frame().body.args_iter();
         for arg in args {
             let callee_arg = this.local_place(
-                callee_args.next().ok_or_else(||
-                    err_ub_format!("callee has fewer arguments than expected")
-                )?
+                callee_args
+                    .next()
+                    .ok_or_else(|| err_ub_format!("callee has fewer arguments than expected"))?,
             )?;
             this.write_immediate(*arg, &callee_arg)?;
         }
@@ -356,7 +356,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 }
             }
 
-            fn visit_union(&mut self, _v: &MPlaceTy<'tcx, Tag>, _fields: NonZeroUsize) -> InterpResult<'tcx> {
+            fn visit_union(
+                &mut self,
+                _v: &MPlaceTy<'tcx, Tag>,
+                _fields: NonZeroUsize,
+            ) -> InterpResult<'tcx> {
                 bug!("we should have already handled unions in `visit_value`")
             }
         }
@@ -387,10 +391,30 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// disabled. It returns an error using the `name` of the foreign function if this is not the
     /// case.
     fn check_no_isolation(&self, name: &str) -> InterpResult<'tcx> {
-        if !self.eval_context_ref().machine.communicate {
-            isolation_error(name)?;
+        if !self.eval_context_ref().machine.communicate() {
+            self.reject_in_isolation(name, RejectOpWith::Abort)?;
         }
         Ok(())
+    }
+
+    /// Helper function used inside the shims of foreign functions which reject the op
+    /// when isolation is enabled. It is used to print a warning/backtrace about the rejection.
+    fn reject_in_isolation(&self, op_name: &str, reject_with: RejectOpWith) -> InterpResult<'tcx> {
+        let this = self.eval_context_ref();
+        match reject_with {
+            RejectOpWith::Abort => isolation_abort_error(op_name),
+            RejectOpWith::WarningWithoutBacktrace => {
+                this.tcx
+                    .sess
+                    .warn(&format!("`{}` was made to return an error due to isolation", op_name));
+                Ok(())
+            }
+            RejectOpWith::Warning => {
+                register_diagnostic(NonHaltingDiagnostic::RejectedIsolatedOp(op_name.to_string()));
+                Ok(())
+            }
+            RejectOpWith::NoWarning => Ok(()), // no warning
+        }
     }
 
     /// Helper function used inside the shims of foreign functions to assert that the target OS
@@ -436,15 +460,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.read_scalar(&errno_place.into())?.check_init()
     }
 
-    /// Sets the last OS error using a `std::io::Error`. This function tries to produce the most
+    /// Sets the last OS error using a `std::io::ErrorKind`. This function tries to produce the most
     /// similar OS error from the `std::io::ErrorKind` and sets it as the last OS error.
-    fn set_last_error_from_io_error(&mut self, e: std::io::Error) -> InterpResult<'tcx> {
+    fn set_last_error_from_io_error(&mut self, err_kind: std::io::ErrorKind) -> InterpResult<'tcx> {
         use std::io::ErrorKind::*;
         let this = self.eval_context_mut();
         let target = &this.tcx.sess.target;
         let target_os = &target.os;
-        let last_error = if target.os_family == Some("unix".to_owned()) {
-            this.eval_libc(match e.kind() {
+        let last_error = if target.families.contains(&"unix".to_owned()) {
+            this.eval_libc(match err_kind {
                 ConnectionRefused => "ECONNREFUSED",
                 ConnectionReset => "ECONNRESET",
                 PermissionDenied => "EPERM",
@@ -460,17 +484,30 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 AlreadyExists => "EEXIST",
                 WouldBlock => "EWOULDBLOCK",
                 _ => {
-                    throw_unsup_format!("io error {} cannot be transformed into a raw os error", e)
+                    throw_unsup_format!(
+                        "io error {:?} cannot be translated into a raw os error",
+                        err_kind
+                    )
                 }
             })?
-        } else if target_os == "windows" {
+        } else if target.families.contains(&"windows".to_owned()) {
             // FIXME: we have to finish implementing the Windows equivalent of this.
-            this.eval_windows("c", match e.kind() {
-                NotFound => "ERROR_FILE_NOT_FOUND",
-                _ => throw_unsup_format!("io error {} cannot be transformed into a raw os error", e)
-            })?
+            this.eval_windows(
+                "c",
+                match err_kind {
+                    NotFound => "ERROR_FILE_NOT_FOUND",
+                    PermissionDenied => "ERROR_ACCESS_DENIED",
+                    _ => throw_unsup_format!(
+                        "io error {:?} cannot be translated into a raw os error",
+                        err_kind
+                    ),
+                },
+            )?
         } else {
-            throw_unsup_format!("setting the last OS error from an io::Error is unsupported for {}.", target_os)
+            throw_unsup_format!(
+                "setting the last OS error from an io::Error is unsupported for {}.",
+                target_os
+            )
         };
         this.set_last_error(last_error)
     }
@@ -488,7 +525,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         match result {
             Ok(ok) => Ok(ok),
             Err(e) => {
-                self.eval_context_mut().set_last_error_from_io_error(e)?;
+                self.eval_context_mut().set_last_error_from_io_error(e.kind())?;
                 Ok((-1).into())
             }
         }
@@ -553,27 +590,109 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             Duration::new(seconds, nanoseconds)
         })
     }
+
+    fn read_c_str<'a>(&'a self, sptr: Scalar<Tag>) -> InterpResult<'tcx, &'a [u8]>
+    where
+        'tcx: 'a,
+        'mir: 'a,
+    {
+        let this = self.eval_context_ref();
+        let size1 = Size::from_bytes(1);
+        let ptr = this.force_ptr(sptr)?; // We need to read at least 1 byte, so we can eagerly get a ptr.
+
+        // Step 1: determine the length.
+        let mut len = Size::ZERO;
+        loop {
+            // FIXME: We are re-getting the allocation each time around the loop.
+            // Would be nice if we could somehow "extend" an existing AllocRange.
+            let alloc = this.memory.get(ptr.offset(len, this)?.into(), size1, Align::ONE)?.unwrap(); // not a ZST, so we will get a result
+            let byte = alloc.read_scalar(alloc_range(Size::ZERO, size1))?.to_u8()?;
+            if byte == 0 {
+                break;
+            } else {
+                len = len + size1;
+            }
+        }
+
+        // Step 2: get the bytes.
+        this.memory.read_bytes(ptr.into(), len)
+    }
+
+    fn read_wide_str(&self, sptr: Scalar<Tag>) -> InterpResult<'tcx, Vec<u16>> {
+        let this = self.eval_context_ref();
+        let size2 = Size::from_bytes(2);
+        let align2 = Align::from_bytes(2).unwrap();
+
+        let mut ptr = this.force_ptr(sptr)?; // We need to read at least 1 wchar, so we can eagerly get a ptr.
+        let mut wchars = Vec::new();
+        loop {
+            // FIXME: We are re-getting the allocation each time around the loop.
+            // Would be nice if we could somehow "extend" an existing AllocRange.
+            let alloc = this.memory.get(ptr.into(), size2, align2)?.unwrap(); // not a ZST, so we will get a result
+            let wchar = alloc.read_scalar(alloc_range(Size::ZERO, size2))?.to_u16()?;
+            if wchar == 0 {
+                break;
+            } else {
+                wchars.push(wchar);
+                ptr = ptr.offset(size2, this)?;
+            }
+        }
+
+        Ok(wchars)
+    }
+
+    /// Check that the ABI is what we expect.
+    fn check_abi<'a>(&self, abi: Abi, exp_abi: Abi) -> InterpResult<'a, ()> {
+        if self.eval_context_ref().machine.enforce_abi && abi != exp_abi {
+            throw_ub_format!(
+                "calling a function with ABI {} using caller ABI {}",
+                exp_abi.name(),
+                abi.name()
+            )
+        }
+        Ok(())
+    }
+
+    fn frame_in_std(&self) -> bool {
+        let this = self.eval_context_ref();
+        this.tcx.lang_items().start_fn().map_or(false, |start_fn| {
+            this.tcx.def_path(this.frame().instance.def_id()).krate
+                == this.tcx.def_path(start_fn).krate
+        })
+    }
+
+    /// Handler that should be called when unsupported functionality is encountered.
+    /// This function will either panic within the context of the emulated application
+    /// or return an error in the Miri process context
+    ///
+    /// Return value of `Ok(bool)` indicates whether execution should continue.
+    fn handle_unsupported<S: AsRef<str>>(&mut self, error_msg: S) -> InterpResult<'tcx, ()> {
+        let this = self.eval_context_mut();
+        if this.machine.panic_on_unsupported {
+            // message is slightly different here to make automated analysis easier
+            let error_msg = format!("unsupported Miri functionality: {}", error_msg.as_ref());
+            this.start_panic(error_msg.as_ref(), StackPopUnwind::Skip)?;
+            return Ok(());
+        } else {
+            throw_unsup_format!("{}", error_msg.as_ref());
+        }
+    }
 }
 
 /// Check that the number of args is what we expect.
-pub fn check_arg_count<'a, 'tcx, const N: usize>(args: &'a [OpTy<'tcx, Tag>]) -> InterpResult<'tcx, &'a [OpTy<'tcx, Tag>; N]>
-    where &'a [OpTy<'tcx, Tag>; N]: TryFrom<&'a [OpTy<'tcx, Tag>]> {
+pub fn check_arg_count<'a, 'tcx, const N: usize>(
+    args: &'a [OpTy<'tcx, Tag>],
+) -> InterpResult<'tcx, &'a [OpTy<'tcx, Tag>; N]>
+where
+    &'a [OpTy<'tcx, Tag>; N]: TryFrom<&'a [OpTy<'tcx, Tag>]>,
+{
     if let Ok(ops) = args.try_into() {
         return Ok(ops);
     }
     throw_ub_format!("incorrect number of arguments: got {}, expected {}", args.len(), N)
 }
 
-/// Check that the ABI is what we expect.
-pub fn check_abi<'a>(abi: Abi, exp_abi: Abi) -> InterpResult<'a, ()> {
-    if abi == exp_abi {
-        Ok(())
-    } else {
-        throw_ub_format!("calling a function with ABI {} using caller ABI {}", exp_abi.name(), abi.name())
-    }
-}
-
-pub fn isolation_error(name: &str) -> InterpResult<'static> {
+pub fn isolation_abort_error(name: &str) -> InterpResult<'static> {
     throw_machine_stop!(TerminationInfo::UnsupportedInIsolation(format!(
         "{} not available when isolation is enabled",
         name,

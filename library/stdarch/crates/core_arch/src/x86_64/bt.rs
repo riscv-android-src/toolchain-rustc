@@ -1,16 +1,36 @@
 #[cfg(test)]
 use stdarch_test::assert_instr;
 
+// x32 wants to use a 32-bit address size, but asm! defaults to using the full
+// register name (e.g. rax). We have to explicitly override the placeholder to
+// use the 32-bit register name in that case.
+#[cfg(target_pointer_width = "32")]
+macro_rules! bt {
+    ($inst:expr) => {
+        concat!($inst, " {b}, ({p:e})")
+    };
+}
+#[cfg(target_pointer_width = "64")]
+macro_rules! bt {
+    ($inst:expr) => {
+        concat!($inst, " {b}, ({p})")
+    };
+}
+
 /// Returns the bit in position `b` of the memory addressed by `p`.
 #[inline]
 #[cfg_attr(test, assert_instr(bt))]
 #[unstable(feature = "simd_x86_bittest", issue = "59414")]
 pub unsafe fn _bittest64(p: *const i64, b: i64) -> u8 {
     let r: u8;
-    llvm_asm!("btq $2, $1\n\tsetc ${0:b}"
-              : "=r"(r)
-              : "*m"(p), "r"(b)
-              : "cc", "memory");
+    asm!(
+        bt!("btq"),
+        "setc {r}",
+        p = in(reg) p,
+        b = in(reg) b,
+        r = out(reg_byte) r,
+        options(readonly, nostack, pure, att_syntax)
+    );
     r
 }
 
@@ -20,10 +40,14 @@ pub unsafe fn _bittest64(p: *const i64, b: i64) -> u8 {
 #[unstable(feature = "simd_x86_bittest", issue = "59414")]
 pub unsafe fn _bittestandset64(p: *mut i64, b: i64) -> u8 {
     let r: u8;
-    llvm_asm!("btsq $2, $1\n\tsetc ${0:b}"
-              : "=r"(r), "+*m"(p)
-              : "r"(b)
-              : "cc", "memory");
+    asm!(
+        bt!("btsq"),
+        "setc {r}",
+        p = in(reg) p,
+        b = in(reg) b,
+        r = out(reg_byte) r,
+        options(nostack, att_syntax)
+    );
     r
 }
 
@@ -33,10 +57,14 @@ pub unsafe fn _bittestandset64(p: *mut i64, b: i64) -> u8 {
 #[unstable(feature = "simd_x86_bittest", issue = "59414")]
 pub unsafe fn _bittestandreset64(p: *mut i64, b: i64) -> u8 {
     let r: u8;
-    llvm_asm!("btrq $2, $1\n\tsetc ${0:b}"
-              : "=r"(r), "+*m"(p)
-              : "r"(b)
-              : "cc", "memory");
+    asm!(
+        bt!("btrq"),
+        "setc {r}",
+        p = in(reg) p,
+        b = in(reg) b,
+        r = out(reg_byte) r,
+        options(nostack, att_syntax)
+    );
     r
 }
 
@@ -46,10 +74,14 @@ pub unsafe fn _bittestandreset64(p: *mut i64, b: i64) -> u8 {
 #[unstable(feature = "simd_x86_bittest", issue = "59414")]
 pub unsafe fn _bittestandcomplement64(p: *mut i64, b: i64) -> u8 {
     let r: u8;
-    llvm_asm!("btcq $2, $1\n\tsetc ${0:b}"
-              : "=r"(r), "+*m"(p)
-              : "r"(b)
-              : "cc", "memory");
+    asm!(
+        bt!("btcq"),
+        "setc {r}",
+        p = in(reg) p,
+        b = in(reg) b,
+        r = out(reg_byte) r,
+        options(nostack, att_syntax)
+    );
     r
 }
 

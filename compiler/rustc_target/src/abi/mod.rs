@@ -222,6 +222,7 @@ pub trait HasDataLayout {
 }
 
 impl HasDataLayout for TargetDataLayout {
+    #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         self
     }
@@ -441,6 +442,8 @@ pub struct Align {
 }
 
 impl Align {
+    pub const ONE: Align = Align { pow2: 0 };
+
     #[inline]
     pub fn from_bits(bits: u64) -> Result<Align, String> {
         Align::from_bytes(Size::from_bits(bits).bytes())
@@ -450,7 +453,7 @@ impl Align {
     pub fn from_bytes(align: u64) -> Result<Align, String> {
         // Treat an alignment of 0 bytes like 1-byte alignment.
         if align == 0 {
-            return Ok(Align { pow2: 0 });
+            return Ok(Align::ONE);
         }
 
         #[cold]
@@ -750,11 +753,7 @@ impl FieldsShape {
         match *self {
             FieldsShape::Primitive => 0,
             FieldsShape::Union(count) => count.get(),
-            FieldsShape::Array { count, .. } => {
-                let usize_count = count as usize;
-                assert_eq!(usize_count as u64, count);
-                usize_count
-            }
+            FieldsShape::Array { count, .. } => count.try_into().unwrap(),
             FieldsShape::Arbitrary { ref offsets, .. } => offsets.len(),
         }
     }
@@ -788,11 +787,7 @@ impl FieldsShape {
                 unreachable!("FieldsShape::memory_index: `Primitive`s have no fields")
             }
             FieldsShape::Union(_) | FieldsShape::Array { .. } => i,
-            FieldsShape::Arbitrary { ref memory_index, .. } => {
-                let r = memory_index[i];
-                assert_eq!(r as usize as u32, r);
-                r as usize
-            }
+            FieldsShape::Arbitrary { ref memory_index, .. } => memory_index[i].try_into().unwrap(),
         }
     }
 
@@ -860,6 +855,7 @@ pub enum Abi {
 
 impl Abi {
     /// Returns `true` if the layout corresponds to an unsized type.
+    #[inline]
     pub fn is_unsized(&self) -> bool {
         match *self {
             Abi::Uninhabited | Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } => false,
@@ -879,11 +875,13 @@ impl Abi {
     }
 
     /// Returns `true` if this is an uninhabited type
+    #[inline]
     pub fn is_uninhabited(&self) -> bool {
         matches!(*self, Abi::Uninhabited)
     }
 
     /// Returns `true` is this is a scalar type
+    #[inline]
     pub fn is_scalar(&self) -> bool {
         matches!(*self, Abi::Scalar(_))
     }

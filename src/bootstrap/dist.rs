@@ -402,6 +402,10 @@ impl Step for Rustc {
             if builder.config.lld_enabled {
                 let exe = exe("rust-lld", compiler.host);
                 builder.copy(&src_dir.join(&exe), &dst_dir.join(&exe));
+                // for `-Z gcc-ld=lld`
+                let gcc_lld_dir = dst_dir.join("gcc-ld");
+                t!(fs::create_dir(&gcc_lld_dir));
+                builder.copy(&src_dir.join(&exe), &gcc_lld_dir.join(&exe));
             }
 
             // Copy over llvm-dwp if it's there
@@ -1074,6 +1078,12 @@ impl Step for RustAnalyzer {
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<GeneratedTarball> {
+        // This prevents rust-analyzer from being built for "dist" or "install"
+        // on the stable/beta channels. It is a nightly-only tool and should
+        // not be included.
+        if !builder.build.unstable_features() {
+            return None;
+        }
         let compiler = self.compiler;
         let target = self.target;
         assert!(builder.config.extended);
@@ -1173,6 +1183,12 @@ impl Step for Miri {
     }
 
     fn run(self, builder: &Builder<'_>) -> Option<GeneratedTarball> {
+        // This prevents miri from being built for "dist" or "install"
+        // on the stable/beta channels. It is a nightly-only tool and should
+        // not be included.
+        if !builder.build.unstable_features() {
+            return None;
+        }
         let compiler = self.compiler;
         let target = self.target;
         assert!(builder.config.extended);

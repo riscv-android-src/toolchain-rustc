@@ -1,6 +1,4 @@
-//! Implementations of things like `Eq` for fixed-length arrays
-//! up to a certain length. Eventually, we should be able to generalize
-//! to all lengths.
+//! Helper functions and types for fixed-length arrays.
 //!
 //! *[See also the array primitive type](array).*
 
@@ -158,7 +156,6 @@ impl<T: fmt::Debug, const N: usize> fmt::Debug for [T; N] {
 // Note: the `#[rustc_skip_array_during_method_dispatch]` on `trait IntoIterator`
 // hides this implementation from explicit `.into_iter()` calls on editions < 2021,
 // so those calls will still resolve to the slice implementation, by reference.
-#[cfg(not(bootstrap))]
 #[stable(feature = "array_into_iter_impl", since = "1.53.0")]
 impl<T, const N: usize> IntoIterator for [T; N] {
     type Item = T;
@@ -419,7 +416,7 @@ impl<T, const N: usize> [T; N] {
     {
         // SAFETY: we know for certain that this iterator will yield exactly `N`
         // items.
-        unsafe { collect_into_array_unchecked(&mut IntoIter::new(self).map(f)) }
+        unsafe { collect_into_array_unchecked(&mut IntoIterator::into_iter(self).map(f)) }
     }
 
     /// 'Zips up' two arrays into a single array of pairs.
@@ -440,7 +437,7 @@ impl<T, const N: usize> [T; N] {
     /// ```
     #[unstable(feature = "array_zip", issue = "80094")]
     pub fn zip<U>(self, rhs: [U; N]) -> [(T, U); N] {
-        let mut iter = IntoIter::new(self).zip(IntoIter::new(rhs));
+        let mut iter = IntoIterator::into_iter(self).zip(rhs);
 
         // SAFETY: we know for certain that this iterator will yield exactly `N`
         // items.

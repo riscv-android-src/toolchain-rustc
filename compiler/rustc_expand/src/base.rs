@@ -14,7 +14,7 @@ use rustc_lint_defs::builtin::PROC_MACRO_BACK_COMPAT;
 use rustc_lint_defs::BuiltinLintDiagnostics;
 use rustc_parse::{self, nt_to_tokenstream, parser, MACRO_ARGUMENTS};
 use rustc_session::{parse::ParseSess, Limit, Session};
-use rustc_span::def_id::DefId;
+use rustc_span::def_id::{CrateNum, DefId};
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{AstPass, ExpnData, ExpnId, ExpnKind};
 use rustc_span::source_map::SourceMap;
@@ -810,8 +810,16 @@ impl SyntaxExtension {
         descr: Symbol,
         macro_def_id: Option<DefId>,
     ) -> ExpnData {
+        use SyntaxExtensionKind::*;
+        let proc_macro = match self.kind {
+            // User-defined proc macro
+            Bang(..) | Attr(..) | Derive(..) => true,
+            // Consider everthing else to be not a proc
+            // macro for diagnostic purposes
+            LegacyBang(..) | LegacyAttr(..) | NonMacroAttr { .. } | LegacyDerive(..) => false,
+        };
         ExpnData::new(
-            ExpnKind::Macro(self.macro_kind(), descr),
+            ExpnKind::Macro { kind: self.macro_kind(), name: descr, proc_macro },
             parent,
             call_site,
             self.span,
@@ -873,6 +881,10 @@ pub trait ResolverExpand {
     fn take_derive_resolutions(&mut self, expn_id: ExpnId) -> Option<DeriveResolutions>;
     /// Path resolution logic for `#[cfg_accessible(path)]`.
     fn cfg_accessible(&mut self, expn_id: ExpnId, path: &ast::Path) -> Result<bool, Indeterminate>;
+
+    /// Decodes the proc-macro quoted span in the specified crate, with the specified id.
+    /// No caching is performed.
+    fn get_proc_macro_quoted_span(&self, krate: CrateNum, id: usize) -> Span;
 }
 
 #[derive(Clone, Default)]
@@ -1056,11 +1068,11 @@ impl<'a> ExtCtxt<'a> {
         self.resolver.check_unused_macros();
     }
 
-    /// Resolves a path mentioned inside Rust code.
+    /// Resolves a `path` mentioned inside Rust code, returning an absolute path.
     ///
-    /// This unifies the logic used for resolving `include_X!`, and `#[doc(include)]` file paths.
+    /// This unifies the logic used for resolving `include_X!`.
     ///
-    /// Returns an absolute path to the file that `path` refers to.
+    /// FIXME: move this to `rustc_builtin_macros` and make it private.
     pub fn resolve_path(
         &self,
         path: impl Into<PathBuf>,
@@ -1072,13 +1084,18 @@ impl<'a> ExtCtxt<'a> {
         // after macro expansion (that is, they are unhygienic).
         if !path.is_absolute() {
             let callsite = span.source_callsite();
-            let mut result = match self.source_map().span_to_unmapped_path(callsite) {
-                FileName::Real(name) => name.into_local_path(),
+            let mut result = match self.source_map().span_to_filename(callsite) {
+                FileName::Real(name) => name
+                    .into_local_path()
+                    .expect("attempting to resolve a file path in an external file"),
                 FileName::DocTest(path, _) => path,
                 other => {
                     return Err(self.struct_span_err(
                         span,
-                        &format!("cannot resolve relative path in non-file source `{}`", other),
+                        &format!(
+                            "cannot resolve relative path in non-file source `{}`",
+                            other.prefer_local()
+                        ),
                     ));
                 }
             };

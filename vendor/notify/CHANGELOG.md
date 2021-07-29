@@ -10,10 +10,38 @@
 - META: The project maintainers have changed from @passcod to notify-rs.
 - CHANGE: Avoid stating the watched path for non-recursive watches with inotify [#256]
 - FIX: Report events promptly on Linux, even when many occur in rapid succession. [#268]
+- FIX: Remove `anymap`, and replace event attributes with an opaque type. [#306]
+- CHANGE: Hide fsevent::{CFRunLoopIsWaiting,callback}, fix clippy lint warnings [#312]
 
 [#268]: https://github.com/notify-rs/notify/pull/268
+[#306]: https://github.com/notify-rs/notify/pull/306
+[#312]: https://github.com/notify-rs/notify/pull/312
 
 ## unreleased
+
+## 5.0.0-pre.9 (2021-05-21)
+
+- DEPS: Upgrade fsevent-sys dependency to 4.0 [#322]
+- CHANGE: Remove dependency on `fsevent`. [#313]
+- FIX: Correct the return type for `CFRunLoopIsWaiting` to be `Boolean` [#319]
+- CHANGE: Hide fsevent::{CFRunLoopIsWaiting,callback}, fix clippy lint warnings [#312]
+- FIX: Fix some clippy lints [#320]
+
+[#319]: https://github.com/notify-rs/notify/pull/319
+[#313]: https://github.com/notify-rs/notify/pull/313
+[#312]: https://github.com/notify-rs/notify/pull/312
+[#320]: https://github.com/notify-rs/notify/pull/320
+[#322]: https://github.com/notify-rs/notify/pull/322
+
+## 5.0.0-pre.8 (2021-05-12)
+
+- HOTFIX: Fix breaking change in fsevent-sys in minor version destroying builds [#316]
+- FIX: Don't crash on macos when creating & deleting folders in rapid succession [#302]
+- FIX: Remove `anymap`, and replace event attributes with an opaque type. [#306]
+
+[#302]: https://github.com/notify-rs/notify/pull/302
+[#306]: https://github.com/notify-rs/notify/pull/306
+[#316]: https://github.com/notify-rs/notify/pull/316
 
 ## 5.0.0-pre.7 (2021-04-15)
 

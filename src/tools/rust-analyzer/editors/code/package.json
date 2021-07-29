@@ -110,6 +110,16 @@
                 "category": "Rust Analyzer"
             },
             {
+                "command": "rust-analyzer.viewItemTree",
+                "title": "Debug ItemTree",
+                "category": "Rust Analyzer"
+            },
+            {
+                "command": "rust-analyzer.viewCrateGraph",
+                "title": "View Crate Graph",
+                "category": "Rust Analyzer"
+            },
+            {
                 "command": "rust-analyzer.expandMacro",
                 "title": "Expand macro recursively",
                 "category": "Rust Analyzer"
@@ -283,6 +293,11 @@
                     "default": true,
                     "description": "Whether to show inlay hints."
                 },
+                "rust-analyzer.inlayHints.smallerHints": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Whether inlay hints font size should be smaller than editor's font size."
+                },
                 "rust-analyzer.updates.channel": {
                     "type": "string",
                     "enum": [
@@ -354,7 +369,11 @@
                     ]
                 },
                 "rust-analyzer.debug.sourceFileMap": {
-                    "type": "object",
+                    "type": [
+                        "object",
+                        "string"
+                    ],
+                    "const": "auto",
                     "description": "Optional source file mappings passed to the debug engine.",
                     "default": {
                         "/rustc/<id>": "${env:USERPROFILE}/.rustup/toolchains/<toolchain-id>/lib/rustlib/src/rust"
@@ -371,20 +390,27 @@
                     "markdownDescription": "Optional settings passed to the debug engine. Example: `{ \"lldb\": { \"terminal\":\"external\"} }`"
                 },
                 "$generated-start": false,
-                "rust-analyzer.assist.importMergeBehavior": {
-                    "markdownDescription": "The strategy to use when inserting new imports or merging imports.",
-                    "default": "full",
+                "rust-analyzer.assist.importGranularity": {
+                    "markdownDescription": "How imports should be grouped into use statements.",
+                    "default": "crate",
                     "type": "string",
                     "enum": [
-                        "none",
-                        "full",
-                        "last"
+                        "preserve",
+                        "crate",
+                        "module",
+                        "item"
                     ],
                     "enumDescriptions": [
-                        "No merging",
-                        "Merge all layers of the import trees",
-                        "Only merge the last layer of the import trees"
+                        "Do not change the granularity of any imports and preserve the original structure written by the developer.",
+                        "Merge imports from the same crate into a single use statement. Conversely, imports from different crates are split into separate statements.",
+                        "Merge imports from the same module into a single use statement. Conversely, imports from different modules are split into separate statements.",
+                        "Flatten imports so that each has its own use statement."
                     ]
+                },
+                "rust-analyzer.assist.importEnforceGranularity": {
+                    "markdownDescription": "Whether to enforce the import granularity setting for all files. If set to false rust-analyzer will try to keep import styles consistent per file.",
+                    "default": false,
+                    "type": "boolean"
                 },
                 "rust-analyzer.assist.importPrefix": {
                     "markdownDescription": "The path structure for newly inserted paths to use.",
@@ -527,7 +553,7 @@
                     }
                 },
                 "rust-analyzer.completion.addCallArgumentSnippets": {
-                    "markdownDescription": "Whether to add argument snippets when completing functions.",
+                    "markdownDescription": "Whether to add argument snippets when completing functions.\nOnly applies when `#rust-analyzer.completion.addCallParenthesis#` is set.",
                     "default": true,
                     "type": "boolean"
                 },
@@ -543,6 +569,11 @@
                 },
                 "rust-analyzer.completion.autoimport.enable": {
                     "markdownDescription": "Toggles the additional completions that automatically add imports when completed.\nNote that your client must specify the `additionalTextEdits` LSP client capability to truly have this feature enabled.",
+                    "default": true,
+                    "type": "boolean"
+                },
+                "rust-analyzer.completion.autoself.enable": {
+                    "markdownDescription": "Toggles the additional completions that automatically show method calls and field accesses\nwith `self` prefixed to them when inside a method.",
                     "default": true,
                     "type": "boolean"
                 },
@@ -571,7 +602,7 @@
                     "type": "object"
                 },
                 "rust-analyzer.diagnostics.warningsAsHint": {
-                    "markdownDescription": "List of warnings that should be displayed with info severity.\n\nThe warnings will be indicated by a blue squiggly underline in code\nand a blue icon in the `Problems Panel`.",
+                    "markdownDescription": "List of warnings that should be displayed with hint severity.\n\nThe warnings will be indicated by faded text or three dots in code\nand will not show up in the `Problems Panel`.",
                     "default": [],
                     "type": "array",
                     "items": {
@@ -579,12 +610,17 @@
                     }
                 },
                 "rust-analyzer.diagnostics.warningsAsInfo": {
-                    "markdownDescription": "List of warnings that should be displayed with hint severity.\n\nThe warnings will be indicated by faded text or three dots in code\nand will not show up in the `Problems Panel`.",
+                    "markdownDescription": "List of warnings that should be displayed with info severity.\n\nThe warnings will be indicated by a blue squiggly underline in code\nand a blue icon in the `Problems Panel`.",
                     "default": [],
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
+                },
+                "rust-analyzer.experimental.procAttrMacros": {
+                    "markdownDescription": "Expand attribute macros.",
+                    "default": false,
+                    "type": "boolean"
                 },
                 "rust-analyzer.files.watcher": {
                     "markdownDescription": "Controls file watching implementation.",
@@ -598,6 +634,11 @@
                     "items": {
                         "type": "string"
                     }
+                },
+                "rust-analyzer.highlighting.strings": {
+                    "markdownDescription": "Use semantic tokens for strings.\n\nIn some editors (e.g. vscode) semantic tokens override other highlighting grammars.\nBy disabling semantic tokens for strings, other grammars can be used to highlight\ntheir contents.",
+                    "default": true,
+                    "type": "boolean"
                 },
                 "rust-analyzer.hoverActions.debug": {
                     "markdownDescription": "Whether to show `Debug` action. Only applies when\n`#rust-analyzer.hoverActions.enable#` is set.",
@@ -617,6 +658,11 @@
                 "rust-analyzer.hoverActions.implementations": {
                     "markdownDescription": "Whether to show `Implementations` action. Only applies when\n`#rust-analyzer.hoverActions.enable#` is set.",
                     "default": true,
+                    "type": "boolean"
+                },
+                "rust-analyzer.hoverActions.references": {
+                    "markdownDescription": "Whether to show `References` action. Only applies when\n`#rust-analyzer.hoverActions.enable#` is set.",
+                    "default": false,
                     "type": "boolean"
                 },
                 "rust-analyzer.hoverActions.run": {
@@ -763,6 +809,37 @@
                     "items": {
                         "type": "string"
                     }
+                },
+                "rust-analyzer.rustfmt.enableRangeFormatting": {
+                    "markdownDescription": "Enables the use of rustfmt's unstable range formatting command for the\n`textDocument/rangeFormatting` request. The rustfmt option is unstable and only\navailable on a nightly build.",
+                    "default": false,
+                    "type": "boolean"
+                },
+                "rust-analyzer.workspace.symbol.search.scope": {
+                    "markdownDescription": "Workspace symbol search scope.",
+                    "default": "workspace",
+                    "type": "string",
+                    "enum": [
+                        "workspace",
+                        "workspace_and_dependencies"
+                    ],
+                    "enumDescriptions": [
+                        "Search in current workspace only",
+                        "Search in current workspace and dependencies"
+                    ]
+                },
+                "rust-analyzer.workspace.symbol.search.kind": {
+                    "markdownDescription": "Workspace symbol search kind.",
+                    "default": "only_types",
+                    "type": "string",
+                    "enum": [
+                        "only_types",
+                        "all_symbols"
+                    ],
+                    "enumDescriptions": [
+                        "Search for types only",
+                        "Search for all symbols kinds"
+                    ]
                 },
                 "$generated-end": false
             }

@@ -1,7 +1,6 @@
 #![cfg_attr(feature = "compiler-builtins", compiler_builtins)]
 #![cfg_attr(not(feature = "no-asm"), feature(asm))]
 #![feature(abi_unadjusted)]
-#![cfg_attr(not(feature = "no-asm"), feature(llvm_asm))]
 #![cfg_attr(not(feature = "no-asm"), feature(global_asm))]
 #![feature(cfg_target_has_atomic)]
 #![feature(compiler_builtins)]
@@ -17,6 +16,8 @@
 // compiler on ABIs and such, so we should be "good enough" for now and changes
 // to the `u128` ABI will be reflected here.
 #![allow(improper_ctypes, improper_ctypes_definitions)]
+// `mem::swap` cannot be used because it may generate references to memcpy in unoptimized code.
+#![allow(clippy::manual_swap)]
 
 // We disable #[no_mangle] for tests so that we can verify the test results
 // against the native compiler-rt implementations of the builtins.
@@ -30,11 +31,6 @@
 
 #[cfg(test)]
 extern crate core;
-
-#[allow(unused_unsafe)]
-fn abort() -> ! {
-    unsafe { core::intrinsics::abort() }
-}
 
 #[macro_use]
 mod macros;
@@ -53,7 +49,11 @@ pub mod mem;
 #[cfg(target_arch = "arm")]
 pub mod arm;
 
-#[cfg(all(kernel_user_helpers, target_os = "linux", target_arch = "arm"))]
+#[cfg(all(
+    kernel_user_helpers,
+    any(target_os = "linux", target_os = "android"),
+    target_arch = "arm"
+))]
 pub mod arm_linux;
 
 #[cfg(any(target_arch = "riscv32"))]

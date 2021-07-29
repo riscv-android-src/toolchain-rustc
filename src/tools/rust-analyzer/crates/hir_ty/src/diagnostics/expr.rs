@@ -1,19 +1,27 @@
-//! FIXME: write short doc here
+//! Various diagnostics for expressions that are collected together in one pass
+//! through the body using inference results: mismatched arg counts, missing
+//! fields, etc.
 
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
-use hir_def::{expr::Statement, path::path, resolver::HasResolver, AssocItemId, DefWithBodyId};
-use hir_expand::{diagnostics::DiagnosticSink, name};
+use hir_def::{
+    expr::Statement, path::path, resolver::HasResolver, AssocItemId, DefWithBodyId, HasModule,
+};
+use hir_expand::name;
 use rustc_hash::FxHashSet;
 use syntax::{ast, AstPtr};
 
 use crate::{
     db::HirDatabase,
     diagnostics::{
-        match_check::{is_useful, MatchCheckCtx, Matrix, PatStack, Usefulness},
+        match_check::{
+            self,
+            usefulness::{compute_match_usefulness, expand_pattern, MatchCheckCtx, PatternArena},
+        },
         MismatchedArgCount, MissingFields, MissingMatchArms, MissingOkOrSomeInTailExpr,
         MissingPatFields, RemoveThisSemicolon,
     },
+    diagnostics_sink::DiagnosticSink,
     AdtId, InferenceResult, Interner, TyExt, TyKind,
 };
 
@@ -83,7 +91,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         if let Expr::Block { statements, tail, .. } = body_expr {
             if let Some(t) = tail {
                 self.validate_results_in_tail_expr(body.body_expr, *t, db);
-            } else if let Some(Statement::Expr(id)) = statements.last() {
+            } else if let Some(Statement::Expr { expr: id, .. }) = statements.last() {
                 self.validate_missing_tail_expr(body.body_expr, *id, db);
             }
         }
@@ -179,7 +187,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
         for (id, expr) in body.exprs.iter() {
             if let Expr::MethodCall { receiver, .. } = expr {
                 let function_id = match self.infer.method_resolution(id) {
-                    Some(id) => id,
+                    Some((id, _)) => id,
                     None => continue,
                 };
 
@@ -211,7 +219,7 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
 
         // FIXME: Due to shortcomings in the current type system implementation, only emit this
         // diagnostic if there are no type mismatches in the containing function.
-        if self.infer.type_mismatches.iter().next().is_some() {
+        if self.infer.expr_type_mismatches().next().is_some() {
             return;
         }
 
@@ -237,15 +245,11 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
                     return;
                 }
 
-                // FIXME: note that we erase information about substs here. This
-                // is not right, but, luckily, doesn't matter as we care only
-                // about the number of params
-                let callee = match self.infer.method_resolution(call_id) {
-                    Some(callee) => callee,
+                let (callee, subst) = match self.infer.method_resolution(call_id) {
+                    Some(it) => it,
                     None => return,
                 };
-                let sig =
-                    db.callable_item_signature(callee.into()).into_value_and_skipped_binders().0;
+                let sig = db.callable_item_signature(callee.into()).substitute(&Interner, &subst);
 
                 (sig, args)
             }
@@ -295,12 +299,12 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
             &infer.type_of_expr[match_expr]
         };
 
-        let cx = MatchCheckCtx { match_expr, body, infer: infer.clone(), db };
-        let pats = arms.iter().map(|arm| arm.pat);
+        let pattern_arena = RefCell::new(PatternArena::new());
 
-        let mut seen = Matrix::empty();
-        for pat in pats {
-            if let Some(pat_ty) = infer.type_of_pat.get(pat) {
+        let mut m_arms = Vec::new();
+        let mut has_lowering_errors = false;
+        for arm in arms {
+            if let Some(pat_ty) = infer.type_of_pat.get(arm.pat) {
                 // We only include patterns whose type matches the type
                 // of the match expression. If we had a InvalidMatchArmPattern
                 // diagnostic or similar we could raise that in an else
@@ -311,18 +315,30 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
                 // necessary.
                 //
                 // FIXME we should use the type checker for this.
-                if pat_ty == match_expr_ty
+                if (pat_ty == match_expr_ty
                     || match_expr_ty
                         .as_reference()
                         .map(|(match_expr_ty, ..)| match_expr_ty == pat_ty)
-                        .unwrap_or(false)
+                        .unwrap_or(false))
+                    && types_of_subpatterns_do_match(arm.pat, &body, &infer)
                 {
                     // If we had a NotUsefulMatchArm diagnostic, we could
                     // check the usefulness of each pattern as we added it
                     // to the matrix here.
-                    let v = PatStack::from_pattern(pat);
-                    seen.push(&cx, v);
-                    continue;
+                    let m_arm = match_check::MatchArm {
+                        pat: self.lower_pattern(
+                            arm.pat,
+                            &mut pattern_arena.borrow_mut(),
+                            db,
+                            &body,
+                            &mut has_lowering_errors,
+                        ),
+                        has_guard: arm.guard.is_some(),
+                    };
+                    m_arms.push(m_arm);
+                    if !has_lowering_errors {
+                        continue;
+                    }
                 }
             }
 
@@ -330,32 +346,74 @@ impl<'a, 'b> ExprValidator<'a, 'b> {
             // fit the match expression, we skip this diagnostic. Skipping the entire
             // diagnostic rather than just not including this match arm is preferred
             // to avoid the chance of false positives.
+            #[cfg(test)]
+            match_check::tests::report_bail_out(db, self.owner, arm.pat, self.sink);
             return;
         }
 
-        match is_useful(&cx, &seen, &PatStack::from_wild()) {
-            Ok(Usefulness::Useful) => (),
-            // if a wildcard pattern is not useful, then all patterns are covered
-            Ok(Usefulness::NotUseful) => return,
-            // this path is for unimplemented checks, so we err on the side of not
-            // reporting any errors
-            _ => return,
-        }
-
-        if let Ok(source_ptr) = source_map.expr_syntax(id) {
-            let root = source_ptr.file_syntax(db.upcast());
-            if let ast::Expr::MatchExpr(match_expr) = &source_ptr.value.to_node(&root) {
-                if let (Some(match_expr), Some(arms)) =
-                    (match_expr.expr(), match_expr.match_arm_list())
-                {
-                    self.sink.push(MissingMatchArms {
-                        file: source_ptr.file_id,
-                        match_expr: AstPtr::new(&match_expr),
-                        arms: AstPtr::new(&arms),
+        let cx = MatchCheckCtx {
+            module: self.owner.module(db.upcast()),
+            match_expr,
+            infer: &infer,
+            db,
+            pattern_arena: &pattern_arena,
+            panic_context: &|| {
+                use syntax::AstNode;
+                let match_expr_text = source_map
+                    .expr_syntax(match_expr)
+                    .ok()
+                    .and_then(|scrutinee_sptr| {
+                        let root = scrutinee_sptr.file_syntax(db.upcast());
+                        scrutinee_sptr.value.to_node(&root).syntax().parent()
                     })
+                    .map(|node| node.to_string());
+                format!(
+                    "expression:\n{}",
+                    match_expr_text.as_deref().unwrap_or("<synthesized expr>")
+                )
+            },
+        };
+        let report = compute_match_usefulness(&cx, &m_arms);
+
+        // FIXME Report unreacheble arms
+        // https://github.com/rust-lang/rust/blob/25c15cdbe/compiler/rustc_mir_build/src/thir/pattern/check_match.rs#L200-L201
+
+        let witnesses = report.non_exhaustiveness_witnesses;
+        // FIXME Report witnesses
+        // eprintln!("compute_match_usefulness(..) -> {:?}", &witnesses);
+        if !witnesses.is_empty() {
+            if let Ok(source_ptr) = source_map.expr_syntax(id) {
+                let root = source_ptr.file_syntax(db.upcast());
+                if let ast::Expr::MatchExpr(match_expr) = &source_ptr.value.to_node(&root) {
+                    if let (Some(match_expr), Some(arms)) =
+                        (match_expr.expr(), match_expr.match_arm_list())
+                    {
+                        self.sink.push(MissingMatchArms {
+                            file: source_ptr.file_id,
+                            match_expr: AstPtr::new(&match_expr),
+                            arms: AstPtr::new(&arms),
+                        })
+                    }
                 }
             }
         }
+    }
+
+    fn lower_pattern(
+        &self,
+        pat: PatId,
+        pattern_arena: &mut PatternArena,
+        db: &dyn HirDatabase,
+        body: &Body,
+        have_errors: &mut bool,
+    ) -> match_check::PatId {
+        let mut patcx = match_check::PatCtxt::new(db, &self.infer, body);
+        let pattern = patcx.lower_pattern(pat);
+        let pattern = pattern_arena.alloc(expand_pattern(pattern));
+        if !patcx.errors.is_empty() {
+            *have_errors = true;
+        }
+        pattern
     }
 
     fn validate_results_in_tail_expr(&mut self, body_id: ExprId, id: ExprId, db: &dyn HirDatabase) {
@@ -494,6 +552,21 @@ pub fn record_pattern_missing_fields(
         return None;
     }
     Some((variant_def, missed_fields, exhaustive))
+}
+
+fn types_of_subpatterns_do_match(pat: PatId, body: &Body, infer: &InferenceResult) -> bool {
+    fn walk(pat: PatId, body: &Body, infer: &InferenceResult, has_type_mismatches: &mut bool) {
+        match infer.type_mismatch_for_pat(pat) {
+            Some(_) => *has_type_mismatches = true,
+            None => {
+                body[pat].walk_child_pats(|subpat| walk(subpat, body, infer, has_type_mismatches))
+            }
+        }
+    }
+
+    let mut has_type_mismatches = false;
+    walk(pat, body, infer, &mut has_type_mismatches);
+    !has_type_mismatches
 }
 
 #[cfg(test)]

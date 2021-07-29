@@ -278,7 +278,7 @@ impl ParenthesizedArgs {
             .cloned()
             .map(|input| AngleBracketedArg::Arg(GenericArg::Type(input)))
             .collect();
-        AngleBracketedArgs { span: self.span, args }
+        AngleBracketedArgs { span: self.inputs_span, args }
     }
 }
 
@@ -623,12 +623,13 @@ impl Pat {
             PatKind::Ident(_, _, Some(p)) => p.walk(it),
 
             // Walk into each field of struct.
-            PatKind::Struct(_, fields, _) => fields.iter().for_each(|field| field.pat.walk(it)),
+            PatKind::Struct(_, _, fields, _) => fields.iter().for_each(|field| field.pat.walk(it)),
 
             // Sequence of patterns.
-            PatKind::TupleStruct(_, s) | PatKind::Tuple(s) | PatKind::Slice(s) | PatKind::Or(s) => {
-                s.iter().for_each(|p| p.walk(it))
-            }
+            PatKind::TupleStruct(_, _, s)
+            | PatKind::Tuple(s)
+            | PatKind::Slice(s)
+            | PatKind::Or(s) => s.iter().for_each(|p| p.walk(it)),
 
             // Trivial wrappers over inner patterns.
             PatKind::Box(s) | PatKind::Ref(s, _) | PatKind::Paren(s) => s.walk(it),
@@ -701,10 +702,10 @@ pub enum PatKind {
 
     /// A struct or struct variant pattern (e.g., `Variant {x, y, ..}`).
     /// The `bool` is `true` in the presence of a `..`.
-    Struct(Path, Vec<PatField>, /* recovered */ bool),
+    Struct(Option<QSelf>, Path, Vec<PatField>, /* recovered */ bool),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
-    TupleStruct(Path, Vec<P<Pat>>),
+    TupleStruct(Option<QSelf>, Path, Vec<P<Pat>>),
 
     /// An or-pattern `A | B | C`.
     /// Invariant: `pats.len() >= 2`.
@@ -1247,6 +1248,7 @@ pub enum StructRest {
 
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct StructExpr {
+    pub qself: Option<QSelf>,
     pub path: Path,
     pub fields: Vec<ExprField>,
     pub rest: StructRest,
@@ -1861,6 +1863,10 @@ pub enum TyKind {
     Never,
     /// A tuple (`(A, B, C, D,...)`).
     Tup(Vec<P<Ty>>),
+    /// An anonymous struct type i.e. `struct { foo: Type }`
+    AnonymousStruct(Vec<FieldDef>, bool),
+    /// An anonymous union type i.e. `union { bar: Type }`
+    AnonymousUnion(Vec<FieldDef>, bool),
     /// A path (`module::module::...::Type`), optionally
     /// "qualified", e.g., `<Vec<T> as SomeTrait>::SomeType`.
     ///
@@ -2279,14 +2285,6 @@ pub struct ForeignMod {
     pub items: Vec<P<ForeignItem>>,
 }
 
-/// Global inline assembly.
-///
-/// Also known as "module-level assembly" or "file-scoped assembly".
-#[derive(Clone, Encodable, Decodable, Debug, Copy)]
-pub struct GlobalAsm {
-    pub asm: Symbol,
-}
-
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct EnumDef {
     pub variants: Vec<Variant>,
@@ -2669,7 +2667,7 @@ pub enum ItemKind {
     /// E.g., `extern {}` or `extern "C" {}`.
     ForeignMod(ForeignMod),
     /// Module-level inline assembly (from `global_asm!()`).
-    GlobalAsm(GlobalAsm),
+    GlobalAsm(InlineAsm),
     /// A type alias (`type`).
     ///
     /// E.g., `type Foo = Bar<u8>;`.

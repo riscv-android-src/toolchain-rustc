@@ -3,25 +3,30 @@
 use hir::{PrefixKind, Semantics};
 use ide_db::{
     base_db::{fixture::ChangeFixture, FileLoader, FilePosition},
-    helpers::{insert_use::InsertUseConfig, merge_imports::MergeBehavior, SnippetCap},
+    helpers::{
+        insert_use::{ImportGranularity, InsertUseConfig},
+        SnippetCap,
+    },
     RootDatabase,
 };
 use itertools::Itertools;
 use stdx::{format_to, trim_indent};
 use syntax::{AstNode, NodeOrToken, SyntaxElement};
-use test_utils::{assert_eq_text, RangeOrOffset};
+use test_utils::assert_eq_text;
 
 use crate::{item::CompletionKind, CompletionConfig, CompletionItem};
 
 pub(crate) const TEST_CONFIG: CompletionConfig = CompletionConfig {
     enable_postfix_completions: true,
     enable_imports_on_the_fly: true,
+    enable_self_on_the_fly: true,
     add_call_parenthesis: true,
     add_call_argument_snippets: true,
     snippet_cap: SnippetCap::new(true),
     insert_use: InsertUseConfig {
-        merge: Some(MergeBehavior::Full),
+        granularity: ImportGranularity::Crate,
         prefix_kind: PrefixKind::Plain,
+        enforce_granularity: true,
         group: true,
     },
 };
@@ -32,10 +37,7 @@ pub(crate) fn position(ra_fixture: &str) -> (RootDatabase, FilePosition) {
     let mut database = RootDatabase::default();
     database.apply_change(change_fixture.change);
     let (file_id, range_or_offset) = change_fixture.file_position.expect("expected a marker ($0)");
-    let offset = match range_or_offset {
-        RangeOrOffset::Range(_) => panic!(),
-        RangeOrOffset::Offset(it) => it,
-    };
+    let offset = range_or_offset.expect_offset();
     (database, FilePosition { file_id, offset })
 }
 
@@ -48,10 +50,11 @@ pub(crate) fn do_completion_with_config(
     code: &str,
     kind: CompletionKind,
 ) -> Vec<CompletionItem> {
-    let mut kind_completions: Vec<CompletionItem> =
-        get_all_items(config, code).into_iter().filter(|c| c.completion_kind == kind).collect();
-    kind_completions.sort_by(|l, r| l.label().cmp(r.label()));
-    kind_completions
+    get_all_items(config, code)
+        .into_iter()
+        .filter(|c| c.completion_kind == kind)
+        .sorted_by(|l, r| l.label().cmp(r.label()))
+        .collect()
 }
 
 pub(crate) fn completion_list(code: &str, kind: CompletionKind) -> String {
@@ -128,7 +131,7 @@ pub(crate) fn check_edit_with_config(
     assert_eq_text!(&ra_fixture_after, &actual)
 }
 
-pub(crate) fn check_pattern_is_applicable(code: &str, check: fn(SyntaxElement) -> bool) {
+pub(crate) fn check_pattern_is_applicable(code: &str, check: impl FnOnce(SyntaxElement) -> bool) {
     let (db, pos) = position(code);
 
     let sema = Semantics::new(&db);

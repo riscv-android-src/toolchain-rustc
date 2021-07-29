@@ -143,6 +143,9 @@ pub struct Counter {
 /// A freshly built `Counter` is disabled. To begin counting events, you must
 /// call [`enable`] on the `Counter` or the `Group` to which it belongs.
 ///
+/// Internally, a `Builder` is just a wrapper around the kernel's
+/// `struct perf_event_attr` type. See the [perf_event_open(2)] man page for details.
+///
 /// For example, if you want a `Counter` for instructions retired by the current
 /// process, those are `Builder`'s defaults, so you need only write:
 ///
@@ -182,12 +185,10 @@ pub struct Counter {
 /// but hopefully it will acquire methods to support more of them as time goes
 /// on.
 ///
-/// Internally, a `Builder` is just a wrapper around the kernel's `struct
-/// perf_event_attr` type.
-///
 /// [`enable`]: Counter::enable
 /// [`kind`]: Builder::kind
 /// [`group`]: Builder::group
+/// [perf_event_open(2)]: http://man7.org/linux/man-pages/man2/perf_event_open.2.html
 pub struct Builder<'a> {
     attrs: perf_event_attr,
     who: EventPid<'a>,
@@ -500,6 +501,23 @@ impl<'a> Builder<'a> {
     /// Observe code running on any CPU core. (This is the default.)
     pub fn any_cpu(mut self) -> Builder<'a> {
         self.cpu = None;
+        self
+    }
+
+    /// Set whether this counter is inherited by new threads.
+    ///
+    /// When this flag is set, this counter observes activity in new threads
+    /// created by any thread already being observed.
+    ///
+    /// By default, the flag is unset: counters are not inherited, and observe
+    /// only the threads specified when they are created.
+    ///
+    /// This flag cannot be set if the counter belongs to a `Group`. Doing so
+    /// will result in an error when the counter is built. This is a kernel
+    /// limitation.
+    pub fn inherit(mut self, inherit: bool) -> Builder<'a> {
+        let flag = if inherit { 1 } else { 0 };
+        self.attrs.set_inherit(flag);
         self
     }
 

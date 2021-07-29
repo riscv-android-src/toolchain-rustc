@@ -14,6 +14,7 @@ mod tests;
 
 #[cfg(test)]
 mod benchmark;
+mod token_map;
 
 use std::fmt;
 
@@ -63,9 +64,12 @@ impl fmt::Display for ExpandError {
     }
 }
 
-pub use crate::syntax_bridge::{
-    ast_to_token_tree, parse_exprs_with_sep, parse_to_token_tree, syntax_node_to_token_tree,
-    token_tree_to_syntax_node, TokenMap,
+pub use crate::{
+    syntax_bridge::{
+        ast_to_token_tree, parse_exprs_with_sep, parse_to_token_tree, syntax_node_to_token_tree,
+        token_tree_to_syntax_node,
+    },
+    token_map::TokenMap,
 };
 
 /// This struct contains AST for a single `macro_rules` definition. What might
@@ -291,8 +295,8 @@ fn validate(pattern: &MetaTemplate) -> Result<(), ParseError> {
                 // Checks that no repetition which could match an empty token
                 // https://github.com/rust-lang/rust/blob/a58b1ed44f5e06976de2bdc4d7dc81c36a96934f/src/librustc_expand/mbe/macro_rules.rs#L558
 
-                if separator.is_none() {
-                    if subtree.iter().all(|child_op| {
+                if separator.is_none()
+                    && subtree.iter().all(|child_op| {
                         match child_op {
                             Op::Var { kind, .. } => {
                                 // vis is optional
@@ -310,9 +314,9 @@ fn validate(pattern: &MetaTemplate) -> Result<(), ParseError> {
                             Op::Subtree { .. } => {}
                         }
                         false
-                    }) {
-                        return Err(ParseError::RepetitionEmptyTokenTree);
-                    }
+                    })
+                {
+                    return Err(ParseError::RepetitionEmptyTokenTree);
                 }
                 validate(subtree)?
             }

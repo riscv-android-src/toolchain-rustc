@@ -13,7 +13,7 @@ pub trait Foo {
 pub struct Bar;
 
 impl Foo for Bar {
-    // @has assoc_consts/struct.Bar.html '//code' 'impl Foo for Bar'
+    // @has assoc_consts/struct.Bar.html '//h3[@class="code-header in-band"]' 'impl Foo for Bar'
     // @has - '//*[@id="associatedconstant.FOO"]' 'const FOO: usize'
     const FOO: usize = 12;
     // @has - '//*[@id="associatedconstant.FOO_NO_DEFAULT"]' 'const FOO_NO_DEFAULT: bool'
@@ -77,7 +77,7 @@ pub trait Qux {
     const QUX_DEFAULT2: u32 = 3;
 }
 
-// @has assoc_consts/struct.Bar.html '//code' 'impl Qux for Bar'
+// @has assoc_consts/struct.Bar.html '//h3[@class="code-header in-band"]' 'impl Qux for Bar'
 impl Qux for Bar {
     // @has - '//*[@id="associatedconstant.QUX0"]' 'const QUX0: u8'
     // @has - '//*[@class="docblock"]' "Docs for QUX0 in trait."
@@ -88,12 +88,12 @@ impl Qux for Bar {
     /// Docs for QUX1 in impl.
     const QUX1: i8 = 5;
     // @has - '//*[@id="associatedconstant.QUX_DEFAULT0"]' 'const QUX_DEFAULT0: u16'
-    // @has - '//*[@class="docblock hidden"]' "Docs for QUX_DEFAULT12 in trait."
+    // @has - '//div[@class="impl-items"]//*[@class="docblock"]' "Docs for QUX_DEFAULT12 in trait."
     const QUX_DEFAULT0: u16 = 6;
     // @has - '//*[@id="associatedconstant.QUX_DEFAULT1"]' 'const QUX_DEFAULT1: i16'
     // @has - '//*[@class="docblock"]' "Docs for QUX_DEFAULT1 in impl."
     /// Docs for QUX_DEFAULT1 in impl.
     const QUX_DEFAULT1: i16 = 7;
     // @has - '//*[@id="associatedconstant.QUX_DEFAULT2"]' 'const QUX_DEFAULT2: u32'
-    // @has - '//*[@class="docblock hidden"]' "Docs for QUX_DEFAULT2 in trait."
+    // @has - '//div[@class="impl-items"]//*[@class="docblock"]' "Docs for QUX_DEFAULT2 in trait."
 }

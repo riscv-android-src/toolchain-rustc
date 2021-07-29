@@ -1,8 +1,8 @@
-use std::{fmt, iter, marker::PhantomData, ops::Range};
+use std::{borrow::Cow, fmt, iter, marker::PhantomData, ops::Range};
 
 use crate::{
-    cursor, green::GreenTokenData, Direction, GreenNode, GreenToken, NodeOrToken, SyntaxKind,
-    SyntaxText, TextRange, TextSize, TokenAtOffset, WalkEvent,
+    cursor, green::GreenTokenData, Direction, GreenNode, GreenNodeData, GreenToken, NodeOrToken,
+    SyntaxKind, SyntaxText, TextRange, TextSize, TokenAtOffset, WalkEvent,
 };
 
 pub trait Language: Sized + Clone + Copy + fmt::Debug + Eq + Ord + std::hash::Hash {
@@ -121,7 +121,7 @@ impl<L: Language> SyntaxNode<L> {
         self.raw.text()
     }
 
-    pub fn green(&self) -> GreenNode {
+    pub fn green(&self) -> Cow<'_, GreenNodeData> {
         self.raw.green()
     }
 
@@ -225,6 +225,14 @@ impl<L: Language> SyntaxNode<L> {
 
     pub fn child_or_token_at_range(&self, range: TextRange) -> Option<SyntaxElement<L>> {
         self.raw.child_or_token_at_range(range).map(SyntaxElement::from)
+    }
+
+    /// Returns an independent copy of the subtree rooted at this node.
+    ///
+    /// The parent of the returned node will be `None`, the start offset will be
+    /// zero, but, otherwise, it'll be equivalent to the source node.
+    pub fn clone_subtree(&self) -> SyntaxNode<L> {
+        SyntaxNode::from(self.raw.clone_subtree())
     }
 
     pub fn clone_for_update(&self) -> SyntaxNode<L> {

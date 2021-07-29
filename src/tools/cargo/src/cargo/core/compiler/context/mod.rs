@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use anyhow::Context as _;
+use anyhow::{bail, Context as _};
 use filetime::FileTime;
 use jobserver::Client;
 
@@ -309,6 +309,9 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
         }
         self.primary_packages
             .extend(self.bcx.roots.iter().map(|u| u.pkg.package_id()));
+        self.compilation
+            .root_crate_names
+            .extend(self.bcx.roots.iter().map(|u| u.target.crate_name()));
 
         self.record_units_requiring_metadata();
 
@@ -480,6 +483,22 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             }
         };
 
+        fn doc_collision_error(unit: &Unit, other_unit: &Unit) -> CargoResult<()> {
+            bail!(
+                "document output filename collision\n\
+                 The {} `{}` in package `{}` has the same name as the {} `{}` in package `{}`.\n\
+                 Only one may be documented at once since they output to the same path.\n\
+                 Consider documenting only one, renaming one, \
+                 or marking one with `doc = false` in Cargo.toml.",
+                unit.target.kind().description(),
+                unit.target.name(),
+                unit.pkg,
+                other_unit.target.kind().description(),
+                other_unit.target.name(),
+                other_unit.pkg,
+            );
+        }
+
         let mut keys = self
             .bcx
             .unit_graph
@@ -488,7 +507,30 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             .collect::<Vec<_>>();
         // Sort for consistent error messages.
         keys.sort_unstable();
+        // These are kept separate to retain compatibility with older
+        // versions, which generated an error when there was a duplicate lib
+        // or bin (but the old code did not check bin<->lib collisions). To
+        // retain backwards compatibility, this only generates an error for
+        // duplicate libs or duplicate bins (but not both). Ideally this
+        // shouldn't be here, but since there isn't a complete workaround,
+        // yet, this retains the old behavior.
+        let mut doc_libs = HashMap::new();
+        let mut doc_bins = HashMap::new();
         for unit in keys {
+            if unit.mode.is_doc() && self.is_primary_package(unit) {
+                // These situations have been an error since before 1.0, so it
+                // is not a warning like the other situations.
+                if unit.target.is_lib() {
+                    if let Some(prev) = doc_libs.insert((unit.target.crate_name(), unit.kind), unit)
+                    {
+                        doc_collision_error(unit, prev)?;
+                    }
+                } else if let Some(prev) =
+                    doc_bins.insert((unit.target.crate_name(), unit.kind), unit)
+                {
+                    doc_collision_error(unit, prev)?;
+                }
+            }
             for output in self.outputs(unit)?.iter() {
                 if let Some(other_unit) = output_collisions.insert(output.path.clone(), unit) {
                     if unit.mode.is_doc() {

@@ -5,15 +5,14 @@
 #![deny(rust_2018_idioms)]
 #![feature(
     asm,
-    const_fn,
     const_fn_union,
     const_fn_transmute,
+    const_panic,
     custom_inner_attributes,
     link_llvm_intrinsics,
     platform_intrinsics,
     repr_simd,
     simd_ffi,
-    llvm_asm,
     proc_macro_hygiene,
     stmt_expr_attributes,
     core_intrinsics,
@@ -35,13 +34,12 @@
     adx_target_feature,
     rtm_target_feature,
     f16c_target_feature,
-    external_doc,
     allow_internal_unstable,
     decl_macro,
-    extended_key_value_attributes
+    bench_black_box
 )]
 #![cfg_attr(test, feature(test, abi_vectorcall))]
-#![cfg_attr(all(test, target_arch = "wasm32"), feature(wasm_simd))]
+#![cfg_attr(target_arch = "wasm32", feature(wasm_simd_const))]
 #![deny(clippy::missing_inline_in_public_items)]
 #![allow(
     clippy::inline_always,
@@ -76,4 +74,4 @@ mod core_arch;
 pub use self::core_arch::arch;
 
 #[allow(unused_imports)]
-use core::{ffi, hint, intrinsics, marker, mem, ops, ptr, sync};
+use core::{convert, ffi, hint, intrinsics, marker, mem, ops, ptr, sync};
