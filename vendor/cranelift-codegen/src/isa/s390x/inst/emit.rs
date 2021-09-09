@@ -5,6 +5,7 @@ use crate::ir::condcodes::IntCC;
 use crate::ir::MemFlags;
 use crate::ir::{SourceLoc, TrapCode};
 use crate::isa::s390x::inst::*;
+use crate::isa::s390x::settings as s390x_settings;
 use core::convert::TryFrom;
 use log::debug;
 use regalloc::{Reg, RegClass};
@@ -175,6 +176,56 @@ pub fn mem_emit(
                 reloc,
                 name,
                 offset.into(),
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+pub fn mem_rs_emit(
+    rd: Reg,
+    rn: Reg,
+    mem: &MemArg,
+    opcode_rs: Option<u16>,
+    opcode_rsy: Option<u16>,
+    add_trap: bool,
+    sink: &mut MachBuffer<Inst>,
+    emit_info: &EmitInfo,
+    state: &mut EmitState,
+) {
+    let (mem_insts, mem) = mem_finalize(
+        mem,
+        state,
+        opcode_rs.is_some(),
+        opcode_rsy.is_some(),
+        false,
+        false,
+    );
+    for inst in mem_insts.into_iter() {
+        inst.emit(sink, emit_info, state);
+    }
+
+    if add_trap && mem.can_trap() {
+        let srcloc = state.cur_srcloc();
+        if srcloc != SourceLoc::default() {
+            sink.add_trap(srcloc, TrapCode::HeapOutOfBounds);
+        }
+    }
+
+    match &mem {
+        &MemArg::BXD12 {
+            base, index, disp, ..
+        } => {
+            assert!(index == zero_reg());
+            put(sink, &enc_rs(opcode_rs.unwrap(), rd, rn, base, disp.bits()));
+        }
+        &MemArg::BXD20 {
+            base, index, disp, ..
+        } => {
+            assert!(index == zero_reg());
+            put(
+                sink,
+                &enc_rsy(opcode_rsy.unwrap(), rd, rn, base, disp.bits()),
             );
         }
         _ => unreachable!(),
@@ -855,17 +906,20 @@ impl EmitState {
 }
 
 /// Constant state used during function compilation.
-pub struct EmitInfo(settings::Flags);
+pub struct EmitInfo {
+    flags: settings::Flags,
+    isa_flags: s390x_settings::Flags,
+}
 
 impl EmitInfo {
-    pub(crate) fn new(flags: settings::Flags) -> Self {
-        Self(flags)
+    pub(crate) fn new(flags: settings::Flags, isa_flags: s390x_settings::Flags) -> Self {
+        Self { flags, isa_flags }
     }
 }
 
 impl MachInstEmitInfo for EmitInfo {
     fn flags(&self) -> &settings::Flags {
-        &self.0
+        &self.flags
     }
 }
 
@@ -874,6 +928,25 @@ impl MachInstEmit for Inst {
     type Info = EmitInfo;
 
     fn emit(&self, sink: &mut MachBuffer<Inst>, emit_info: &Self::Info, state: &mut EmitState) {
+        // Verify that we can emit this Inst in the current ISA
+        let matches_isa_flags = |iset_requirement: &InstructionSet| -> bool {
+            match iset_requirement {
+                // Baseline ISA is z14
+                InstructionSet::Base => true,
+                // Miscellaneous-Instruction-Extensions Facility 2 (z15)
+                InstructionSet::MIE2 => emit_info.isa_flags.has_mie2(),
+                // Vector-Enhancements Facility 2 (z15)
+                InstructionSet::VXRS_EXT2 => emit_info.isa_flags.has_vxrs_ext2(),
+            }
+        };
+        let isa_requirements = self.available_in_isa();
+        if !matches_isa_flags(&isa_requirements) {
+            panic!(
+                "Cannot emit inst '{:?}' for target; failed to match ISA requirements: {:?}",
+                self, isa_requirements
+            )
+        }
+
         // N.B.: we *must* not exceed the "worst-case size" used to compute
         // where to insert islands, except when islands are explicitly triggered
         // (with an `EmitIsland`). We check this in debug builds. This is `mut`
@@ -1299,6 +1372,53 @@ impl MachInstEmit for Inst {
                     srcloc,
                     trap_code,
                 );
+            }
+
+            &Inst::AtomicRmw {
+                alu_op,
+                rd,
+                rn,
+                ref mem,
+            } => {
+                let opcode = match alu_op {
+                    ALUOp::Add32 => 0xebf8, // LAA
+                    ALUOp::Add64 => 0xebe8, // LAAG
+                    ALUOp::And32 => 0xebf4, // LAN
+                    ALUOp::And64 => 0xebe4, // LANG
+                    ALUOp::Orr32 => 0xebf6, // LAO
+                    ALUOp::Orr64 => 0xebe6, // LAOG
+                    ALUOp::Xor32 => 0xebf7, // LAX
+                    ALUOp::Xor64 => 0xebe7, // LAXG
+                    _ => unreachable!(),
+                };
+
+                let rd = rd.to_reg();
+                mem_rs_emit(
+                    rd,
+                    rn,
+                    mem,
+                    None,
+                    Some(opcode),
+                    true,
+                    sink,
+                    emit_info,
+                    state,
+                );
+            }
+            &Inst::AtomicCas32 { rd, rn, ref mem } | &Inst::AtomicCas64 { rd, rn, ref mem } => {
+                let (opcode_rs, opcode_rsy) = match self {
+                    &Inst::AtomicCas32 { .. } => (Some(0xba), Some(0xeb14)), // CS(Y)
+                    &Inst::AtomicCas64 { .. } => (None, Some(0xeb30)),       // CSG
+                    _ => unreachable!(),
+                };
+
+                let rd = rd.to_reg();
+                mem_rs_emit(
+                    rd, rn, mem, opcode_rs, opcode_rsy, true, sink, emit_info, state,
+                );
+            }
+            &Inst::Fence => {
+                put(sink, &enc_e(0x07e0));
             }
 
             &Inst::Load32 { rd, ref mem }

@@ -49,6 +49,10 @@
 //
 // This cfg won't affect doc tests.
 #![cfg(not(test))]
+// To run libcore tests without x.py without ending up with two copies of libcore, Miri needs to be
+// able to "empty" this crate. See <https://github.com/rust-lang/miri-test-libstd/issues/4>.
+// rustc itself never sets the feature, so this line has no affect there.
+#![cfg(any(not(feature = "miri-test-libstd"), test, doctest))]
 #![stable(feature = "core", since = "1.6.0")]
 #![doc(
     html_playground_url = "https://play.rust-lang.org/",
@@ -87,7 +91,6 @@
 #![feature(const_fn_floating_point_arithmetic)]
 #![feature(const_fn_fn_ptr_basics)]
 #![feature(const_fn_trait_bound)]
-#![cfg_attr(bootstrap, feature(const_fn))]
 #![feature(const_option)]
 #![feature(const_precise_live_drops)]
 #![feature(const_ptr_offset)]
@@ -112,7 +115,6 @@
 #![feature(doc_cfg)]
 #![feature(doc_notable_trait)]
 #![feature(duration_consts_2)]
-#![cfg_attr(bootstrap, feature(extended_key_value_attributes))]
 #![feature(extern_types)]
 #![feature(fundamental)]
 #![feature(intra_doc_pointers)]
@@ -165,10 +167,9 @@
 #![feature(slice_ptr_get)]
 #![feature(no_niche)] // rust-lang/rust#68303
 #![feature(no_coverage)] // rust-lang/rust#84605
-#![feature(int_error_matching)]
-#![cfg_attr(bootstrap, feature(target_feature_11))]
 #![deny(unsafe_op_in_unsafe_fn)]
-#![deny(or_patterns_back_compat)]
+#![cfg_attr(bootstrap, deny(or_patterns_back_compat))]
+#![cfg_attr(not(bootstrap), deny(rust_2021_incompatible_or_patterns))]
 
 // allow using `core::` in intra-doc links
 #[allow(unused_extern_crates)]
@@ -269,7 +270,6 @@ pub mod option;
 pub mod panic;
 pub mod panicking;
 pub mod pin;
-pub mod raw;
 pub mod result;
 #[unstable(feature = "async_stream", issue = "79024")]
 pub mod stream;
@@ -320,5 +320,35 @@ pub mod primitive;
 #[unstable(feature = "stdsimd", issue = "48556")]
 mod core_arch;
 
+#[doc = include_str!("../../stdarch/crates/core_arch/src/core_arch_docs.md")]
 #[stable(feature = "simd_arch", since = "1.27.0")]
-pub use core_arch::arch;
+pub mod arch {
+    #[stable(feature = "simd_arch", since = "1.27.0")]
+    pub use crate::core_arch::arch::*;
+
+    /// Inline assembly.
+    ///
+    /// Read the [unstable book] for the usage.
+    ///
+    /// [unstable book]: ../../unstable-book/library-features/asm.html
+    #[unstable(
+        feature = "asm",
+        issue = "72016",
+        reason = "inline assembly is not stable enough for use and is subject to change"
+    )]
+    #[rustc_builtin_macro]
+    pub macro asm("assembly template", $(operands,)* $(options($(option),*))?) {
+        /* compiler built-in */
+    }
+
+    /// Module-level inline assembly.
+    #[unstable(
+        feature = "global_asm",
+        issue = "35119",
+        reason = "`global_asm!` is not stable enough for use and is subject to change"
+    )]
+    #[rustc_builtin_macro]
+    pub macro global_asm("assembly template", $(operands,)* $(options($(option),*))?) {
+        /* compiler built-in */
+    }
+}

@@ -112,16 +112,8 @@ impl ModuleId {
         self.def_map(db).containing_module(self.local_id)
     }
 
-    /// Returns `true` if this module represents a block expression.
-    ///
-    /// Returns `false` if this module is a submodule *inside* a block expression
-    /// (eg. `m` in `{ mod m {} }`).
-    pub fn is_block_root(&self, db: &dyn db::DefDatabase) -> bool {
-        if self.block.is_none() {
-            return false;
-        }
-
-        self.def_map(db)[self.local_id].parent.is_none()
+    pub fn containing_block(&self) -> Option<BlockId> {
+        self.block
     }
 }
 
@@ -581,6 +573,18 @@ impl HasModule for GenericDefId {
     }
 }
 
+impl HasModule for TypeAliasId {
+    fn module(&self, db: &dyn db::DefDatabase) -> ModuleId {
+        self.lookup(db).module(db)
+    }
+}
+
+impl HasModule for TraitId {
+    fn module(&self, db: &dyn db::DefDatabase) -> ModuleId {
+        self.lookup(db).container
+    }
+}
+
 impl HasModule for StaticLoc {
     fn module(&self, _db: &dyn db::DefDatabase) -> ModuleId {
         self.container
@@ -731,13 +735,11 @@ fn macro_call_as_call_id(
         )
         .map(MacroCallId::from)
     } else {
-        Ok(def
-            .as_lazy_macro(
-                db.upcast(),
-                krate,
-                MacroCallKind::FnLike { ast_id: call.ast_id, fragment },
-            )
-            .into())
+        Ok(def.as_lazy_macro(
+            db.upcast(),
+            krate,
+            MacroCallKind::FnLike { ast_id: call.ast_id, fragment },
+        ))
     };
     Ok(res)
 }
@@ -756,17 +758,15 @@ fn derive_macro_as_call_id(
         .segments()
         .last()
         .ok_or_else(|| UnresolvedMacro { path: item_attr.path.clone() })?;
-    let res = def
-        .as_lazy_macro(
-            db.upcast(),
-            krate,
-            MacroCallKind::Derive {
-                ast_id: item_attr.ast_id,
-                derive_name: last_segment.to_string(),
-                derive_attr_index: derive_attr.ast_index,
-            },
-        )
-        .into();
+    let res = def.as_lazy_macro(
+        db.upcast(),
+        krate,
+        MacroCallKind::Derive {
+            ast_id: item_attr.ast_id,
+            derive_name: last_segment.to_string(),
+            derive_attr_index: derive_attr.ast_index,
+        },
+    );
     Ok(res)
 }
 
@@ -794,17 +794,15 @@ fn attr_macro_as_call_id(
     // The parentheses are always disposed here.
     arg.delimiter = None;
 
-    let res = def
-        .as_lazy_macro(
-            db.upcast(),
-            krate,
-            MacroCallKind::Attr {
-                ast_id: item_attr.ast_id,
-                attr_name: last_segment.to_string(),
-                attr_args: arg,
-                invoc_attr_index: macro_attr.id.ast_index,
-            },
-        )
-        .into();
+    let res = def.as_lazy_macro(
+        db.upcast(),
+        krate,
+        MacroCallKind::Attr {
+            ast_id: item_attr.ast_id,
+            attr_name: last_segment.to_string(),
+            attr_args: arg,
+            invoc_attr_index: macro_attr.id.ast_index,
+        },
+    );
     Ok(res)
 }

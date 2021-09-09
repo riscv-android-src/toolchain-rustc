@@ -12,10 +12,12 @@ pub struct RepeatedPos {
 impl RepeatedPos {
     pub const HELP: &'static str = Self::HELP_;
 
+    #[allow(dead_code)]
     pub fn from_env() -> xflags::Result<Self> {
         Self::from_env_()
     }
 
+    #[allow(dead_code)]
     pub fn from_vec(args: Vec<std::ffi::OsString>) -> xflags::Result<Self> {
         Self::from_vec_(args)
     }
@@ -77,7 +79,8 @@ impl RepeatedPos {
     }
 }
 impl RepeatedPos {
-    const HELP_: &'static str = "RepeatedPos
+    const HELP_: &'static str = "\
+RepeatedPos
 
 ARGS:
     <a>
@@ -87,6 +90,5 @@ ARGS:
     [c]
 
     <rest>...
-
-SUBCOMANDS:";
+";
 }

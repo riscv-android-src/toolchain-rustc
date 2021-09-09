@@ -30,7 +30,7 @@ pub trait Step: Clone + PartialOrd + Sized {
     /// For any `a`, `b`, and `n`:
     ///
     /// * `steps_between(&a, &b) == Some(n)` if and only if `Step::forward_checked(&a, n) == Some(b)`
-    /// * `steps_between(&a, &b) == Some(n)` if and only if `Step::backward_checked(&a, n) == Some(a)`
+    /// * `steps_between(&a, &b) == Some(n)` if and only if `Step::backward_checked(&b, n) == Some(a)`
     /// * `steps_between(&a, &b) == Some(n)` only if `a <= b`
     ///   * Corollary: `steps_between(&a, &b) == Some(0)` if and only if `a == b`
     ///   * Note that `a <= b` does _not_ imply `steps_between(&a, &b) != None`;
@@ -667,6 +667,7 @@ impl<A: Step> Iterator for ops::Range<A> {
     }
 
     #[inline]
+    #[doc(hidden)]
     unsafe fn __iterator_get_unchecked(&mut self, idx: usize) -> Self::Item
     where
         Self: TrustedRandomAccess,

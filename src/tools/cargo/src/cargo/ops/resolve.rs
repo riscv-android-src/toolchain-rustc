@@ -15,7 +15,9 @@ use crate::core::registry::{LockedPatchDependency, PackageRegistry};
 use crate::core::resolver::features::{
     CliFeatures, FeatureOpts, FeatureResolver, ForceAllTargets, RequestedFeatures, ResolvedFeatures,
 };
-use crate::core::resolver::{self, HasDevUnits, Resolve, ResolveOpts, ResolveVersion};
+use crate::core::resolver::{
+    self, HasDevUnits, Resolve, ResolveOpts, ResolveVersion, VersionPreferences,
+};
 use crate::core::summary::Summary;
 use crate::core::Feature;
 use crate::core::{
@@ -242,11 +244,20 @@ pub fn resolve_with_previous<'cfg>(
             }
     };
 
-    // This is a set of PackageIds of `[patch]` entries that should not be
-    // locked.
+    // While registering patches, we will record preferences for particular versions
+    // of various packages.
+    let mut version_prefs = VersionPreferences::default();
+
+    // This is a set of PackageIds of `[patch]` entries, and some related locked PackageIds, for
+    // which locking should be avoided (but which will be preferred when searching dependencies,
+    // via prefer_patch_deps below)
     let mut avoid_patch_ids = HashSet::new();
+
     if register_patches {
         for (url, patches) in ws.root_patch()?.iter() {
+            for patch in patches {
+                version_prefs.prefer_dependency(patch.clone());
+            }
             let previous = match previous {
                 Some(r) => r,
                 None => {
@@ -364,19 +375,16 @@ pub fn resolve_with_previous<'cfg>(
         trace!("previous: {:?}", r);
         register_previous_locks(ws, registry, r, &keep, dev_deps);
     }
-    // Everything in the previous lock file we want to keep is prioritized
-    // in dependency selection if it comes up, aka we want to have
-    // conservative updates.
-    let try_to_use = previous
-        .map(|r| {
-            r.iter()
-                .filter(keep)
-                .inspect(|id| {
-                    debug!("attempting to prefer {}", id);
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+
+    // Prefer to use anything in the previous lock file, aka we want to have conservative updates.
+    for r in previous {
+        for id in r.iter() {
+            if keep(&id) {
+                debug!("attempting to prefer {}", id);
+                version_prefs.prefer_package_id(id);
+            }
+        }
+    }
 
     if register_patches {
         registry.lock_patches();
@@ -425,7 +433,7 @@ pub fn resolve_with_previous<'cfg>(
         &summaries,
         &replace,
         registry,
-        &try_to_use,
+        &version_prefs,
         Some(ws.config()),
         ws.unstable_features()
             .require(Feature::public_dependency())

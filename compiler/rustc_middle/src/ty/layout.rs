@@ -221,7 +221,7 @@ fn layout_raw<'tcx>(
     ty::tls::with_related_context(tcx, move |icx| {
         let (param_env, ty) = query.into_parts();
 
-        if !tcx.sess.recursion_limit().value_within_limit(icx.layout_depth) {
+        if !tcx.recursion_limit().value_within_limit(icx.layout_depth) {
             tcx.sess.fatal(&format!("overflow representing the type `{}`", ty));
         }
 
@@ -312,7 +312,8 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
         let dl = self.data_layout();
         let pack = repr.pack;
         if pack.is_some() && repr.align.is_some() {
-            bug!("struct cannot be packed and aligned");
+            self.tcx.sess.delay_span_bug(DUMMY_SP, "struct cannot be packed and aligned");
+            return Err(LayoutError::Unknown(ty));
         }
 
         let mut align = if pack.is_some() { dl.i8_align } else { dl.aggregate_align };
@@ -672,6 +673,15 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
 
             // SIMD vector types.
             ty::Adt(def, substs) if def.repr.simd() => {
+                if !def.is_struct() {
+                    // Should have yielded E0517 by now.
+                    tcx.sess.delay_span_bug(
+                        DUMMY_SP,
+                        "#[repr(simd)] was applied to an ADT that is not a struct",
+                    );
+                    return Err(LayoutError::Unknown(ty));
+                }
+
                 // Supported SIMD vectors are homogeneous ADTs with at least one field:
                 //
                 // * #[repr(simd)] struct S(T, T, T, T);
@@ -799,7 +809,11 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
 
                 if def.is_union() {
                     if def.repr.pack.is_some() && def.repr.align.is_some() {
-                        bug!("union cannot be packed and aligned");
+                        self.tcx.sess.delay_span_bug(
+                            tcx.def_span(def.did),
+                            "union cannot be packed and aligned",
+                        );
+                        return Err(LayoutError::Unknown(ty));
                     }
 
                     let mut align =
@@ -2469,9 +2483,10 @@ impl<'tcx> ty::Instance<'tcx> {
                 // `src/test/ui/polymorphization/normalized_sig_types.rs`), and codegen not keeping
                 // track of a polymorphization `ParamEnv` to allow normalizing later.
                 let mut sig = match *ty.kind() {
-                    ty::FnDef(def_id, substs) => tcx
+                    ty::FnDef(def_id, substs) if tcx.sess.opts.debugging_opts.polymorphize => tcx
                         .normalize_erasing_regions(tcx.param_env(def_id), tcx.fn_sig(def_id))
                         .subst(tcx, substs),
+                    ty::FnDef(def_id, substs) => tcx.fn_sig(def_id).subst(tcx, substs),
                     _ => unreachable!(),
                 };
 

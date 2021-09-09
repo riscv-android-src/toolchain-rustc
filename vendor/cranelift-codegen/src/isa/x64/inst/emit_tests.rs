@@ -3574,6 +3574,18 @@ fn test_x64_emit() {
     ));
 
     insns.push((
+        Inst::xmm_rm_r_evex(Avx512Opcode::Vpermi2b, RegMem::reg(xmm14), xmm10, w_xmm1),
+        "62D22D0875CE",
+        "vpermi2b %xmm14, %xmm10, %xmm1",
+    ));
+
+    insns.push((
+        Inst::xmm_rm_r_evex(Avx512Opcode::Vpermi2b, RegMem::reg(xmm1), xmm0, w_xmm2),
+        "62F27D0875D1",
+        "vpermi2b %xmm1, %xmm0, %xmm2",
+    ));
+
+    insns.push((
         Inst::xmm_rm_r(SseOpcode::Pmuludq, RegMem::reg(xmm8), w_xmm9),
         "66450FF4C8",
         "pmuludq %xmm8, %xmm9",
@@ -3893,6 +3905,24 @@ fn test_x64_emit() {
         Inst::xmm_unary_rm_r_evex(Avx512Opcode::Vcvtudq2ps, RegMem::reg(xmm2), w_xmm8),
         "62717F087AC2",
         "vcvtudq2ps %xmm2, %xmm8",
+    ));
+
+    insns.push((
+        Inst::xmm_unary_rm_r_evex(Avx512Opcode::Vpopcntb, RegMem::reg(xmm2), w_xmm8),
+        "62727D0854C2",
+        "vpopcntb %xmm2, %xmm8",
+    ));
+
+    insns.push((
+        Inst::xmm_unary_rm_r(SseOpcode::Cvtpd2ps, RegMem::reg(xmm7), w_xmm7),
+        "660F5AFF",
+        "cvtpd2ps %xmm7, %xmm7",
+    ));
+
+    insns.push((
+        Inst::xmm_unary_rm_r(SseOpcode::Cvtps2pd, RegMem::reg(xmm11), w_xmm9),
+        "450F5ACB",
+        "cvtps2pd %xmm11, %xmm9",
     ));
 
     // Xmm to int conversions, and conversely.
@@ -4306,8 +4336,11 @@ fn test_x64_emit() {
     let mut isa_flag_builder = x64::settings::builder();
     isa_flag_builder.enable("has_ssse3").unwrap();
     isa_flag_builder.enable("has_sse41").unwrap();
-    isa_flag_builder.enable("has_avx512f").unwrap();
+    isa_flag_builder.enable("has_avx512bitalg").unwrap();
     isa_flag_builder.enable("has_avx512dq").unwrap();
+    isa_flag_builder.enable("has_avx512f").unwrap();
+    isa_flag_builder.enable("has_avx512vbmi").unwrap();
+    isa_flag_builder.enable("has_avx512vl").unwrap();
     let isa_flags = x64::settings::Flags::new(&flags, isa_flag_builder);
 
     let rru = regs::create_reg_universe_systemv(&flags);

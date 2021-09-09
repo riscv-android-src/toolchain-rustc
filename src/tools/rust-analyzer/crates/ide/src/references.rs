@@ -9,20 +9,18 @@
 //! at the index that the match starts at and its tree parent is
 //! resolved to the search element definition, we get a reference.
 
-pub(crate) mod rename;
-
 use hir::{PathResolution, Semantics};
 use ide_db::{
     base_db::FileId,
     defs::{Definition, NameClass, NameRefClass},
-    search::{ReferenceAccess, SearchScope},
+    search::{ReferenceAccess, SearchScope, UsageSearchResult},
     RootDatabase,
 };
 use rustc_hash::FxHashMap;
 use syntax::{
     algo::find_node_at_offset,
     ast::{self, NameOwner},
-    match_ast, AstNode, SyntaxNode, TextRange, T,
+    match_ast, AstNode, SyntaxNode, TextRange, TextSize, T,
 };
 
 use crate::{display::TryToNav, FilePosition, NavigationTarget};
@@ -58,45 +56,34 @@ pub(crate) fn find_all_refs(
     let _p = profile::span("find_all_refs");
     let syntax = sema.parse(position.file_id).syntax().clone();
 
-    let (def, is_literal_search) =
-        if let Some(name) = get_name_of_item_declaration(&syntax, position) {
-            (NameClass::classify(sema, &name)?.referenced_or_defined(sema.db), true)
-        } else {
-            (find_def(&sema, &syntax, position)?, false)
-        };
+    let mut is_literal_search = false;
+    let def = if let Some(name) = name_for_constructor_search(&syntax, position) {
+        is_literal_search = true;
+        match NameClass::classify(sema, &name)? {
+            NameClass::Definition(it) | NameClass::ConstReference(it) => it,
+            NameClass::PatFieldShorthand { local_def: _, field_ref } => {
+                Definition::Field(field_ref)
+            }
+        }
+    } else {
+        find_def(sema, &syntax, position.offset)?
+    };
 
     let mut usages = def.usages(sema).set_scope(search_scope).include_self_refs().all();
-    if is_literal_search {
-        // filter for constructor-literals
-        let refs = usages.references.values_mut();
-        match def {
-            Definition::ModuleDef(hir::ModuleDef::Adt(hir::Adt::Enum(enum_))) => {
-                refs.for_each(|it| {
-                    it.retain(|reference| {
-                        reference
-                            .name
-                            .as_name_ref()
-                            .map_or(false, |name_ref| is_enum_lit_name_ref(sema, enum_, name_ref))
-                    })
-                });
-                usages.references.retain(|_, it| !it.is_empty());
-            }
-            Definition::ModuleDef(hir::ModuleDef::Adt(_))
-            | Definition::ModuleDef(hir::ModuleDef::Variant(_)) => {
-                refs.for_each(|it| {
-                    it.retain(|reference| {
-                        reference.name.as_name_ref().map_or(false, is_lit_name_ref)
-                    })
-                });
-                usages.references.retain(|_, it| !it.is_empty());
-            }
-            _ => {}
+    let declaration = match def {
+        Definition::ModuleDef(hir::ModuleDef::Module(module)) => {
+            Some(NavigationTarget::from_module_to_decl(sema.db, module))
         }
+        def => def.try_to_nav(sema.db),
     }
-    let declaration = def.try_to_nav(sema.db).map(|nav| {
+    .map(|nav| {
         let decl_range = nav.focus_or_full_range();
         Declaration { nav, access: decl_access(&def, &syntax, decl_range) }
     });
+    if is_literal_search {
+        retain_adt_literal_usages(&mut usages, def, sema);
+    }
+
     let references = usages
         .into_iter()
         .map(|(file_id, refs)| {
@@ -107,29 +94,44 @@ pub(crate) fn find_all_refs(
     Some(ReferenceSearchResult { declaration, references })
 }
 
-fn find_def(
+pub(crate) fn find_def(
     sema: &Semantics<RootDatabase>,
     syntax: &SyntaxNode,
-    position: FilePosition,
+    offset: TextSize,
 ) -> Option<Definition> {
-    let def = match sema.find_node_at_offset_with_descend(syntax, position.offset)? {
-        ast::NameLike::NameRef(name_ref) => {
-            NameRefClass::classify(sema, &name_ref)?.referenced(sema.db)
-        }
-        ast::NameLike::Name(name) => {
-            NameClass::classify(sema, &name)?.referenced_or_defined(sema.db)
-        }
+    let def = match sema.find_node_at_offset_with_descend(syntax, offset)? {
+        ast::NameLike::NameRef(name_ref) => match NameRefClass::classify(sema, &name_ref)? {
+            NameRefClass::Definition(def) => def,
+            NameRefClass::FieldShorthand { local_ref, field_ref: _ } => {
+                Definition::Local(local_ref)
+            }
+        },
+        ast::NameLike::Name(name) => match NameClass::classify(sema, &name)? {
+            NameClass::Definition(it) | NameClass::ConstReference(it) => it,
+            NameClass::PatFieldShorthand { local_def, field_ref: _ } => {
+                Definition::Local(local_def)
+            }
+        },
         ast::NameLike::Lifetime(lifetime) => NameRefClass::classify_lifetime(sema, &lifetime)
-            .map(|class| class.referenced(sema.db))
+            .and_then(|class| match class {
+                NameRefClass::Definition(it) => Some(it),
+                _ => None,
+            })
             .or_else(|| {
-                NameClass::classify_lifetime(sema, &lifetime)
-                    .map(|class| class.referenced_or_defined(sema.db))
+                NameClass::classify_lifetime(sema, &lifetime).and_then(|class| match class {
+                    NameClass::Definition(it) => Some(it),
+                    _ => None,
+                })
             })?,
     };
     Some(def)
 }
 
-fn decl_access(def: &Definition, syntax: &SyntaxNode, range: TextRange) -> Option<ReferenceAccess> {
+pub(crate) fn decl_access(
+    def: &Definition,
+    syntax: &SyntaxNode,
+    range: TextRange,
+) -> Option<ReferenceAccess> {
     match def {
         Definition::Local(_) | Definition::Field(_) => {}
         _ => return None,
@@ -148,7 +150,37 @@ fn decl_access(def: &Definition, syntax: &SyntaxNode, range: TextRange) -> Optio
     None
 }
 
-fn get_name_of_item_declaration(syntax: &SyntaxNode, position: FilePosition) -> Option<ast::Name> {
+/// Filter out all non-literal usages for adt-defs
+fn retain_adt_literal_usages(
+    usages: &mut UsageSearchResult,
+    def: Definition,
+    sema: &Semantics<RootDatabase>,
+) {
+    let refs = usages.references.values_mut();
+    match def {
+        Definition::ModuleDef(hir::ModuleDef::Adt(hir::Adt::Enum(enum_))) => {
+            refs.for_each(|it| {
+                it.retain(|reference| {
+                    reference
+                        .name
+                        .as_name_ref()
+                        .map_or(false, |name_ref| is_enum_lit_name_ref(sema, enum_, name_ref))
+                })
+            });
+            usages.references.retain(|_, it| !it.is_empty());
+        }
+        Definition::ModuleDef(hir::ModuleDef::Adt(_) | hir::ModuleDef::Variant(_)) => {
+            refs.for_each(|it| {
+                it.retain(|reference| reference.name.as_name_ref().map_or(false, is_lit_name_ref))
+            });
+            usages.references.retain(|_, it| !it.is_empty());
+        }
+        _ => {}
+    }
+}
+
+/// Returns `Some` if the cursor is at a position for an item to search for all its constructor/literal usages
+fn name_for_constructor_search(syntax: &SyntaxNode, position: FilePosition) -> Option<ast::Name> {
     let token = syntax.token_at_offset(position.offset).right_biased()?;
     let token_parent = token.parent()?;
     let kind = token.kind();
@@ -661,9 +693,6 @@ fn f() {
         );
     }
 
-    // `mod foo;` is not in the results because `foo` is an `ast::Name`.
-    // So, there are two references: the first one is a definition of the `foo` module,
-    // which is the whole `foo.rs`, and the second one is in `use foo::Foo`.
     #[test]
     fn test_find_all_refs_decl_module() {
         check(
@@ -683,9 +712,41 @@ pub struct Foo {
 }
 "#,
             expect![[r#"
-                foo Module FileId(1) 0..35
+                foo Module FileId(0) 0..8 4..7
 
                 FileId(0) 14..17
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_find_all_refs_decl_module_on_self() {
+        check(
+            r#"
+//- /lib.rs
+mod foo;
+
+//- /foo.rs
+use self$0;
+"#,
+            expect![[r#"
+                foo Module FileId(0) 0..8 4..7
+
+                FileId(1) 4..8
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_find_all_refs_decl_module_on_self_crate_root() {
+        check(
+            r#"
+//- /lib.rs
+use self$0;
+"#,
+            expect![[r#"
+                Module FileId(0) 0..10
+
             "#]],
         );
     }
@@ -1024,7 +1085,7 @@ impl Foo {
                 actual += "\n";
             }
         }
-        expect.assert_eq(&actual)
+        expect.assert_eq(actual.trim_start())
     }
 
     #[test]
@@ -1273,24 +1334,6 @@ fn test$0() {
     }
 
     #[test]
-    fn test_attr_matches_proc_macro_fn() {
-        check(
-            r#"
-#[proc_macro_attribute]
-fn my_proc_macro() {}
-
-#[my_proc_macro$0]
-fn test() {}
-"#,
-            expect![[r#"
-                my_proc_macro Function FileId(0) 0..45 27..40
-
-                FileId(0) 49..62
-            "#]],
-        );
-    }
-
-    #[test]
     fn test_const_in_pattern() {
         check(
             r#"
@@ -1377,6 +1420,26 @@ lib::foo!();
                 FileId(0) 46..49
                 FileId(2) 0..3
                 FileId(3) 5..8
+            "#]],
+        );
+    }
+
+    #[test]
+    fn macro_doesnt_reference_attribute_on_call() {
+        check(
+            r#"
+macro_rules! m {
+    () => {};
+}
+
+#[proc_macro_test::attr_noop]
+m$0!();
+
+"#,
+            expect![[r#"
+                m Macro FileId(0) 0..32 13..14
+
+                FileId(0) 64..65
             "#]],
         );
     }

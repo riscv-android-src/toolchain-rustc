@@ -67,7 +67,7 @@ impl SourceRoot {
 /// Note that `CrateGraph` is build-system agnostic: it's a concept of the Rust
 /// language proper, not a concept of the build system. In practice, we get
 /// `CrateGraph` by lowering `cargo metadata` output.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct CrateGraph {
     arena: FxHashMap<CrateId, CrateData>,
 }
@@ -170,14 +170,7 @@ pub struct ProcMacro {
     pub expander: Arc<dyn ProcMacroExpander>,
 }
 
-impl Eq for ProcMacro {}
-impl PartialEq for ProcMacro {
-    fn eq(&self, other: &ProcMacro) -> bool {
-        self.name == other.name && Arc::ptr_eq(&self.expander, &other.expander)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct CrateData {
     pub root_file_id: FileId,
     pub edition: Edition,
@@ -189,6 +182,7 @@ pub struct CrateData {
     /// `Dependency` matters), this name should only be used for UI.
     pub display_name: Option<CrateDisplayName>,
     pub cfg_options: CfgOptions,
+    pub potential_cfg_options: CfgOptions,
     pub env: Env,
     pub dependencies: Vec<Dependency>,
     pub proc_macro: Vec<ProcMacro>,
@@ -199,6 +193,10 @@ pub enum Edition {
     Edition2015,
     Edition2018,
     Edition2021,
+}
+
+impl Edition {
+    pub const CURRENT: Edition = Edition::Edition2018;
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -219,6 +217,7 @@ impl CrateGraph {
         edition: Edition,
         display_name: Option<CrateDisplayName>,
         cfg_options: CfgOptions,
+        potential_cfg_options: CfgOptions,
         env: Env,
         proc_macro: Vec<ProcMacro>,
     ) -> CrateId {
@@ -227,6 +226,7 @@ impl CrateGraph {
             edition,
             display_name,
             cfg_options,
+            potential_cfg_options,
             env,
             proc_macro,
             dependencies: Vec::new(),
@@ -504,6 +504,7 @@ mod tests {
             Edition2018,
             None,
             CfgOptions::default(),
+            CfgOptions::default(),
             Env::default(),
             Default::default(),
         );
@@ -512,6 +513,7 @@ mod tests {
             Edition2018,
             None,
             CfgOptions::default(),
+            CfgOptions::default(),
             Env::default(),
             Default::default(),
         );
@@ -519,6 +521,7 @@ mod tests {
             FileId(3u32),
             Edition2018,
             None,
+            CfgOptions::default(),
             CfgOptions::default(),
             Env::default(),
             Default::default(),
@@ -536,6 +539,7 @@ mod tests {
             Edition2018,
             None,
             CfgOptions::default(),
+            CfgOptions::default(),
             Env::default(),
             Default::default(),
         );
@@ -543,6 +547,7 @@ mod tests {
             FileId(2u32),
             Edition2018,
             None,
+            CfgOptions::default(),
             CfgOptions::default(),
             Env::default(),
             Default::default(),
@@ -559,6 +564,7 @@ mod tests {
             Edition2018,
             None,
             CfgOptions::default(),
+            CfgOptions::default(),
             Env::default(),
             Default::default(),
         );
@@ -567,6 +573,7 @@ mod tests {
             Edition2018,
             None,
             CfgOptions::default(),
+            CfgOptions::default(),
             Env::default(),
             Default::default(),
         );
@@ -574,6 +581,7 @@ mod tests {
             FileId(3u32),
             Edition2018,
             None,
+            CfgOptions::default(),
             CfgOptions::default(),
             Env::default(),
             Default::default(),
@@ -590,6 +598,7 @@ mod tests {
             Edition2018,
             None,
             CfgOptions::default(),
+            CfgOptions::default(),
             Env::default(),
             Default::default(),
         );
@@ -597,6 +606,7 @@ mod tests {
             FileId(2u32),
             Edition2018,
             None,
+            CfgOptions::default(),
             CfgOptions::default(),
             Env::default(),
             Default::default(),

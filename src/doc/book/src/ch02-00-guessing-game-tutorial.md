@@ -34,9 +34,6 @@ Look at the generated *Cargo.toml* file:
 {{#include ../listings/ch02-guessing-game-tutorial/no-listing-01-cargo-new/Cargo.toml}}
 ```
 
-If the author information that Cargo obtained from your environment is not
-correct, fix that in the file and save it again.
-
 As you saw in Chapter 1, `cargo new` generates a “Hello, world!” program for
 you. Check out the *src/main.rs* file:
 
@@ -125,19 +122,18 @@ line. Notice that this is a `let` statement, which is used to create a
 *variable*. Here’s another example:
 
 ```rust,ignore
-let foo = bar;
+let apples = 5;
 ```
 
-This line creates a new variable named `foo` and binds it to the value of the
-`bar` variable. In Rust, variables are immutable by default. We’ll be
-discussing this concept in detail in the [“Variables and
-Mutability”][variables-and-mutability]<!-- ignore --> section in Chapter 3.
-The following example shows how to use `mut` before the variable name to make
-a variable mutable:
+This line creates a new variable named `apples` and binds it to the value 5. In
+Rust, variables are immutable by default. We’ll be discussing this concept in
+detail in the [“Variables and Mutability”][variables-and-mutability]<!-- ignore
+--> section in Chapter 3. The following example shows how to use `mut` before
+the variable name to make a variable mutable:
 
 ```rust,ignore
-let foo = 5; // immutable
-let mut bar = 5; // mutable
+let apples = 5; // immutable
+let mut bananas = 5; // mutable
 ```
 
 > Note: The `//` syntax starts a comment that continues until the end of the
@@ -154,9 +150,8 @@ library that is a growable, UTF-8 encoded bit of text.
 [string]: ../std/string/struct.String.html
 
 The `::` syntax in the `::new` line indicates that `new` is an *associated
-function* of the `String` type. An associated function is implemented on a type,
-in this case `String`, rather than on a particular instance of a `String`. Some
-languages call this a *static method*.
+function* of the `String` type. An associated function is implemented on a
+type, in this case `String`.
 
 This `new` function creates a new, empty string. You’ll find a `new` function
 on many types, because it’s a common name for a function that makes a new value
@@ -212,9 +207,9 @@ is this method:
 {{#rustdoc_include ../listings/ch02-guessing-game-tutorial/listing-02-01/src/main.rs:expect}}
 ```
 
-When you call a method with the `.foo()` syntax, it’s often wise to introduce a
-newline and other whitespace to help break up long lines. We could have
-written this code as:
+When you call a method with the `.method_name()` syntax, it’s often wise to
+introduce a newline and other whitespace to help break up long lines. We could
+have written this code as:
 
 ```rust,ignore
 io::stdin().read_line(&mut guess).expect("Failed to read line");
@@ -332,17 +327,17 @@ library. However, the Rust team does provide a [`rand` crate][randcrate].
 
 ### Using a Crate to Get More Functionality
 
-Remember that a crate is a collection of Rust source code files.
-The project we’ve been building is a *binary crate*, which is an executable.
-The `rand` crate is a *library crate*, which contains code intended to be
-used in other programs.
+Remember that a crate is a collection of Rust source code files. The project
+we’ve been building is a *binary crate*, which is an executable. The `rand`
+crate is a *library crate*, which contains code intended to be used in other
+programs.
 
-Cargo’s use of external crates is where it really shines. Before we can write
-code that uses `rand`, we need to modify the *Cargo.toml* file to include the
-`rand` crate as a dependency. Open that file now and add the following line to
-the bottom beneath the `[dependencies]` section header that Cargo created for
-you. Be sure to specify `rand` exactly as we have here, or the code examples in
-this tutorial may not work.
+Cargo’s coordination of external crates is where Cargo really shines. Before we
+can write code that uses `rand`, we need to modify the *Cargo.toml* file to
+include the `rand` crate as a dependency. Open that file now and add the
+following line to the bottom beneath the `[dependencies]` section header that
+Cargo created for you. Be sure to specify `rand` exactly as we have here, or
+the code examples in this tutorial may not work.
 
 <!-- When updating the version of `rand` used, also update the version of
 `rand` used in these files so they all match:
@@ -452,9 +447,9 @@ your part of the code.
 Cargo has a mechanism that ensures you can rebuild the same artifact every time
 you or anyone else builds your code: Cargo will use only the versions of the
 dependencies you specified until you indicate otherwise. For example, what
-happens if next week version 0.8.4 of the `rand` crate comes out and
-contains an important bug fix but also contains a regression that will break
-your code?
+happens if next week version 0.8.4 of the `rand` crate comes out, and that
+version contains an important bug fix, but it also contains a regression that
+will break your code?
 
 The answer to this problem is the *Cargo.lock* file, which was created the
 first time you ran `cargo build` and is now in your *guessing_game* directory.
@@ -843,11 +838,11 @@ is converted from a `String` to a `u32`, as shown in Listing 2-5.
 <span class="caption">Listing 2-5: Ignoring a non-number guess and asking for
 another guess instead of crashing the program</span>
 
-Switching from an `expect` call to a `match` expression is how you generally
-move from crashing on an error to handling the error. Remember that `parse`
-returns a `Result` type and `Result` is an enum that has the variants `Ok` or
-`Err`. We’re using a `match` expression here, as we did with the `Ordering`
-result of the `cmp` method.
+Switching from an `expect` call to a `match` expression is one way of moving
+from crashing on an error to handling the error. Remember that `parse` returns
+a `Result` type and `Result` is an enum that has the variants `Ok` or `Err`.
+We’re using a `match` expression here, as we did with the `Ordering` result of
+the `cmp` method.
 
 If `parse` is able to successfully turn the string into a number, it will
 return an `Ok` value that contains the resulting number. That `Ok` value will
@@ -917,13 +912,12 @@ secret number. Listing 2-6 shows the final code.
 At this point, you’ve successfully built the guessing game. Congratulations!
 
 This project was a hands-on way to introduce you to many new Rust concepts:
-`let`, `match`, methods, associated functions, the use of external crates, and
-more. In the next few chapters, you’ll learn about these concepts in more
-detail. Chapter 3 covers concepts that most programming languages have, such as
-variables, data types, and functions, and shows how to use them in Rust.
-Chapter 4 explores ownership, a feature that makes Rust different from other
-languages. Chapter 5 discusses structs and method syntax, and Chapter 6
-explains how enums work.
+`let`, `match`, functions, the use of external crates, and more. In the next
+few chapters, you’ll learn about these concepts in more detail. Chapter 3
+covers concepts that most programming languages have, such as variables, data
+types, and functions, and shows how to use them in Rust. Chapter 4 explores
+ownership, a feature that makes Rust different from other languages. Chapter 5
+discusses structs and method syntax, and Chapter 6 explains how enums work.
 
 [variables-and-mutability]:
 ch03-01-variables-and-mutability.html#variables-and-mutability

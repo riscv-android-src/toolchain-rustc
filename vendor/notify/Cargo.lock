@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "notify"
-version = "5.0.0-pre.9"
+version = "5.0.0-pre.10"
 dependencies = [
  "bitflags",
  "crossbeam-channel",

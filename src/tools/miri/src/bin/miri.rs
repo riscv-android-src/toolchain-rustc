@@ -10,6 +10,7 @@ extern crate rustc_session;
 
 use std::convert::TryFrom;
 use std::env;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::str::FromStr;
@@ -19,7 +20,7 @@ use log::debug;
 
 use rustc_driver::Compilation;
 use rustc_errors::emitter::{ColorConfig, HumanReadableErrorType};
-use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_hir::{self as hir, def_id::LOCAL_CRATE, Node};
 use rustc_interface::interface::Config;
 use rustc_middle::{
     middle::exported_symbols::{ExportedSymbol, SymbolExportLevel},
@@ -109,12 +110,27 @@ impl rustc_driver::Callbacks for MiriBeRustCompilerCalls {
                         // https://github.com/rust-lang/rust/blob/2962e7c0089d5c136f4e9600b7abccfbbde4973d/compiler/rustc_codegen_ssa/src/back/symbol_export.rs#L62-L63
                         // https://github.com/rust-lang/rust/blob/2962e7c0089d5c136f4e9600b7abccfbbde4973d/compiler/rustc_codegen_ssa/src/back/symbol_export.rs#L174
                         tcx.reachable_set(()).iter().filter_map(|&local_def_id| {
-                            tcx.codegen_fn_attrs(local_def_id)
-                                .contains_extern_indicator()
-                                .then_some((
-                                    ExportedSymbol::NonGeneric(local_def_id.to_def_id()),
-                                    SymbolExportLevel::C,
-                                ))
+                            // Do the same filtering that rustc does:
+                            // https://github.com/rust-lang/rust/blob/2962e7c0089d5c136f4e9600b7abccfbbde4973d/compiler/rustc_codegen_ssa/src/back/symbol_export.rs#L84-L102
+                            // Otherwise it may cause unexpected behaviours and ICEs
+                            // (https://github.com/rust-lang/rust/issues/86261).
+                            let is_reachable_non_generic = matches!(
+                                tcx.hir().get(tcx.hir().local_def_id_to_hir_id(local_def_id)),
+                                Node::Item(&hir::Item {
+                                    kind: hir::ItemKind::Static(..) | hir::ItemKind::Fn(..),
+                                    ..
+                                }) | Node::ImplItem(&hir::ImplItem {
+                                    kind: hir::ImplItemKind::Fn(..),
+                                    ..
+                                })
+                                if !tcx.generics_of(local_def_id).requires_monomorphization(tcx)
+                            );
+                            (is_reachable_non_generic
+                                && tcx.codegen_fn_attrs(local_def_id).contains_extern_indicator())
+                            .then_some((
+                                ExportedSymbol::NonGeneric(local_def_id.to_def_id()),
+                                SymbolExportLevel::C,
+                            ))
                         }),
                     )
                 }
@@ -188,9 +204,12 @@ fn compile_time_sysroot() -> Option<String> {
     let toolchain = option_env!("RUSTUP_TOOLCHAIN").or(option_env!("MULTIRUST_TOOLCHAIN"));
     Some(match (home, toolchain) {
         (Some(home), Some(toolchain)) => format!("{}/toolchains/{}", home, toolchain),
-        _ => option_env!("RUST_SYSROOT")
-            .expect("To build Miri without rustup, set the `RUST_SYSROOT` env var at build time")
-            .to_owned(),
+        _ =>
+            option_env!("RUST_SYSROOT")
+                .expect(
+                    "To build Miri without rustup, set the `RUST_SYSROOT` env var at build time",
+                )
+                .to_owned(),
     })
 }
 
@@ -321,9 +340,10 @@ fn main() {
                         "warn" => miri::IsolatedOp::Reject(miri::RejectOpWith::Warning),
                         "warn-nobacktrace" =>
                             miri::IsolatedOp::Reject(miri::RejectOpWith::WarningWithoutBacktrace),
-                        _ => panic!(
-                            "-Zmiri-isolation-error must be `abort`, `hide`, `warn`, or `warn-nobacktrace`"
-                        ),
+                        _ =>
+                            panic!(
+                                "-Zmiri-isolation-error must be `abort`, `hide`, `warn`, or `warn-nobacktrace`"
+                            ),
                     };
                 }
                 "-Zmiri-ignore-leaks" => {
@@ -368,10 +388,11 @@ fn main() {
                     let id: u64 =
                         match arg.strip_prefix("-Zmiri-track-pointer-tag=").unwrap().parse() {
                             Ok(id) => id,
-                            Err(err) => panic!(
-                                "-Zmiri-track-pointer-tag requires a valid `u64` argument: {}",
-                                err
-                            ),
+                            Err(err) =>
+                                panic!(
+                                    "-Zmiri-track-pointer-tag requires a valid `u64` argument: {}",
+                                    err
+                                ),
                         };
                     if let Some(id) = miri::PtrId::new(id) {
                         miri_config.tracked_pointer_tag = Some(id);
@@ -392,11 +413,16 @@ fn main() {
                     }
                 }
                 arg if arg.starts_with("-Zmiri-track-alloc-id=") => {
-                    let id: u64 = match arg.strip_prefix("-Zmiri-track-alloc-id=").unwrap().parse()
+                    let id = match arg
+                        .strip_prefix("-Zmiri-track-alloc-id=")
+                        .unwrap()
+                        .parse()
+                        .ok()
+                        .and_then(NonZeroU64::new)
                     {
-                        Ok(id) => id,
-                        Err(err) =>
-                            panic!("-Zmiri-track-alloc-id requires a valid `u64` argument: {}", err),
+                        Some(id) => id,
+                        None =>
+                            panic!("-Zmiri-track-alloc-id requires a valid non-zero `u64` argument"),
                     };
                     miri_config.tracked_alloc_id = Some(miri::AllocId(id));
                 }
@@ -407,13 +433,15 @@ fn main() {
                         .parse::<f64>()
                     {
                         Ok(rate) if rate >= 0.0 && rate <= 1.0 => rate,
-                        Ok(_) => panic!(
-                            "-Zmiri-compare-exchange-weak-failure-rate must be between `0.0` and `1.0`"
-                        ),
-                        Err(err) => panic!(
-                            "-Zmiri-compare-exchange-weak-failure-rate requires a `f64` between `0.0` and `1.0`: {}",
-                            err
-                        ),
+                        Ok(_) =>
+                            panic!(
+                                "-Zmiri-compare-exchange-weak-failure-rate must be between `0.0` and `1.0`"
+                            ),
+                        Err(err) =>
+                            panic!(
+                                "-Zmiri-compare-exchange-weak-failure-rate requires a `f64` between `0.0` and `1.0`: {}",
+                                err
+                            ),
                     };
                     miri_config.cmpxchg_weak_failure_rate = rate;
                 }

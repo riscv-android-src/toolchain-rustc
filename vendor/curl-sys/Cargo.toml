@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "curl-sys"
-version = "0.4.42+curl-7.76.0"
+version = "0.4.45+curl-7.78.0"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 build = "build.rs"
 links = "curl"

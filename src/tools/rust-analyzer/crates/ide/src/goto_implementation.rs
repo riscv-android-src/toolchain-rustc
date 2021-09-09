@@ -28,11 +28,19 @@ pub(crate) fn goto_implementation(
 
     let node = sema.find_node_at_offset_with_descend(&syntax, position.offset)?;
     let def = match &node {
-        ast::NameLike::Name(name) => {
-            NameClass::classify(&sema, name).map(|class| class.referenced_or_defined(sema.db))
-        }
+        ast::NameLike::Name(name) => NameClass::classify(&sema, name).map(|class| match class {
+            NameClass::Definition(it) | NameClass::ConstReference(it) => it,
+            NameClass::PatFieldShorthand { local_def, field_ref: _ } => {
+                Definition::Local(local_def)
+            }
+        }),
         ast::NameLike::NameRef(name_ref) => {
-            NameRefClass::classify(&sema, name_ref).map(|class| class.referenced(sema.db))
+            NameRefClass::classify(&sema, name_ref).map(|class| match class {
+                NameRefClass::Definition(def) => def,
+                NameRefClass::FieldShorthand { local_ref, field_ref: _ } => {
+                    Definition::Local(local_ref)
+                }
+            })
         }
         ast::NameLike::Lifetime(_) => None,
     }?;
@@ -52,13 +60,13 @@ pub(crate) fn goto_implementation(
         hir::ModuleDef::Function(f) => {
             let assoc = f.as_assoc_item(sema.db)?;
             let name = assoc.name(sema.db)?;
-            let trait_ = assoc.containing_trait(sema.db)?;
+            let trait_ = assoc.containing_trait_or_trait_impl(sema.db)?;
             impls_for_trait_item(&sema, trait_, name)
         }
         hir::ModuleDef::Const(c) => {
             let assoc = c.as_assoc_item(sema.db)?;
             let name = assoc.name(sema.db)?;
-            let trait_ = assoc.containing_trait(sema.db)?;
+            let trait_ = assoc.containing_trait_or_trait_impl(sema.db)?;
             impls_for_trait_item(&sema, trait_, name)
         }
         _ => return None,
@@ -87,7 +95,7 @@ fn impls_for_trait_item(
         .filter_map(|imp| {
             let item = imp.items(sema.db).iter().find_map(|itm| {
                 let itm_name = itm.name(sema.db)?;
-                (itm_name == fun_name).then(|| itm.clone())
+                (itm_name == fun_name).then(|| *itm)
             })?;
             item.try_to_nav(sema.db)
         })
@@ -97,31 +105,24 @@ fn impls_for_trait_item(
 #[cfg(test)]
 mod tests {
     use ide_db::base_db::FileRange;
+    use itertools::Itertools;
 
     use crate::fixture;
 
     fn check(ra_fixture: &str) {
-        let (analysis, position, annotations) = fixture::annotations(ra_fixture);
+        let (analysis, position, expected) = fixture::annotations(ra_fixture);
 
         let navs = analysis.goto_implementation(position).unwrap().unwrap().info;
 
-        let key = |frange: &FileRange| (frange.file_id, frange.range.start());
+        let cmp = |frange: &FileRange| (frange.file_id, frange.range.start());
 
-        let mut expected = annotations
-            .into_iter()
-            .map(|(range, data)| {
-                assert!(data.is_empty());
-                range
-            })
-            .collect::<Vec<_>>();
-        expected.sort_by_key(key);
-
-        let mut actual = navs
+        let actual = navs
             .into_iter()
             .map(|nav| FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() })
+            .sorted_by_key(cmp)
             .collect::<Vec<_>>();
-        actual.sort_by_key(key);
-
+        let expected =
+            expected.into_iter().map(|(range, _)| range).sorted_by_key(cmp).collect::<Vec<_>>();
         assert_eq!(expected, actual);
     }
 
@@ -236,15 +237,10 @@ impl T for &Foo {}
     fn goto_implementation_to_builtin_derive() {
         check(
             r#"
+//- minicore: copy, derive
   #[derive(Copy)]
 //^^^^^^^^^^^^^^^
 struct Foo$0;
-
-mod marker {
-    trait Copy {}
-}
-#[rustc_builtin_macro]
-macro Copy {}
 "#,
         );
     }

@@ -3,7 +3,7 @@
 use crate::binemit::{CodeOffset, Reloc, StackMap};
 use crate::ir::constant::ConstantData;
 use crate::ir::types::*;
-use crate::ir::{MemFlags, TrapCode};
+use crate::ir::{LibCall, MemFlags, TrapCode};
 use crate::isa::aarch64::inst::*;
 use crate::machinst::ty_bits;
 
@@ -597,12 +597,22 @@ impl MachInstEmit for Inst {
                 let top11 = match alu_op {
                     ALUOp::Add32 => 0b00001011_000,
                     ALUOp::Add64 => 0b10001011_000,
+                    ALUOp::Adc32 => 0b00011010_000,
+                    ALUOp::Adc64 => 0b10011010_000,
+                    ALUOp::AdcS32 => 0b00111010_000,
+                    ALUOp::AdcS64 => 0b10111010_000,
                     ALUOp::Sub32 => 0b01001011_000,
                     ALUOp::Sub64 => 0b11001011_000,
+                    ALUOp::Sbc32 => 0b01011010_000,
+                    ALUOp::Sbc64 => 0b11011010_000,
+                    ALUOp::SbcS32 => 0b01111010_000,
+                    ALUOp::SbcS64 => 0b11111010_000,
                     ALUOp::Orr32 => 0b00101010_000,
                     ALUOp::Orr64 => 0b10101010_000,
                     ALUOp::And32 => 0b00001010_000,
                     ALUOp::And64 => 0b10001010_000,
+                    ALUOp::AndS32 => 0b01101010_000,
+                    ALUOp::AndS64 => 0b11101010_000,
                     ALUOp::Eor32 => 0b01001010_000,
                     ALUOp::Eor64 => 0b11001010_000,
                     ALUOp::OrrNot32 => 0b00101010_001,
@@ -690,6 +700,8 @@ impl MachInstEmit for Inst {
                     ALUOp::Orr64 => (0b101_100100, false),
                     ALUOp::And32 => (0b000_100100, false),
                     ALUOp::And64 => (0b100_100100, false),
+                    ALUOp::AndS32 => (0b011_100100, false),
+                    ALUOp::AndS64 => (0b111_100100, false),
                     ALUOp::Eor32 => (0b010_100100, false),
                     ALUOp::Eor64 => (0b110_100100, false),
                     ALUOp::OrrNot32 => (0b001_100100, true),
@@ -759,6 +771,8 @@ impl MachInstEmit for Inst {
                     ALUOp::Orr64 => 0b101_01010000,
                     ALUOp::And32 => 0b000_01010000,
                     ALUOp::And64 => 0b100_01010000,
+                    ALUOp::AndS32 => 0b011_01010000,
+                    ALUOp::AndS64 => 0b111_01010000,
                     ALUOp::Eor32 => 0b010_01010000,
                     ALUOp::Eor64 => 0b110_01010000,
                     ALUOp::OrrNot32 => 0b001_01010001,
@@ -1259,6 +1273,8 @@ impl MachInstEmit for Inst {
                      mov          x28, x26
                    so that we simply write in the destination, the "2nd arg for op".
                 */
+                // TODO: We should not hardcode registers here, a better idea would be to
+                // pass some scratch registers in the AtomicRMW pseudo-instruction, and use those
                 let xzr = zero_reg();
                 let x24 = xreg(24);
                 let x25 = xreg(25);
@@ -1280,25 +1296,90 @@ impl MachInstEmit for Inst {
                 }
                 sink.put4(enc_ldxr(ty, x27wr, x25)); // ldxr x27, [x25]
 
-                if op == inst_common::AtomicRmwOp::Xchg {
-                    // mov x28, x26
-                    sink.put4(enc_arith_rrr(0b101_01010_00_0, 0b000000, x28wr, xzr, x26))
-                } else {
-                    // add/sub/and/orr/eor x28, x27, x26
-                    let bits_31_21 = match op {
-                        inst_common::AtomicRmwOp::Add => 0b100_01011_00_0,
-                        inst_common::AtomicRmwOp::Sub => 0b110_01011_00_0,
-                        inst_common::AtomicRmwOp::And => 0b100_01010_00_0,
-                        inst_common::AtomicRmwOp::Or => 0b101_01010_00_0,
-                        inst_common::AtomicRmwOp::Xor => 0b110_01010_00_0,
-                        inst_common::AtomicRmwOp::Nand
-                        | inst_common::AtomicRmwOp::Umin
-                        | inst_common::AtomicRmwOp::Umax
-                        | inst_common::AtomicRmwOp::Smin
-                        | inst_common::AtomicRmwOp::Smax => todo!("{:?}", op),
-                        inst_common::AtomicRmwOp::Xchg => unreachable!(),
-                    };
-                    sink.put4(enc_arith_rrr(bits_31_21, 0b000000, x28wr, x27, x26));
+                match op {
+                    AtomicRmwOp::Xchg => {
+                        // mov x28, x26
+                        Inst::Mov64 { rd: x28wr, rm: x26 }.emit(sink, emit_info, state);
+                    }
+                    AtomicRmwOp::Nand => {
+                        // and x28, x27, x26
+                        // mvn x28, x28
+
+                        Inst::AluRRR {
+                            alu_op: ALUOp::And64,
+                            rd: x28wr,
+                            rn: x27,
+                            rm: x26,
+                        }
+                        .emit(sink, emit_info, state);
+
+                        Inst::AluRRR {
+                            alu_op: ALUOp::OrrNot64,
+                            rd: x28wr,
+                            rn: xzr,
+                            rm: x28,
+                        }
+                        .emit(sink, emit_info, state);
+                    }
+                    AtomicRmwOp::Umin
+                    | AtomicRmwOp::Umax
+                    | AtomicRmwOp::Smin
+                    | AtomicRmwOp::Smax => {
+                        // cmp x27, x26
+                        // csel.op x28, x27, x26
+
+                        let cond = match op {
+                            AtomicRmwOp::Umin => Cond::Lo,
+                            AtomicRmwOp::Umax => Cond::Hi,
+                            AtomicRmwOp::Smin => Cond::Lt,
+                            AtomicRmwOp::Smax => Cond::Gt,
+                            _ => unreachable!(),
+                        };
+
+                        Inst::AluRRR {
+                            alu_op: if ty == I64 {
+                                ALUOp::SubS64
+                            } else {
+                                ALUOp::SubS32
+                            },
+                            rd: writable_zero_reg(),
+                            rn: x27,
+                            rm: x26,
+                        }
+                        .emit(sink, emit_info, state);
+
+                        Inst::CSel {
+                            cond,
+                            rd: x28wr,
+                            rn: x27,
+                            rm: x26,
+                        }
+                        .emit(sink, emit_info, state);
+                    }
+                    _ => {
+                        // add/sub/and/orr/eor x28, x27, x26
+                        let alu_op = match op {
+                            AtomicRmwOp::Add => ALUOp::Add64,
+                            AtomicRmwOp::Sub => ALUOp::Sub64,
+                            AtomicRmwOp::And => ALUOp::And64,
+                            AtomicRmwOp::Or => ALUOp::Orr64,
+                            AtomicRmwOp::Xor => ALUOp::Eor64,
+                            AtomicRmwOp::Nand
+                            | AtomicRmwOp::Umin
+                            | AtomicRmwOp::Umax
+                            | AtomicRmwOp::Smin
+                            | AtomicRmwOp::Smax
+                            | AtomicRmwOp::Xchg => unreachable!(),
+                        };
+
+                        Inst::AluRRR {
+                            alu_op,
+                            rd: x28wr,
+                            rn: x27,
+                            rm: x26,
+                        }
+                        .emit(sink, emit_info, state);
+                    }
                 }
 
                 let srcloc = state.cur_srcloc();
@@ -1595,11 +1676,6 @@ impl MachInstEmit for Inst {
                     VecMisc2::Rev64 => {
                         debug_assert_ne!(VectorSize::Size64x2, size);
                         (0b0, 0b00000, enc_size)
-                    }
-                    VecMisc2::Shll => {
-                        debug_assert_ne!(VectorSize::Size64x2, size);
-                        debug_assert!(!size.is_128bits());
-                        (0b1, 0b10011, enc_size)
                     }
                     VecMisc2::Fcvtzs => {
                         debug_assert!(size == VectorSize::Size32x4 || size == VectorSize::Size64x2);
@@ -2011,24 +2087,49 @@ impl MachInstEmit for Inst {
                         | machreg_to_vec(rd.to_reg()),
                 );
             }
-            &Inst::VecMiscNarrow {
+            &Inst::VecRRLong {
                 op,
                 rd,
                 rn,
-                size,
                 high_half,
             } => {
-                let size = match size.lane_size() {
-                    ScalarSize::Size8 => 0b00,
-                    ScalarSize::Size16 => 0b01,
-                    ScalarSize::Size32 => 0b10,
-                    _ => panic!("Unexpected vector operand lane size!"),
+                let (u, size, bits_12_16) = match op {
+                    VecRRLongOp::Fcvtl16 => (0b0, 0b00, 0b10111),
+                    VecRRLongOp::Fcvtl32 => (0b0, 0b01, 0b10111),
+                    VecRRLongOp::Shll8 => (0b1, 0b00, 0b10011),
+                    VecRRLongOp::Shll16 => (0b1, 0b01, 0b10011),
+                    VecRRLongOp::Shll32 => (0b1, 0b10, 0b10011),
                 };
-                let (u, bits_12_16) = match op {
-                    VecMiscNarrowOp::Xtn => (0b0, 0b10010),
-                    VecMiscNarrowOp::Sqxtn => (0b0, 0b10100),
-                    VecMiscNarrowOp::Sqxtun => (0b1, 0b10010),
+
+                sink.put4(enc_vec_rr_misc(
+                    ((high_half as u32) << 1) | u,
+                    size,
+                    bits_12_16,
+                    rd,
+                    rn,
+                ));
+            }
+            &Inst::VecRRNarrow {
+                op,
+                rd,
+                rn,
+                high_half,
+            } => {
+                let (u, size, bits_12_16) = match op {
+                    VecRRNarrowOp::Xtn16 => (0b0, 0b00, 0b10010),
+                    VecRRNarrowOp::Xtn32 => (0b0, 0b01, 0b10010),
+                    VecRRNarrowOp::Xtn64 => (0b0, 0b10, 0b10010),
+                    VecRRNarrowOp::Sqxtn16 => (0b0, 0b00, 0b10100),
+                    VecRRNarrowOp::Sqxtn32 => (0b0, 0b01, 0b10100),
+                    VecRRNarrowOp::Sqxtn64 => (0b0, 0b10, 0b10100),
+                    VecRRNarrowOp::Sqxtun16 => (0b1, 0b00, 0b10010),
+                    VecRRNarrowOp::Sqxtun32 => (0b1, 0b01, 0b10010),
+                    VecRRNarrowOp::Sqxtun64 => (0b1, 0b10, 0b10010),
+                    VecRRNarrowOp::Uqxtn16 => (0b1, 0b00, 0b10100),
+                    VecRRNarrowOp::Uqxtn32 => (0b1, 0b01, 0b10100),
+                    VecRRNarrowOp::Uqxtn64 => (0b1, 0b10, 0b10100),
                 };
+
                 sink.put4(enc_vec_rr_misc(
                     ((high_half as u32) << 1) | u,
                     size,
@@ -2147,6 +2248,14 @@ impl MachInstEmit for Inst {
                     VecALUOp::Zip1 => (0b01001110_00_0 | enc_size << 1, 0b001110),
                     VecALUOp::Smull => (0b000_01110_00_1 | enc_size << 1, 0b110000),
                     VecALUOp::Smull2 => (0b010_01110_00_1 | enc_size << 1, 0b110000),
+                    VecALUOp::Sqrdmulh => {
+                        debug_assert!(
+                            size.lane_size() == ScalarSize::Size16
+                                || size.lane_size() == ScalarSize::Size32
+                        );
+
+                        (0b001_01110_00_1 | enc_size << 1, 0b101101)
+                    }
                 };
                 let top11 = match alu_op {
                     VecALUOp::Smull | VecALUOp::Smull2 => top11,
@@ -2549,6 +2658,32 @@ impl MachInstEmit for Inst {
                     sink.bind_label(jump_around_label);
                 }
             }
+
+            &Inst::ElfTlsGetAddr { ref symbol } => {
+                // This is the instruction sequence that GCC emits for ELF GD TLS Relocations in aarch64
+                // See: https://gcc.godbolt.org/z/KhMh5Gvra
+
+                // adrp x0, <label>
+                sink.add_reloc(state.cur_srcloc(), Reloc::Aarch64TlsGdAdrPage21, symbol, 0);
+                sink.put4(0x90000000);
+
+                // add x0, x0, <label>
+                sink.add_reloc(state.cur_srcloc(), Reloc::Aarch64TlsGdAddLo12Nc, symbol, 0);
+                sink.put4(0x91000000);
+
+                // bl __tls_get_addr
+                sink.add_reloc(
+                    state.cur_srcloc(),
+                    Reloc::Arm64Call,
+                    &ExternalName::LibCall(LibCall::ElfTlsGetAddr),
+                    0,
+                );
+                sink.put4(0x94000000);
+
+                // nop
+                sink.put4(0xd503201f);
+            }
+
             &Inst::ValueLabelMarker { .. } => {
                 // Nothing; this is only used to compute debug info.
             }

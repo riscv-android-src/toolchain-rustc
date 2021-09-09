@@ -1,6 +1,7 @@
 use cargo::core::{features, CliUnstable};
 use cargo::{self, drop_print, drop_println, CliResult, Config};
 use clap::{AppSettings, Arg, ArgMatches};
+use itertools::Itertools;
 
 use super::commands;
 use super::list_commands;
@@ -136,8 +137,7 @@ Run with 'cargo -Z [FLAG] [SUBCOMMAND]'",
 
 pub fn get_version_string(is_verbose: bool) -> String {
     let version = cargo::version();
-    let mut version_string = version.to_string();
-    version_string.push('\n');
+    let mut version_string = format!("cargo {}\n", version);
     if is_verbose {
         version_string.push_str(&format!(
             "release: {}.{}.{}\n",
@@ -169,6 +169,17 @@ fn expand_aliases(
                     cmd,
                 ))?;
             }
+            (Some(_), None) => {
+                // Command is built-in and is not conflicting with alias, but contains ignored values.
+                if let Some(mut values) = args.values_of("") {
+                    config.shell().warn(format!(
+                        "trailing arguments after built-in command `{}` are ignored: `{}`",
+                        cmd,
+                        values.join(" "),
+                    ))?;
+                }
+            }
+            (None, None) => {}
             (_, Some(mut alias)) => {
                 alias.extend(
                     args.values_of("")
@@ -186,7 +197,6 @@ fn expand_aliases(
                 let (expanded_args, _) = expand_aliases(config, new_args)?;
                 return Ok((expanded_args, global_args));
             }
-            (_, None) => {}
         }
     };
 
@@ -308,7 +318,7 @@ Some common cargo commands are (see all commands with --list):
     build, b    Compile the current package
     check, c    Analyze the current package and report errors, but don't build object files
     clean       Remove the target directory
-    doc         Build this package's and its dependencies' documentation
+    doc, d      Build this package's and its dependencies' documentation
     new         Create a new cargo package
     init        Create a new cargo package in an existing directory
     run, r      Run a binary or example of the local package

@@ -3,19 +3,17 @@
 //! Right now it supports only server side handling requests.
 //!
 //! ```rust
-//! use jsonrpc_core::*;
+//! use jsonrpc_core::IoHandler;
+//! use jsonrpc_core::Value;
+//! let mut io = IoHandler::new();
+//! io.add_sync_method("say_hello", |_| {
+//!     Ok(Value::String("Hello World!".into()))
+//! });
 //!
-//! fn main() {
-//! 	let mut io = IoHandler::new();
-//! 	io.add_sync_method("say_hello", |_| {
-//!			Ok(Value::String("Hello World!".into()))
-//! 	});
+//! let request = r#"{"jsonrpc": "2.0", "method": "say_hello", "params": [42, 23], "id": 1}"#;
+//! let response = r#"{"jsonrpc":"2.0","result":"Hello World!","id":1}"#;
 //!
-//! 	let request = r#"{"jsonrpc": "2.0", "method": "say_hello", "params": [42, 23], "id": 1}"#;
-//! 	let response = r#"{"jsonrpc":"2.0","result":"Hello World!","id":1}"#;
-//!
-//! 	assert_eq!(io.handle_request_sync(request), Some(response.to_string()));
-//! }
+//! assert_eq!(io.handle_request_sync(request), Some(response.to_string()));
 //! ```
 
 #![deny(missing_docs)]
@@ -27,7 +25,11 @@ extern crate log;
 #[macro_use]
 extern crate serde_derive;
 
+#[cfg(feature = "futures")]
 pub use futures;
+#[cfg(feature = "futures-executor")]
+pub use futures_executor;
+pub use futures_util;
 
 #[doc(hidden)]
 pub extern crate serde;
@@ -45,7 +47,7 @@ pub mod types;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// A `Future` trait object.
-pub type BoxFuture<T> = Pin<Box<dyn futures::Future<Output = T> + Send>>;
+pub type BoxFuture<T> = Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
 pub use crate::calls::{
 	Metadata, RemoteProcedure, RpcMethod, RpcMethodSimple, RpcMethodSync, RpcNotification, RpcNotificationSimple,

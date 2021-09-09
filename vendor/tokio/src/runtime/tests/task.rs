@@ -1,5 +1,5 @@
 use crate::runtime::task::{self, Schedule, Task};
-use crate::util::linked_list::LinkedList;
+use crate::util::linked_list::{Link, LinkedList};
 use crate::util::TryLock;
 
 use std::collections::VecDeque;
@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 #[test]
 fn create_drop() {
-    let _ = task::joinable::<_, Runtime>(async { unreachable!() });
+    let _ = super::joinable::<_, Runtime>(async { unreachable!() });
 }
 
 #[test]
 fn schedule() {
     with(|rt| {
-        let (task, _) = task::joinable(async {
+        let (task, _) = super::joinable(async {
             crate::task::yield_now().await;
         });
 
@@ -26,7 +26,7 @@ fn schedule() {
 #[test]
 fn shutdown() {
     with(|rt| {
-        let (task, _) = task::joinable(async {
+        let (task, _) = super::joinable(async {
             loop {
                 crate::task::yield_now().await;
             }
@@ -72,14 +72,14 @@ struct Inner {
 
 struct Core {
     queue: VecDeque<task::Notified<Runtime>>,
-    tasks: LinkedList<Task<Runtime>>,
+    tasks: LinkedList<Task<Runtime>, <Task<Runtime> as Link>::Target>,
 }
 
 static CURRENT: TryLock<Option<Runtime>> = TryLock::new(None);
 
 impl Runtime {
     fn tick(&self) -> usize {
-        self.tick_max(usize::max_value())
+        self.tick_max(usize::MAX)
     }
 
     fn tick_max(&self, max: usize) -> usize {

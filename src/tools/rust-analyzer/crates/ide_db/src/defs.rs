@@ -6,8 +6,8 @@
 // FIXME: this badly needs rename/rewrite (matklad, 2020-02-06).
 
 use hir::{
-    db::HirDatabase, Crate, Field, GenericParam, HasAttrs, HasVisibility, Impl, Label, Local,
-    MacroDef, Module, ModuleDef, Name, PathResolution, Semantics, Visibility,
+    Field, GenericParam, HasVisibility, Impl, Label, Local, MacroDef, Module, ModuleDef, Name,
+    PathResolution, Semantics, Visibility,
 };
 use syntax::{
     ast::{self, AstNode, PathSegmentKind},
@@ -43,13 +43,25 @@ impl Definition {
 
     pub fn visibility(&self, db: &RootDatabase) -> Option<Visibility> {
         match self {
-            Definition::Macro(_) => None,
             Definition::Field(sf) => Some(sf.visibility(db)),
-            Definition::ModuleDef(def) => def.definition_visibility(db),
-            Definition::SelfType(_) => None,
-            Definition::Local(_) => None,
-            Definition::GenericParam(_) => None,
-            Definition::Label(_) => None,
+            Definition::ModuleDef(def) => match def {
+                ModuleDef::Module(it) => Some(it.visibility(db)),
+                ModuleDef::Function(it) => Some(it.visibility(db)),
+                ModuleDef::Adt(it) => Some(it.visibility(db)),
+                ModuleDef::Const(it) => Some(it.visibility(db)),
+                ModuleDef::Static(it) => Some(it.visibility(db)),
+                ModuleDef::Trait(it) => Some(it.visibility(db)),
+                ModuleDef::TypeAlias(it) => Some(it.visibility(db)),
+                // NB: Variants don't have their own visibility, and just inherit
+                // one from the parent. Not sure if that's the right thing to do.
+                ModuleDef::Variant(it) => Some(it.parent_enum(db).visibility(db)),
+                ModuleDef::BuiltinType(_) => None,
+            },
+            Definition::Macro(_)
+            | Definition::SelfType(_)
+            | Definition::Local(_)
+            | Definition::GenericParam(_)
+            | Definition::Label(_) => None,
         }
     }
 
@@ -81,24 +93,33 @@ impl Definition {
     }
 }
 
+/// On a first blush, a single `ast::Name` defines a single definition at some
+/// scope. That is, that, by just looking at the syntactical category, we can
+/// unambiguously define the semantic category.
+///
+/// Sadly, that's not 100% true, there are special cases. To make sure that
+/// callers handle all the special cases correctly via exhaustive matching, we
+/// add a [`NameClass`] enum which lists all of them!
+///
+/// A model special case is `None` constant in pattern.
 #[derive(Debug)]
 pub enum NameClass {
-    ExternCrate(Crate),
     Definition(Definition),
     /// `None` in `if let None = Some(82) {}`.
+    /// Syntactically, it is a name, but semantically it is a reference.
     ConstReference(Definition),
-    /// `field` in `if let Foo { field } = foo`.
+    /// `field` in `if let Foo { field } = foo`. Here, `ast::Name` both introduces
+    /// a definition into a local scope, and refers to an existing definition.
     PatFieldShorthand {
         local_def: Local,
-        field_ref: Definition,
+        field_ref: Field,
     },
 }
 
 impl NameClass {
     /// `Definition` defined by this name.
-    pub fn defined(self, db: &dyn HirDatabase) -> Option<Definition> {
+    pub fn defined(self) -> Option<Definition> {
         let res = match self {
-            NameClass::ExternCrate(krate) => Definition::ModuleDef(krate.root_module(db).into()),
             NameClass::Definition(it) => it,
             NameClass::ConstReference(_) => return None,
             NameClass::PatFieldShorthand { local_def, field_ref: _ } => {
@@ -106,15 +127,6 @@ impl NameClass {
             }
         };
         Some(res)
-    }
-
-    /// `Definition` referenced or defined by this name.
-    pub fn referenced_or_defined(self, db: &dyn HirDatabase) -> Definition {
-        match self {
-            NameClass::ExternCrate(krate) => Definition::ModuleDef(krate.root_module(db).into()),
-            NameClass::Definition(it) | NameClass::ConstReference(it) => it,
-            NameClass::PatFieldShorthand { local_def: _, field_ref } => field_ref,
-        }
     }
 
     pub fn classify(sema: &Semantics<RootDatabase>, name: &ast::Name) -> Option<NameClass> {
@@ -158,11 +170,17 @@ impl NameClass {
                             })
                             .and_then(|name_ref| NameRefClass::classify(sema, &name_ref))?;
 
-                        Some(NameClass::Definition(name_ref_class.referenced(sema.db)))
+                        Some(NameClass::Definition(match name_ref_class {
+                            NameRefClass::Definition(def) => def,
+                            NameRefClass::FieldShorthand { local_ref: _, field_ref } => {
+                                Definition::Field(field_ref)
+                            }
+                        }))
                     } else {
                         let extern_crate = it.syntax().parent().and_then(ast::ExternCrate::cast)?;
-                        let resolved = sema.resolve_extern_crate(&extern_crate)?;
-                        Some(NameClass::ExternCrate(resolved))
+                        let krate = sema.resolve_extern_crate(&extern_crate)?;
+                        let root_module = krate.root_module(sema.db);
+                        Some(NameClass::Definition(Definition::ModuleDef(root_module.into())))
                     }
                 },
                 ast::IdentPat(it) => {
@@ -171,7 +189,6 @@ impl NameClass {
                     if let Some(record_pat_field) = it.syntax().parent().and_then(ast::RecordPatField::cast) {
                         if record_pat_field.name_ref().is_none() {
                             if let Some(field) = sema.resolve_record_pat_field(&record_pat_field) {
-                                let field = Definition::Field(field);
                                 return Some(NameClass::PatFieldShorthand { local_def: local, field_ref: field });
                             }
                         }
@@ -267,27 +284,19 @@ impl NameClass {
     }
 }
 
+/// This is similar to [`NameClass`], but works for [`ast::NameRef`] rather than
+/// for [`ast::Name`]. Similarly, what looks like a reference in syntax is a
+/// reference most of the time, but there are a couple of annoying exceptions.
+///
+/// A model special case is field shorthand syntax, which uses a single
+/// reference to point to two different defs.
 #[derive(Debug)]
 pub enum NameRefClass {
-    ExternCrate(Crate),
     Definition(Definition),
-    FieldShorthand { local_ref: Local, field_ref: Definition },
+    FieldShorthand { local_ref: Local, field_ref: Field },
 }
 
 impl NameRefClass {
-    /// `Definition`, which this name refers to.
-    pub fn referenced(self, db: &dyn HirDatabase) -> Definition {
-        match self {
-            NameRefClass::ExternCrate(krate) => Definition::ModuleDef(krate.root_module(db).into()),
-            NameRefClass::Definition(def) => def,
-            NameRefClass::FieldShorthand { local_ref, field_ref: _ } => {
-                // FIXME: this is inherently ambiguous -- this name refers to
-                // two different defs....
-                Definition::Local(local_ref)
-            }
-        }
-    }
-
     // Note: we don't have unit-tests for this rather important function.
     // It is primarily exercised via goto definition tests in `ide`.
     pub fn classify(
@@ -312,9 +321,8 @@ impl NameRefClass {
 
         if let Some(record_field) = ast::RecordExprField::for_field_name(name_ref) {
             if let Some((field, local, _)) = sema.resolve_record_field(&record_field) {
-                let field = Definition::Field(field);
                 let res = match local {
-                    None => NameRefClass::Definition(field),
+                    None => NameRefClass::Definition(Definition::Field(field)),
                     Some(local) => {
                         NameRefClass::FieldShorthand { field_ref: field, local_ref: local }
                     }
@@ -357,9 +365,9 @@ impl NameRefClass {
             }
         }
 
-        if let Some(macro_call) = parent.ancestors().find_map(ast::MacroCall::cast) {
-            if let Some(path) = macro_call.path() {
-                if path.qualifier().is_none() {
+        if let Some(path) = name_ref.syntax().ancestors().find_map(ast::Path::cast) {
+            if path.qualifier().is_none() {
+                if let Some(macro_call) = path.syntax().parent().and_then(ast::MacroCall::cast) {
                     // Only use this to resolve single-segment macro calls like `foo!()`. Multi-segment
                     // paths are handled below (allowing `log$0::info!` to resolve to the log crate).
                     if let Some(macro_def) = sema.resolve_macro_call(&macro_call) {
@@ -367,25 +375,36 @@ impl NameRefClass {
                     }
                 }
             }
-        }
-
-        if let Some(path) = name_ref.syntax().ancestors().find_map(ast::Path::cast) {
-            if let Some(resolved) = sema.resolve_path(&path) {
-                if path.syntax().parent().and_then(ast::Attr::cast).is_some() {
-                    if let PathResolution::Def(ModuleDef::Function(func)) = resolved {
-                        if func.attrs(sema.db).by_key("proc_macro_attribute").exists() {
-                            return Some(NameRefClass::Definition(resolved.into()));
+            let top_path = path.top_path();
+            let is_attribute_path = top_path
+                .syntax()
+                .ancestors()
+                .find_map(ast::Attr::cast)
+                .map(|attr| attr.path().as_ref() == Some(&top_path));
+            return match is_attribute_path {
+                Some(true) => sema.resolve_path(&path).and_then(|resolved| {
+                    match resolved {
+                        // Don't wanna collide with builtin attributes here like `test` hence guard
+                        // so only resolve to modules that aren't the last segment
+                        PathResolution::Def(module @ ModuleDef::Module(_)) if path != top_path => {
+                            cov_mark::hit!(name_ref_classify_attr_path_qualifier);
+                            Some(NameRefClass::Definition(Definition::ModuleDef(module)))
                         }
+                        PathResolution::Macro(mac) if mac.kind() == hir::MacroKind::Attr => {
+                            Some(NameRefClass::Definition(Definition::Macro(mac)))
+                        }
+                        _ => None,
                     }
-                } else {
-                    return Some(NameRefClass::Definition(resolved.into()));
-                }
-            }
+                }),
+                Some(false) => None,
+                None => sema.resolve_path(&path).map(Into::into).map(NameRefClass::Definition),
+            };
         }
 
         let extern_crate = ast::ExternCrate::cast(parent)?;
-        let resolved = sema.resolve_extern_crate(&extern_crate)?;
-        Some(NameRefClass::ExternCrate(resolved))
+        let krate = sema.resolve_extern_crate(&extern_crate)?;
+        let root_module = krate.root_module(sema.db);
+        Some(NameRefClass::Definition(Definition::ModuleDef(root_module.into())))
     }
 
     pub fn classify_lifetime(

@@ -52,7 +52,7 @@ pub struct VersionInfo {
 
 impl fmt::Display for VersionInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "cargo {}.{}.{}", self.major, self.minor, self.patch)?;
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
         if let Some(channel) = self.cfg_info.as_ref().map(|ci| &ci.release_channel) {
             if channel != "stable" {
                 write!(f, "-{}", channel)?;
@@ -89,13 +89,7 @@ pub fn exit_with_error(err: CliError, shell: &mut Shell) -> ! {
 /// Displays an error, and all its causes, to stderr.
 pub fn display_error(err: &Error, shell: &mut Shell) {
     debug!("display_error; err={:?}", err);
-    let has_verbose = _display_error(err, shell, true);
-    if has_verbose {
-        drop(writeln!(
-            shell.err(),
-            "\nTo learn more, run the command again with --verbose."
-        ));
-    }
+    _display_error(err, shell, true);
     if err
         .chain()
         .any(|e| e.downcast_ref::<InternalError>().is_some())
@@ -106,7 +100,7 @@ pub fn display_error(err: &Error, shell: &mut Shell) {
                 "we would appreciate a bug report: https://github.com/rust-lang/cargo/issues/",
             ),
         );
-        drop(shell.note(format!("{}", version())));
+        drop(shell.note(format!("cargo {}", version())));
         // Once backtraces are stabilized, this should print out a backtrace
         // if it is available.
     }

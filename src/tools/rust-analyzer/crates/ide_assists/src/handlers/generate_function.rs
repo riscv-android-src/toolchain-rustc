@@ -44,8 +44,8 @@ use crate::{
 pub(crate) fn generate_function(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
     let path_expr: ast::PathExpr = ctx.find_node_at_offset()?;
     let call = path_expr.syntax().parent().and_then(ast::CallExpr::cast)?;
-    let path = path_expr.path()?;
 
+    let path = path_expr.path()?;
     if ctx.sema.resolve_path(&path).is_some() {
         // The function call already resolves, no need to add a function
         return None;
@@ -59,9 +59,9 @@ pub(crate) fn generate_function(acc: &mut Assists, ctx: &AssistContext) -> Optio
         None => None,
     };
 
-    let function_builder = FunctionBuilder::from_call(&ctx, &call, &path, target_module)?;
-
+    let function_builder = FunctionBuilder::from_call(ctx, &call, &path, target_module)?;
     let target = call.syntax().text_range();
+
     acc.add(
         AssistId("generate_function", AssistKind::Generate),
         format!("Generate `{}` function", function_builder.fn_name),
@@ -109,6 +109,7 @@ struct FunctionBuilder {
     should_render_snippet: bool,
     file: FileId,
     needs_pub: bool,
+    is_async: bool,
 }
 
 impl FunctionBuilder {
@@ -128,12 +129,15 @@ impl FunctionBuilder {
                 file = in_file;
                 target
             }
-            None => next_space_for_fn_after_call_site(&call)?,
+            None => next_space_for_fn_after_call_site(call)?,
         };
         let needs_pub = target_module.is_some();
         let target_module = target_module.or_else(|| ctx.sema.scope(target.syntax()).module())?;
-        let fn_name = fn_name(&path)?;
-        let (type_params, params) = fn_args(ctx, target_module, &call)?;
+        let fn_name = fn_name(path)?;
+        let (type_params, params) = fn_args(ctx, target_module, call)?;
+
+        let await_expr = call.syntax().parent().and_then(ast::AwaitExpr::cast);
+        let is_async = await_expr.is_some();
 
         // should_render_snippet intends to express a rough level of confidence about
         // the correctness of the return type.
@@ -171,6 +175,7 @@ impl FunctionBuilder {
             should_render_snippet,
             file,
             needs_pub,
+            is_async,
         })
     }
 
@@ -185,6 +190,7 @@ impl FunctionBuilder {
             self.params,
             fn_body,
             Some(self.ret_type),
+            self.is_async,
         );
         let leading_ws;
         let trailing_ws;
@@ -256,10 +262,9 @@ fn fn_args(
         });
     }
     deduplicate_arg_names(&mut arg_names);
-    let params = arg_names
-        .into_iter()
-        .zip(arg_types)
-        .map(|(name, ty)| make::param(make::ident_pat(make::name(&name)).into(), make::ty(&ty)));
+    let params = arg_names.into_iter().zip(arg_types).map(|(name, ty)| {
+        make::param(make::ext::simple_ident_pat(make::name(&name)).into(), make::ty(&ty))
+    });
     Some((None, make::param_list(None, params)))
 }
 
@@ -811,9 +816,8 @@ fn bar(baz: Baz::Bof) ${0:-> ()} {
     }
 
     #[test]
-    #[ignore]
-    // FIXME fix printing the generics of a `Ty` to make this test pass
     fn add_function_with_generic_arg() {
+        // FIXME: This is wrong, generated `bar` should include generic parameter.
         check_assist(
             generate_function,
             r"
@@ -826,7 +830,7 @@ fn foo<T>(t: T) {
     bar(t)
 }
 
-fn bar<T>(t: T) ${0:-> ()} {
+fn bar(t: T) ${0:-> ()} {
     todo!()
 }
 ",
@@ -834,9 +838,8 @@ fn bar<T>(t: T) ${0:-> ()} {
     }
 
     #[test]
-    #[ignore]
-    // FIXME Fix function type printing to make this test pass
     fn add_function_with_fn_arg() {
+        // FIXME: The argument in `bar` is wrong.
         check_assist(
             generate_function,
             r"
@@ -857,7 +860,7 @@ fn foo() {
     bar(Baz::new);
 }
 
-fn bar(arg: fn() -> Baz) ${0:-> ()} {
+fn bar(new: fn) ${0:-> ()} {
     todo!()
 }
 ",
@@ -865,9 +868,8 @@ fn bar(arg: fn() -> Baz) ${0:-> ()} {
     }
 
     #[test]
-    #[ignore]
-    // FIXME Fix closure type printing to make this test pass
     fn add_function_with_closure_arg() {
+        // FIXME: The argument in `bar` is wrong.
         check_assist(
             generate_function,
             r"
@@ -882,7 +884,7 @@ fn foo() {
     bar(closure)
 }
 
-fn bar(closure: impl Fn(i64) -> i64) ${0:-> ()} {
+fn bar(closure: ()) ${0:-> ()} {
     todo!()
 }
 ",
@@ -986,13 +988,10 @@ fn foo() {
     }
 
     #[test]
-    #[ignore]
-    // Ignored until local imports are supported.
-    // See https://github.com/rust-analyzer/rust-analyzer/issues/1165
     fn qualified_path_uses_correct_scope() {
         check_assist(
             generate_function,
-            "
+            r#"
 mod foo {
     pub struct Foo;
 }
@@ -1001,8 +1000,8 @@ fn bar() {
     let foo = Foo;
     baz$0(foo)
 }
-",
-            "
+"#,
+            r#"
 mod foo {
     pub struct Foo;
 }
@@ -1015,7 +1014,7 @@ fn bar() {
 fn baz(foo: foo::Foo) ${0:-> ()} {
     todo!()
 }
-",
+"#,
         )
     }
 
@@ -1141,40 +1140,50 @@ fn bar() {}
             // The assist is only active if the cursor is on an unresolved path,
             // but the assist should only be offered if the path is a function call.
             generate_function,
-            r"
+            r#"
 fn foo() {
     bar(b$0az);
 }
 
 fn bar(baz: ()) {}
-",
+"#,
         )
     }
 
     #[test]
-    #[ignore]
     fn create_method_with_no_args() {
-        check_assist(
+        // FIXME: This is wrong, this should just work.
+        check_assist_not_applicable(
             generate_function,
-            r"
+            r#"
 struct Foo;
 impl Foo {
     fn foo(&self) {
         self.bar()$0;
     }
 }
-        ",
+        "#,
+        )
+    }
+
+    #[test]
+    fn create_function_with_async() {
+        check_assist(
+            generate_function,
             r"
-struct Foo;
-impl Foo {
-    fn foo(&self) {
-        self.bar();
-    }
-    fn bar(&self) {
-        todo!();
-    }
+fn foo() {
+    $0bar(42).await();
 }
-        ",
+",
+            r"
+fn foo() {
+    bar(42).await();
+}
+
+async fn bar(arg: i32) ${0:-> ()} {
+    todo!()
+}
+",
         )
     }
 }

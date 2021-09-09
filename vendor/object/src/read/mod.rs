@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use core::{fmt, result};
 
 use crate::common::*;
-use crate::ByteString;
 
 mod read_ref;
 pub use read_ref::*;
@@ -16,7 +15,7 @@ mod read_cache;
 pub use read_cache::*;
 
 mod util;
-pub use util::StringTable;
+pub use util::*;
 
 #[cfg(any(
     feature = "coff",
@@ -84,6 +83,12 @@ trait ReadError<T> {
 impl<T> ReadError<T> for result::Result<T, ()> {
     fn read_error(self, error: &'static str) -> Result<T> {
         self.map_err(|()| Error(error))
+    }
+}
+
+impl<T> ReadError<T> for result::Result<T, Error> {
+    fn read_error(self, error: &'static str) -> Result<T> {
+        self.map_err(|_| Error(error))
     }
 }
 

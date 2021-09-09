@@ -25,6 +25,7 @@ The following things are considered to be overflow:
 * When `+`, `*` or `-` create a value greater than the maximum value, or less than the minimum value that can be stored.
   This includes unary `-` on the smallest value of any signed integer type.
 * Using `/` or `%`, where the left-hand argument is the smallest integer of a signed integer type and the right-hand argument is `-1`.
+  These checks occur even when `-C overflow-checks` is disabled, for legacy reasons.
 * Using `<<` or `>>` where the right-hand argument is greater than or equal to the number of bits in the type of the left-hand argument, or is negative.
 
 ## Borrow operators
@@ -191,16 +192,18 @@ The operands of all of these operators are evaluated in [value expression contex
 | `-`    | Subtraction             |               | Subtraction    | `std::ops::Sub`    | `std::ops::SubAssign`                 |
 | `*`    | Multiplication          |               | Multiplication | `std::ops::Mul`    | `std::ops::MulAssign`                 |
 | `/`    | Division*               |               | Division       | `std::ops::Div`    | `std::ops::DivAssign`                 |
-| `%`    | Remainder               |               | Remainder      | `std::ops::Rem`    | `std::ops::RemAssign`                 |
+| `%`    | Remainder**             |               | Remainder      | `std::ops::Rem`    | `std::ops::RemAssign`                 |
 | `&`    | Bitwise AND             | [Logical AND] |                | `std::ops::BitAnd` | `std::ops::BitAndAssign`              |
 | <code>&#124;</code> | Bitwise OR | [Logical OR]  |                | `std::ops::BitOr`  | `std::ops::BitOrAssign`               |
 | `^`    | Bitwise XOR             | [Logical XOR] |                | `std::ops::BitXor` | `std::ops::BitXorAssign`              |
 | `<<`   | Left Shift              |               |                | `std::ops::Shl`    | `std::ops::ShlAssign`                 |
-| `>>`   | Right Shift**           |               |                | `std::ops::Shr`    |  `std::ops::ShrAssign`                |
+| `>>`   | Right Shift***          |               |                | `std::ops::Shr`    |  `std::ops::ShrAssign`                |
 
 \* Integer division rounds towards zero.
 
-\*\* Arithmetic right shift on signed integer types, logical right shift on
+\*\* Rust uses a remainder defined with [truncating division](https://en.wikipedia.org/wiki/Modulo_operation#Variants_of_the_definition). Given `remainder = dividend % divisor`, the remainder will have the same sign as the dividend.
+
+\*\*\* Arithmetic right shift on signed integer types, logical right shift on
 unsigned integer types.
 
 Here are examples of these operators being used.
@@ -340,6 +343,7 @@ reference types and `mut` or `const` in pointer types.
 #### Numeric cast
 
 * Casting between two integers of the same size (e.g. i32 -> u32) is a no-op
+  (Rust uses 2's complement for negative values of fixed integers)
 * Casting from a larger integer to a smaller integer (e.g. u32 -> u8) will
   truncate
 * Casting from a smaller integer to a larger integer (e.g. u8 -> u32) will
@@ -347,10 +351,8 @@ reference types and `mut` or `const` in pointer types.
     * sign-extend if the source is signed
 * Casting from a float to an integer will round the float towards zero
     * `NaN` will return `0`
-    * Values larger than the maximum integer value will saturate to the
-      maximum value of the integer type.
-    * Values smaller than the minimum integer value will saturate to the
-      minimum value of the integer type.
+    * Values larger than the maximum integer value, including `INFINITY`, will saturate to the maximum value of the integer type.
+    * Values smaller than the minimum integer value, including `NEG_INFINITY`, will saturate to the minimum value of the integer type.
 * Casting from an integer to float will produce the closest possible float \*
     * if necessary, rounding is according to `roundTiesToEven` mode \*\*\*
     * on overflow, infinity (of the same sign as the input) is produced

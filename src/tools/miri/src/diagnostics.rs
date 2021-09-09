@@ -26,6 +26,10 @@ pub enum TerminationInfo {
         second: SpanData,
         second_crate: Symbol,
     },
+    SymbolShimClashing {
+        link_name: Symbol,
+        span: SpanData,
+    },
 }
 
 impl fmt::Display for TerminationInfo {
@@ -39,6 +43,12 @@ impl fmt::Display for TerminationInfo {
             Deadlock => write!(f, "the evaluated program deadlocked"),
             MultipleSymbolDefinitions { link_name, .. } =>
                 write!(f, "multiple definitions of symbol `{}`", link_name),
+            SymbolShimClashing { link_name, .. } =>
+                write!(
+                    f,
+                    "found `{}` symbol definition that clashes with a built-in shim",
+                    link_name
+                ),
         }
     }
 }
@@ -79,7 +89,7 @@ pub fn report_error<'tcx, 'mir>(
                 UnsupportedInIsolation(_) => Some("unsupported operation"),
                 ExperimentalUb { .. } => Some("Undefined Behavior"),
                 Deadlock => Some("deadlock"),
-                MultipleSymbolDefinitions { .. } => None,
+                MultipleSymbolDefinitions { .. } | SymbolShimClashing { .. } => None,
             };
             #[rustfmt::skip]
             let helps = match info {
@@ -98,6 +108,8 @@ pub fn report_error<'tcx, 'mir>(
                         (Some(*first), format!("it's first defined here, in crate `{}`", first_crate)),
                         (Some(*second), format!("then it's defined here again, in crate `{}`", second_crate)),
                     ],
+                SymbolShimClashing { link_name, span } =>
+                    vec![(Some(*span), format!("the `{}` symbol is defined here", link_name))],
                 _ => vec![],
             };
             (title, helps)
@@ -122,7 +134,7 @@ pub fn report_error<'tcx, 'mir>(
             let helps = match e.kind() {
                 Unsupported(UnsupportedOpInfo::NoMirFor(..)) =>
                     vec![(None, format!("make sure to use a Miri sysroot, which you can prepare with `cargo miri setup`"))],
-                Unsupported(UnsupportedOpInfo::ReadBytesAsPointer | UnsupportedOpInfo::ThreadLocalStatic(_) | UnsupportedOpInfo::ReadExternStatic(_)) =>
+                Unsupported(UnsupportedOpInfo::ThreadLocalStatic(_) | UnsupportedOpInfo::ReadExternStatic(_)) =>
                     panic!("Error should never be raised by Miri: {:?}", e.kind()),
                 Unsupported(_) =>
                     vec![(None, format!("this is likely not a bug in the program; it indicates that the program performed an operation that the interpreter does not support"))],

@@ -5,7 +5,11 @@ use hir::{
 };
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
-use syntax::{ast, utils::path_to_string_stripping_turbo_fish, AstNode, SyntaxNode};
+use syntax::{
+    ast::{self, NameOwner},
+    utils::path_to_string_stripping_turbo_fish,
+    AstNode, SyntaxNode,
+};
 
 use crate::{
     items_locator::{self, AssocItemSearch, DEFAULT_QUERY_SEARCH_LIMIT},
@@ -110,6 +114,19 @@ impl ImportAssets {
         }
         Some(Self {
             import_candidate: ImportCandidate::for_regular_path(sema, fully_qualified_path)?,
+            module_with_candidate: sema.scope(&candidate_node).module()?,
+            candidate_node,
+        })
+    }
+
+    pub fn for_ident_pat(pat: &ast::IdentPat, sema: &Semantics<RootDatabase>) -> Option<Self> {
+        let name = pat.name()?;
+        let candidate_node = pat.syntax().clone();
+        if !pat.is_simple_ident() {
+            return None;
+        }
+        Some(Self {
+            import_candidate: ImportCandidate::for_name(sema, &name)?,
             module_with_candidate: sema.scope(&candidate_node).module()?,
             candidate_node,
         })
@@ -323,7 +340,7 @@ fn import_for_item(
     }
 
     let segment_import =
-        find_import_for_segment(db, original_item_candidate, &unresolved_first_segment)?;
+        find_import_for_segment(db, original_item_candidate, unresolved_first_segment)?;
     let trait_item_to_import = item_as_assoc(db, original_item)
         .and_then(|assoc| assoc.containing_trait(db))
         .map(|trait_| ItemInNs::from(ModuleDef::from(trait_)));
@@ -383,7 +400,7 @@ fn find_import_for_segment(
         original_item
     } else {
         let matching_module =
-            module_with_segment_name(db, &unresolved_first_segment, original_item)?;
+            module_with_segment_name(db, unresolved_first_segment, original_item)?;
         ItemInNs::from(ModuleDef::from(matching_module))
     })
 }
@@ -541,6 +558,20 @@ impl ImportCandidate {
             path.qualifier(),
             NameToImport::Exact(path.segment()?.name_ref()?.to_string()),
         )
+    }
+
+    fn for_name(sema: &Semantics<RootDatabase>, name: &ast::Name) -> Option<Self> {
+        if sema
+            .scope(name.syntax())
+            .speculative_resolve(&ast::make::ext::ident_path(&name.text()))
+            .is_some()
+        {
+            return None;
+        }
+        Some(ImportCandidate::Path(PathImportCandidate {
+            qualifier: None,
+            name: NameToImport::Exact(name.to_string()),
+        }))
     }
 
     fn for_fuzzy_path(

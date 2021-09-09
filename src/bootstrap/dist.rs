@@ -400,12 +400,12 @@ impl Step for Rustc {
 
             // Copy over lld if it's there
             if builder.config.lld_enabled {
-                let exe = exe("rust-lld", compiler.host);
-                builder.copy(&src_dir.join(&exe), &dst_dir.join(&exe));
+                let rust_lld = exe("rust-lld", compiler.host);
+                builder.copy(&src_dir.join(&rust_lld), &dst_dir.join(&rust_lld));
                 // for `-Z gcc-ld=lld`
                 let gcc_lld_dir = dst_dir.join("gcc-ld");
                 t!(fs::create_dir(&gcc_lld_dir));
-                builder.copy(&src_dir.join(&exe), &gcc_lld_dir.join(&exe));
+                builder.copy(&src_dir.join(&rust_lld), &gcc_lld_dir.join(exe("ld", compiler.host)));
             }
 
             // Copy over llvm-dwp if it's there
@@ -1033,13 +1033,7 @@ impl Step for Rls {
         let rls = builder
             .ensure(tool::Rls { compiler, target, extra_features: Vec::new() })
             .or_else(|| {
-                // We ignore failure on aarch64 Windows because RLS currently
-                // fails to build, due to winapi 0.2 not supporting aarch64.
-                missing_tool(
-                    "RLS",
-                    builder.build.config.missing_tools
-                        || (target.triple.contains("aarch64") && target.triple.contains("windows")),
-                );
+                missing_tool("RLS", builder.build.config.missing_tools);
                 None
             })?;
 
@@ -1961,8 +1955,16 @@ fn maybe_install_llvm(builder: &Builder<'_>, target: TargetSelection, dst_libdir
         cmd.arg("--libfiles");
         builder.verbose(&format!("running {:?}", cmd));
         let files = output(&mut cmd);
+        let build_llvm_out = &builder.llvm_out(builder.config.build);
+        let target_llvm_out = &builder.llvm_out(target);
         for file in files.trim_end().split(' ') {
-            builder.install(Path::new(file), dst_libdir, 0o644);
+            // If we're not using a custom LLVM, make sure we package for the target.
+            let file = if let Ok(relative_path) = Path::new(file).strip_prefix(build_llvm_out) {
+                target_llvm_out.join(relative_path)
+            } else {
+                PathBuf::from(file)
+            };
+            builder.install(&file, dst_libdir, 0o644);
         }
         !builder.config.dry_run
     } else {

@@ -8,6 +8,8 @@
 //! specific JSON shapes here -- there's little value in such tests, as we can't
 //! be sure without a real client anyway.
 
+mod sourcegen;
+mod tidy;
 mod testdir;
 mod support;
 
@@ -130,6 +132,49 @@ fn main() {}
               },
               "targetUri": "file:///[..]/tests/spam.rs"
             }
+          },
+          {
+            "args": {
+              "overrideCargo": null,
+              "workspaceRoot": server.path().join("foo"),
+              "cargoArgs": [
+                "test",
+                "--package",
+                "foo",
+                "--test",
+                "spam"
+              ],
+              "cargoExtraArgs": [],
+              "executableArgs": [
+                "",
+                "--nocapture"
+              ]
+            },
+            "kind": "cargo",
+            "label": "test-mod ",
+            "location": {
+              "targetUri": "file:///[..]/tests/spam.rs",
+              "targetRange": {
+                "start": {
+                  "line": 0,
+                  "character": 0
+                },
+                "end": {
+                  "line": 3,
+                  "character": 0
+                }
+              },
+              "targetSelectionRange": {
+                "start": {
+                  "line": 0,
+                  "character": 0
+                },
+                "end": {
+                  "line": 3,
+                  "character": 0
+                }
+              }
+            },
           },
           {
             "args": {
@@ -493,7 +538,7 @@ fn preserves_dos_line_endings() {
     }
 
     let server = Project::with_fixture(
-        &"
+        "
 //- /Cargo.toml
 [package]
 name = \"foo\"
@@ -758,7 +803,7 @@ pub fn foo(_input: TokenStream) -> TokenStream {
         ```rust
         fn bar()
         ```"#]]
-    .assert_eq(&value);
+    .assert_eq(value);
 }
 
 #[test]
@@ -795,7 +840,7 @@ fn main() {}
 
 "#;
     let server =
-        Project::with_fixture(&code).tmp_dir(tmp_dir).server().wait_until_workspace_is_loaded();
+        Project::with_fixture(code).tmp_dir(tmp_dir).server().wait_until_workspace_is_loaded();
 
     //rename same level file
     server.request::<WillRenameFiles>(

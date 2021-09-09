@@ -109,11 +109,13 @@ fn emit_api(buf: &mut String, xflags: &ast::XFlags) {
     w!(buf, "    pub const HELP: &'static str = Self::HELP_;\n");
     blank_line(buf);
 
+    w!(buf, "    #[allow(dead_code)]\n");
     w!(buf, "    pub fn from_env() -> xflags::Result<Self> {{\n");
     w!(buf, "        Self::from_env_()\n");
     w!(buf, "    }}\n");
     blank_line(buf);
 
+    w!(buf, "    #[allow(dead_code)]\n");
     w!(buf, "    pub fn from_vec(args: Vec<std::ffi::OsString>) -> xflags::Result<Self> {{\n");
     w!(buf, "        Self::from_vec_(args)\n");
     w!(buf, "    }}\n");
@@ -323,16 +325,26 @@ fn emit_help(buf: &mut String, xflags: &ast::XFlags) {
         buf
     };
     let help = format!("{:?}", help);
-    let help = help.replace("\\n", "\n");
+    let help = help.replace("\\n", "\n").replacen("\"", "\"\\\n", 1);
 
     w!(buf, "const HELP_: &'static str = {};", help);
     w!(buf, "}}\n");
 }
 
+fn write_lines_indented(buf: &mut String, multiline_str: &str, indent: usize) {
+    for line in multiline_str.split('\n').map(str::trim_end) {
+        if line.is_empty() {
+            w!(buf, "\n")
+        } else {
+            w!(buf, "{blank:indent$}{}\n", line, indent = indent, blank = "");
+        }
+    }
+}
+
 fn help_rec(buf: &mut String, prefix: &str, cmd: &ast::Cmd) {
     w!(buf, "{}{}\n", prefix, cmd.name);
     if let Some(doc) = &cmd.doc {
-        w!(buf, "  {}\n", doc)
+        write_lines_indented(buf, doc, 2);
     }
     let indent = if prefix.is_empty() { "" } else { "  " };
 
@@ -353,7 +365,7 @@ fn help_rec(buf: &mut String, prefix: &str, cmd: &ast::Cmd) {
             };
             w!(buf, "    {}{}{}\n", l, arg.val.name, r);
             if let Some(doc) = &arg.doc {
-                w!(buf, "      {}\n", doc)
+                write_lines_indented(buf, doc, 6)
             }
         }
     }
@@ -372,21 +384,24 @@ fn help_rec(buf: &mut String, prefix: &str, cmd: &ast::Cmd) {
             let value = flag.val.as_ref().map(|it| format!(" <{}>", it.name)).unwrap_or_default();
             w!(buf, "    {}--{}{}\n", short, flag.name, value);
             if let Some(doc) = &flag.doc {
-                w!(buf, "      {}\n", doc)
+                write_lines_indented(buf, doc, 6);
             }
         }
     }
 
-    if prefix.is_empty() {
-        blank_line(buf);
-        w!(buf, "SUBCOMANDS:");
-    }
+    let subcommands = cmd.named_subcommands();
+    if !subcommands.is_empty() {
+        if prefix.is_empty() {
+            blank_line(buf);
+            w!(buf, "SUBCOMMANDS:");
+        }
 
-    let prefix = format!("{}{} ", prefix, cmd.name);
-    for sub in cmd.named_subcommands() {
-        blank_line(buf);
-        blank_line(buf);
-        help_rec(buf, &prefix, sub);
+        let prefix = format!("{}{} ", prefix, cmd.name);
+        for sub in subcommands {
+            blank_line(buf);
+            blank_line(buf);
+            help_rec(buf, &prefix, sub);
+        }
     }
 }
 
@@ -484,10 +499,20 @@ mod tests {
         }
     }
 
+    fn update_on_disk_if_different(file: &Path, new_contents: String) -> bool {
+        let old_contents = fs::read_to_string(file).unwrap_or_default();
+        if old_contents.trim() == new_contents.trim() {
+            return false;
+        }
+        fs::write(file, new_contents).unwrap();
+        true
+    }
+
     #[test]
     fn gen_it() {
         let test_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it");
 
+        let mut did_update = false;
         for entry in fs::read_dir(test_dir.join("src")).unwrap() {
             let entry = entry.unwrap();
 
@@ -506,11 +531,14 @@ mod tests {
             );
 
             let name = entry.file_name();
-            fs::write(test_dir.join(name), code).unwrap();
+            did_update |= update_on_disk_if_different(&test_dir.join(name), code);
 
             if fmt.is_none() {
                 panic!("syntax error");
             }
+        }
+        if did_update {
+            panic!("generated output changed")
         }
     }
 }

@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
-Copyright (c) 2018, Microsoft Research, Daan Leijen
+Copyright (c) 2018-2021, Microsoft Research, Daan Leijen
 This is free software; you can redistribute it and/or modify it under the
 terms of the MIT license. A copy of the license can be found in the file
 "LICENSE" at the root of this distribution.
@@ -259,7 +259,7 @@ static _Atomic(uintptr_t) warning_count; // = 0;  // when >= max_warning_count s
 static mi_decl_thread bool recurse = false;
 
 static bool mi_recurse_enter(void) {
-  #if defined(__MACH__) || defined(MI_TLS_RECURSE_GUARD)
+  #if defined(__APPLE__) || defined(MI_TLS_RECURSE_GUARD)
   if (_mi_preloading()) return true;
   #endif
   if (recurse) return false;
@@ -268,7 +268,7 @@ static bool mi_recurse_enter(void) {
 }
 
 static void mi_recurse_exit(void) {
-  #if defined(__MACH__) || defined(MI_TLS_RECURSE_GUARD)
+  #if defined(__APPLE__) || defined(MI_TLS_RECURSE_GUARD)
   if (_mi_preloading()) return;
   #endif
   recurse = false;
@@ -422,7 +422,7 @@ static inline int mi_strnicmp(const char* s, const char* t, size_t n) {
 // reliably even when this is invoked before the C runtime is initialized.
 // i.e. when `_mi_preloading() == true`.
 // Note: on windows, environment names are not case sensitive.
-#include <Windows.h>
+#include <windows.h>
 static bool mi_getenv(const char* name, char* result, size_t result_size) {
   result[0] = 0;
   size_t len = GetEnvironmentVariableA(name, result, (DWORD)result_size);

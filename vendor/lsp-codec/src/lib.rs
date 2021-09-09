@@ -31,13 +31,13 @@ impl From<crate::proto::HeaderError> for Error {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tokio_util::codec::{FramedRead, FramedWrite};
     use tokio::runtime::Runtime;
-    use tokio::stream::StreamExt;
+    use tokio_stream::StreamExt;
+    use tokio_util::codec::{FramedRead, FramedWrite};
 
     #[test]
     fn decode() {
-        let mut runtime = Runtime::new().unwrap();
+        let runtime = Runtime::new().unwrap();
 
         let buf: &[u8] = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -46,7 +46,9 @@ mod tests {
 
         let reader = FramedRead::new(buf, LspDecoder::default());
 
-        let received = runtime.block_on(reader.collect::<Result<Vec<_>, _>>()).unwrap();
+        let received = runtime
+            .block_on(reader.collect::<Result<Vec<_>, _>>())
+            .unwrap();
         assert_eq!(
             received,
             vec![
@@ -66,10 +68,10 @@ mod tests {
             "key": "value"
         });
 
-        let mut a = Runtime::new().unwrap();
+        let rt = Runtime::new().unwrap();
         let fut = SinkExt::send(&mut writer, obj);
 
-        let _ = a.block_on(fut);
+        let _ = rt.block_on(fut);
 
         let buf = writer.into_inner();
         let s = String::from_utf8(buf).unwrap();

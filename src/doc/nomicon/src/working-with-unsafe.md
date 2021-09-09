@@ -84,6 +84,7 @@ impl<T> Vec<T> {
 This code is simple enough to reasonably audit and informally verify. Now consider
 adding the following method:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 fn make_room(&mut self) {
     // grow the capacity
@@ -117,4 +118,3 @@ it prevents us from having to trust all the safe code in the universe from messi
 with our trusted state.
 
 Safety lives!
-

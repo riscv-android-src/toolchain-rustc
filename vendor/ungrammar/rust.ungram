@@ -51,7 +51,7 @@ TypeArg =
   Type
 
 AssocTypeArg =
-  NameRef (':' TypeBoundList | '=' Type)
+  NameRef GenericParamList? (':' TypeBoundList | '=' Type)
 
 LifetimeArg =
   Lifetime
@@ -298,7 +298,10 @@ Visibility =
   'pub' ('(' 'in'? Path ')')?
 
 Attr =
-  '#' '!'? '[' Path ('=' Expr | TokenTree)? ']'
+  '#' '!'? '[' Meta ']'
+
+Meta =
+  Path ('=' Expr | TokenTree)?
 
 //****************************//
 // Statements and Expressions //
@@ -387,9 +390,9 @@ BinExpr =
   lhs:Expr
   op:(
     '||' | '&&'
-    | '==' | '!=' | '<=' | '>=' | '<' | '>'
-    | '+' | '*' | '-' | '/' | '%' | '<<' | '>>' | '^' | '|' | '&'
-    | '=' | '+=' | '/=' | '*=' | '%=' | '>>=' | '<<=' | '-=' | '|=' | '&=' | '^='
+  | '==' | '!=' | '<=' | '>=' | '<' | '>'
+  | '+' | '*' | '-' | '/' | '%' | '<<' | '>>' | '^' | '|' | '&'
+  | '=' | '+=' | '/=' | '*=' | '%=' | '>>=' | '<<=' | '-=' | '|=' | '&=' | '^='
   )
   rhs:Expr
 

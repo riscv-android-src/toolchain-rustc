@@ -2,6 +2,11 @@
 
 ## Summary
 
+- `any_prefix#..`, `any_prefix".."`, and `any_prefix'..'` are reserved syntax, and no longer tokenize.
+- This is mostly relevant to macros. E.g. `quote!{ #a#b }` is no longer accepted.
+- It doesn't treat keywords specially, so e.g. `match".." {}` is no longer accepted.
+- Insert whitespace to avoid errors.
+
 ## Details
 
 To make space for some new syntax in the future,

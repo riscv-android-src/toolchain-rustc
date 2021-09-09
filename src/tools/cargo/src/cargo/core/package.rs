@@ -37,12 +37,11 @@ pub const MANIFEST_PREAMBLE: &str = "\
 # When uploading crates to the registry Cargo will automatically
 # \"normalize\" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g., crates.io) dependencies
+# to registry (e.g., crates.io) dependencies.
 #
-# If you believe there's an error in this file please file an
-# issue against the rust-lang/cargo repository. If you're
-# editing this file be aware that the upstream Cargo.toml
-# will likely look very different (and much more reasonable)
+# If you are reading this file be aware that the original Cargo.toml
+# will likely look very different (and much more reasonable).
+# See Cargo.toml.orig for the original contents.
 ";
 
 /// Information about a package that is available somewhere in the file system.
@@ -102,6 +101,7 @@ pub struct SerializedPackage {
     links: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metabuild: Option<Vec<String>>,
+    default_run: Option<String>,
 }
 
 impl Package {
@@ -267,6 +267,7 @@ impl Package {
             links: self.manifest().links().map(|s| s.to_owned()),
             metabuild: self.manifest().metabuild().cloned(),
             publish: self.publish().as_ref().cloned(),
+            default_run: self.manifest().default_run().map(|s| s.to_owned()),
         }
     }
 }

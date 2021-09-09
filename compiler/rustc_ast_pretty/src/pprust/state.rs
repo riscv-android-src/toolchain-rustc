@@ -136,11 +136,11 @@ pub fn print_crate<'a>(
     s.s.eof()
 }
 
-// This makes printed token streams look slightly nicer,
-// and also addresses some specific regressions described in #63896 and #73345.
+/// This makes printed token streams look slightly nicer,
+/// and also addresses some specific regressions described in #63896 and #73345.
 fn tt_prepend_space(tt: &TokenTree, prev: &TokenTree) -> bool {
     if let TokenTree::Token(token) = prev {
-        if matches!(token.kind, token::Dot) {
+        if matches!(token.kind, token::Dot | token::Dollar) {
             return false;
         }
         if let token::DocComment(comment_kind, ..) = token.kind {
@@ -1954,7 +1954,6 @@ impl<'a> State<'a> {
                     self.word_space(":");
                 }
                 self.head("loop");
-                self.s.space();
                 self.print_block_with_attrs(blk, attrs);
             }
             ast::ExprKind::Match(ref expr, ref arms) => {
@@ -2283,6 +2282,9 @@ impl<'a> State<'a> {
                 }
                 if opts.contains(InlineAsmOptions::ATT_SYNTAX) {
                     options.push("att_syntax");
+                }
+                if opts.contains(InlineAsmOptions::RAW) {
+                    options.push("raw");
                 }
                 s.commasep(Inconsistent, &options, |s, &opt| {
                     s.word(opt);

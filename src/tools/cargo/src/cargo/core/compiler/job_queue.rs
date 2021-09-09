@@ -49,8 +49,9 @@
 //! The current scheduling algorithm is relatively primitive and could likely be
 //! improved.
 
-use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::io;
 use std::marker;
 use std::sync::Arc;
@@ -61,8 +62,6 @@ use cargo_util::ProcessBuilder;
 use crossbeam_utils::thread::Scope;
 use jobserver::{Acquired, Client, HelperThread};
 use log::{debug, info, trace};
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
 
 use super::context::OutputFile;
 use super::job::{
@@ -72,11 +71,12 @@ use super::job::{
 use super::timings::Timings;
 use super::{BuildContext, BuildPlan, CompileMode, Context, Unit};
 use crate::core::compiler::future_incompat::{
-    FutureBreakageItem, OnDiskReport, FUTURE_INCOMPAT_FILE,
+    FutureBreakageItem, FutureIncompatReportPackage, OnDiskReports,
 };
-use crate::core::{PackageId, Shell, TargetKind};
-use crate::drop_eprint;
+use crate::core::resolver::ResolveBehavior;
+use crate::core::{FeatureValue, PackageId, Shell, TargetKind};
 use crate::util::diagnostic_server::{self, DiagnosticPrinter};
+use crate::util::interning::InternedString;
 use crate::util::machine_message::{self, Message as _};
 use crate::util::CargoResult;
 use crate::util::{self, internal, profile};
@@ -126,6 +126,14 @@ struct DrainState<'cfg> {
 
     queue: DependencyQueue<Unit, Artifact, Job>,
     messages: Arc<Queue<Message>>,
+    /// Diagnostic deduplication support.
+    diag_dedupe: DiagDedupe<'cfg>,
+    /// Count of warnings, used to print a summary after the job succeeds.
+    ///
+    /// First value is the total number of warnings, and the second value is
+    /// the number that were suppressed because they were duplicates of a
+    /// previous warning.
+    warning_count: HashMap<JobId, (usize, usize)>,
     active: HashMap<JobId, Unit>,
     compiled: HashSet<PackageId>,
     documented: HashSet<PackageId>,
@@ -158,7 +166,7 @@ struct DrainState<'cfg> {
 
     /// How many jobs we've finished
     finished: usize,
-    per_crate_future_incompat_reports: Vec<FutureIncompatReportCrate>,
+    per_package_future_incompat_reports: Vec<FutureIncompatReportPackage>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -170,17 +178,12 @@ impl std::fmt::Display for JobId {
     }
 }
 
-struct FutureIncompatReportCrate {
-    package_id: PackageId,
-    report: Vec<FutureBreakageItem>,
-}
-
 /// A `JobState` is constructed by `JobQueue::run` and passed to `Job::run`. It includes everything
 /// necessary to communicate between the main thread and the execution of the job.
 ///
 /// The job may execute on either a dedicated thread or the main thread. If the job executes on the
 /// main thread, the `output` field must be set to prevent a deadlock.
-pub struct JobState<'a> {
+pub struct JobState<'a, 'cfg> {
     /// Channel back to the main thread to coordinate messages and such.
     ///
     /// When the `output` field is `Some`, care must be taken to avoid calling `push_bounded` on
@@ -197,7 +200,7 @@ pub struct JobState<'a> {
     /// interleaved. In the future, it may be wrapped in a `Mutex` instead. In this case
     /// interleaving is still prevented as the lock would be held for the whole printing of an
     /// output message.
-    output: Option<&'a Config>,
+    output: Option<&'a DiagDedupe<'cfg>>,
 
     /// The job id that this state is associated with, used when sending
     /// messages back to the main thread.
@@ -211,6 +214,36 @@ pub struct JobState<'a> {
     // Historical versions of Cargo made use of the `'a` argument here, so to
     // leave the door open to future refactorings keep it here.
     _marker: marker::PhantomData<&'a ()>,
+}
+
+/// Handler for deduplicating diagnostics.
+struct DiagDedupe<'cfg> {
+    seen: RefCell<HashSet<u64>>,
+    config: &'cfg Config,
+}
+
+impl<'cfg> DiagDedupe<'cfg> {
+    fn new(config: &'cfg Config) -> Self {
+        DiagDedupe {
+            seen: RefCell::new(HashSet::new()),
+            config,
+        }
+    }
+
+    /// Emits a diagnostic message.
+    ///
+    /// Returns `true` if the message was emitted, or `false` if it was
+    /// suppressed for being a duplicate.
+    fn emit_diag(&self, diag: &str) -> CargoResult<bool> {
+        let h = util::hash_u64(diag);
+        if !self.seen.borrow_mut().insert(h) {
+            return Ok(false);
+        }
+        let mut shell = self.config.shell();
+        shell.print_ansi_stderr(diag.as_bytes())?;
+        shell.err().write_all(b"\n")?;
+        Ok(true)
+    }
 }
 
 /// Possible artifacts that can be produced by compilations, used as edge values
@@ -238,6 +271,15 @@ enum Message {
     BuildPlanMsg(String, ProcessBuilder, Arc<Vec<OutputFile>>),
     Stdout(String),
     Stderr(String),
+    Diagnostic {
+        id: JobId,
+        level: String,
+        diag: String,
+    },
+    WarningCount {
+        id: JobId,
+        emitted: bool,
+    },
     FixDiagnostic(diagnostic_server::Message),
     Token(io::Result<Acquired>),
     Finish(JobId, Artifact, CargoResult<()>),
@@ -250,7 +292,7 @@ enum Message {
     ReleaseToken(JobId),
 }
 
-impl<'a> JobState<'a> {
+impl<'a, 'cfg> JobState<'a, 'cfg> {
     pub fn running(&self, cmd: &ProcessBuilder) {
         self.messages.push(Message::Run(self.id, cmd.to_string()));
     }
@@ -266,8 +308,8 @@ impl<'a> JobState<'a> {
     }
 
     pub fn stdout(&self, stdout: String) -> CargoResult<()> {
-        if let Some(config) = self.output {
-            writeln!(config.shell().out(), "{}", stdout)?;
+        if let Some(dedupe) = self.output {
+            writeln!(dedupe.config.shell().out(), "{}", stdout)?;
         } else {
             self.messages.push_bounded(Message::Stdout(stdout));
         }
@@ -275,12 +317,31 @@ impl<'a> JobState<'a> {
     }
 
     pub fn stderr(&self, stderr: String) -> CargoResult<()> {
-        if let Some(config) = self.output {
-            let mut shell = config.shell();
-            shell.print_ansi(stderr.as_bytes())?;
+        if let Some(dedupe) = self.output {
+            let mut shell = dedupe.config.shell();
+            shell.print_ansi_stderr(stderr.as_bytes())?;
             shell.err().write_all(b"\n")?;
         } else {
             self.messages.push_bounded(Message::Stderr(stderr));
+        }
+        Ok(())
+    }
+
+    pub fn emit_diag(&self, level: String, diag: String) -> CargoResult<()> {
+        if let Some(dedupe) = self.output {
+            let emitted = dedupe.emit_diag(&diag)?;
+            if level == "warning" {
+                self.messages.push(Message::WarningCount {
+                    id: self.id,
+                    emitted,
+                });
+            }
+        } else {
+            self.messages.push_bounded(Message::Diagnostic {
+                id: self.id,
+                level,
+                diag,
+            });
         }
         Ok(())
     }
@@ -416,6 +477,8 @@ impl<'cfg> JobQueue<'cfg> {
             // typical messages. If you change this, please update the test
             // caching_large_output, too.
             messages: Arc::new(Queue::new(100)),
+            diag_dedupe: DiagDedupe::new(cx.bcx.config),
+            warning_count: HashMap::new(),
             active: HashMap::new(),
             compiled: HashSet::new(),
             documented: HashSet::new(),
@@ -429,7 +492,7 @@ impl<'cfg> JobQueue<'cfg> {
             pending_queue: Vec::new(),
             print: DiagnosticPrinter::new(cx.bcx.config),
             finished: 0,
-            per_crate_future_incompat_reports: Vec::new(),
+            per_package_future_incompat_reports: Vec::new(),
         };
 
         // Create a helper thread for acquiring jobserver tokens
@@ -566,8 +629,17 @@ impl<'cfg> DrainState<'cfg> {
             }
             Message::Stderr(err) => {
                 let mut shell = cx.bcx.config.shell();
-                shell.print_ansi(err.as_bytes())?;
+                shell.print_ansi_stderr(err.as_bytes())?;
                 shell.err().write_all(b"\n")?;
+            }
+            Message::Diagnostic { id, level, diag } => {
+                let emitted = self.diag_dedupe.emit_diag(&diag)?;
+                if level == "warning" {
+                    self.bump_warning_count(id, emitted);
+                }
+            }
+            Message::WarningCount { id, emitted } => {
+                self.bump_warning_count(id, emitted);
             }
             Message::FixDiagnostic(msg) => {
                 self.print.print(&msg)?;
@@ -592,6 +664,7 @@ impl<'cfg> DrainState<'cfg> {
                             self.tokens.extend(rustc_tokens);
                         }
                         self.to_send_clients.remove(&id);
+                        self.report_warning_count(cx.bcx.config, id);
                         self.active.remove(&id).unwrap()
                     }
                     // ... otherwise if it hasn't finished we leave it
@@ -607,14 +680,15 @@ impl<'cfg> DrainState<'cfg> {
                     Err(e) => {
                         let msg = "The following warnings were emitted during compilation:";
                         self.emit_warnings(Some(msg), &unit, cx)?;
+                        self.back_compat_notice(cx, &unit)?;
                         return Err(e);
                     }
                 }
             }
-            Message::FutureIncompatReport(id, report) => {
+            Message::FutureIncompatReport(id, items) => {
                 let package_id = self.active[&id].pkg.package_id();
-                self.per_crate_future_incompat_reports
-                    .push(FutureIncompatReportCrate { package_id, report });
+                self.per_package_future_incompat_reports
+                    .push(FutureIncompatReportPackage { package_id, items });
             }
             Message::Token(acquired_token) => {
                 let token = acquired_token.with_context(|| "failed to acquire jobserver token")?;
@@ -797,7 +871,7 @@ impl<'cfg> DrainState<'cfg> {
             if !cx.bcx.build_config.build_plan {
                 // It doesn't really matter if this fails.
                 drop(cx.bcx.config.shell().status("Finished", message));
-                self.emit_future_incompat(cx);
+                self.emit_future_incompat(cx.bcx);
             }
 
             None
@@ -807,93 +881,57 @@ impl<'cfg> DrainState<'cfg> {
         }
     }
 
-    fn emit_future_incompat(&mut self, cx: &mut Context<'_, '_>) {
-        if cx.bcx.config.cli_unstable().future_incompat_report {
-            if self.per_crate_future_incompat_reports.is_empty() {
+    fn emit_future_incompat(&mut self, bcx: &BuildContext<'_, '_>) {
+        if !bcx.config.cli_unstable().future_incompat_report {
+            return;
+        }
+        if self.per_package_future_incompat_reports.is_empty() {
+            if bcx.build_config.future_incompat_report {
                 drop(
-                    cx.bcx
-                        .config
+                    bcx.config
                         .shell()
-                        .note("0 dependencies had future-incompat warnings"),
+                        .note("0 dependencies had future-incompatible warnings"),
                 );
-                return;
             }
-            self.per_crate_future_incompat_reports
-                .sort_by_key(|r| r.package_id);
+            return;
+        }
 
-            let crates_and_versions = self
-                .per_crate_future_incompat_reports
-                .iter()
-                .map(|r| r.package_id.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
+        // Get a list of unique and sorted package name/versions.
+        let package_vers: BTreeSet<_> = self
+            .per_package_future_incompat_reports
+            .iter()
+            .map(|r| r.package_id)
+            .collect();
+        let package_vers: Vec<_> = package_vers
+            .into_iter()
+            .map(|pid| pid.to_string())
+            .collect();
 
-            drop(cx.bcx.config.shell().warn(&format!(
-                "the following crates contain code that will be rejected by a future version of Rust: {}",
-                crates_and_versions
+        drop(bcx.config.shell().warn(&format!(
+            "the following packages contain code that will be rejected by a future \
+             version of Rust: {}",
+            package_vers.join(", ")
+        )));
+
+        let on_disk_reports =
+            OnDiskReports::save_report(bcx.ws, &self.per_package_future_incompat_reports);
+        let report_id = on_disk_reports.last_id();
+
+        if bcx.build_config.future_incompat_report {
+            let rendered = on_disk_reports.get_report(report_id, bcx.config).unwrap();
+            drop(bcx.config.shell().print_ansi_stderr(rendered.as_bytes()));
+            drop(bcx.config.shell().note(&format!(
+                "this report can be shown with `cargo report \
+                 future-incompatibilities -Z future-incompat-report --id {}`",
+                report_id
             )));
-
-            let mut full_report = String::new();
-            let mut rng = thread_rng();
-
-            // Generate a short ID to allow detecting if a report gets overwritten
-            let id: String = std::iter::repeat(())
-                .map(|()| char::from(rng.sample(Alphanumeric)))
-                .take(4)
-                .collect();
-
-            for report in std::mem::take(&mut self.per_crate_future_incompat_reports) {
-                full_report.push_str(&format!(
-                    "The crate `{}` currently triggers the following future incompatibility lints:\n",
-                    report.package_id
-                ));
-                for item in report.report {
-                    let rendered = if cx.bcx.config.shell().err_supports_color() {
-                        item.diagnostic.rendered
-                    } else {
-                        strip_ansi_escapes::strip(&item.diagnostic.rendered)
-                            .map(|v| String::from_utf8(v).expect("utf8"))
-                            .expect("strip should never fail")
-                    };
-
-                    for line in rendered.lines() {
-                        full_report.push_str(&format!("> {}\n", line));
-                    }
-                }
-            }
-
-            let report_file = cx.bcx.ws.target_dir().open_rw(
-                FUTURE_INCOMPAT_FILE,
-                cx.bcx.config,
-                "Future incompatibility report",
-            );
-            let err = report_file
-                .and_then(|report_file| {
-                    let on_disk_report = OnDiskReport {
-                        id: id.clone(),
-                        report: full_report.clone(),
-                    };
-                    serde_json::to_writer(report_file, &on_disk_report).map_err(|e| e.into())
-                })
-                .err();
-            if let Some(e) = err {
-                crate::display_warning_with_error(
-                    "failed to write on-disk future incompat report",
-                    &e,
-                    &mut cx.bcx.config.shell(),
-                );
-            }
-
-            if cx.bcx.build_config.future_incompat_report {
-                drop_eprint!(cx.bcx.config, "{}", full_report);
-                drop(cx.bcx.config.shell().note(
-                    &format!("this report can be shown with `cargo report future-incompatibilities -Z future-incompat-report --id {}`", id)
-                ));
-            } else {
-                drop(cx.bcx.config.shell().note(
-                    &format!("to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id {}`", id)
-                ));
-            }
+        } else {
+            drop(bcx.config.shell().note(&format!(
+                "to see what the problems were, use the option \
+                 `--future-incompat-report`, or run `cargo report \
+                 future-incompatibilities --id {}`",
+                report_id
+            )));
         }
     }
 
@@ -977,7 +1015,7 @@ impl<'cfg> DrainState<'cfg> {
         let fresh = job.freshness();
         let rmeta_required = cx.rmeta_required(unit);
 
-        let doit = move |state: JobState<'_>| {
+        let doit = move |state: JobState<'_, '_>| {
             let mut sender = FinishOnDrop {
                 messages: &state.messages,
                 id,
@@ -1033,7 +1071,7 @@ impl<'cfg> DrainState<'cfg> {
                 doit(JobState {
                     id,
                     messages,
-                    output: Some(cx.bcx.config),
+                    output: Some(&self.diag_dedupe),
                     rmeta_required: Cell::new(rmeta_required),
                     _marker: marker::PhantomData,
                 });
@@ -1083,6 +1121,44 @@ impl<'cfg> DrainState<'cfg> {
         }
 
         Ok(())
+    }
+
+    fn bump_warning_count(&mut self, id: JobId, emitted: bool) {
+        let cnts = self.warning_count.entry(id).or_default();
+        cnts.0 += 1;
+        if !emitted {
+            cnts.1 += 1;
+        }
+    }
+
+    /// Displays a final report of the warnings emitted by a particular job.
+    fn report_warning_count(&mut self, config: &Config, id: JobId) {
+        let count = match self.warning_count.remove(&id) {
+            Some(count) => count,
+            None => return,
+        };
+        let unit = &self.active[&id];
+        let mut message = format!("`{}` ({}", unit.pkg.name(), unit.target.description_named());
+        if unit.mode.is_rustc_test() && !(unit.target.is_test() || unit.target.is_bench()) {
+            message.push_str(" test");
+        } else if unit.mode.is_doc_test() {
+            message.push_str(" doctest");
+        } else if unit.mode.is_doc() {
+            message.push_str(" doc");
+        }
+        message.push_str(") generated ");
+        match count.0 {
+            1 => message.push_str("1 warning"),
+            n => drop(write!(message, "{} warnings", n)),
+        };
+        match count.1 {
+            0 => {}
+            1 => message.push_str(" (1 duplicate)"),
+            n => drop(write!(message, " ({} duplicates)", n)),
+        }
+        // Errors are ignored here because it is tricky to handle them
+        // correctly, and they aren't important.
+        drop(config.shell().warn(message));
     }
 
     fn finish(
@@ -1152,6 +1228,60 @@ impl<'cfg> DrainState<'cfg> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn back_compat_notice(&self, cx: &Context<'_, '_>, unit: &Unit) -> CargoResult<()> {
+        if unit.pkg.name() != "diesel"
+            || unit.pkg.version().major != 1
+            || cx.bcx.ws.resolve_behavior() == ResolveBehavior::V1
+            || !unit.pkg.package_id().source_id().is_registry()
+            || !unit.features.is_empty()
+        {
+            return Ok(());
+        }
+        let other_diesel = match cx
+            .bcx
+            .unit_graph
+            .keys()
+            .find(|unit| unit.pkg.name() == "diesel" && !unit.features.is_empty())
+        {
+            Some(u) => u,
+            // Unlikely due to features.
+            None => return Ok(()),
+        };
+        let mut features_suggestion: BTreeSet<_> = other_diesel.features.iter().collect();
+        let fmap = other_diesel.pkg.summary().features();
+        // Remove any unnecessary features.
+        for feature in &other_diesel.features {
+            if let Some(feats) = fmap.get(feature) {
+                for feat in feats {
+                    if let FeatureValue::Feature(f) = feat {
+                        features_suggestion.remove(&f);
+                    }
+                }
+            }
+        }
+        features_suggestion.remove(&InternedString::new("default"));
+        let features_suggestion = toml::to_string(&features_suggestion).unwrap();
+
+        cx.bcx.config.shell().note(&format!(
+            "\
+This error may be due to an interaction between diesel and Cargo's new
+feature resolver. Some workarounds you may want to consider:
+- Add a build-dependency in Cargo.toml on diesel to force Cargo to add the appropriate
+  features. This may look something like this:
+
+    [build-dependencies]
+    diesel = {{ version = \"{}\", features = {} }}
+
+- Try using the previous resolver by setting `resolver = \"1\"` in `Cargo.toml`
+  (see <https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions>
+  for more information).
+",
+            unit.pkg.version(),
+            features_suggestion
+        ))?;
         Ok(())
     }
 }

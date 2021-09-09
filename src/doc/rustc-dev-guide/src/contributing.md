@@ -64,7 +64,8 @@ Pull requests (or PRs for short) are the primary mechanism we use to change Rust
 GitHub itself has some [great documentation][about-pull-requests] on using the
 Pull Request feature. We use the "fork and pull" model [described here][development-models],
 where contributors push changes to their personal fork and create pull requests to
-bring those changes into the source repository.
+bring those changes into the source repository. We have more info about how to use git
+when contributing to Rust under [the git section](./git.md).
 
 [about-pull-requests]: https://help.github.com/articles/about-pull-requests/
 [development-models]: https://help.github.com/articles/about-collaborative-development-models/
@@ -144,8 +145,7 @@ CI will also run tidy and will fail if tidy fails.
 Rust follows a _no merge-commit policy_, meaning, when you encounter merge
 conflicts you are expected to always rebase instead of merging.  E.g. always use
 rebase when bringing the latest changes from the master branch to your feature
-branch.  Also, please make sure that fixup commits are squashed into other
-related commits with meaningful commit messages.
+branch.
 
 If you encounter merge conflicts or when a reviewer asks you to perform some
 changes, your PR will get marked as `S-waiting-on-author`. When you resolve

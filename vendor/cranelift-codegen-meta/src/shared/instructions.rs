@@ -2479,6 +2479,33 @@ pub(crate) fn define(
         .operands_out(vec![a]),
     );
 
+    let I16or32 = &TypeVar::new(
+        "I16or32",
+        "A scalar or vector integer type with 16- or 32-bit numbers",
+        TypeSetBuilder::new().ints(16..32).simd_lanes(4..8).build(),
+    );
+
+    let qx = &Operand::new("x", I16or32);
+    let qy = &Operand::new("y", I16or32);
+    let qa = &Operand::new("a", I16or32);
+
+    ig.push(
+        Inst::new(
+            "sqmul_round_sat",
+            r#"
+        Fixed-point multiplication of numbers in the QN format, where N + 1
+        is the number bitwidth:
+        `a := signed_saturate((x * y + 1 << (Q - 1)) >> Q)`
+
+        Polymorphic over all integer types (scalar and vector) with 16- or
+        32-bit numbers.
+        "#,
+            &formats.binary,
+        )
+        .operands_in(vec![qx, qy])
+        .operands_out(vec![qa]),
+    );
+
     ig.push(
         Inst::new(
             "udiv",
@@ -3958,19 +3985,19 @@ pub(crate) fn define(
         .constraints(vec![WiderOrEq(Int.clone(), IntTo.clone())]),
     );
 
-    let I16or32xN = &TypeVar::new(
-        "I16or32xN",
-        "A SIMD vector type containing integer lanes 16 or 32 bits wide",
+    let I16or32or64xN = &TypeVar::new(
+        "I16or32or64xN",
+        "A SIMD vector type containing integer lanes 16, 32, or 64 bits wide",
         TypeSetBuilder::new()
-            .ints(16..32)
-            .simd_lanes(4..8)
+            .ints(16..64)
+            .simd_lanes(2..8)
             .includes_scalars(false)
             .build(),
     );
 
-    let x = &Operand::new("x", I16or32xN);
-    let y = &Operand::new("y", I16or32xN);
-    let a = &Operand::new("a", &I16or32xN.split_lanes());
+    let x = &Operand::new("x", I16or32or64xN);
+    let y = &Operand::new("y", I16or32or64xN);
+    let a = &Operand::new("a", &I16or32or64xN.split_lanes());
 
     ig.push(
         Inst::new(
@@ -4009,18 +4036,37 @@ pub(crate) fn define(
         .operands_out(vec![a]),
     );
 
-    let I8or16xN = &TypeVar::new(
-        "I8or16xN",
-        "A SIMD vector type containing integer lanes 8 or 16 bits wide.",
+    ig.push(
+        Inst::new(
+            "uunarrow",
+            r#"
+        Combine `x` and `y` into a vector with twice the lanes but half the integer width while
+        saturating overflowing values to the unsigned maximum and minimum.
+
+        Note that all input lanes are considered unsigned.
+
+        The lanes will be concatenated after narrowing. For example, when `x` and `y` are `i32x4`
+        and `x = [x3, x2, x1, x0]` and `y = [y3, y2, y1, y0]`, then after narrowing the value
+        returned is an `i16x8`: `a = [y3', y2', y1', y0', x3', x2', x1', x0']`.
+            "#,
+            &formats.binary,
+        )
+        .operands_in(vec![x, y])
+        .operands_out(vec![a]),
+    );
+
+    let I8or16or32xN = &TypeVar::new(
+        "I8or16or32xN",
+        "A SIMD vector type containing integer lanes 8, 16, or 32 bits wide.",
         TypeSetBuilder::new()
-            .ints(8..16)
-            .simd_lanes(8..16)
+            .ints(8..32)
+            .simd_lanes(4..16)
             .includes_scalars(false)
             .build(),
     );
 
-    let x = &Operand::new("x", I8or16xN);
-    let a = &Operand::new("a", &I8or16xN.merge_lanes());
+    let x = &Operand::new("x", I8or16or32xN);
+    let a = &Operand::new("a", &I8or16or32xN.merge_lanes());
 
     ig.push(
         Inst::new(
@@ -4221,6 +4267,69 @@ pub(crate) fn define(
         .operands_in(vec![x])
         .operands_out(vec![a])
         .constraints(vec![WiderOrEq(Float.clone(), FloatTo.clone())]),
+    );
+
+    let F64x2 = &TypeVar::new(
+        "F64x2",
+        "A SIMD vector type consisting of 2 lanes of 64-bit floats",
+        TypeSetBuilder::new()
+            .floats(64..64)
+            .simd_lanes(2..2)
+            .includes_scalars(false)
+            .build(),
+    );
+    let F32x4 = &TypeVar::new(
+        "F32x4",
+        "A SIMD vector type consisting of 4 lanes of 32-bit floats",
+        TypeSetBuilder::new()
+            .floats(32..32)
+            .simd_lanes(4..4)
+            .includes_scalars(false)
+            .build(),
+    );
+
+    let x = &Operand::new("x", F64x2);
+    let a = &Operand::new("a", F32x4);
+
+    ig.push(
+        Inst::new(
+            "fvdemote",
+            r#"
+                Convert `x` to a smaller floating point format.
+
+                Each lane in `x` is converted to the destination floating point format
+                by rounding to nearest, ties to even.
+
+                Cranelift currently only supports two floating point formats
+                - `f32` and `f64`. This may change in the future.
+
+                Fvdemote differs from fdemote in that with fvdemote it targets vectors.
+                Fvdemote is constrained to having the input type being F64x2 and the result
+                type being F32x4. The result lane that was the upper half of the input lane
+                is initialized to zero.
+                "#,
+            &formats.unary,
+        )
+        .operands_in(vec![x])
+        .operands_out(vec![a]),
+    );
+
+    ig.push(
+        Inst::new(
+            "fvpromote_low",
+            r#"
+        Converts packed single precision floating point to packed double precision floating point.
+
+        Considering only the lower half of the register, the low lanes in `x` are interpreted as
+        single precision floats that are then converted to a double precision floats.
+
+        The result type will have half the number of vector lanes as the input. Fvpromote_low is
+        constrained to input F32x4 with a result type of F64x2.
+        "#,
+            &formats.unary,
+        )
+        .operands_in(vec![a])
+        .operands_out(vec![x]),
     );
 
     let x = &Operand::new("x", Float);

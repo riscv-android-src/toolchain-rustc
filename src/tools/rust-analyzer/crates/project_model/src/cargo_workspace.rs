@@ -1,5 +1,6 @@
 //! See [`CargoWorkspace`].
 
+use std::iter;
 use std::path::PathBuf;
 use std::{convert::TryInto, ops, process::Command, sync::Arc};
 
@@ -12,6 +13,7 @@ use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde_json::from_value;
 
+use crate::CfgOverrides;
 use crate::{build_data::BuildDataConfig, utf8_stdout};
 
 /// [`CargoWorkspace`] represents the logical structure of, well, a Cargo
@@ -76,6 +78,21 @@ pub struct CargoConfig {
 
     /// rustc private crate source
     pub rustc_source: Option<RustcSource>,
+
+    /// crates to disable `#[cfg(test)]` on
+    pub unset_test_crates: Vec<String>,
+}
+
+impl CargoConfig {
+    pub fn cfg_overrides(&self) -> CfgOverrides {
+        self.unset_test_crates
+            .iter()
+            .cloned()
+            .zip(iter::repeat_with(|| {
+                cfg::CfgDiff::new(Vec::new(), vec![cfg::CfgAtom::Flag("test".into())]).unwrap()
+            }))
+            .collect()
+    }
 }
 
 pub type Package = Idx<PackageData>;
@@ -211,11 +228,11 @@ struct PackageMetadata {
 }
 
 impl CargoWorkspace {
-    pub fn from_cargo_metadata(
+    pub fn fetch_metadata(
         cargo_toml: &AbsPath,
         config: &CargoConfig,
         progress: &dyn Fn(String),
-    ) -> Result<CargoWorkspace> {
+    ) -> Result<cargo_metadata::Metadata> {
         let mut meta = MetadataCommand::new();
         meta.cargo_path(toolchain::cargo());
         meta.manifest_path(cargo_toml.to_path_buf());
@@ -245,10 +262,12 @@ impl CargoWorkspace {
             meta.other_options(vec![String::from("--filter-platform"), target]);
         }
 
-        // FIXME: Currently MetadataCommand is not based on parse_stream,
-        // So we just report it as a whole
+        // FIXME: Fetching metadata is a slow process, as it might require
+        // calling crates.io. We should be reporting progress here, but it's
+        // unclear whether cargo itself supports it.
         progress("metadata".to_string());
-        let mut meta = meta.exec().with_context(|| {
+
+        let meta = meta.exec().with_context(|| {
             let cwd: Option<AbsPathBuf> =
                 std::env::current_dir().ok().and_then(|p| p.try_into().ok());
 
@@ -256,16 +275,24 @@ impl CargoWorkspace {
                 .parent()
                 .map(|p| p.to_path_buf())
                 .or(cwd)
-                .map(|dir| dir.to_string_lossy().to_string())
-                .unwrap_or_else(|| "<failed to get path>".into());
+                .map(|dir| format!(" in `{}`", dir.display()))
+                .unwrap_or_default();
 
             format!(
-                "Failed to run `cargo metadata --manifest-path {}` in `{}`",
+                "Failed to run `cargo metadata --manifest-path {}`{}",
                 cargo_toml.display(),
                 workdir
             )
         })?;
 
+        Ok(meta)
+    }
+
+    pub fn new(
+        cargo_toml: &AbsPath,
+        config: &CargoConfig,
+        mut meta: cargo_metadata::Metadata,
+    ) -> CargoWorkspace {
         let mut pkg_by_id = FxHashMap::default();
         let mut packages = Arena::default();
         let mut targets = Arena::default();
@@ -278,10 +305,11 @@ impl CargoWorkspace {
                 id, edition, name, manifest_path, version, metadata, ..
             } = meta_pkg;
             let meta = from_value::<PackageMetadata>(metadata.clone()).unwrap_or_default();
-            let is_member = ws_members.contains(&id);
-            let edition = edition
-                .parse::<Edition>()
-                .with_context(|| format!("Failed to parse edition {}", edition))?;
+            let is_member = ws_members.contains(id);
+            let edition = edition.parse::<Edition>().unwrap_or_else(|err| {
+                log::error!("Failed to parse edition {}", err);
+                Edition::CURRENT
+            });
 
             let pkg = packages.alloc(PackageData {
                 id: id.repr.clone(),
@@ -349,7 +377,16 @@ impl CargoWorkspace {
         let build_data_config =
             BuildDataConfig::new(cargo_toml.to_path_buf(), config.clone(), Arc::new(meta.packages));
 
-        Ok(CargoWorkspace { packages, targets, workspace_root, build_data_config })
+        CargoWorkspace { packages, targets, workspace_root, build_data_config }
+    }
+
+    pub fn from_cargo_metadata3(
+        cargo_toml: &AbsPath,
+        config: &CargoConfig,
+        progress: &dyn Fn(String),
+    ) -> Result<CargoWorkspace> {
+        let meta = CargoWorkspace::fetch_metadata(cargo_toml, config, progress)?;
+        Ok(CargoWorkspace::new(cargo_toml, config, meta))
     }
 
     pub fn packages<'a>(&'a self) -> impl Iterator<Item = Package> + ExactSizeIterator + 'a {

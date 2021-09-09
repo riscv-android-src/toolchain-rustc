@@ -122,10 +122,40 @@ impl SourceAnalyzer {
         Type::new_with_resolver(db, &self.resolver, ty)
     }
 
+    pub(crate) fn type_of_expr_with_coercion(
+        &self,
+        db: &dyn HirDatabase,
+        expr: &ast::Expr,
+    ) -> Option<(Type, bool)> {
+        let expr_id = self.expr_id(db, expr)?;
+        let infer = self.infer.as_ref()?;
+        let (ty, coerced) = infer
+            .expr_adjustments
+            .get(&expr_id)
+            .and_then(|adjusts| adjusts.last().map(|adjust| (&adjust.target, true)))
+            .unwrap_or_else(|| (&infer[expr_id], false));
+        Type::new_with_resolver(db, &self.resolver, ty.clone()).zip(Some(coerced))
+    }
+
     pub(crate) fn type_of_pat(&self, db: &dyn HirDatabase, pat: &ast::Pat) -> Option<Type> {
         let pat_id = self.pat_id(pat)?;
         let ty = self.infer.as_ref()?[pat_id].clone();
         Type::new_with_resolver(db, &self.resolver, ty)
+    }
+
+    pub(crate) fn type_of_pat_with_coercion(
+        &self,
+        db: &dyn HirDatabase,
+        pat: &ast::Pat,
+    ) -> Option<Type> {
+        let pat_id = self.pat_id(pat)?;
+        let infer = self.infer.as_ref()?;
+        let ty = infer
+            .pat_adjustments
+            .get(&pat_id)
+            .and_then(|adjusts| adjusts.last().map(|adjust| &adjust.target))
+            .unwrap_or_else(|| &infer[pat_id]);
+        Type::new_with_resolver(db, &self.resolver, ty.clone())
     }
 
     pub(crate) fn type_of_self(
@@ -222,7 +252,7 @@ impl SourceAnalyzer {
             Pat::Path(path) => path,
             _ => return None,
         };
-        let res = resolve_hir_path(db, &self.resolver, &path)?;
+        let res = resolve_hir_path(db, &self.resolver, path)?;
         match res {
             PathResolution::Def(def) => Some(def),
             _ => None,
@@ -329,7 +359,7 @@ impl SourceAnalyzer {
 
         let (variant, missing_fields, _exhaustive) =
             record_literal_missing_fields(db, infer, expr_id, &body[expr_id])?;
-        let res = self.missing_fields(db, krate, &substs, variant, missing_fields);
+        let res = self.missing_fields(db, krate, substs, variant, missing_fields);
         Some(res)
     }
 
@@ -347,7 +377,7 @@ impl SourceAnalyzer {
 
         let (variant, missing_fields, _exhaustive) =
             record_pattern_missing_fields(db, infer, pat_id, &body[pat_id])?;
-        let res = self.missing_fields(db, krate, &substs, variant, missing_fields);
+        let res = self.missing_fields(db, krate, substs, variant, missing_fields);
         Some(res)
     }
 

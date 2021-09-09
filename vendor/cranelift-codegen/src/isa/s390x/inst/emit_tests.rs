@@ -1,5 +1,6 @@
 use crate::ir::MemFlags;
 use crate::isa::s390x::inst::*;
+use crate::isa::s390x::settings as s390x_settings;
 use crate::isa::test_utils;
 use crate::settings;
 use alloc::vec::Vec;
@@ -2203,6 +2204,656 @@ fn test_s390x_binemit() {
         "EB456FFF7F0A",
         "srag %r4, %r5, 524287(%r6)",
     ));
+
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Add32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45000080F8",
+        "laa %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Add32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7FF8",
+        "laa %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Add32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45600080F8",
+        "laa %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Add32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7FF8",
+        "laa %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Add64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45000080E8",
+        "laag %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Add64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7FE8",
+        "laag %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Add64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45600080E8",
+        "laag %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Add64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7FE8",
+        "laag %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::And32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45000080F4",
+        "lan %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::And32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7FF4",
+        "lan %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::And32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45600080F4",
+        "lan %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::And32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7FF4",
+        "lan %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::And64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45000080E4",
+        "lang %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::And64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7FE4",
+        "lang %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::And64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45600080E4",
+        "lang %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::And64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7FE4",
+        "lang %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Orr32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45000080F6",
+        "lao %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Orr32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7FF6",
+        "lao %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Orr32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45600080F6",
+        "lao %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Orr32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7FF6",
+        "lao %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Orr64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45000080E6",
+        "laog %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Orr64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7FE6",
+        "laog %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Orr64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45600080E6",
+        "laog %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Orr64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7FE6",
+        "laog %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Xor32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45000080F7",
+        "lax %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Xor32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7FF7",
+        "lax %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Xor32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45600080F7",
+        "lax %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Xor32,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7FF7",
+        "lax %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Xor64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45000080E7",
+        "laxg %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Xor64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7FE7",
+        "laxg %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Xor64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB45600080E7",
+        "laxg %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicRmw {
+            alu_op: ALUOp::Xor64,
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7FE7",
+        "laxg %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicCas32 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD12 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: UImm12::maybe_from_u64(0).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "BA450000",
+        "cs %r4, %r5, 0",
+    ));
+    insns.push((
+        Inst::AtomicCas32 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD12 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: UImm12::maybe_from_u64(4095).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "BA450FFF",
+        "cs %r4, %r5, 4095",
+    ));
+    insns.push((
+        Inst::AtomicCas32 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB4500008014",
+        "csy %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicCas32 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7F14",
+        "csy %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicCas32 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD12 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: UImm12::maybe_from_u64(0).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "BA456000",
+        "cs %r4, %r5, 0(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicCas32 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD12 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: UImm12::maybe_from_u64(4095).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "BA456FFF",
+        "cs %r4, %r5, 4095(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicCas32 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB4560008014",
+        "csy %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicCas32 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7F14",
+        "csy %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicCas64 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB4500008030",
+        "csg %r4, %r5, -524288",
+    ));
+    insns.push((
+        Inst::AtomicCas64 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: zero_reg(),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB450FFF7F30",
+        "csg %r4, %r5, 524287",
+    ));
+    insns.push((
+        Inst::AtomicCas64 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(-524288).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB4560008030",
+        "csg %r4, %r5, -524288(%r6)",
+    ));
+    insns.push((
+        Inst::AtomicCas64 {
+            rd: writable_gpr(4),
+            rn: gpr(5),
+            mem: MemArg::BXD20 {
+                base: gpr(6),
+                index: zero_reg(),
+                disp: SImm20::maybe_from_i64(524287).unwrap(),
+                flags: MemFlags::trusted(),
+            },
+        },
+        "EB456FFF7F30",
+        "csg %r4, %r5, 524287(%r6)",
+    ));
+    insns.push((Inst::Fence, "07E0", "bcr 14, 0"));
 
     insns.push((
         Inst::Load32 {
@@ -7117,8 +7768,14 @@ fn test_s390x_binemit() {
     ));
 
     let flags = settings::Flags::new(settings::builder());
+
+    use crate::settings::Configurable;
+    let mut isa_flag_builder = s390x_settings::builder();
+    isa_flag_builder.enable("arch13").unwrap();
+    let isa_flags = s390x_settings::Flags::new(&flags, isa_flag_builder);
+
     let rru = create_reg_universe(&flags);
-    let emit_info = EmitInfo::new(flags);
+    let emit_info = EmitInfo::new(flags, isa_flags);
     for (insn, expected_encoding, expected_printing) in insns {
         println!(
             "S390x: {:?}, {}, {}",

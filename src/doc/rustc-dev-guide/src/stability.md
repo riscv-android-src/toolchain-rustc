@@ -44,7 +44,7 @@ prevents breaking dependencies by leveraging Cargo's lint capping.
 [rustc bug]: https://github.com/rust-lang/rust/issues/15702
 
 ## stable
-The `#[stable(feature = "foo", "since = "1.420.69")]` attribute explicitly
+The `#[stable(feature = "foo", since = "1.420.69")]` attribute explicitly
 marks an item as stabilized. Note that stable functions may use unstable things in their body.
 
 ## rustc_const_unstable
@@ -60,7 +60,7 @@ there's no way to add `const` to functions in `extern` blocks for now.
 
 ## rustc_const_stable
 
-The `#[rustc_const_stable(feature = "foo", "since = "1.420.69")]` attribute explicitly marks
+The `#[rustc_const_stable(feature = "foo", since = "1.420.69")]` attribute explicitly marks
 a `const fn` as having its constness be `stable`. This attribute can make sense
 even on an `unstable` function, if that function is called from another
 `rustc_const_stable` function.
@@ -85,28 +85,39 @@ To stabilize a feature, follow these steps:
    - Add the appropriate labels: `@rustbot modify labels: +T-libs`.
    - Link to the tracking issue and say "Closes #XXXXX".
 
-You can see an example of stabilizing a feature at [#75132](https://github.com/rust-lang/rust/pull/75132).
+You can see an example of stabilizing a feature with
+[tracking issue #81656 with FCP](https://github.com/rust-lang/rust/issues/81656)
+and the associated
+[implementation PR #84642](https://github.com/rust-lang/rust/pull/84642).
 
 ## allow_internal_unstable
 
-Macros, compiler desugarings and `const fn`s expose their bodies to the call
+Macros and compiler desugarings expose their bodies to the call
 site. To work around not being able to use unstable things in the standard
 library's macros, there's the `#[allow_internal_unstable(feature1, feature2)]`
-attribute that allows the given features to be used in stable macros or
-`const fn`s.
+attribute that allows the given features to be used in stable macros.
 
-Note that `const fn`s are even more special in this regard. You can't just
-allow any feature, the features need an implementation in
-`qualify_min_const_fn.rs`. For example the `const_fn_union` feature gate allows
-accessing fields of unions inside stable `const fn`s. The rules for when it's
-ok to use such a feature gate are that behavior matches the runtime behavior of
-the same code (see also [this blog post][blog]). This means that you may not
-create a `const fn` that e.g. transmutes a memory address to an integer,
+## rustc_allow_const_fn_unstable
+
+`const fn`, while not directly exposing their body to the world, are going to get
+evaluated at compile time in stable crates. If their body does something const-unstable,
+that could lock us into certain features indefinitely by accident. Thus no unstable const
+features are allowed inside stable `const fn`.
+
+However, sometimes we do know that a feature will get
+stabilized, just not when, or there is a stable (but e.g. runtime-slow) workaround, so we
+could always fall back to some stable version if we scrapped the unstable feature.
+In those cases, the rustc_allow_const_fn_unstable attribute can be used to allow some
+unstable features in the body of a stable `const fn`.
+
+You also need to take care to uphold the `const fn` invariant that calling it at runtime and
+compile-time needs to behave the same (see also [this blog post][blog]). This means that you
+may not create a `const fn` that e.g. transmutes a memory address to an integer,
 because the addresses of things are nondeterministic and often unknown at
 compile-time.
 
-Always ping @oli-obk, @RalfJung, and @Centril if you are adding more
-`allow_internal_unstable` attributes to any `const fn`
+Always ping @rust-lang/wg-const-eval if you are adding more
+`rustc_allow_const_fn_unstable` attributes to any `const fn`.
 
 ## staged_api
 

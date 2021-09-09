@@ -17,7 +17,7 @@ use ide_db::{RootDatabase, SymbolKind};
 use rustc_hash::FxHashMap;
 use syntax::{
     ast::{self, HasFormatSpecifier},
-    AstNode, AstToken, Direction, NodeOrToken,
+    match_ast, AstNode, AstToken, Direction, NodeOrToken,
     SyntaxKind::*,
     SyntaxNode, TextRange, WalkEvent, T,
 };
@@ -102,7 +102,8 @@ pub struct HlRange {
 // //-
 //
 // [horizontal]
-// attribute:: Emitted for attributes.
+// attribute:: Emitted for the `#[` `]` tokens.
+// builtinAttribute:: Emitted for names to builtin attributes in attribute path, the `repr` in `#[repr(u8)]` for example.
 // builtinType:: Emitted for builtin types like `u32`, `str` and `f32`.
 // comment:: Emitted for comments.
 // constParameter:: Emitted for const parameters.
@@ -137,6 +138,7 @@ pub struct HlRange {
 // injected:: Emitted for doc-string injected highlighting like rust source blocks in documentation.
 // intraDocLink:: Emitted for intra doc links in doc-strings.
 // library:: Emitted for items that are defined outside of the current crate.
+// public:: Emitted for items that are from the current crate and are `pub`.
 // mutable:: Emitted for mutable locals and statics.
 // static:: Emitted for "static" functions, also known as functions that do not take a `self` param, as well as statics and consts.
 // trait:: Emitted for associated trait items.
@@ -157,15 +159,16 @@ pub(crate) fn highlight(
     // Determine the root based on the given range.
     let (root, range_to_highlight) = {
         let source_file = sema.parse(file_id);
+        let source_file = source_file.syntax();
         match range_to_highlight {
             Some(range) => {
-                let node = match source_file.syntax().covering_element(range) {
+                let node = match source_file.covering_element(range) {
                     NodeOrToken::Node(it) => it,
-                    NodeOrToken::Token(it) => it.parent().unwrap(),
+                    NodeOrToken::Token(it) => it.parent().unwrap_or_else(|| source_file.clone()),
                 };
                 (node, range)
             }
-            None => (source_file.syntax().clone(), source_file.syntax().text_range()),
+            None => (source_file.clone(), source_file.text_range()),
         }
     };
 
@@ -192,6 +195,7 @@ fn traverse(
     let mut bindings_shadow_count: FxHashMap<Name, u32> = FxHashMap::default();
 
     let mut current_macro_call: Option<ast::MacroCall> = None;
+    let mut current_attr_macro_call = None;
     let mut current_macro: Option<ast::Macro> = None;
     let mut macro_highlighter = MacroHighlighter::default();
     let mut inside_attribute = false;
@@ -208,45 +212,57 @@ fn traverse(
             continue;
         }
 
-        // Track "inside macro" state
-        match event.clone().map(|it| it.into_node().and_then(ast::MacroCall::cast)) {
-            WalkEvent::Enter(Some(mc)) => {
-                if let Some(range) = macro_call_range(&mc) {
-                    hl.add(HlRange {
-                        range,
-                        highlight: HlTag::Symbol(SymbolKind::Macro).into(),
-                        binding_hash: None,
-                    });
+        match event.clone() {
+            WalkEvent::Enter(NodeOrToken::Node(node)) => {
+                match_ast! {
+                    match node {
+                        ast::MacroCall(mcall) => {
+                            if let Some(range) = macro_call_range(&mcall) {
+                                hl.add(HlRange {
+                                    range,
+                                    highlight: HlTag::Symbol(SymbolKind::Macro).into(),
+                                    binding_hash: None,
+                                });
+                            }
+                            current_macro_call = Some(mcall);
+                            continue;
+                        },
+                        ast::Macro(mac) => {
+                            macro_highlighter.init();
+                            current_macro = Some(mac);
+                            continue;
+                        },
+                        ast::Item(item) => {
+                            if sema.is_attr_macro_call(&item) {
+                                current_attr_macro_call = Some(item);
+                            }
+                        },
+                        ast::Attr(__) => inside_attribute = true,
+                        _ => ()
+                    }
                 }
-                current_macro_call = Some(mc.clone());
-                continue;
             }
-            WalkEvent::Leave(Some(mc)) => {
-                assert_eq!(current_macro_call, Some(mc));
-                current_macro_call = None;
-            }
-            _ => (),
-        }
-
-        match event.clone().map(|it| it.into_node().and_then(ast::Macro::cast)) {
-            WalkEvent::Enter(Some(mac)) => {
-                macro_highlighter.init();
-                current_macro = Some(mac);
-                continue;
-            }
-            WalkEvent::Leave(Some(mac)) => {
-                assert_eq!(current_macro, Some(mac));
-                current_macro = None;
-                macro_highlighter = MacroHighlighter::default();
-            }
-            _ => (),
-        }
-        match &event {
-            WalkEvent::Enter(NodeOrToken::Node(node)) if ast::Attr::can_cast(node.kind()) => {
-                inside_attribute = true
-            }
-            WalkEvent::Leave(NodeOrToken::Node(node)) if ast::Attr::can_cast(node.kind()) => {
-                inside_attribute = false
+            WalkEvent::Leave(NodeOrToken::Node(node)) => {
+                match_ast! {
+                    match node {
+                        ast::MacroCall(mcall) => {
+                            assert_eq!(current_macro_call, Some(mcall));
+                            current_macro_call = None;
+                        },
+                        ast::Macro(mac) => {
+                            assert_eq!(current_macro, Some(mac));
+                            current_macro = None;
+                            macro_highlighter = MacroHighlighter::default();
+                        },
+                        ast::Item(item) => {
+                            if current_attr_macro_call == Some(item) {
+                                current_attr_macro_call = None;
+                            }
+                        },
+                        ast::Attr(__) => inside_attribute = false,
+                        _ => ()
+                    }
+                }
             }
             _ => (),
         }
@@ -280,7 +296,23 @@ fn traverse(
                 Some(parent) => {
                     // We only care Name and Name_ref
                     match (token.kind(), parent.kind()) {
-                        (IDENT, NAME) | (IDENT, NAME_REF) => parent.into(),
+                        (IDENT, NAME | NAME_REF) => parent.into(),
+                        _ => token.into(),
+                    }
+                }
+                None => token.into(),
+            }
+        } else if current_attr_macro_call.is_some() {
+            let token = match element.clone().into_token() {
+                Some(it) => it,
+                _ => continue,
+            };
+            let token = sema.descend_into_macros(token.clone());
+            match token.parent() {
+                Some(parent) => {
+                    // We only care Name and Name_ref
+                    match (token.kind(), parent.kind()) {
+                        (IDENT, NAME | NAME_REF) => parent.into(),
                         _ => token.into(),
                     }
                 }
@@ -293,7 +325,7 @@ fn traverse(
         if let Some(token) = element.as_token().cloned().and_then(ast::String::cast) {
             if token.is_raw() {
                 let expanded = element_to_highlight.as_token().unwrap().clone();
-                if inject::ra_fixture(hl, &sema, token, expanded).is_some() {
+                if inject::ra_fixture(hl, sema, token, expanded).is_some() {
                     continue;
                 }
             }
@@ -304,7 +336,7 @@ fn traverse(
         }
 
         if let Some((mut highlight, binding_hash)) = highlight::element(
-            &sema,
+            sema,
             krate,
             &mut bindings_shadow_count,
             syntactic_name_ref_highlighting,

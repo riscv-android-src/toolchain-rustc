@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
-Copyright (c) 2018, Microsoft Research, Daan Leijen
+Copyright (c) 2018-2021, Microsoft Research, Daan Leijen
 This is free software; you can redistribute it and/or modify it under the
 terms of the MIT license. A copy of the license can be found in the file
 "LICENSE" at the root of this distribution.
@@ -293,7 +293,7 @@ extern bool _mi_process_is_initialized;
 mi_heap_t*  _mi_heap_main_get(void);    // statically allocated main backing heap
 
 #if defined(MI_MALLOC_OVERRIDE)
-#if defined(__MACH__) // OSX
+#if defined(__APPLE__) // macOS
 #define MI_TLS_SLOT               89  // seems unused? 
 // other possible unused ones are 9, 29, __PTK_FRAMEWORK_JAVASCRIPTCORE_KEY4 (94), __PTK_FRAMEWORK_GC_KEY9 (112) and __PTK_FRAMEWORK_OLDGC_KEY9 (89)
 // see <https://github.com/rweichler/substrate/blob/master/include/pthread_machdep.h>
@@ -324,9 +324,13 @@ static inline mi_heap_t** mi_tls_pthread_heap_slot(void) {
 #elif defined(MI_TLS_PTHREAD)
 #include <pthread.h>
 extern pthread_key_t _mi_heap_default_key;
-#else
-extern mi_decl_thread mi_heap_t* _mi_heap_default;  // default heap to allocate from
 #endif
+
+// Default heap to allocate from (if not using TLS- or pthread slots).
+// Do not use this directly but use through `mi_heap_get_default()` (or the unchecked `mi_get_default_heap`).
+// This thread local variable is only used when neither MI_TLS_SLOT, MI_TLS_PTHREAD, or MI_TLS_PTHREAD_SLOT_OFS are defined.
+// However, on the Apple M1 we do use the address of this variable as the unique thread-id (issue #356).
+extern mi_decl_thread mi_heap_t* _mi_heap_default;  // default heap to allocate from
 
 static inline mi_heap_t* mi_get_default_heap(void) {
 #if defined(MI_TLS_SLOT)
@@ -663,13 +667,14 @@ static inline uintptr_t _mi_random_shuffle(uintptr_t x) {
 int    _mi_os_numa_node_get(mi_os_tld_t* tld);
 size_t _mi_os_numa_node_count_get(void);
 
-extern size_t _mi_numa_node_count;
+extern _Atomic(size_t) _mi_numa_node_count;
 static inline int _mi_os_numa_node(mi_os_tld_t* tld) {
-  if (mi_likely(_mi_numa_node_count == 1)) return 0;
+  if (mi_likely(mi_atomic_load_relaxed(&_mi_numa_node_count) == 1)) return 0;
   else return _mi_os_numa_node_get(tld);
 }
 static inline size_t _mi_os_numa_node_count(void) {
-  if (mi_likely(_mi_numa_node_count>0)) return _mi_numa_node_count;
+  const size_t count = mi_atomic_load_relaxed(&_mi_numa_node_count);
+  if (mi_likely(count>0)) return count;
   else return _mi_os_numa_node_count_get();
 }
 
@@ -695,7 +700,7 @@ static inline void* mi_tls_slot(size_t slot) mi_attr_noexcept {
   const size_t ofs = (slot*sizeof(void*));
 #if defined(__i386__)
   __asm__("movl %%gs:%1, %0" : "=r" (res) : "m" (*((void**)ofs)) : );  // 32-bit always uses GS
-#elif defined(__MACH__) && defined(__x86_64__)
+#elif defined(__APPLE__) && defined(__x86_64__)
   __asm__("movq %%gs:%1, %0" : "=r" (res) : "m" (*((void**)ofs)) : );  // x86_64 macOSX uses GS
 #elif defined(__x86_64__) && (MI_INTPTR_SIZE==4)
   __asm__("movl %%fs:%1, %0" : "=r" (res) : "m" (*((void**)ofs)) : );  // x32 ABI
@@ -707,8 +712,9 @@ static inline void* mi_tls_slot(size_t slot) mi_attr_noexcept {
   res = tcb[slot];
 #elif defined(__aarch64__)
   void** tcb; UNUSED(ofs);
-#if defined(__APPLE__) // issue #343
+#if defined(__APPLE__) // M1, issue #343
   __asm__ volatile ("mrs %0, tpidrro_el0" : "=r" (tcb));
+  tcb = (void**)((uintptr_t)tcb & ~0x07UL);  // clear lower 3 bits
 #else
   __asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tcb));
 #endif
@@ -722,7 +728,7 @@ static inline void mi_tls_slot_set(size_t slot, void* value) mi_attr_noexcept {
   const size_t ofs = (slot*sizeof(void*));
 #if defined(__i386__)
   __asm__("movl %1,%%gs:%0" : "=m" (*((void**)ofs)) : "rn" (value) : );  // 32-bit always uses GS
-#elif defined(__MACH__) && defined(__x86_64__)
+#elif defined(__APPLE__) && defined(__x86_64__)
   __asm__("movq %1,%%gs:%0" : "=m" (*((void**)ofs)) : "rn" (value) : );  // x86_64 macOSX uses GS
 #elif defined(__x86_64__) && (MI_INTPTR_SIZE==4)
   __asm__("movl %1,%%fs:%1" : "=m" (*((void**)ofs)) : "rn" (value) : );  // x32 ABI
@@ -734,8 +740,9 @@ static inline void mi_tls_slot_set(size_t slot, void* value) mi_attr_noexcept {
   tcb[slot] = value;
 #elif defined(__aarch64__)
   void** tcb; UNUSED(ofs);
-#if defined(__APPLE__) // issue #343
+#if defined(__APPLE__) // M1, issue #343
   __asm__ volatile ("mrs %0, tpidrro_el0" : "=r" (tcb));
+  tcb = (void**)((uintptr_t)tcb & ~0x07UL);  // clear lower 3 bits
 #else
   __asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tcb));
 #endif
@@ -744,8 +751,13 @@ static inline void mi_tls_slot_set(size_t slot, void* value) mi_attr_noexcept {
 }
 
 static inline uintptr_t _mi_thread_id(void) mi_attr_noexcept {
-  // in all our targets, slot 0 is the pointer to the thread control block
+#if defined(__BIONIC__) && (defined(__arm__) || defined(__aarch64__))
+  // on Android, slot 1 is the thread ID (pointer to pthread internal struct)
+  return (uintptr_t)mi_tls_slot(1);
+#else
+  // in all our other targets, slot 0 is the pointer to the thread control block
   return (uintptr_t)mi_tls_slot(0);
+#endif
 }
 #else
 // otherwise use standard C

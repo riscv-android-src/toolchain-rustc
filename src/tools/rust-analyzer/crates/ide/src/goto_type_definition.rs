@@ -1,6 +1,5 @@
-use ide_db::base_db::Upcast;
-use ide_db::RootDatabase;
-use syntax::{ast, match_ast, AstNode, SyntaxKind::*, SyntaxToken, TokenAtOffset, T};
+use ide_db::{base_db::Upcast, helpers::pick_best_token, RootDatabase};
+use syntax::{ast, match_ast, AstNode, SyntaxKind::*, SyntaxToken, T};
 
 use crate::{display::TryToNav, FilePosition, NavigationTarget, RangeInfo};
 
@@ -22,7 +21,12 @@ pub(crate) fn goto_type_definition(
     let sema = hir::Semantics::new(db);
 
     let file: ast::SourceFile = sema.parse(position.file_id);
-    let token: SyntaxToken = pick_best(file.syntax().token_at_offset(position.offset))?;
+    let token: SyntaxToken =
+        pick_best_token(file.syntax().token_at_offset(position.offset), |kind| match kind {
+            IDENT | INT_NUMBER | T![self] => 2,
+            kind if kind.is_trivia() => 0,
+            _ => 1,
+        })?;
     let token: SyntaxToken = sema.descend_into_macros(token);
 
     let (ty, node) = sema.token_ancestors_with_macros(token).find_map(|node| {
@@ -33,6 +37,16 @@ pub(crate) fn goto_type_definition(
                 ast::SelfParam(it) => sema.type_of_self(&it)?,
                 ast::Type(it) => sema.resolve_type(&it)?,
                 ast::RecordField(it) => sema.to_def(&it).map(|d| d.ty(db.upcast()))?,
+                // can't match on RecordExprField directly as `ast::Expr` will match an iteration too early otherwise
+                ast::NameRef(it) => {
+                    if let Some(record_field) = ast::RecordExprField::for_name_ref(&it) {
+                        let (_, _, ty) = sema.resolve_record_field(&record_field)?;
+                        ty
+                    } else {
+                        let record_field = ast::RecordPatField::for_field_name_ref(&it)?;
+                        sema.resolve_record_pat_field(&record_field)?.ty(db)
+                    }
+                },
                 _ => return None,
             }
         };
@@ -40,38 +54,55 @@ pub(crate) fn goto_type_definition(
         Some((ty, node))
     })?;
 
-    let adt_def = ty.autoderef(db).filter_map(|ty| ty.as_adt()).last()?;
-
-    let nav = adt_def.try_to_nav(db)?;
-    Some(RangeInfo::new(node.text_range(), vec![nav]))
-}
-
-fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
-    return tokens.max_by_key(priority);
-    fn priority(n: &SyntaxToken) -> usize {
-        match n.kind() {
-            IDENT | INT_NUMBER | T![self] => 2,
-            kind if kind.is_trivia() => 0,
-            _ => 1,
+    let mut res = Vec::new();
+    let mut push = |def: hir::ModuleDef| {
+        if let Some(nav) = def.try_to_nav(db) {
+            if !res.contains(&nav) {
+                res.push(nav);
+            }
         }
-    }
+    };
+
+    let ty = ty.strip_references();
+    ty.walk(db, |t| {
+        if let Some(adt) = t.as_adt() {
+            push(adt.into());
+        } else if let Some(trait_) = t.as_dyn_trait() {
+            push(trait_.into());
+        } else if let Some(traits) = t.as_impl_traits(db) {
+            traits.into_iter().for_each(|it| push(it.into()));
+        } else if let Some(trait_) = t.as_associated_type_parent_trait(db) {
+            push(trait_.into());
+        }
+    });
+
+    Some(RangeInfo::new(node.text_range(), res))
 }
 
 #[cfg(test)]
 mod tests {
     use ide_db::base_db::FileRange;
+    use itertools::Itertools;
 
     use crate::fixture;
 
     fn check(ra_fixture: &str) {
-        let (analysis, position, mut annotations) = fixture::annotations(ra_fixture);
-        let (expected, data) = annotations.pop().unwrap();
-        assert!(data.is_empty());
+        let (analysis, position, expected) = fixture::annotations(ra_fixture);
+        let navs = analysis.goto_type_definition(position).unwrap().unwrap().info;
+        assert_ne!(navs.len(), 0);
 
-        let mut navs = analysis.goto_type_definition(position).unwrap().unwrap().info;
-        assert_eq!(navs.len(), 1);
-        let nav = navs.pop().unwrap();
-        assert_eq!(expected, FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() });
+        let cmp = |&FileRange { file_id, range }: &_| (file_id, range.start());
+        let navs = navs
+            .into_iter()
+            .map(|nav| FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() })
+            .sorted_by_key(cmp)
+            .collect::<Vec<_>>();
+        let expected = expected
+            .into_iter()
+            .map(|(FileRange { file_id, range }, _)| FileRange { file_id, range })
+            .sorted_by_key(cmp)
+            .collect::<Vec<_>>();
+        assert_eq!(expected, navs);
     }
 
     #[test]
@@ -82,6 +113,54 @@ struct Foo;
      //^^^
 fn foo() {
     let f: Foo; f$0
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_type_definition_record_expr_field() {
+        check(
+            r#"
+struct Bar;
+    // ^^^
+struct Foo { foo: Bar }
+fn foo() {
+    Foo { foo$0 }
+}
+"#,
+        );
+        check(
+            r#"
+struct Bar;
+    // ^^^
+struct Foo { foo: Bar }
+fn foo() {
+    Foo { foo$0: Bar }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_type_definition_record_pat_field() {
+        check(
+            r#"
+struct Bar;
+    // ^^^
+struct Foo { foo: Bar }
+fn foo() {
+    let Foo { foo$0 };
+}
+"#,
+        );
+        check(
+            r#"
+struct Bar;
+    // ^^^
+struct Foo { foo: Bar }
+fn foo() {
+    let Foo { foo$0: bar };
 }
 "#,
         );
@@ -190,6 +269,22 @@ enum Foo {
         bar$0: Bar
     },
 }
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_def_considers_generics() {
+        check(
+            r#"
+struct Foo;
+     //^^^
+struct Bar<T, U>(T, U);
+     //^^^
+struct Baz<T>(T);
+     //^^^
+
+fn foo(x$0: Bar<Baz<Foo>, Baz<usize>) {}
 "#,
         );
     }

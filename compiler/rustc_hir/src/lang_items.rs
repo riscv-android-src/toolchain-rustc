@@ -310,6 +310,8 @@ language_item_table! {
 
     Try,                     sym::Try,                 try_trait,                  Target::Trait;
 
+    SliceLen,                sym::slice_len_fn,        slice_len_fn,               Target::Method(MethodKind::Inherent);
+
     // Language items from AST lowering
     TryTraitFromResidual,    sym::from_residual,       from_residual_fn,           Target::Method(MethodKind::Trait { body: false });
     TryTraitFromOutput,      sym::from_output,         from_output_fn,             Target::Method(MethodKind::Trait { body: false });
@@ -346,7 +348,4 @@ language_item_table! {
     Range,                   sym::Range,               range_struct,               Target::Struct;
     RangeToInclusive,        sym::RangeToInclusive,    range_to_inclusive_struct,  Target::Struct;
     RangeTo,                 sym::RangeTo,             range_to_struct,            Target::Struct;
-    Send,                    sym::send,                send_trait,                 Target::Trait;
-    UnwindSafe,              sym::unwind_safe,         unwind_safe_trait,          Target::Trait;
-    RefUnwindSafe,           sym::ref_unwind_safe,     ref_unwind_safe_trait,      Target::Trait;
 }

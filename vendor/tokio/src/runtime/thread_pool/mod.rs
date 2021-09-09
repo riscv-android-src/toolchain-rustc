@@ -9,9 +9,7 @@ use self::idle::Idle;
 mod worker;
 pub(crate) use worker::Launch;
 
-cfg_blocking! {
-    pub(crate) use worker::block_in_place;
-}
+pub(crate) use worker::block_in_place;
 
 use crate::loom::sync::Arc;
 use crate::runtime::task::{self, JoinHandle};
@@ -61,15 +59,6 @@ impl ThreadPool {
         &self.spawner
     }
 
-    /// Spawns a task
-    pub(crate) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
-    where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        self.spawner.spawn(future)
-    }
-
     /// Blocks the current thread waiting for the future to complete.
     ///
     /// The future will execute on the current thread, but all spawned tasks
@@ -101,11 +90,17 @@ impl Spawner {
     /// Spawns a future onto the thread pool
     pub(crate) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
-        F: Future + Send + 'static,
+        F: crate::future::Future + Send + 'static,
         F::Output: Send + 'static,
     {
         let (task, handle) = task::joinable(future);
-        self.shared.schedule(task, false);
+
+        if let Err(task) = self.shared.schedule(task, false) {
+            // The newly spawned task could not be scheduled because the runtime
+            // is shutting down. The task must be explicitly shutdown at this point.
+            task.shutdown();
+        }
+
         handle
     }
 

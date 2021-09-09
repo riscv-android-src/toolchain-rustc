@@ -129,7 +129,7 @@ pub fn prepare(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
 }
 
 fn emit_build_output(
-    state: &JobState<'_>,
+    state: &JobState<'_, '_>,
     output: &BuildOutput,
     out_dir: &Path,
     package_id: PackageId,
@@ -252,6 +252,24 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
         }
     }
 
+    // Also inform the build script of the rustc compiler context.
+    if let Some(wrapper) = bcx.rustc().wrapper.as_ref() {
+        cmd.env("RUSTC_WRAPPER", wrapper);
+    } else {
+        cmd.env_remove("RUSTC_WRAPPER");
+    }
+    cmd.env_remove("RUSTC_WORKSPACE_WRAPPER");
+    if cx.bcx.ws.is_member(&unit.pkg) {
+        if let Some(wrapper) = bcx.rustc().workspace_wrapper.as_ref() {
+            cmd.env("RUSTC_WORKSPACE_WRAPPER", wrapper);
+        }
+    }
+    cmd.env(
+        "CARGO_ENCODED_RUSTFLAGS",
+        bcx.rustflags_args(unit).join("\x1f"),
+    );
+    cmd.env_remove("RUSTFLAGS");
+
     // Gather the set of native dependencies that this package has along with
     // some other variables to close over.
     //
@@ -299,7 +317,7 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
 
     let extra_link_arg = cx.bcx.config.cli_unstable().extra_link_arg;
     let nightly_features_allowed = cx.bcx.config.nightly_features_allowed;
-    let targets: Vec<Target> = unit.pkg.targets().iter().cloned().collect();
+    let targets: Vec<Target> = unit.pkg.targets().to_vec();
     // Need a separate copy for the fresh closure.
     let targets_fresh = targets.clone();
 

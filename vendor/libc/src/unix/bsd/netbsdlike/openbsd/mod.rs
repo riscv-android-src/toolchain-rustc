@@ -14,6 +14,7 @@ pub type pthread_cond_t = *mut ::c_void;
 pub type pthread_condattr_t = *mut ::c_void;
 pub type pthread_rwlock_t = *mut ::c_void;
 pub type pthread_rwlockattr_t = *mut ::c_void;
+pub type pthread_spinlock_t = ::uintptr_t;
 pub type caddr_t = *mut ::c_char;
 
 // elf.h
@@ -386,6 +387,10 @@ s! {
 }
 
 impl siginfo_t {
+    pub unsafe fn si_addr(&self) -> *mut ::c_char {
+        self.si_addr
+    }
+
     pub unsafe fn si_value(&self) -> ::sigval {
         #[repr(C)]
         struct siginfo_timer {
@@ -1526,6 +1531,7 @@ extern "C" {
     pub fn pthread_main_np() -> ::c_int;
     pub fn pthread_set_name_np(tid: ::pthread_t, name: *const ::c_char);
     pub fn pthread_stackseg_np(thread: ::pthread_t, sinfo: *mut ::stack_t) -> ::c_int;
+
     pub fn sysctl(
         name: *const ::c_int,
         namelen: ::c_uint,
@@ -1562,6 +1568,8 @@ extern "C" {
 
     // Added in `OpenBSD` 5.5
     pub fn explicit_bzero(s: *mut ::c_void, len: ::size_t);
+
+    pub fn setproctitle(fmt: *const ::c_char, ...);
 }
 
 cfg_if! {

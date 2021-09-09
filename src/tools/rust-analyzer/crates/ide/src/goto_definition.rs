@@ -1,18 +1,17 @@
-use std::convert::TryInto;
+use std::{convert::TryInto, iter};
 
 use either::Either;
-use hir::{InFile, Semantics};
+use hir::{AsAssocItem, InFile, ModuleDef, Semantics};
 use ide_db::{
     base_db::{AnchoredPath, FileId, FileLoader},
-    defs::{NameClass, NameRefClass},
+    defs::{Definition, NameClass, NameRefClass},
+    helpers::pick_best_token,
     RootDatabase,
 };
-use syntax::{
-    ast, match_ast, AstNode, AstToken, SyntaxKind::*, SyntaxToken, TextRange, TokenAtOffset, T,
-};
+use syntax::{ast, match_ast, AstNode, AstToken, SyntaxKind::*, SyntaxToken, TextRange, T};
 
 use crate::{
-    display::TryToNav,
+    display::{ToNav, TryToNav},
     doc_links::{doc_attributes, extract_definitions_from_markdown, resolve_doc_path_for_def},
     FilePosition, NavigationTarget, RangeInfo,
 };
@@ -34,7 +33,12 @@ pub(crate) fn goto_definition(
 ) -> Option<RangeInfo<Vec<NavigationTarget>>> {
     let sema = Semantics::new(db);
     let file = sema.parse(position.file_id).syntax().clone();
-    let original_token = pick_best(file.token_at_offset(position.offset))?;
+    let original_token =
+        pick_best_token(file.token_at_offset(position.offset), |kind| match kind {
+            IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] | T![super] | T![crate] | COMMENT => 2,
+            kind if kind.is_trivia() => 0,
+            _ => 1,
+        })?;
     let token = sema.descend_into_macros(original_token.clone());
     let parent = token.parent()?;
     if let Some(_) = ast::Comment::cast(token.clone()) {
@@ -43,34 +47,43 @@ pub(crate) fn goto_definition(
         let (docs, doc_mapping) = attributes.docs_with_rangemap(db)?;
         let (_, link, ns) =
             extract_definitions_from_markdown(docs.as_str()).into_iter().find(|(range, ..)| {
-                doc_mapping.map(range.clone()).map_or(false, |InFile { file_id, value: range }| {
+                doc_mapping.map(*range).map_or(false, |InFile { file_id, value: range }| {
                     file_id == position.file_id.into() && range.contains(position.offset)
                 })
             })?;
         let nav = resolve_doc_path_for_def(db, def, &link, ns)?.try_to_nav(db)?;
         return Some(RangeInfo::new(original_token.text_range(), vec![nav]));
     }
-    let nav = match_ast! {
+
+    let navs = match_ast! {
         match parent {
             ast::NameRef(name_ref) => {
                 reference_definition(&sema, Either::Right(&name_ref))
             },
             ast::Name(name) => {
-                let def = NameClass::classify(&sema, &name)?.referenced_or_defined(sema.db);
-                def.try_to_nav(sema.db)
+                match NameClass::classify(&sema, &name)? {
+                    NameClass::Definition(def) | NameClass::ConstReference(def) => {
+                        try_find_trait_item_definition(sema.db, &def).unwrap_or_else(|| def_to_nav(sema.db, def))
+                    }
+                    NameClass::PatFieldShorthand { local_def, field_ref } => {
+                        local_and_field_to_nav(sema.db, local_def, field_ref)
+                    },
+                }
             },
             ast::Lifetime(lt) => if let Some(name_class) = NameClass::classify_lifetime(&sema, &lt) {
-                let def = name_class.referenced_or_defined(sema.db);
-                def.try_to_nav(sema.db)
+                match name_class {
+                    NameClass::Definition(def) => def_to_nav(sema.db, def),
+                    _ => return None,
+                }
             } else {
                 reference_definition(&sema, Either::Left(&lt))
             },
-            ast::TokenTree(tt) => try_lookup_include_path(sema.db, tt, token, position.file_id),
+            ast::TokenTree(tt) => try_lookup_include_path(sema.db, tt, token, position.file_id)?,
             _ => return None,
         }
     };
 
-    Some(RangeInfo::new(original_token.text_range(), nav.into_iter().collect()))
+    Some(RangeInfo::new(original_token.text_range(), navs))
 }
 
 fn try_lookup_include_path(
@@ -78,7 +91,7 @@ fn try_lookup_include_path(
     tt: ast::TokenTree,
     token: SyntaxToken,
     file_id: FileId,
-) -> Option<NavigationTarget> {
+) -> Option<Vec<NavigationTarget>> {
     let path = ast::String::cast(token)?.value()?.into_owned();
     let macro_call = tt.syntax().parent().and_then(ast::MacroCall::cast)?;
     let name = macro_call.path()?.segment()?.name_ref()?;
@@ -87,7 +100,7 @@ fn try_lookup_include_path(
     }
     let file_id = db.resolve_path(AnchoredPath { anchor: file_id, path: &path })?;
     let size = db.file_text(file_id).len().try_into().ok()?;
-    Some(NavigationTarget {
+    Some(vec![NavigationTarget {
         file_id,
         full_range: TextRange::new(0.into(), size),
         name: path.into(),
@@ -96,49 +109,98 @@ fn try_lookup_include_path(
         container_name: None,
         description: None,
         docs: None,
-    })
+    }])
 }
 
-fn pick_best(tokens: TokenAtOffset<SyntaxToken>) -> Option<SyntaxToken> {
-    return tokens.max_by_key(priority);
-    fn priority(n: &SyntaxToken) -> usize {
-        match n.kind() {
-            IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] | COMMENT => 2,
-            kind if kind.is_trivia() => 0,
-            _ => 1,
-        }
-    }
+/// finds the trait definition of an impl'd item
+/// e.g.
+/// ```rust
+/// trait A { fn a(); }
+/// struct S;
+/// impl A for S { fn a(); } // <-- on this function, will get the location of a() in the trait
+/// ```
+fn try_find_trait_item_definition(
+    db: &RootDatabase,
+    def: &Definition,
+) -> Option<Vec<NavigationTarget>> {
+    let name = def.name(db)?;
+    let assoc = match def {
+        Definition::ModuleDef(ModuleDef::Function(f)) => f.as_assoc_item(db),
+        Definition::ModuleDef(ModuleDef::Const(c)) => c.as_assoc_item(db),
+        Definition::ModuleDef(ModuleDef::TypeAlias(ty)) => ty.as_assoc_item(db),
+        _ => None,
+    }?;
+
+    let imp = match assoc.container(db) {
+        hir::AssocItemContainer::Impl(imp) => imp,
+        _ => return None,
+    };
+
+    let trait_ = imp.trait_(db)?;
+    trait_
+        .items(db)
+        .iter()
+        .find_map(|itm| (itm.name(db)? == name).then(|| itm.try_to_nav(db)).flatten())
+        .map(|it| vec![it])
 }
 
 pub(crate) fn reference_definition(
     sema: &Semantics<RootDatabase>,
     name_ref: Either<&ast::Lifetime, &ast::NameRef>,
-) -> Option<NavigationTarget> {
-    let name_kind = name_ref.either(
+) -> Vec<NavigationTarget> {
+    let name_kind = match name_ref.either(
         |lifetime| NameRefClass::classify_lifetime(sema, lifetime),
         |name_ref| NameRefClass::classify(sema, name_ref),
-    )?;
-    let def = name_kind.referenced(sema.db);
-    def.try_to_nav(sema.db)
+    ) {
+        Some(class) => class,
+        None => return Vec::new(),
+    };
+    match name_kind {
+        NameRefClass::Definition(def) => def_to_nav(sema.db, def),
+        NameRefClass::FieldShorthand { local_ref, field_ref } => {
+            local_and_field_to_nav(sema.db, local_ref, field_ref)
+        }
+    }
+}
+
+fn def_to_nav(db: &RootDatabase, def: Definition) -> Vec<NavigationTarget> {
+    def.try_to_nav(db).map(|it| vec![it]).unwrap_or_default()
+}
+
+fn local_and_field_to_nav(
+    db: &RootDatabase,
+    local: hir::Local,
+    field: hir::Field,
+) -> Vec<NavigationTarget> {
+    iter::once(local.to_nav(db)).chain(field.try_to_nav(db)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use ide_db::base_db::FileRange;
+    use itertools::Itertools;
 
     use crate::fixture;
 
     fn check(ra_fixture: &str) {
-        let (analysis, position, expected) = fixture::nav_target_annotation(ra_fixture);
-        let mut navs =
-            analysis.goto_definition(position).unwrap().expect("no definition found").info;
+        let (analysis, position, expected) = fixture::annotations(ra_fixture);
+        let navs = analysis.goto_definition(position).unwrap().expect("no definition found").info;
         if navs.len() == 0 {
             panic!("unresolved reference")
         }
-        assert_eq!(navs.len(), 1);
 
-        let nav = navs.pop().unwrap();
-        assert_eq!(expected, FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() });
+        let cmp = |&FileRange { file_id, range }: &_| (file_id, range.start());
+        let navs = navs
+            .into_iter()
+            .map(|nav| FileRange { file_id: nav.file_id, range: nav.focus_or_full_range() })
+            .sorted_by_key(cmp)
+            .collect::<Vec<_>>();
+        let expected = expected
+            .into_iter()
+            .map(|(FileRange { file_id, range }, _)| FileRange { file_id, range })
+            .sorted_by_key(cmp)
+            .collect::<Vec<_>>();
+        assert_eq!(expected, navs);
     }
 
     fn check_unresolved(ra_fixture: &str) {
@@ -156,7 +218,7 @@ mod tests {
 extern crate std$0;
 //- /std/lib.rs crate:std
 // empty
-//^ file
+//^file
 "#,
         )
     }
@@ -169,7 +231,7 @@ extern crate std$0;
 extern crate std as abc$0;
 //- /std/lib.rs crate:std
 // empty
-//^ file
+//^file
 "#,
         )
     }
@@ -224,7 +286,7 @@ mod $0foo;
 
 //- /foo.rs
 // empty
-//^ file
+//^file
 "#,
         );
 
@@ -235,7 +297,7 @@ mod $0foo;
 
 //- /foo/mod.rs
 // empty
-//^ file
+//^file
 "#,
         );
     }
@@ -366,7 +428,7 @@ use foo as bar$0;
 
 //- /foo/lib.rs crate:foo
 // empty
-//^ file
+//^file
 "#,
         );
     }
@@ -841,6 +903,7 @@ fn bar() {
         check(
             r#"
 struct Foo { x: i32 }
+           //^
 fn main() {
     let x = 92;
       //^
@@ -856,10 +919,12 @@ fn main() {
             r#"
 enum Foo {
     Bar { x: i32 }
-}       //^
+        //^
+}
 fn baz(foo: Foo) {
     match foo {
         Foo::Bar { x$0 } => x
+                 //^
     };
 }
 "#,
@@ -1101,16 +1166,18 @@ fn foo<'foobar>(_: &'foobar ()) {
     }
 
     #[test]
-    #[ignore] // requires the HIR to somehow track these hrtb lifetimes
     fn goto_lifetime_hrtb() {
-        check(
-            r#"trait Foo<T> {}
+        // FIXME: requires the HIR to somehow track these hrtb lifetimes
+        check_unresolved(
+            r#"
+trait Foo<T> {}
 fn foo<T>() where for<'a> T: Foo<&'a$0 (u8, u16)>, {}
                     //^^
 "#,
         );
-        check(
-            r#"trait Foo<T> {}
+        check_unresolved(
+            r#"
+trait Foo<T> {}
 fn foo<T>() where for<'a$0> T: Foo<&'a (u8, u16)>, {}
                     //^^
 "#,
@@ -1118,9 +1185,9 @@ fn foo<T>() where for<'a$0> T: Foo<&'a (u8, u16)>, {}
     }
 
     #[test]
-    #[ignore] // requires ForTypes to be implemented
     fn goto_lifetime_hrtb_for_type() {
-        check(
+        // FIXME: requires ForTypes to be implemented
+        check_unresolved(
             r#"trait Foo<T> {}
 fn foo<T>() where T: for<'a> Foo<&'a$0 (u8, u16)>, {}
                        //^^
@@ -1258,7 +1325,61 @@ fn main() {
 }
 //- /foo.txt
 // empty
-//^ file
+//^file
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_def_of_trait_impl_fn() {
+        check(
+            r#"
+trait Twait {
+    fn a();
+    // ^
+}
+
+struct Stwuct;
+
+impl Twait for Stwuct {
+    fn a$0();
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_def_of_trait_impl_const() {
+        check(
+            r#"
+trait Twait {
+    const NOMS: bool;
+       // ^^^^
+}
+
+struct Stwuct;
+
+impl Twait for Stwuct {
+    const NOMS$0: bool = true;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn goto_def_of_trait_impl_type_alias() {
+        check(
+            r#"
+trait Twait {
+    type IsBad;
+      // ^^^^^
+}
+
+struct Stwuct;
+
+impl Twait for Stwuct {
+    type IsBad$0 = !;
+}
 "#,
         );
     }

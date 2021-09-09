@@ -7,9 +7,9 @@ use std::{
 };
 
 use anyhow::Result;
+use base_db::CrateName;
 use cargo_metadata::camino::Utf8Path;
 use cargo_metadata::{BuildScript, Message};
-use itertools::Itertools;
 use paths::{AbsPath, AbsPathBuf};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
@@ -184,10 +184,10 @@ impl WorkspaceBuildData {
 
                 // Copy-pasted from existing cargo_metadata. It seems like we
                 // should be using sered_stacker here?
-                let mut deserializer = serde_json::Deserializer::from_str(&line);
+                let mut deserializer = serde_json::Deserializer::from_str(line);
                 deserializer.disable_recursion_limit();
                 let message = Message::deserialize(&mut deserializer)
-                    .unwrap_or(Message::TextLine(line.to_string()));
+                    .unwrap_or_else(|_| Message::TextLine(line.to_string()));
 
                 match message {
                     Message::BuildScriptExecuted(BuildScript {
@@ -229,7 +229,7 @@ impl WorkspaceBuildData {
                     Message::CompilerArtifact(message) => {
                         progress(format!("metadata {}", message.target.name));
 
-                        if message.target.kind.contains(&"proc-macro".to_string()) {
+                        if message.target.kind.iter().any(|k| k == "proc-macro") {
                             let package_id = message.package_id;
                             // Skip rmeta file
                             if let Some(filename) =
@@ -258,7 +258,7 @@ impl WorkspaceBuildData {
             inject_cargo_env(package, package_build_data);
             if let Some(out_dir) = &package_build_data.out_dir {
                 // NOTE: cargo and rustc seem to hide non-UTF-8 strings from env! and option_env!()
-                if let Some(out_dir) = out_dir.to_str().map(|s| s.to_owned()) {
+                if let Some(out_dir) = out_dir.as_os_str().to_str().map(|s| s.to_owned()) {
                     package_build_data.envs.push(("OUT_DIR".to_string(), out_dir));
                 }
             }
@@ -291,7 +291,7 @@ fn inject_cargo_env(package: &cargo_metadata::Package, build_data: &mut PackageB
     let env = &mut build_data.envs;
 
     // FIXME: Missing variables:
-    // CARGO_PKG_HOMEPAGE, CARGO_CRATE_NAME, CARGO_BIN_NAME, CARGO_BIN_EXE_<name>
+    // CARGO_BIN_NAME, CARGO_BIN_EXE_<name>
 
     let mut manifest_dir = package.manifest_path.clone();
     manifest_dir.pop();
@@ -304,16 +304,17 @@ fn inject_cargo_env(package: &cargo_metadata::Package, build_data: &mut PackageB
     env.push(("CARGO_PKG_VERSION_MAJOR".into(), package.version.major.to_string()));
     env.push(("CARGO_PKG_VERSION_MINOR".into(), package.version.minor.to_string()));
     env.push(("CARGO_PKG_VERSION_PATCH".into(), package.version.patch.to_string()));
-
-    let pre = package.version.pre.iter().map(|id| id.to_string()).format(".");
-    env.push(("CARGO_PKG_VERSION_PRE".into(), pre.to_string()));
+    env.push(("CARGO_PKG_VERSION_PRE".into(), package.version.pre.to_string()));
 
     let authors = package.authors.join(";");
     env.push(("CARGO_PKG_AUTHORS".into(), authors));
 
     env.push(("CARGO_PKG_NAME".into(), package.name.clone()));
+    // FIXME: This isn't really correct (a package can have many crates with different names), but
+    // it's better than leaving the variable unset.
+    env.push(("CARGO_CRATE_NAME".into(), CrateName::normalize_dashes(&package.name).to_string()));
     env.push(("CARGO_PKG_DESCRIPTION".into(), package.description.clone().unwrap_or_default()));
-    //env.push(("CARGO_PKG_HOMEPAGE".into(), package.homepage.clone().unwrap_or_default()));
+    env.push(("CARGO_PKG_HOMEPAGE".into(), package.homepage.clone().unwrap_or_default()));
     env.push(("CARGO_PKG_REPOSITORY".into(), package.repository.clone().unwrap_or_default()));
     env.push(("CARGO_PKG_LICENSE".into(), package.license.clone().unwrap_or_default()));
 

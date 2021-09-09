@@ -15,7 +15,6 @@ we will then relate it back to how subtyping actually occurs in Rust.
 
 So here's our simple extension, *Objective Rust*, featuring three new types:
 
-
 ```rust
 trait Animal {
     fn snuggle(&self);
@@ -35,6 +34,7 @@ But unlike normal traits, we can use them as concrete and sized types, just like
 
 Now, say we have a very simple function that takes an Animal, like this:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 fn love(pet: Animal) {
     pet.snuggle();
@@ -44,6 +44,7 @@ fn love(pet: Animal) {
 By default, static types must match *exactly* for a program to compile. As such,
 this code won't compile:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 let mr_snuggles: Cat = ...;
 love(mr_snuggles);         // ERROR: expected Animal, found Cat
@@ -79,6 +80,7 @@ of our static type system, making it worse than useless (and leading to Undefine
 Here's a simple example of this happening when we apply subtyping in a completely naive
 "find and replace" way.
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 fn evil_feeder(pet: &mut Animal) {
     let spike: Dog = ...;
@@ -133,10 +135,7 @@ because nothing ever has type `'a`. Lifetimes only occur as part of some larger 
 like `&'a u32` or `IterMut<'a, u32>`. To apply lifetime subtyping, we need to know
 how to compose subtyping. Once again, we need *variance*.
 
-
-
-
-# Variance
+## Variance
 
 Variance is where things get a bit complicated.
 
@@ -188,6 +187,10 @@ some sense "fundamental". All the others can be understood by analogy to the oth
 * `*const T` follows the logic of `&T`
 * `*mut T` follows the logic of `&mut T` (or `UnsafeCell<T>`)
 
+For more types, see the ["Variance" section][variance-table] on the reference.
+
+[variance-table]: ../reference/subtyping.html#variance
+
 > NOTE: the *only* source of contravariance in the language is the arguments to
 > a function, which is why it really doesn't come up much in practice. Invoking
 > contravariance involves higher-order programming with function pointers that
@@ -199,6 +202,7 @@ and look at some examples.
 
 First off, let's revisit the meowing dog example:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 fn evil_feeder(pet: &mut Animal) {
     let spike: Dog = ...;
@@ -265,7 +269,7 @@ enough into the place expecting something long-lived.
 
 Here it is:
 
-```rust,ignore
+```rust,compile_fail
 fn evil_feeder<T>(input: &mut T, val: T) {
     *input = val;
 }
@@ -285,15 +289,16 @@ And what do we get when we run this?
 
 ```text
 error[E0597]: `spike` does not live long enough
-  --> src/main.rs:9:32
+  --> src/main.rs:9:31
    |
-9  |         let spike_str: &str = &spike;
-   |                                ^^^^^ borrowed value does not live long enough
-10 |         evil_feeder(&mut mr_snuggles, spike_str);
+6  |     let mut mr_snuggles: &'static str = "meow! :3";  // mr. snuggles forever!!
+   |                          ------------ type annotation requires that `spike` is borrowed for `'static`
+...
+9  |         let spike_str: &str = &spike;                // Only lives for the block
+   |                               ^^^^^^ borrowed value does not live long enough
+10 |         evil_feeder(&mut mr_snuggles, spike_str);    // EVIL!
 11 |     }
-   |     - borrowed value only lives until here
-   |
-   = note: borrowed value must be valid for the static lifetime...
+   |     - `spike` dropped here while still borrowed
 ```
 
 Good, it doesn't compile! Let's break down what's happening here in detail.
@@ -343,6 +348,7 @@ are guaranteed to be the only one with access to it.
 
 Consider the following code:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 let mr_snuggles: Box<Cat> = ..;
 let spike: Box<Dog> = ..;
@@ -368,6 +374,7 @@ Only one thing left to explain: function pointers.
 
 To see why `fn(T) -> U` should be covariant over `U`, consider the following signature:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 fn get_animal() -> Animal;
 ```
@@ -375,6 +382,7 @@ fn get_animal() -> Animal;
 This function claims to produce an Animal. As such, it is perfectly valid to
 provide a function with the following signature instead:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 fn get_animal() -> Cat;
 ```
@@ -387,12 +395,14 @@ just forget that fact.
 
 However, the same logic does not apply to *arguments*. Consider trying to satisfy:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 fn handle_animal(Animal);
 ```
 
-with
+with:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 fn handle_animal(Cat);
 ```
@@ -442,4 +452,3 @@ struct MyType<'a, 'b, A: 'a, B: 'b, C, D, E, F, G, H, In, Out, Mixed> {
     k2: Mixed,              // invariant over Mixed, because invariance wins all conflicts
 }
 ```
-

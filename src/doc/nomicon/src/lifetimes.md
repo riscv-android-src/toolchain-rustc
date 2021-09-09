@@ -45,6 +45,7 @@ let z = &y;
 The borrow checker always tries to minimize the extent of a lifetime, so it will
 likely desugar to the following:
 
+<!-- ignore: desugared code -->
 ```rust,ignore
 // NOTE: `'a: {` and `&'b x` is not valid syntax!
 'a: {
@@ -72,6 +73,7 @@ let y = &x;
 z = y;
 ```
 
+<!-- ignore: desugared code -->
 ```rust,ignore
 'a: {
     let x: i32 = 0;
@@ -87,9 +89,7 @@ z = y;
 }
 ```
 
-
-
-# Example: references that outlive referents
+## Example: references that outlive referents
 
 Alright, let's look at some of those examples from before:
 
@@ -102,6 +102,7 @@ fn as_str(data: &u32) -> &str {
 
 desugars to:
 
+<!-- ignore: desugared code -->
 ```rust,ignore
 fn as_str<'a>(data: &'a u32) -> &'a str {
     'b: {
@@ -129,6 +130,7 @@ up in our face.
 
 To make this more clear, we can expand the example:
 
+<!-- ignore: desugared code -->
 ```rust,ignore
 fn as_str<'a>(data: &'a u32) -> &'a str {
     'b: {
@@ -169,11 +171,7 @@ we could have returned an `&'a str` would have been if it was in a field of the
 can be considered to reside at the bottom of the stack; though this limits
 our implementation *just a bit*.)
 
-
-
-
-
-# Example: aliasing a mutable reference
+## Example: aliasing a mutable reference
 
 How about the other example:
 
@@ -184,6 +182,7 @@ data.push(4);
 println!("{}", x);
 ```
 
+<!-- ignore: desugared code -->
 ```rust,ignore
 'a: {
     let mut data: Vec<i32> = vec![1, 2, 3];
@@ -222,11 +221,9 @@ to the compiler. However it does mean that several programs that are totally
 correct with respect to Rust's *true* semantics are rejected because lifetimes
 are too dumb.
 
+## The area covered by a lifetime
 
-
-# The area covered by a lifetime
-
-The lifetime (sometimes called a *borrow*) is *alive* from the place it is
+A reference (sometimes called a *borrow*) is *alive* from the place it is
 created to its last use. The borrowed thing needs to outlive only borrows that
 are alive. This looks simple, but there are few subtleties.
 
@@ -234,7 +231,7 @@ The following snippet compiles, because after printing `x`, it is no longer
 needed, so it doesn't matter if it is dangling or aliased (even though the
 variable `x` *technically* exists to the very end of the scope).
 
-```rust,edition2018
+```rust
 let mut data = vec![1, 2, 3];
 let x = &data[0];
 println!("{}", x);
@@ -246,7 +243,7 @@ However, if the value has a destructor, the destructor is run at the end of the
 scope. And running the destructor is considered a use ‒ obviously the last one.
 So, this will *not* compile.
 
-```rust,edition2018,compile_fail
+```rust,compile_fail
 #[derive(Debug)]
 struct X<'a>(&'a i32);
 
@@ -266,7 +263,7 @@ One way to convince the compiler that `x` is no longer valid is by using `drop(x
 Furthermore, there might be multiple possible last uses of the borrow, for
 example in each branch of a condition.
 
-```rust,edition2018
+```rust
 # fn some_condition() -> bool { true }
 let mut data = vec![1, 2, 3];
 let x = &data[0];
@@ -286,7 +283,7 @@ borrows just being tied to the same local variable. This often happens around
 loops (writing a new value of a variable at the end of the loop and using it for
 the last time at the top of the next iteration).
 
-```rust,edition2018
+```rust
 let mut data = vec![1, 2, 3];
 // This mut allows us to change where the reference points to
 let mut x = &data[0];

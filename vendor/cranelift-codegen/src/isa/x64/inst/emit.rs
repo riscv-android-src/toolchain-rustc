@@ -126,16 +126,18 @@ pub(crate) fn emit(
             InstructionSet::Lzcnt => info.isa_flags.use_lzcnt(),
             InstructionSet::BMI1 => info.isa_flags.use_bmi1(),
             InstructionSet::BMI2 => info.isa_flags.has_bmi2(),
-            InstructionSet::AVX512F => info.isa_flags.has_avx512f(),
-            InstructionSet::AVX512VL => info.isa_flags.has_avx512vl(),
+            InstructionSet::AVX512BITALG => info.isa_flags.has_avx512bitalg(),
             InstructionSet::AVX512DQ => info.isa_flags.has_avx512dq(),
+            InstructionSet::AVX512F => info.isa_flags.has_avx512f(),
+            InstructionSet::AVX512VBMI => info.isa_flags.has_avx512vbmi(),
+            InstructionSet::AVX512VL => info.isa_flags.has_avx512vl(),
         }
     };
 
     // Certain instructions may be present in more than one ISA feature set; we must at least match
     // one of them in the target CPU.
     let isa_requirements = inst.available_in_any_isa();
-    if !isa_requirements.is_empty() && !isa_requirements.iter().any(matches_isa_flags) {
+    if !isa_requirements.is_empty() && !isa_requirements.iter().all(matches_isa_flags) {
         panic!(
             "Cannot emit inst '{:?}' for target; failed to match ISA requirements: {:?}",
             inst, isa_requirements
@@ -1346,6 +1348,8 @@ pub(crate) fn emit(
 
             let (prefix, opcode, num_opcodes) = match op {
                 SseOpcode::Cvtdq2pd => (LegacyPrefixes::_F3, 0x0FE6, 2),
+                SseOpcode::Cvtpd2ps => (LegacyPrefixes::_66, 0x0F5A, 2),
+                SseOpcode::Cvtps2pd => (LegacyPrefixes::None, 0x0F5A, 2),
                 SseOpcode::Cvtss2sd => (LegacyPrefixes::_F3, 0x0F5A, 2),
                 SseOpcode::Cvtsd2ss => (LegacyPrefixes::_F2, 0x0F5A, 2),
                 SseOpcode::Movaps => (LegacyPrefixes::None, 0x0F28, 2),
@@ -1409,8 +1413,9 @@ pub(crate) fn emit(
 
         Inst::XmmUnaryRmREvex { op, src, dst } => {
             let (prefix, map, w, opcode) = match op {
-                Avx512Opcode::Vpabsq => (LegacyPrefixes::_66, OpcodeMap::_0F38, true, 0x1f),
                 Avx512Opcode::Vcvtudq2ps => (LegacyPrefixes::_F2, OpcodeMap::_0F, false, 0x7a),
+                Avx512Opcode::Vpabsq => (LegacyPrefixes::_66, OpcodeMap::_0F38, true, 0x1f),
+                Avx512Opcode::Vpopcntb => (LegacyPrefixes::_66, OpcodeMap::_0F38, false, 0x54),
                 _ => unimplemented!("Opcode {:?} not implemented", op),
             };
             match src {
@@ -1556,8 +1561,9 @@ pub(crate) fn emit(
             src2,
             dst,
         } => {
-            let opcode = match op {
-                Avx512Opcode::Vpmullq => 0x40,
+            let (w, opcode) = match op {
+                Avx512Opcode::Vpermi2b => (false, 0x75),
+                Avx512Opcode::Vpmullq => (true, 0x40),
                 _ => unimplemented!("Opcode {:?} not implemented", op),
             };
             match src1 {
@@ -1565,7 +1571,7 @@ pub(crate) fn emit(
                     .length(EvexVectorLength::V128)
                     .prefix(LegacyPrefixes::_66)
                     .map(OpcodeMap::_0F38)
-                    .w(true)
+                    .w(w)
                     .opcode(opcode)
                     .reg(dst.to_reg().get_hw_encoding())
                     .rm(src.get_hw_encoding())

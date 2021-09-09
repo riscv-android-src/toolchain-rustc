@@ -808,13 +808,13 @@ impl<'hir> Pat<'hir> {
         }
 
         use PatKind::*;
-        match &self.kind {
+        match self.kind {
             Wild | Lit(_) | Range(..) | Binding(.., None) | Path(_) => true,
             Box(s) | Ref(s, _) | Binding(.., Some(s)) => s.walk_short_(it),
             Struct(_, fields, _) => fields.iter().all(|field| field.pat.walk_short_(it)),
             TupleStruct(_, s, _) | Tuple(s, _) | Or(s) => s.iter().all(|p| p.walk_short_(it)),
             Slice(before, slice, after) => {
-                before.iter().chain(slice.iter()).chain(after.iter()).all(|p| p.walk_short_(it))
+                before.iter().chain(slice).chain(after.iter()).all(|p| p.walk_short_(it))
             }
         }
     }
@@ -836,13 +836,13 @@ impl<'hir> Pat<'hir> {
         }
 
         use PatKind::*;
-        match &self.kind {
+        match self.kind {
             Wild | Lit(_) | Range(..) | Binding(.., None) | Path(_) => {}
             Box(s) | Ref(s, _) | Binding(.., Some(s)) => s.walk_(it),
             Struct(_, fields, _) => fields.iter().for_each(|field| field.pat.walk_(it)),
             TupleStruct(_, s, _) | Tuple(s, _) | Or(s) => s.iter().for_each(|p| p.walk_(it)),
             Slice(before, slice, after) => {
-                before.iter().chain(slice.iter()).chain(after.iter()).for_each(|p| p.walk_(it))
+                before.iter().chain(slice).chain(after.iter()).for_each(|p| p.walk_(it))
             }
         }
     }
@@ -940,11 +940,11 @@ pub enum PatKind<'hir> {
     /// A tuple struct/variant pattern `Variant(x, y, .., z)`.
     /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
     /// `0 <= position <= subpats.len()`
-    TupleStruct(QPath<'hir>, &'hir [&'hir Pat<'hir>], Option<usize>),
+    TupleStruct(QPath<'hir>, &'hir [Pat<'hir>], Option<usize>),
 
     /// An or-pattern `A | B | C`.
     /// Invariant: `pats.len() >= 2`.
-    Or(&'hir [&'hir Pat<'hir>]),
+    Or(&'hir [Pat<'hir>]),
 
     /// A path pattern for an unit struct/variant or a (maybe-associated) constant.
     Path(QPath<'hir>),
@@ -952,7 +952,7 @@ pub enum PatKind<'hir> {
     /// A tuple pattern (e.g., `(a, b)`).
     /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
     /// `0 <= position <= subpats.len()`
-    Tuple(&'hir [&'hir Pat<'hir>], Option<usize>),
+    Tuple(&'hir [Pat<'hir>], Option<usize>),
 
     /// A `box` pattern.
     Box(&'hir Pat<'hir>),
@@ -975,7 +975,7 @@ pub enum PatKind<'hir> {
     /// ```
     /// PatKind::Slice([Binding(a), Binding(b)], Some(Wild), [Binding(c), Binding(d)])
     /// ```
-    Slice(&'hir [&'hir Pat<'hir>], Option<&'hir Pat<'hir>>, &'hir [&'hir Pat<'hir>]),
+    Slice(&'hir [Pat<'hir>], Option<&'hir Pat<'hir>>, &'hir [Pat<'hir>]),
 }
 
 #[derive(Copy, Clone, PartialEq, Encodable, Debug, HashStable_Generic)]
@@ -1205,8 +1205,6 @@ pub struct ExprField<'hir> {
 pub enum BlockCheckMode {
     DefaultBlock,
     UnsafeBlock(UnsafeSource),
-    PushUnsafeBlock(UnsafeSource),
-    PopUnsafeBlock(UnsafeSource),
 }
 
 #[derive(Copy, Clone, PartialEq, Encodable, Debug, HashStable_Generic)]
@@ -2266,18 +2264,14 @@ pub struct OpaqueTy<'hir> {
 }
 
 /// From whence the opaque type came.
-#[derive(Copy, Clone, Encodable, Decodable, Debug, HashStable_Generic)]
+#[derive(Copy, Clone, PartialEq, Eq, Encodable, Decodable, Debug, HashStable_Generic)]
 pub enum OpaqueTyOrigin {
     /// `-> impl Trait`
     FnReturn,
     /// `async fn`
     AsyncFn,
-    /// `let _: impl Trait = ...`
-    Binding,
     /// type aliases: `type Foo = impl Trait;`
     TyAlias,
-    /// Impl trait consts, statics, bounds.
-    Misc,
 }
 
 /// The various kinds of types recognized by the compiler.
@@ -2817,6 +2811,27 @@ impl ItemKind<'_> {
             _ => return None,
         })
     }
+
+    pub fn descr(&self) -> &'static str {
+        match self {
+            ItemKind::ExternCrate(..) => "extern crate",
+            ItemKind::Use(..) => "`use` import",
+            ItemKind::Static(..) => "static item",
+            ItemKind::Const(..) => "constant item",
+            ItemKind::Fn(..) => "function",
+            ItemKind::Mod(..) => "module",
+            ItemKind::ForeignMod { .. } => "extern block",
+            ItemKind::GlobalAsm(..) => "global asm item",
+            ItemKind::TyAlias(..) => "type alias",
+            ItemKind::OpaqueTy(..) => "opaque type",
+            ItemKind::Enum(..) => "enum",
+            ItemKind::Struct(..) => "struct",
+            ItemKind::Union(..) => "union",
+            ItemKind::Trait(..) => "trait",
+            ItemKind::TraitAlias(..) => "trait alias",
+            ItemKind::Impl(..) => "implementation",
+        }
+    }
 }
 
 /// A reference from an trait to one of its associated items. This
@@ -3043,6 +3058,27 @@ impl<'hir> Node<'hir> {
             Node::Variant(Variant { id, .. }) => Some(*id),
             Node::Ctor(variant) => variant.ctor_hir_id(),
             Node::Crate(_) | Node::Visibility(_) => None,
+        }
+    }
+
+    /// Returns `Constness::Const` when this node is a const fn/impl.
+    pub fn constness(&self) -> Constness {
+        match self {
+            Node::Item(Item {
+                kind: ItemKind::Fn(FnSig { header: FnHeader { constness, .. }, .. }, ..),
+                ..
+            })
+            | Node::TraitItem(TraitItem {
+                kind: TraitItemKind::Fn(FnSig { header: FnHeader { constness, .. }, .. }, ..),
+                ..
+            })
+            | Node::ImplItem(ImplItem {
+                kind: ImplItemKind::Fn(FnSig { header: FnHeader { constness, .. }, .. }, ..),
+                ..
+            })
+            | Node::Item(Item { kind: ItemKind::Impl(Impl { constness, .. }), .. }) => *constness,
+
+            _ => Constness::NotConst,
         }
     }
 }

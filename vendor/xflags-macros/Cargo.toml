@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "xflags-macros"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
 description = "Private implementation details of xflags."
 license = "MIT OR Apache-2.0"

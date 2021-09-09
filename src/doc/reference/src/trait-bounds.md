@@ -47,7 +47,7 @@ trait is implemented for a type. For example, given `Ty: Trait`
 ```rust
 # type Surface = i32;
 trait Shape {
-    fn draw(&self, Surface);
+    fn draw(&self, surface: Surface);
     fn name() -> &'static str;
 }
 
@@ -73,19 +73,38 @@ fn name_figure<U: Shape>(
 }
 ```
 
+Bounds that don't use the item's parameters or [higher-ranked lifetimes] are checked when the item is defined.
+It is an error for such a bound to be false.
+
+[`Copy`], [`Clone`], and [`Sized`] bounds are also checked for certain generic types when using the item, even if the use does not provide a concrete type.
+It is an error to have `Copy` or `Clone` as a bound on a mutable reference, [trait object], or [slice].
+It is an error to have `Sized` as a bound on a trait object or slice.
+
+```rust,compile_fail
+struct A<'a, T>
+where
+    i32: Default,           // Allowed, but not useful
+    i32: Iterator,          // Error: `i32` is not an iterator
+    &'a mut T: Copy,        // (at use) Error: the trait bound is not satisfied
+    [T]: Sized,             // (at use) Error: size cannot be known at compilation
+{
+    f: &'a T,
+}
+struct UsesA<'a, T>(A<'a, T>);
+```
+
 Trait and lifetime bounds are also used to name [trait objects].
 
 ## `?Sized`
 
-`?` is only used to declare that the [`Sized`] trait may not be
-implemented for a type parameter or associated type. `?Sized` may
-not be used as a bound for other types.
+`?` is only used to relax the implicit [`Sized`] trait bound for [type parameters] or [associated types].
+`?Sized` may not be used as a bound for other types.
 
 ## Lifetime bounds
 
-Lifetime bounds can be applied to types or other lifetimes. The bound `'a: 'b`
-is usually read as `'a` *outlives* `'b`. `'a: 'b` means that `'a` lasts longer
-than `'b`, so a reference `&'a ()` is valid whenever `&'b ()` is valid.
+Lifetime bounds can be applied to types or to other lifetimes.
+The bound `'a: 'b` is usually read as `'a` *outlives* `'b`.
+`'a: 'b` means that `'a` lasts at least as long as `'b`, so a reference `&'a ()` is valid whenever `&'b ()` is valid.
 
 ```rust
 fn f<'a, 'b>(x: &'a i32, mut y: &'b i32) where 'a: 'b {
@@ -94,9 +113,8 @@ fn f<'a, 'b>(x: &'a i32, mut y: &'b i32) where 'a: 'b {
 }
 ```
 
-`T: 'a` means that all lifetime parameters of `T` outlive `'a`. For example if
-`'a` is an unconstrained lifetime parameter then `i32: 'static` and
-`&'static str: 'a` are satisfied but `Vec<&'a ()>: 'static` is not.
+`T: 'a` means that all lifetime parameters of `T` outlive `'a`.
+For example, if `'a` is an unconstrained lifetime parameter, then `i32: 'static` and `&'static str: 'a` are satisfied, but `Vec<&'a ()>: 'static` is not.
 
 ## Higher-ranked trait bounds
 
@@ -117,8 +135,7 @@ impl<'a> PartialEq<i32> for &'a T {
 
 and could then be used to compare a `&'a T` with any lifetime to an `i32`.
 
-Only a higher-ranked bound can be used here as the lifetime of the reference is
-shorter than a lifetime parameter on the function:
+Only a higher-ranked bound can be used here, because the lifetime of the reference is shorter than any possible lifetime parameter on the function:
 
 ```rust
 fn call_on_ref_zero<F>(f: F) where for<'a> F: Fn(&'a i32) {
@@ -127,7 +144,7 @@ fn call_on_ref_zero<F>(f: F) where for<'a> F: Fn(&'a i32) {
 }
 ```
 
-Higher-ranked lifetimes may also be specified just before the trait, the only
+Higher-ranked lifetimes may also be specified just before the trait: the only
 difference is the scope of the lifetime parameter, which extends only to the
 end of the following trait instead of the whole bound. This function is
 equivalent to the last one.
@@ -142,11 +159,18 @@ fn call_on_ref_zero<F>(f: F) where F: for<'a> Fn(&'a i32) {
 [LIFETIME_OR_LABEL]: tokens.md#lifetimes-and-loop-labels
 [_GenericParams_]: items/generics.md
 [_TypePath_]: paths.md#paths-in-types
+[`Clone`]: special-types-and-traits.md#clone
+[`Copy`]: special-types-and-traits.md#copy
 [`Sized`]: special-types-and-traits.md#sized
 
+[arrays]: types/array.md
 [associated types]: items/associated-items.md#associated-types
 [supertraits]: items/traits.md#supertraits
 [generic]: items/generics.md
+[higher-ranked lifetimes]: #higher-ranked-trait-bounds
+[slice]: types/slice.md
 [Trait]: items/traits.md#trait-bounds
+[trait object]: types/trait-object.md
 [trait objects]: types/trait-object.md
+[type parameters]: types/parameters.md
 [where clause]: items/generics.md#where-clauses

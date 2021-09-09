@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
-Copyright (c) 2019, Microsoft Research, Daan Leijen
+Copyright (c) 2019-2021, Microsoft Research, Daan Leijen
 This is free software; you can redistribute it and/or modify it under the
 terms of the MIT license. A copy of the license can be found in the file
 "LICENSE" at the root of this distribution.
@@ -197,7 +197,10 @@ void* _mi_arena_alloc_aligned(size_t size, size_t alignment, bool* commit, bool*
   }
 
   // finally, fall back to the OS
-  if (mi_option_is_enabled(mi_option_limit_os_alloc)) return NULL;
+  if (mi_option_is_enabled(mi_option_limit_os_alloc)) {
+    errno = ENOMEM;
+    return NULL;
+  }
   *is_zero = true;
   *memid   = MI_MEMID_OS;  
   void* p = _mi_os_alloc_aligned(size, alignment, *commit, large, tld->stats);

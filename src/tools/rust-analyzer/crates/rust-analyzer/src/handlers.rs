@@ -9,8 +9,8 @@ use std::{
 
 use ide::{
     AnnotationConfig, AssistKind, AssistResolveStrategy, FileId, FilePosition, FileRange,
-    HoverAction, HoverGotoTypeData, Query, RangeInfo, Runnable, RunnableKind, SearchScope,
-    SingleResolve, SourceChange, TextEdit,
+    HoverAction, HoverGotoTypeData, Query, RangeInfo, Runnable, RunnableKind, SingleResolve,
+    SourceChange, TextEdit,
 };
 use ide_db::SymbolKind;
 use itertools::Itertools;
@@ -18,17 +18,15 @@ use lsp_server::ErrorCode;
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
     CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
-    CodeLens, CompletionItem, Diagnostic, DiagnosticTag, DocumentFormattingParams,
-    DocumentHighlight, FoldingRange, FoldingRangeParams, HoverContents, Location, NumberOrString,
-    Position, PrepareRenameResponse, Range, RenameParams, SemanticTokensDeltaParams,
-    SemanticTokensFullDeltaResult, SemanticTokensParams, SemanticTokensRangeParams,
-    SemanticTokensRangeResult, SemanticTokensResult, SymbolInformation, SymbolTag,
-    TextDocumentIdentifier, TextDocumentPositionParams, Url, WorkspaceEdit,
+    CodeLens, CompletionItem, Diagnostic, DiagnosticTag, DocumentFormattingParams, FoldingRange,
+    FoldingRangeParams, HoverContents, Location, NumberOrString, Position, PrepareRenameResponse,
+    Range, RenameParams, SemanticTokensDeltaParams, SemanticTokensFullDeltaResult,
+    SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult,
+    SemanticTokensResult, SymbolInformation, SymbolTag, TextDocumentIdentifier, Url, WorkspaceEdit,
 };
 use project_model::TargetKind;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, to_value};
-use stdx::format_to;
+use serde_json::json;
+use stdx::{format_to, never};
 use syntax::{algo, ast, AstNode, TextRange, TextSize};
 
 use crate::{
@@ -38,7 +36,7 @@ use crate::{
     from_proto,
     global_state::{GlobalState, GlobalStateSnapshot},
     line_index::LineEndings,
-    lsp_ext::{self, InlayHint, InlayHintsParams, WorkspaceSymbolParams},
+    lsp_ext::{self, InlayHint, InlayHintsParams, ViewCrateGraphParams, WorkspaceSymbolParams},
     lsp_utils::all_edits_are_disjoint,
     to_proto, LspError, Result,
 };
@@ -60,21 +58,25 @@ pub(crate) fn handle_analyzer_status(
     }
 
     if snap.workspaces.is_empty() {
-        buf.push_str("no workspaces\n")
+        buf.push_str("No workspaces\n")
     } else {
-        buf.push_str("workspaces:\n");
-        for w in snap.workspaces.iter() {
-            format_to!(buf, "{} packages loaded\n", w.n_packages());
-        }
+        buf.push_str("Workspaces:\n");
+        format_to!(
+            buf,
+            "Loaded {:?} packages across {} workspace{}.\n",
+            snap.workspaces.iter().map(|w| w.n_packages()).sum::<usize>(),
+            snap.workspaces.len(),
+            if snap.workspaces.len() == 1 { "" } else { "s" }
+        );
     }
-    buf.push_str("\nanalysis:\n");
+    buf.push_str("\nAnalysis:\n");
     buf.push_str(
         &snap
             .analysis
             .status(file_id)
             .unwrap_or_else(|_| "Analysis retrieval was cancelled".to_owned()),
     );
-    format_to!(buf, "\n\nrequests:\n");
+    format_to!(buf, "\n\nRequests:\n");
     let requests = snap.latest_requests.read();
     for (is_last, r) in requests.iter() {
         let mark = if is_last { "*" } else { " " };
@@ -127,9 +129,12 @@ pub(crate) fn handle_view_item_tree(
     Ok(res)
 }
 
-pub(crate) fn handle_view_crate_graph(snap: GlobalStateSnapshot, (): ()) -> Result<String> {
+pub(crate) fn handle_view_crate_graph(
+    snap: GlobalStateSnapshot,
+    params: ViewCrateGraphParams,
+) -> Result<String> {
     let _p = profile::span("handle_view_crate_graph");
-    let dot = snap.analysis.view_crate_graph()??;
+    let dot = snap.analysis.view_crate_graph(params.full)??;
 
     // We shell out to `dot` to render to SVG, as there does not seem to be a pure-Rust renderer.
     let child = Command::new("dot")
@@ -228,12 +233,15 @@ pub(crate) fn handle_join_lines(
     params: lsp_ext::JoinLinesParams,
 ) -> Result<Vec<lsp_types::TextEdit>> {
     let _p = profile::span("handle_join_lines");
+
+    let config = snap.config.join_lines();
     let file_id = from_proto::file_id(&snap, &params.text_document.uri)?;
     let line_index = snap.file_line_index(file_id)?;
+
     let mut res = TextEdit::default();
     for range in params.ranges {
         let range = from_proto::text_range(&line_index, range);
-        let edit = snap.analysis.join_lines(FileRange { file_id, range })?;
+        let edit = snap.analysis.join_lines(&config, FileRange { file_id, range })?;
         match res.union(edit) {
             Ok(()) => (),
             Err(_edit) => {
@@ -241,8 +249,8 @@ pub(crate) fn handle_join_lines(
             }
         }
     }
-    let res = to_proto::text_edit_vec(&line_index, res);
-    Ok(res)
+
+    Ok(to_proto::text_edit_vec(&line_index, res))
 }
 
 pub(crate) fn handle_on_enter(
@@ -556,6 +564,21 @@ pub(crate) fn handle_goto_definition(
     Ok(Some(res))
 }
 
+pub(crate) fn handle_goto_declaration(
+    snap: GlobalStateSnapshot,
+    params: lsp_types::request::GotoDeclarationParams,
+) -> Result<Option<lsp_types::request::GotoDeclarationResponse>> {
+    let _p = profile::span("handle_goto_declaration");
+    let position = from_proto::file_position(&snap, params.text_document_position_params.clone())?;
+    let nav_info = match snap.analysis.goto_declaration(position)? {
+        None => return handle_goto_definition(snap, params),
+        Some(it) => it,
+    };
+    let src = FileRange { file_id: position.file_id, range: nav_info.range };
+    let res = to_proto::goto_definition_response(&snap, Some(src), nav_info.info)?;
+    Ok(Some(res))
+}
+
 pub(crate) fn handle_goto_implementation(
     snap: GlobalStateSnapshot,
     params: lsp_types::request::GotoImplementationParams,
@@ -742,23 +765,13 @@ pub(crate) fn handle_completion(
     };
     let line_index = snap.file_line_index(position.file_id)?;
 
-    let insert_replace_support =
-        snap.config.insert_replace_support().then(|| text_document_position.position);
-    let items: Vec<CompletionItem> = items
-        .into_iter()
-        .flat_map(|item| {
-            let mut new_completion_items =
-                to_proto::completion_item(insert_replace_support, &line_index, item.clone());
-
-            if completion_config.enable_imports_on_the_fly {
-                for new_item in &mut new_completion_items {
-                    fill_resolve_data(&mut new_item.data, &item, &text_document_position);
-                }
-            }
-
-            new_completion_items
-        })
-        .collect();
+    let items = to_proto::completion_items(
+        snap.config.insert_replace_support(),
+        completion_config.enable_imports_on_the_fly,
+        &line_index,
+        text_document_position.clone(),
+        items.clone(),
+    );
 
     let completion_list = lsp_types::CompletionList { is_incomplete: true, items };
     Ok(Some(completion_list.into()))
@@ -778,15 +791,12 @@ pub(crate) fn handle_completion_resolve(
         .into());
     }
 
-    let resolve_data = match original_completion
-        .data
-        .take()
-        .map(|data| serde_json::from_value::<CompletionResolveData>(data))
-        .transpose()?
-    {
-        Some(data) => data,
+    let data = match original_completion.data.take() {
+        Some(it) => it,
         None => return Ok(original_completion),
     };
+
+    let resolve_data: lsp_ext::CompletionResolveData = serde_json::from_value(data)?;
 
     let file_id = from_proto::file_id(&snap, &resolve_data.position.text_document.uri)?;
     let line_index = snap.file_line_index(file_id)?;
@@ -861,12 +871,10 @@ pub(crate) fn handle_hover(
 ) -> Result<Option<lsp_ext::Hover>> {
     let _p = profile::span("handle_hover");
     let position = from_proto::file_position(&snap, params.text_document_position_params)?;
-    let hover_config = snap.config.hover();
-    let info =
-        match snap.analysis.hover(position, hover_config.links_in_hover, hover_config.markdown)? {
-            None => return Ok(None),
-            Some(info) => info,
-        };
+    let info = match snap.analysis.hover(&snap.config.hover(), position)? {
+        None => return Ok(None),
+        Some(info) => info,
+    };
     let line_index = snap.file_line_index(position.file_id)?;
     let range = to_proto::range(&line_index, info.range);
     let hover = lsp_ext::Hover {
@@ -1125,73 +1133,72 @@ pub(crate) fn handle_code_lens(
     let file_id = from_proto::file_id(&snap, &params.text_document.uri)?;
     let cargo_target_spec = CargoTargetSpec::for_file(&snap, file_id)?;
 
-    let lenses = snap
-        .analysis
-        .annotations(
-            file_id,
-            AnnotationConfig {
-                binary_target: cargo_target_spec
-                    .map(|spec| {
-                        matches!(
-                            spec.target_kind,
-                            TargetKind::Bin | TargetKind::Example | TargetKind::Test
-                        )
-                    })
-                    .unwrap_or(false),
-                annotate_runnables: lens_config.runnable(),
-                annotate_impls: lens_config.implementations,
-                annotate_references: lens_config.refs,
-                annotate_method_references: lens_config.method_refs,
-                run: lens_config.run,
-                debug: lens_config.debug,
-            },
-        )?
-        .into_iter()
-        .map(|annotation| to_proto::code_lens(&snap, annotation).unwrap())
-        .collect();
+    let annotations = snap.analysis.annotations(
+        &AnnotationConfig {
+            binary_target: cargo_target_spec
+                .map(|spec| {
+                    matches!(
+                        spec.target_kind,
+                        TargetKind::Bin | TargetKind::Example | TargetKind::Test
+                    )
+                })
+                .unwrap_or(false),
+            annotate_runnables: lens_config.runnable(),
+            annotate_impls: lens_config.implementations,
+            annotate_references: lens_config.refs,
+            annotate_method_references: lens_config.method_refs,
+        },
+        file_id,
+    )?;
 
-    Ok(Some(lenses))
+    let mut res = Vec::new();
+    for a in annotations {
+        to_proto::code_lens(&mut res, &snap, a)?;
+    }
+
+    Ok(Some(res))
 }
 
 pub(crate) fn handle_code_lens_resolve(
     snap: GlobalStateSnapshot,
     code_lens: CodeLens,
 ) -> Result<CodeLens> {
-    let annotation = from_proto::annotation(&snap, code_lens)?;
+    let annotation = from_proto::annotation(&snap, code_lens.clone())?;
+    let annotation = snap.analysis.resolve_annotation(annotation)?;
 
-    to_proto::code_lens(&snap, snap.analysis.resolve_annotation(annotation)?)
+    let mut acc = Vec::new();
+    to_proto::code_lens(&mut acc, &snap, annotation)?;
+
+    let res = match acc.pop() {
+        Some(it) if acc.is_empty() => it,
+        _ => {
+            never!();
+            code_lens
+        }
+    };
+
+    Ok(res)
 }
 
 pub(crate) fn handle_document_highlight(
     snap: GlobalStateSnapshot,
     params: lsp_types::DocumentHighlightParams,
-) -> Result<Option<Vec<DocumentHighlight>>> {
+) -> Result<Option<Vec<lsp_types::DocumentHighlight>>> {
     let _p = profile::span("handle_document_highlight");
     let position = from_proto::file_position(&snap, params.text_document_position_params)?;
     let line_index = snap.file_line_index(position.file_id)?;
 
-    let refs = match snap
-        .analysis
-        .find_all_refs(position, Some(SearchScope::single_file(position.file_id)))?
-    {
+    let refs = match snap.analysis.highlight_related(position)? {
         None => return Ok(None),
         Some(refs) => refs,
     };
-
-    let decl = refs.declaration.filter(|decl| decl.nav.file_id == position.file_id).map(|decl| {
-        DocumentHighlight {
-            range: to_proto::range(&line_index, decl.nav.focus_or_full_range()),
-            kind: decl.access.map(to_proto::document_highlight_kind),
-        }
-    });
-
-    let file_refs = refs.references.get(&position.file_id).map_or(&[][..], Vec::as_slice);
-    let mut res = Vec::with_capacity(file_refs.len() + 1);
-    res.extend(decl);
-    res.extend(file_refs.iter().map(|&(range, access)| DocumentHighlight {
-        range: to_proto::range(&line_index, range),
-        kind: access.map(to_proto::document_highlight_kind),
-    }));
+    let res = refs
+        .into_iter()
+        .map(|ide::HighlightedRange { range, access }| lsp_types::DocumentHighlight {
+            range: to_proto::range(&line_index, range),
+            kind: access.map(to_proto::document_highlight_kind),
+        })
+        .collect();
     Ok(Some(res))
 }
 
@@ -1229,14 +1236,13 @@ pub(crate) fn publish_diagnostics(
         .map(|d| Diagnostic {
             range: to_proto::range(&line_index, d.range),
             severity: Some(to_proto::diagnostic_severity(d.severity)),
-            code: d.code.map(|d| d.as_str().to_owned()).map(NumberOrString::String),
-            code_description: d.code.and_then(|code| {
-                lsp_types::Url::parse(&format!(
+            code: Some(NumberOrString::String(d.code.as_str().to_string())),
+            code_description: Some(lsp_types::CodeDescription {
+                href: lsp_types::Url::parse(&format!(
                     "https://rust-analyzer.github.io/manual.html#{}",
-                    code.as_str()
+                    d.code.as_str()
                 ))
-                .ok()
-                .map(|href| lsp_types::CodeDescription { href })
+                .unwrap(),
             }),
             source: Some("rust-analyzer".to_string()),
             message: d.message,
@@ -1257,7 +1263,7 @@ pub(crate) fn handle_inlay_hints(
     let line_index = snap.file_line_index(file_id)?;
     Ok(snap
         .analysis
-        .inlay_hints(file_id, &snap.config.inlay_hints())?
+        .inlay_hints(&snap.config.inlay_hints(), file_id)?
         .into_iter()
         .map(|it| to_proto::inlay_hint(&line_index, it))
         .collect())
@@ -1396,7 +1402,7 @@ pub(crate) fn handle_semantic_tokens_full_delta(
 
     if let Some(prev_id) = &cached_tokens.result_id {
         if *prev_id == params.previous_result_id {
-            let delta = to_proto::semantic_token_delta(&cached_tokens, &semantic_tokens);
+            let delta = to_proto::semantic_token_delta(cached_tokens, &semantic_tokens);
             *cached_tokens = semantic_tokens;
             return Ok(Some(delta.into()));
         }
@@ -1484,7 +1490,7 @@ fn show_impl_command_link(
     snap: &GlobalStateSnapshot,
     position: &FilePosition,
 ) -> Option<lsp_ext::CommandLinkGroup> {
-    if snap.config.hover().implementations {
+    if snap.config.hover_actions().implementations {
         if let Some(nav_data) = snap.analysis.goto_implementation(*position).unwrap_or(None) {
             let uri = to_proto::url(snap, position.file_id);
             let line_index = snap.file_line_index(position.file_id).ok()?;
@@ -1510,7 +1516,7 @@ fn show_ref_command_link(
     snap: &GlobalStateSnapshot,
     position: &FilePosition,
 ) -> Option<lsp_ext::CommandLinkGroup> {
-    if snap.config.hover().implementations {
+    if snap.config.hover_actions().references {
         if let Some(ref_search_res) = snap.analysis.find_all_refs(*position, None).unwrap_or(None) {
             let uri = to_proto::url(snap, position.file_id);
             let line_index = snap.file_line_index(position.file_id).ok()?;
@@ -1540,22 +1546,22 @@ fn runnable_action_links(
     snap: &GlobalStateSnapshot,
     runnable: Runnable,
 ) -> Option<lsp_ext::CommandLinkGroup> {
-    let cargo_spec = CargoTargetSpec::for_file(&snap, runnable.nav.file_id).ok()?;
-    let hover_config = snap.config.hover();
-    if !hover_config.runnable() || should_skip_target(&runnable, cargo_spec.as_ref()) {
+    let cargo_spec = CargoTargetSpec::for_file(snap, runnable.nav.file_id).ok()?;
+    let hover_actions_config = snap.config.hover_actions();
+    if !hover_actions_config.runnable() || should_skip_target(&runnable, cargo_spec.as_ref()) {
         return None;
     }
 
-    let action: &'static _ = runnable.action();
+    let title = runnable.title();
     to_proto::runnable(snap, runnable).ok().map(|r| {
         let mut group = lsp_ext::CommandLinkGroup::default();
 
-        if hover_config.run {
-            let run_command = to_proto::command::run_single(&r, action.run_title);
+        if hover_actions_config.run {
+            let run_command = to_proto::command::run_single(&r, &title);
             group.commands.push(to_command_link(run_command, r.label.clone()));
         }
 
-        if hover_config.debug {
+        if hover_actions_config.debug {
             let dbg_command = to_proto::command::debug_single(&r);
             group.commands.push(to_command_link(dbg_command, r.label));
         }
@@ -1568,7 +1574,7 @@ fn goto_type_action_links(
     snap: &GlobalStateSnapshot,
     nav_targets: &[HoverGotoTypeData],
 ) -> Option<lsp_ext::CommandLinkGroup> {
-    if !snap.config.hover().goto_type_def || nav_targets.is_empty() {
+    if !snap.config.hover_actions().goto_type_def || nav_targets.is_empty() {
         return None;
     }
 
@@ -1588,7 +1594,7 @@ fn prepare_hover_actions(
     snap: &GlobalStateSnapshot,
     actions: &[HoverAction],
 ) -> Vec<lsp_ext::CommandLinkGroup> {
-    if snap.config.hover().none() || !snap.config.hover_actions() {
+    if snap.config.hover_actions().none() || !snap.config.experimental_hover_actions() {
         return Vec::new();
     }
 
@@ -1624,7 +1630,7 @@ fn run_rustfmt(
     text_document: TextDocumentIdentifier,
     range: Option<lsp_types::Range>,
 ) -> Result<Option<Vec<lsp_types::TextEdit>>> {
-    let file_id = from_proto::file_id(&snap, &text_document.uri)?;
+    let file_id = from_proto::file_id(snap, &text_document.uri)?;
     let file = snap.analysis.file_text(file_id)?;
     let crate_ids = snap.analysis.crate_for(file_id)?;
 
@@ -1671,7 +1677,7 @@ fn run_rustfmt(
                     .into());
                 }
 
-                let frange = from_proto::file_range(&snap, text_document, range)?;
+                let frange = from_proto::file_range(snap, text_document, range)?;
                 let start_line = line_index.index.line_col(frange.range.start()).line;
                 let end_line = line_index.index.line_col(frange.range.end()).line;
 
@@ -1751,30 +1757,4 @@ fn run_rustfmt(
     } else {
         Ok(Some(to_proto::text_edit_vec(&line_index, diff(&file, &new_text))))
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct CompletionResolveData {
-    position: lsp_types::TextDocumentPositionParams,
-    full_import_path: String,
-    imported_name: String,
-}
-
-fn fill_resolve_data(
-    resolve_data: &mut Option<serde_json::Value>,
-    item: &ide::CompletionItem,
-    position: &TextDocumentPositionParams,
-) -> Option<()> {
-    let import_edit = item.import_to_add()?;
-    let import_path = &import_edit.import.import_path;
-
-    *resolve_data = Some(
-        to_value(CompletionResolveData {
-            position: position.to_owned(),
-            full_import_path: import_path.to_string(),
-            imported_name: import_path.segments().last()?.to_string(),
-        })
-        .unwrap(),
-    );
-    Some(())
 }

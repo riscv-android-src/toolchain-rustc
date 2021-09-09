@@ -12,9 +12,9 @@ use crate::{CompletionContext, CompletionItem, CompletionItemKind, CompletionKin
 /// functions in a file have a `spam: &mut Spam` parameter, a completion with
 /// `spam: &mut Spam` insert text/label and `spam` lookup string will be
 /// suggested.
-pub(crate) fn complete_fn_param(acc: &mut Completions, ctx: &CompletionContext) {
+pub(crate) fn complete_fn_param(acc: &mut Completions, ctx: &CompletionContext) -> Option<()> {
     if !ctx.is_param {
-        return;
+        return None;
     }
 
     let mut params = FxHashMap::default();
@@ -53,21 +53,37 @@ pub(crate) fn complete_fn_param(acc: &mut Completions, ctx: &CompletionContext) 
         };
     }
 
-    params.into_iter().for_each(|(label, lookup)| {
-        let mut item = CompletionItem::new(CompletionKind::Magic, ctx.source_range(), label);
-        item.kind(CompletionItemKind::Binding).lookup_by(lookup);
-        item.add_to(acc)
-    });
+    let self_completion_items = ["self", "&self", "mut self", "&mut self"];
+    if ctx.impl_def.is_some() && me?.param_list()?.params().next().is_none() {
+        self_completion_items.iter().for_each(|self_item| {
+            add_new_item_to_acc(ctx, acc, self_item.to_string(), self_item.to_string())
+        });
+    }
+
+    params.into_iter().for_each(|(label, lookup)| add_new_item_to_acc(ctx, acc, label, lookup));
+
+    Some(())
+}
+
+fn add_new_item_to_acc(
+    ctx: &CompletionContext,
+    acc: &mut Completions,
+    label: String,
+    lookup: String,
+) {
+    let mut item = CompletionItem::new(CompletionKind::Magic, ctx.source_range(), label);
+    item.kind(CompletionItemKind::Binding).lookup_by(lookup);
+    item.add_to(acc)
 }
 
 #[cfg(test)]
 mod tests {
     use expect_test::{expect, Expect};
 
-    use crate::{test_utils::completion_list, CompletionKind};
+    use crate::{tests::filtered_completion_list, CompletionKind};
 
     fn check(ra_fixture: &str, expect: Expect) {
-        let actual = completion_list(ra_fixture, CompletionKind::Magic);
+        let actual = filtered_completion_list(ra_fixture, CompletionKind::Magic);
         expect.assert_eq(&actual);
     }
 
@@ -78,6 +94,20 @@ mod tests {
 fn foo(file_id: FileId) {}
 fn bar(file_id: FileId) {}
 fn baz(file$0) {}
+"#,
+            expect![[r#"
+                bn file_id: FileId
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_param_completion_first_param() {
+        check(
+            r#"
+fn foo(file_id: FileId) {}
+fn bar(file_id: FileId) {}
+fn baz(file$0 id: u32) {}
 "#,
             expect![[r#"
                 bn file_id: FileId
@@ -140,6 +170,28 @@ fn foo2($0) {}
 "#,
             expect![[r#"
                 bn Bar { bar }: Bar
+            "#]],
+        )
+    }
+
+    #[test]
+    fn test_param_completion_self_param() {
+        check(
+            r#"
+                struct A {}
+
+                impl A {
+                    fn foo(file_id: FileId) {}
+                    fn new($0) {
+                    }
+                }
+            "#,
+            expect![[r#"
+                bn self
+                bn &self
+                bn mut self
+                bn &mut self
+                bn file_id: FileId
             "#]],
         )
     }

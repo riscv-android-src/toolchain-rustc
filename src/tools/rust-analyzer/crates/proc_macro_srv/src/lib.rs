@@ -1,7 +1,7 @@
 //! RA Proc Macro Server
 //!
 //! This library is able to call compiled Rust custom derive dynamic libraries on arbitrary code.
-//! The general idea here is based on https://github.com/fedochet/rust-proc-macro-expander.
+//! The general idea here is based on <https://github.com/fedochet/rust-proc-macro-expander>.
 //!
 //! But we adapt it to better fit RA needs:
 //!
@@ -11,16 +11,10 @@
 //!   rustc rather than `unstable`. (Although in general ABI compatibility is still an issue)…
 #![allow(unreachable_pub)]
 
-#[allow(dead_code)]
-#[doc(hidden)]
-mod proc_macro;
-
-#[doc(hidden)]
-mod rustc_server;
-
 mod dylib;
 
-use proc_macro::bridge::client::TokenStream;
+mod abis;
+
 use proc_macro_api::{ExpansionResult, ExpansionTask, ListMacrosResult, ListMacrosTask};
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -36,7 +30,7 @@ pub(crate) struct ProcMacroSrv {
 
 impl ProcMacroSrv {
     pub fn expand(&mut self, task: &ExpansionTask) -> Result<ExpansionResult, String> {
-        let expander = self.expander(&task.lib)?;
+        let expander = self.expander(task.lib.as_ref())?;
 
         let mut prev_env = HashMap::new();
         for (k, v) in &task.env {
@@ -55,15 +49,12 @@ impl ProcMacroSrv {
 
         match result {
             Ok(expansion) => Ok(ExpansionResult { expansion }),
-            Err(msg) => {
-                let msg = msg.as_str().unwrap_or("<unknown error>");
-                Err(format!("proc-macro panicked: {}", msg))
-            }
+            Err(msg) => Err(format!("proc-macro panicked: {}", msg)),
         }
     }
 
     pub fn list_macros(&mut self, task: &ListMacrosTask) -> Result<ListMacrosResult, String> {
-        let expander = self.expander(&task.lib)?;
+        let expander = self.expander(task.lib.as_ref())?;
         Ok(ListMacrosResult { macros: expander.list_macros() })
     }
 

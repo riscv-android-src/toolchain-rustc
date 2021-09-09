@@ -16,7 +16,6 @@ use crate::interpret::{
 #[derive(Clone, Debug)]
 pub enum ConstEvalErrKind {
     NeedsRfc(String),
-    PtrToIntCast,
     ConstAccessesStatic,
     ModifiedGlobal,
     AssertFailure(AssertKind<ConstInt>),
@@ -48,12 +47,6 @@ impl fmt::Display for ConstEvalErrKind {
         match *self {
             NeedsRfc(ref msg) => {
                 write!(f, "\"{}\" needs an rfc before being allowed inside constants", msg)
-            }
-            PtrToIntCast => {
-                write!(
-                    f,
-                    "cannot cast pointer to integer because it was not created by cast from integer"
-                )
             }
             ConstAccessesStatic => write!(f, "constant accesses static"),
             ModifiedGlobal => {
@@ -157,7 +150,7 @@ impl<'tcx> ConstEvalErr<'tcx> {
         tcx: TyCtxtAt<'tcx>,
         message: &str,
         emit: impl FnOnce(DiagnosticBuilder<'_>),
-        mut lint_root: Option<hir::HirId>,
+        lint_root: Option<hir::HirId>,
     ) -> ErrorHandled {
         let finish = |mut err: DiagnosticBuilder<'_>, span_msg: Option<String>| {
             trace!("reporting const eval failure at {:?}", self.span);
@@ -193,12 +186,6 @@ impl<'tcx> ConstEvalErr<'tcx> {
             }
             _ => {}
         };
-
-        // If we have a 'hard error', then set `lint_root` to `None` so that we don't
-        // emit a lint.
-        if matches!(&self.error, InterpError::MachineStop(err) if err.is_hard_err()) {
-            lint_root = None;
-        }
 
         let err_msg = self.error.to_string();
 

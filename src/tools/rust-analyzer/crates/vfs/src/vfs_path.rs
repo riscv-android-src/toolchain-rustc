@@ -121,6 +121,7 @@ impl VfsPath {
                 #[cfg(windows)]
                 {
                     use windows_paths::Encode;
+                    let path: &std::path::Path = path.as_ref();
                     let components = path.components();
                     let mut add_sep = false;
                     for component in components {
@@ -389,7 +390,7 @@ impl VirtualPath {
 
             match (file_stem, extension) {
                 (None, None) => None,
-                (None, Some(_)) | (Some(""), Some(_)) => Some((file_name, None)),
+                (None | Some(""), Some(_)) => Some((file_name, None)),
                 (Some(file_stem), extension) => Some((file_stem, extension)),
             }
         }

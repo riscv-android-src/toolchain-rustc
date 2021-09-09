@@ -12,12 +12,12 @@ use curl_sys;
 use libc::{self, c_char, c_double, c_int, c_long, c_ulong, c_void, size_t};
 use socket2::Socket;
 
-use easy::form;
-use easy::list;
-use easy::windows;
-use easy::{Form, List};
-use panic;
-use Error;
+use crate::easy::form;
+use crate::easy::list;
+use crate::easy::windows;
+use crate::easy::{Form, List};
+use crate::panic;
+use crate::Error;
 
 /// A trait for the various callbacks used by libcurl to invoke user code.
 ///
@@ -581,7 +581,7 @@ impl<H: Handler> Easy2<H> {
     /// `perform` and need to be reset manually (or via the `reset` method) if
     /// this is not desired.
     pub fn new(handler: H) -> Easy2<H> {
-        ::init();
+        crate::init();
         unsafe {
             let handle = curl_sys::curl_easy_init();
             assert!(!handle.is_null());
@@ -880,12 +880,13 @@ impl<H> Easy2<H> {
         self.setopt_ptr(curl_sys::CURLOPT_CONNECT_TO, ptr as *const _)
     }
 
-    // /// Indicates whether sequences of `/../` and `/./` will be squashed or not.
-    // ///
-    // /// By default this option is `false` and corresponds to
-    // /// `CURLOPT_PATH_AS_IS`.
-    // pub fn path_as_is(&mut self, as_is: bool) -> Result<(), Error> {
-    // }
+    /// Indicates whether sequences of `/../` and `/./` will be squashed or not.
+    ///
+    /// By default this option is `false` and corresponds to
+    /// `CURLOPT_PATH_AS_IS`.
+    pub fn path_as_is(&mut self, as_is: bool) -> Result<(), Error> {
+        self.setopt_long(curl_sys::CURLOPT_PATH_AS_IS, as_is as c_long)
+    }
 
     /// Provide the URL of a proxy to use.
     ///
@@ -2228,23 +2229,24 @@ impl<H> Easy2<H> {
         self.setopt_long(curl_sys::CURLOPT_CERTINFO, enable as c_long)
     }
 
-    // /// Set pinned public key.
-    // ///
-    // /// Pass a pointer to a zero terminated string as parameter. The string can
-    // /// be the file name of your pinned public key. The file format expected is
-    // /// "PEM" or "DER". The string can also be any number of base64 encoded
-    // /// sha256 hashes preceded by "sha256//" and separated by ";"
-    // ///
-    // /// When negotiating a TLS or SSL connection, the server sends a certificate
-    // /// indicating its identity. A public key is extracted from this certificate
-    // /// and if it does not exactly match the public key provided to this option,
-    // /// curl will abort the connection before sending or receiving any data.
-    // ///
-    // /// By default this option is not set and corresponds to
-    // /// `CURLOPT_PINNEDPUBLICKEY`.
-    // pub fn pinned_public_key(&mut self, enable: bool) -> Result<(), Error> {
-    //     self.setopt_long(curl_sys::CURLOPT_CERTINFO, enable as c_long)
-    // }
+    /// Set pinned public key.
+    ///
+    /// Pass a pointer to a zero terminated string as parameter. The string can
+    /// be the file name of your pinned public key. The file format expected is
+    /// "PEM" or "DER". The string can also be any number of base64 encoded
+    /// sha256 hashes preceded by "sha256//" and separated by ";"
+    ///
+    /// When negotiating a TLS or SSL connection, the server sends a certificate
+    /// indicating its identity. A public key is extracted from this certificate
+    /// and if it does not exactly match the public key provided to this option,
+    /// curl will abort the connection before sending or receiving any data.
+    ///
+    /// By default this option is not set and corresponds to
+    /// `CURLOPT_PINNEDPUBLICKEY`.
+    pub fn pinned_public_key(&mut self, pubkey: &str) -> Result<(), Error> {
+        let key = CString::new(pubkey)?;
+        self.setopt_str(curl_sys::CURLOPT_PINNEDPUBLICKEY, &key)
+    }
 
     /// Specify a source for random data
     ///

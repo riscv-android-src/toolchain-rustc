@@ -669,39 +669,6 @@ warning: unused manifest key: target.foo.bar
         .file(
             "Cargo.toml",
             r#"
-               cargo-features = ["named-profiles"]
-
-               [package]
-               name = "foo"
-               version = "0.1.0"
-               authors = []
-
-               [profile.debug]
-               debug = 1
-               inherits = "dev"
-            "#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("build -Z named-profiles")
-        .masquerade_as_nightly_cargo()
-        .with_stderr(
-            "\
-warning: use `[profile.dev]` to configure debug builds
-[..]
-[..]",
-        )
-        .run();
-
-    p.cargo("build -Z named-profiles")
-        .masquerade_as_nightly_cargo()
-        .run();
-
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
                 [project]
 
                 name = "foo"
@@ -796,10 +763,14 @@ fn empty_dependencies() {
     Package::new("bar", "0.0.1").publish();
 
     p.cargo("build")
-        .with_stderr_contains(
+        .with_status(101)
+        .with_stderr(
             "\
-warning: dependency (bar) specified without providing a local path, Git repository, or version \
-to use. This will be considered an error in future versions
+[ERROR] failed to parse manifest at `[..]`
+
+Caused by:
+  dependency (bar) specified without providing a local path, Git repository, or version \
+to use.
 ",
         )
         .run();
@@ -941,7 +912,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update registry `https://[..]`
+  Unable to update registry `crates-io`
 
 Caused by:
   could not find a configured source with the name `bar` \
@@ -987,7 +958,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update registry `https://[..]`
+  Unable to update registry `crates-io`
 
 Caused by:
   detected a cycle of `replace-with` sources, [..]
@@ -1035,7 +1006,7 @@ Caused by:
   failed to load source for dependency `bar`
 
 Caused by:
-  Unable to update registry `https://[..]`
+  Unable to update registry `crates-io`
 
 Caused by:
   detected a cycle of `replace-with` sources, the source `crates-io` is \
@@ -1108,11 +1079,12 @@ fn both_git_and_path_specified() {
 
     foo.cargo("build -v")
         .with_status(101)
-        .with_stderr_contains(
+        .with_stderr(
             "\
-[WARNING] dependency (bar) specification is ambiguous. \
-Only one of `git` or `path` is allowed. \
-This will be considered an error in future versions
+error: failed to parse manifest at `[..]`
+
+Caused by:
+  dependency (bar) specification is ambiguous. Only one of `git` or `path` is allowed.
 ",
         )
         .run();
@@ -1178,9 +1150,13 @@ fn ignored_git_revision() {
 
     foo.cargo("build -v")
         .with_status(101)
-        .with_stderr_contains(
-            "[WARNING] key `branch` is ignored for dependency (bar). \
-             This will be considered an error in future versions",
+        .with_stderr(
+            "\
+error: failed to parse manifest at `[..]`
+
+Caused by:
+  key `branch` is ignored for dependency (bar).
+",
         )
         .run();
 }
@@ -1391,16 +1367,16 @@ fn bad_target_cfg() {
         .with_stderr(
             "\
 [ERROR] error in [..]/foo/.cargo/config: \
-could not load config key `target.\"cfg(not(target_os = /\"none/\"))\".runner`
+could not load config key `target.\"cfg(not(target_os = \\\"none\\\"))\".runner`
 
 Caused by:
   error in [..]/foo/.cargo/config: \
-  could not load config key `target.\"cfg(not(target_os = /\"none/\"))\".runner`
+  could not load config key `target.\"cfg(not(target_os = \\\"none\\\"))\".runner`
 
 Caused by:
-  invalid configuration for key `target.\"cfg(not(target_os = /\"none/\"))\".runner`
+  invalid configuration for key `target.\"cfg(not(target_os = \\\"none\\\"))\".runner`
   expected a string or array of strings, but found a boolean for \
-  `target.\"cfg(not(target_os = /\"none/\"))\".runner` in [..]/foo/.cargo/config
+  `target.\"cfg(not(target_os = \\\"none\\\"))\".runner` in [..]/foo/.cargo/config
 ",
         )
         .run();
@@ -1469,7 +1445,7 @@ fn redefined_sources() {
         .with_status(101)
         .with_stderr(
             "\
-[ERROR] source `foo` defines source registry `https://github.com/rust-lang/crates.io-index`, \
+[ERROR] source `foo` defines source registry `crates-io`, \
     but that source is already defined by `crates-io`
 note: Sources are not allowed to be defined multiple times.
 ",

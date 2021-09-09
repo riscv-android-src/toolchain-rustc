@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
-Copyright (c) 2019, Microsoft Research, Daan Leijen
+Copyright (c) 2019-2021, Microsoft Research, Daan Leijen
 This is free software; you can redistribute it and/or modify it under the
 terms of the MIT license. A copy of the license can be found in the file
 "LICENSE" at the root of this distribution.
@@ -244,7 +244,7 @@ static bool os_random_buf(void* buf, size_t buf_len) {
 #endif
 
 #if defined(_WIN32)
-#include <Windows.h>
+#include <windows.h>
 #elif defined(__APPLE__)
 #include <mach/mach_time.h>
 #else

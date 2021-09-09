@@ -232,14 +232,11 @@ impl Config {
             })
             .collect();
 
-        let upper_case_env = if cfg!(windows) {
-            HashMap::new()
-        } else {
-            env.clone()
-                .into_iter()
-                .map(|(k, _)| (k.to_uppercase().replace("-", "_"), k))
-                .collect()
-        };
+        let upper_case_env = env
+            .clone()
+            .into_iter()
+            .map(|(k, _)| (k.to_uppercase().replace("-", "_"), k))
+            .collect();
 
         let cache_rustc_info = match env.get("CARGO_CACHE_RUSTC_INFO") {
             Some(cache) => cache != "0",
@@ -696,12 +693,6 @@ impl Config {
     }
 
     fn check_environment_key_case_mismatch(&self, key: &ConfigKey) {
-        if cfg!(windows) {
-            // In the case of windows the check for case mismatch in keys can be skipped
-            // as windows already converts its environment keys into the desired format.
-            return;
-        }
-
         if let Some(env_key) = self.upper_case_env.get(key.as_env_key()) {
             let _ = self.shell().warn(format!(
                 "Environment variables are expected to use uppercase letters and underscores, \
@@ -732,7 +723,7 @@ impl Config {
         })
     }
 
-    fn string_to_path(&self, value: String, definition: &Definition) -> PathBuf {
+    fn string_to_path(&self, value: &str, definition: &Definition) -> PathBuf {
         let is_path = value.contains('/') || (cfg!(windows) && value.contains('\\'));
         if is_path {
             definition.root(self).join(value)
@@ -1391,7 +1382,11 @@ impl Config {
 
     /// Looks for a path for `tool` in an environment variable or the given config, and returns
     /// `None` if it's not present.
-    fn maybe_get_tool(&self, tool: &str, from_config: &Option<PathBuf>) -> Option<PathBuf> {
+    fn maybe_get_tool(
+        &self,
+        tool: &str,
+        from_config: &Option<ConfigRelativePath>,
+    ) -> Option<PathBuf> {
         let var = tool.to_uppercase();
 
         match env::var_os(&var) {
@@ -1408,13 +1403,13 @@ impl Config {
                 Some(path)
             }
 
-            None => from_config.clone(),
+            None => from_config.as_ref().map(|p| p.resolve_program(self)),
         }
     }
 
     /// Looks for a path for `tool` in an environment variable or config path, defaulting to `tool`
     /// as a path.
-    fn get_tool(&self, tool: &str, from_config: &Option<PathBuf>) -> PathBuf {
+    fn get_tool(&self, tool: &str, from_config: &Option<ConfigRelativePath>) -> PathBuf {
         self.maybe_get_tool(tool, from_config)
             .unwrap_or_else(|| PathBuf::from(tool))
     }
@@ -2084,10 +2079,10 @@ pub struct CargoBuildConfig {
     pub jobs: Option<u32>,
     pub rustflags: Option<StringList>,
     pub rustdocflags: Option<StringList>,
-    pub rustc_wrapper: Option<PathBuf>,
-    pub rustc_workspace_wrapper: Option<PathBuf>,
-    pub rustc: Option<PathBuf>,
-    pub rustdoc: Option<PathBuf>,
+    pub rustc_wrapper: Option<ConfigRelativePath>,
+    pub rustc_workspace_wrapper: Option<ConfigRelativePath>,
+    pub rustc: Option<ConfigRelativePath>,
+    pub rustdoc: Option<ConfigRelativePath>,
     pub out_dir: Option<ConfigRelativePath>,
 }
 

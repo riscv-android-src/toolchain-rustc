@@ -30,6 +30,8 @@ pub mod args;
 pub use self::args::*;
 pub mod emit;
 pub use self::emit::*;
+use crate::isa::aarch64::abi::AArch64MachineDeps;
+
 pub mod unwind;
 
 #[cfg(test)]
@@ -52,6 +54,8 @@ pub enum ALUOp {
     OrrNot64,
     And32,
     And64,
+    AndS32,
+    AndS64,
     AndNot32,
     AndNot64,
     /// XOR (AArch64 calls this "EOR")
@@ -84,6 +88,18 @@ pub enum ALUOp {
     Asr64,
     Lsl32,
     Lsl64,
+    /// Add with carry
+    Adc32,
+    Adc64,
+    /// Add with carry, settings flags
+    AdcS32,
+    AdcS64,
+    /// Subtract with carry
+    Sbc32,
+    Sbc64,
+    /// Subtract with carry, settings flags
+    SbcS32,
+    SbcS64,
 }
 
 /// An ALU operation with three arguments.
@@ -295,6 +311,8 @@ pub enum VecALUOp {
     Smull,
     /// Signed multiply long (high halves)
     Smull2,
+    /// Signed saturating rounding doubling multiply returning high half
+    Sqrdmulh,
 }
 
 /// A Vector miscellaneous operation with two registers.
@@ -314,8 +332,6 @@ pub enum VecMisc2 {
     Fsqrt,
     /// Reverse elements in 64-bit doublewords
     Rev64,
-    /// Shift left long (by element size)
-    Shll,
     /// Floating-point convert to signed integer, rounding toward zero
     Fcvtzs,
     /// Floating-point convert to unsigned integer, rounding toward zero
@@ -338,15 +354,48 @@ pub enum VecMisc2 {
     Cmeq0,
 }
 
-/// A Vector narrowing operation with two registers.
+/// A vector widening operation with one argument.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum VecMiscNarrowOp {
-    /// Extract Narrow
-    Xtn,
-    /// Signed saturating extract narrow
-    Sqxtn,
-    /// Signed saturating extract unsigned narrow
-    Sqxtun,
+pub enum VecRRLongOp {
+    /// Floating-point convert to higher precision long, 16-bit elements
+    Fcvtl16,
+    /// Floating-point convert to higher precision long, 32-bit elements
+    Fcvtl32,
+    /// Shift left long (by element size), 8-bit elements
+    Shll8,
+    /// Shift left long (by element size), 16-bit elements
+    Shll16,
+    /// Shift left long (by element size), 32-bit elements
+    Shll32,
+}
+
+/// A vector narrowing operation with one argument.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum VecRRNarrowOp {
+    /// Extract narrow, 16-bit elements
+    Xtn16,
+    /// Extract narrow, 32-bit elements
+    Xtn32,
+    /// Extract narrow, 64-bit elements
+    Xtn64,
+    /// Signed saturating extract narrow, 16-bit elements
+    Sqxtn16,
+    /// Signed saturating extract narrow, 32-bit elements
+    Sqxtn32,
+    /// Signed saturating extract narrow, 64-bit elements
+    Sqxtn64,
+    /// Signed saturating extract unsigned narrow, 16-bit elements
+    Sqxtun16,
+    /// Signed saturating extract unsigned narrow, 32-bit elements
+    Sqxtun32,
+    /// Signed saturating extract unsigned narrow, 64-bit elements
+    Sqxtun64,
+    /// Unsigned saturating extract narrow, 16-bit elements
+    Uqxtn16,
+    /// Unsigned saturating extract narrow, 32-bit elements
+    Uqxtn32,
+    /// Unsigned saturating extract narrow, 64-bit elements
+    Uqxtn64,
 }
 
 /// A vector operation on a pair of elements with one register.
@@ -1011,12 +1060,19 @@ pub enum Inst {
         size: VectorSize,
     },
 
-    /// Vector narrowing operation.
-    VecMiscNarrow {
-        op: VecMiscNarrowOp,
+    /// Vector widening operation.
+    VecRRLong {
+        op: VecRRLongOp,
         rd: Writable<Reg>,
         rn: Reg,
-        size: VectorSize,
+        high_half: bool,
+    },
+
+    /// Vector narrowing operation.
+    VecRRNarrow {
+        op: VecRRNarrowOp,
+        rd: Writable<Reg>,
+        rn: Reg,
         high_half: bool,
     },
 
@@ -1262,6 +1318,11 @@ pub enum Inst {
         needed_space: CodeOffset,
     },
 
+    /// A call to the `ElfTlsGetAddr` libcall. Returns address of TLS symbol in x0.
+    ElfTlsGetAddr {
+        symbol: ExternalName,
+    },
+
     /// A definition of a value label.
     ValueLabelMarker {
         reg: Reg,
@@ -1363,6 +1424,23 @@ impl Inst {
 
             insts
         }
+    }
+
+    /// Create instructions that load a 128-bit constant.
+    pub fn load_constant128(to_regs: ValueRegs<Writable<Reg>>, value: u128) -> SmallVec<[Inst; 4]> {
+        assert_eq!(to_regs.len(), 2, "Expected to load i128 into two registers");
+
+        let lower = value as u64;
+        let upper = (value >> 64) as u64;
+
+        let lower_reg = to_regs.regs()[0];
+        let upper_reg = to_regs.regs()[1];
+
+        let mut load_ins = Inst::load_constant(lower_reg, lower);
+        let load_upper = Inst::load_constant(upper_reg, upper);
+
+        load_ins.extend(load_upper.into_iter());
+        load_ins
     }
 
     /// Create instructions that load a 32-bit floating-point constant.
@@ -2033,7 +2111,11 @@ fn aarch64_get_regs(inst: &Inst, collector: &mut RegUsageCollector) {
             collector.add_mod(rd);
             collector.add_use(rn);
         }
-        &Inst::VecMiscNarrow {
+        &Inst::VecRRLong { rd, rn, .. } => {
+            collector.add_def(rd);
+            collector.add_use(rn);
+        }
+        &Inst::VecRRNarrow {
             rd, rn, high_half, ..
         } => {
             collector.add_use(rn);
@@ -2118,6 +2200,12 @@ fn aarch64_get_regs(inst: &Inst, collector: &mut RegUsageCollector) {
         &Inst::VirtualSPOffsetAdj { .. } => {}
         &Inst::ValueLabelMarker { reg, .. } => {
             collector.add_use(reg);
+        }
+
+        &Inst::ElfTlsGetAddr { .. } => {
+            for reg in AArch64MachineDeps::get_regs_clobbered_by_call(CallConv::SystemV) {
+                collector.add_def(reg);
+            }
         }
         &Inst::Unwind { .. } => {}
         &Inst::EmitIsland { .. } => {}
@@ -2822,7 +2910,15 @@ fn aarch64_map_regs<RUM: RegUsageMapper>(inst: &mut Inst, mapper: &RUM) {
             map_mod(mapper, rd);
             map_use(mapper, rn);
         }
-        &mut Inst::VecMiscNarrow {
+        &mut Inst::VecRRLong {
+            ref mut rd,
+            ref mut rn,
+            ..
+        } => {
+            map_def(mapper, rd);
+            map_use(mapper, rn);
+        }
+        &mut Inst::VecRRNarrow {
             ref mut rd,
             ref mut rn,
             high_half,
@@ -2928,6 +3024,7 @@ fn aarch64_map_regs<RUM: RegUsageMapper>(inst: &mut Inst, mapper: &RUM) {
         }
         &mut Inst::VirtualSPOffsetAdj { .. } => {}
         &mut Inst::EmitIsland { .. } => {}
+        &mut Inst::ElfTlsGetAddr { .. } => {}
         &mut Inst::ValueLabelMarker { ref mut reg, .. } => {
             map_use(mapper, reg);
         }
@@ -3033,30 +3130,15 @@ impl MachInst for Inst {
         ty: Type,
         alloc_tmp: F,
     ) -> SmallVec<[Inst; 4]> {
-        let to_reg = to_regs
-            .only_reg()
-            .expect("multi-reg values not supported yet");
-        let value = value as u64;
-        if ty == F64 {
-            Inst::load_fp_constant64(to_reg, value, alloc_tmp)
-        } else if ty == F32 {
-            Inst::load_fp_constant32(to_reg, value as u32, alloc_tmp)
-        } else {
-            // Must be an integer type.
-            debug_assert!(
-                ty == B1
-                    || ty == I8
-                    || ty == B8
-                    || ty == I16
-                    || ty == B16
-                    || ty == I32
-                    || ty == B32
-                    || ty == I64
-                    || ty == B64
-                    || ty == R32
-                    || ty == R64
-            );
-            Inst::load_constant(to_reg, value)
+        let to_reg = to_regs.only_reg();
+        match ty {
+            F64 => Inst::load_fp_constant64(to_reg.unwrap(), value as u64, alloc_tmp),
+            F32 => Inst::load_fp_constant32(to_reg.unwrap(), value as u32, alloc_tmp),
+            B1 | B8 | B16 | B32 | B64 | I8 | I16 | I32 | I64 | R32 | R64 => {
+                Inst::load_constant(to_reg.unwrap(), value as u64)
+            }
+            I128 => Inst::load_constant128(to_regs, value),
+            _ => panic!("Cannot generate constant for type: {}", ty),
         }
     }
 
@@ -3178,6 +3260,8 @@ impl Inst {
                 ALUOp::Orr64 => ("orr", OperandSize::Size64),
                 ALUOp::And32 => ("and", OperandSize::Size32),
                 ALUOp::And64 => ("and", OperandSize::Size64),
+                ALUOp::AndS32 => ("ands", OperandSize::Size32),
+                ALUOp::AndS64 => ("ands", OperandSize::Size64),
                 ALUOp::Eor32 => ("eor", OperandSize::Size32),
                 ALUOp::Eor64 => ("eor", OperandSize::Size64),
                 ALUOp::AddS32 => ("adds", OperandSize::Size32),
@@ -3202,6 +3286,14 @@ impl Inst {
                 ALUOp::Asr64 => ("asr", OperandSize::Size64),
                 ALUOp::Lsl32 => ("lsl", OperandSize::Size32),
                 ALUOp::Lsl64 => ("lsl", OperandSize::Size64),
+                ALUOp::Adc32 => ("adc", OperandSize::Size32),
+                ALUOp::Adc64 => ("adc", OperandSize::Size64),
+                ALUOp::AdcS32 => ("adcs", OperandSize::Size32),
+                ALUOp::AdcS64 => ("adcs", OperandSize::Size64),
+                ALUOp::Sbc32 => ("sbc", OperandSize::Size32),
+                ALUOp::Sbc64 => ("sbc", OperandSize::Size64),
+                ALUOp::SbcS32 => ("sbcs", OperandSize::Size32),
+                ALUOp::SbcS64 => ("sbcs", OperandSize::Size64),
             }
         }
 
@@ -3859,29 +3951,132 @@ impl Inst {
                 let rn = show_vreg_element(rn, mb_rru, src_idx, size);
                 format!("mov {}, {}", rd, rn)
             }
-            &Inst::VecMiscNarrow {
+            &Inst::VecRRLong {
                 op,
                 rd,
                 rn,
-                size,
                 high_half,
             } => {
-                let dest_size = if high_half {
-                    assert!(size.is_128bits());
-                    size
-                } else {
-                    size.halve()
+                let (op, rd_size, size, suffix) = match (op, high_half) {
+                    (VecRRLongOp::Fcvtl16, false) => {
+                        ("fcvtl", VectorSize::Size32x4, VectorSize::Size16x4, "")
+                    }
+                    (VecRRLongOp::Fcvtl16, true) => {
+                        ("fcvtl2", VectorSize::Size32x4, VectorSize::Size16x8, "")
+                    }
+                    (VecRRLongOp::Fcvtl32, false) => {
+                        ("fcvtl", VectorSize::Size64x2, VectorSize::Size32x2, "")
+                    }
+                    (VecRRLongOp::Fcvtl32, true) => {
+                        ("fcvtl2", VectorSize::Size64x2, VectorSize::Size32x4, "")
+                    }
+                    (VecRRLongOp::Shll8, false) => {
+                        ("shll", VectorSize::Size16x8, VectorSize::Size8x8, ", #8")
+                    }
+                    (VecRRLongOp::Shll8, true) => {
+                        ("shll2", VectorSize::Size16x8, VectorSize::Size8x16, ", #8")
+                    }
+                    (VecRRLongOp::Shll16, false) => {
+                        ("shll", VectorSize::Size32x4, VectorSize::Size16x4, ", #16")
+                    }
+                    (VecRRLongOp::Shll16, true) => {
+                        ("shll2", VectorSize::Size32x4, VectorSize::Size16x8, ", #16")
+                    }
+                    (VecRRLongOp::Shll32, false) => {
+                        ("shll", VectorSize::Size64x2, VectorSize::Size32x2, ", #32")
+                    }
+                    (VecRRLongOp::Shll32, true) => {
+                        ("shll2", VectorSize::Size64x2, VectorSize::Size32x4, ", #32")
+                    }
                 };
-                let rd = show_vreg_vector(rd.to_reg(), mb_rru, dest_size);
-                let rn = show_vreg_vector(rn, mb_rru, size.widen());
-                let op = match (op, high_half) {
-                    (VecMiscNarrowOp::Xtn, false) => "xtn",
-                    (VecMiscNarrowOp::Xtn, true) => "xtn2",
-                    (VecMiscNarrowOp::Sqxtn, false) => "sqxtn",
-                    (VecMiscNarrowOp::Sqxtn, true) => "sqxtn2",
-                    (VecMiscNarrowOp::Sqxtun, false) => "sqxtun",
-                    (VecMiscNarrowOp::Sqxtun, true) => "sqxtun2",
+                let rd = show_vreg_vector(rd.to_reg(), mb_rru, rd_size);
+                let rn = show_vreg_vector(rn, mb_rru, size);
+
+                format!("{} {}, {}{}", op, rd, rn, suffix)
+            }
+            &Inst::VecRRNarrow {
+                op,
+                rd,
+                rn,
+                high_half,
+            } => {
+                let (op, rd_size, size) = match (op, high_half) {
+                    (VecRRNarrowOp::Xtn16, false) => {
+                        ("xtn", VectorSize::Size8x8, VectorSize::Size16x8)
+                    }
+                    (VecRRNarrowOp::Xtn16, true) => {
+                        ("xtn2", VectorSize::Size8x16, VectorSize::Size16x8)
+                    }
+                    (VecRRNarrowOp::Xtn32, false) => {
+                        ("xtn", VectorSize::Size16x4, VectorSize::Size32x4)
+                    }
+                    (VecRRNarrowOp::Xtn32, true) => {
+                        ("xtn2", VectorSize::Size16x8, VectorSize::Size32x4)
+                    }
+                    (VecRRNarrowOp::Xtn64, false) => {
+                        ("xtn", VectorSize::Size32x2, VectorSize::Size64x2)
+                    }
+                    (VecRRNarrowOp::Xtn64, true) => {
+                        ("xtn2", VectorSize::Size32x4, VectorSize::Size64x2)
+                    }
+                    (VecRRNarrowOp::Sqxtn16, false) => {
+                        ("sqxtn", VectorSize::Size8x8, VectorSize::Size16x8)
+                    }
+                    (VecRRNarrowOp::Sqxtn16, true) => {
+                        ("sqxtn2", VectorSize::Size8x16, VectorSize::Size16x8)
+                    }
+                    (VecRRNarrowOp::Sqxtn32, false) => {
+                        ("sqxtn", VectorSize::Size16x4, VectorSize::Size32x4)
+                    }
+                    (VecRRNarrowOp::Sqxtn32, true) => {
+                        ("sqxtn2", VectorSize::Size16x8, VectorSize::Size32x4)
+                    }
+                    (VecRRNarrowOp::Sqxtn64, false) => {
+                        ("sqxtn", VectorSize::Size32x2, VectorSize::Size64x2)
+                    }
+                    (VecRRNarrowOp::Sqxtn64, true) => {
+                        ("sqxtn2", VectorSize::Size32x4, VectorSize::Size64x2)
+                    }
+                    (VecRRNarrowOp::Sqxtun16, false) => {
+                        ("sqxtun", VectorSize::Size8x8, VectorSize::Size16x8)
+                    }
+                    (VecRRNarrowOp::Sqxtun16, true) => {
+                        ("sqxtun2", VectorSize::Size8x16, VectorSize::Size16x8)
+                    }
+                    (VecRRNarrowOp::Sqxtun32, false) => {
+                        ("sqxtun", VectorSize::Size16x4, VectorSize::Size32x4)
+                    }
+                    (VecRRNarrowOp::Sqxtun32, true) => {
+                        ("sqxtun2", VectorSize::Size16x8, VectorSize::Size32x4)
+                    }
+                    (VecRRNarrowOp::Sqxtun64, false) => {
+                        ("sqxtun", VectorSize::Size32x2, VectorSize::Size64x2)
+                    }
+                    (VecRRNarrowOp::Sqxtun64, true) => {
+                        ("sqxtun2", VectorSize::Size32x4, VectorSize::Size64x2)
+                    }
+                    (VecRRNarrowOp::Uqxtn16, false) => {
+                        ("uqxtn", VectorSize::Size8x8, VectorSize::Size16x8)
+                    }
+                    (VecRRNarrowOp::Uqxtn16, true) => {
+                        ("uqxtn2", VectorSize::Size8x16, VectorSize::Size16x8)
+                    }
+                    (VecRRNarrowOp::Uqxtn32, false) => {
+                        ("uqxtn", VectorSize::Size16x4, VectorSize::Size32x4)
+                    }
+                    (VecRRNarrowOp::Uqxtn32, true) => {
+                        ("uqxtn2", VectorSize::Size16x8, VectorSize::Size32x4)
+                    }
+                    (VecRRNarrowOp::Uqxtn64, false) => {
+                        ("uqxtn", VectorSize::Size32x2, VectorSize::Size64x2)
+                    }
+                    (VecRRNarrowOp::Uqxtn64, true) => {
+                        ("uqxtn2", VectorSize::Size32x4, VectorSize::Size64x2)
+                    }
                 };
+                let rd = show_vreg_vector(rd.to_reg(), mb_rru, rd_size);
+                let rn = show_vreg_vector(rn, mb_rru, size);
+
                 format!("{} {}, {}", op, rd, rn)
             }
             &Inst::VecRRPair { op, rd, rn } => {
@@ -3940,6 +4135,7 @@ impl Inst {
                     VecALUOp::Zip1 => ("zip1", size),
                     VecALUOp::Smull => ("smull", size),
                     VecALUOp::Smull2 => ("smull2", size),
+                    VecALUOp::Sqrdmulh => ("sqrdmulh", size),
                 };
                 let rd_size = match alu_op {
                     VecALUOp::Umlal | VecALUOp::Smull | VecALUOp::Smull2 => size.widen(),
@@ -3956,45 +4152,34 @@ impl Inst {
                 format!("{} {}, {}, {}", op, rd, rn, rm)
             }
             &Inst::VecMisc { op, rd, rn, size } => {
-                let (op, rd_size, size, suffix) = match op {
-                    VecMisc2::Not => {
-                        let size = if size.is_128bits() {
+                let (op, size, suffix) = match op {
+                    VecMisc2::Not => (
+                        "mvn",
+                        if size.is_128bits() {
                             VectorSize::Size8x16
                         } else {
                             VectorSize::Size8x8
-                        };
-
-                        ("mvn", size, size, "")
-                    }
-                    VecMisc2::Neg => ("neg", size, size, ""),
-                    VecMisc2::Abs => ("abs", size, size, ""),
-                    VecMisc2::Fabs => ("fabs", size, size, ""),
-                    VecMisc2::Fneg => ("fneg", size, size, ""),
-                    VecMisc2::Fsqrt => ("fsqrt", size, size, ""),
-                    VecMisc2::Rev64 => ("rev64", size, size, ""),
-                    VecMisc2::Shll => (
-                        "shll",
-                        size.widen(),
-                        size,
-                        match size {
-                            VectorSize::Size8x8 => ", #8",
-                            VectorSize::Size16x4 => ", #16",
-                            VectorSize::Size32x2 => ", #32",
-                            _ => panic!("Unexpected vector size: {:?}", size),
                         },
+                        "",
                     ),
-                    VecMisc2::Fcvtzs => ("fcvtzs", size, size, ""),
-                    VecMisc2::Fcvtzu => ("fcvtzu", size, size, ""),
-                    VecMisc2::Scvtf => ("scvtf", size, size, ""),
-                    VecMisc2::Ucvtf => ("ucvtf", size, size, ""),
-                    VecMisc2::Frintn => ("frintn", size, size, ""),
-                    VecMisc2::Frintz => ("frintz", size, size, ""),
-                    VecMisc2::Frintm => ("frintm", size, size, ""),
-                    VecMisc2::Frintp => ("frintp", size, size, ""),
-                    VecMisc2::Cnt => ("cnt", size, size, ""),
-                    VecMisc2::Cmeq0 => ("cmeq", size, size, ", #0"),
+                    VecMisc2::Neg => ("neg", size, ""),
+                    VecMisc2::Abs => ("abs", size, ""),
+                    VecMisc2::Fabs => ("fabs", size, ""),
+                    VecMisc2::Fneg => ("fneg", size, ""),
+                    VecMisc2::Fsqrt => ("fsqrt", size, ""),
+                    VecMisc2::Rev64 => ("rev64", size, ""),
+                    VecMisc2::Fcvtzs => ("fcvtzs", size, ""),
+                    VecMisc2::Fcvtzu => ("fcvtzu", size, ""),
+                    VecMisc2::Scvtf => ("scvtf", size, ""),
+                    VecMisc2::Ucvtf => ("ucvtf", size, ""),
+                    VecMisc2::Frintn => ("frintn", size, ""),
+                    VecMisc2::Frintz => ("frintz", size, ""),
+                    VecMisc2::Frintm => ("frintm", size, ""),
+                    VecMisc2::Frintp => ("frintp", size, ""),
+                    VecMisc2::Cnt => ("cnt", size, ""),
+                    VecMisc2::Cmeq0 => ("cmeq", size, ", #0"),
                 };
-                let rd = show_vreg_vector(rd.to_reg(), mb_rru, rd_size);
+                let rd = show_vreg_vector(rd.to_reg(), mb_rru, size);
                 let rn = show_vreg_vector(rn, mb_rru, size);
                 format!("{} {}, {}{}", op, rd, rn, suffix)
             }
@@ -4306,6 +4491,10 @@ impl Inst {
                 format!("virtual_sp_offset_adjust {}", offset)
             }
             &Inst::EmitIsland { needed_space } => format!("emit_island {}", needed_space),
+
+            &Inst::ElfTlsGetAddr { ref symbol } => {
+                format!("elf_tls_get_addr {}", symbol)
+            }
 
             &Inst::ValueLabelMarker { label, reg } => {
                 format!("value_label {:?}, {}", label, reg.show_rru(mb_rru))

@@ -1,5 +1,5 @@
 /* ----------------------------------------------------------------------------
-Copyright (c) 2018, Microsoft Research, Daan Leijen
+Copyright (c) 2018-2021, Microsoft Research, Daan Leijen
 This is free software; you can redistribute it and/or modify it under the
 terms of the MIT license. A copy of the license can be found in the file
 "LICENSE" at the root of this distribution.
@@ -284,7 +284,7 @@ static void _mi_thread_done(mi_heap_t* default_heap);
   // nothing to do as it is done in DllMain
 #elif defined(_WIN32) && !defined(MI_SHARED_LIB)
   // use thread local storage keys to detect thread ending
-  #include <Windows.h>
+  #include <windows.h>
   #include <fibersapi.h>
   #if (_WIN32_WINNT < 0x600)  // before Windows Vista 
   WINBASEAPI DWORD WINAPI FlsAlloc( _In_opt_ PFLS_CALLBACK_FUNCTION lpCallback );

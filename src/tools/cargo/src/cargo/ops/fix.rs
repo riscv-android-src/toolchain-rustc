@@ -53,7 +53,7 @@ use rustfix::{self, CodeFix};
 
 use crate::core::compiler::RustcTargetData;
 use crate::core::resolver::features::{FeatureOpts, FeatureResolver};
-use crate::core::resolver::{HasDevUnits, ResolveBehavior};
+use crate::core::resolver::{HasDevUnits, Resolve, ResolveBehavior};
 use crate::core::{Edition, MaybePackage, Workspace};
 use crate::ops::{self, CompileOptions};
 use crate::util::diagnostic_server::{Message, RustfixDiagnosticServer};
@@ -255,7 +255,7 @@ fn check_resolver_change(ws: &Workspace<'_>, opts: &FixOptions) -> CargoResult<(
     )?;
 
     let differences = v2_features.compare_legacy(&ws_resolve.resolved_features);
-    if differences.features.is_empty() && differences.optional_deps.is_empty() {
+    if differences.is_empty() {
         // Nothing is different, nothing to report.
         return Ok(());
     }
@@ -265,33 +265,47 @@ fn check_resolver_change(ws: &Workspace<'_>, opts: &FixOptions) -> CargoResult<(
     )?;
     drop_eprintln!(
         config,
-        "This may cause dependencies to resolve with a different set of features."
+        "This may cause some dependencies to be built with fewer features enabled than previously."
     );
     drop_eprintln!(
         config,
         "More information about the resolver changes may be found \
-         at https://doc.rust-lang.org/cargo/reference/features.html#feature-resolver-version-2"
+         at https://doc.rust-lang.org/nightly/edition-guide/rust-2021/default-cargo-resolver.html"
     );
     drop_eprintln!(
         config,
-        "The following differences were detected with the current configuration:\n"
+        "When building the following dependencies, \
+         the given features will no longer be used:\n"
     );
-    let report = |changes: crate::core::resolver::features::DiffMap, what| {
-        for ((pkg_id, for_host), removed) in changes {
-            drop_eprint!(config, "  {}", pkg_id);
-            if for_host {
-                drop_eprint!(config, " (as build dependency)");
-            }
-            if !removed.is_empty() {
-                let joined: Vec<_> = removed.iter().map(|s| s.as_str()).collect();
-                drop_eprint!(config, " removed {} `{}`", what, joined.join(","));
-            }
-            drop_eprint!(config, "\n");
+    for ((pkg_id, for_host), removed) in differences {
+        drop_eprint!(config, "  {}", pkg_id);
+        if for_host {
+            drop_eprint!(config, " (as host dependency)");
         }
-    };
-    report(differences.features, "features");
-    report(differences.optional_deps, "optional dependency");
+        drop_eprint!(config, ": ");
+        let joined: Vec<_> = removed.iter().map(|s| s.as_str()).collect();
+        drop_eprintln!(config, "{}", joined.join(", "));
+    }
     drop_eprint!(config, "\n");
+    report_maybe_diesel(config, &ws_resolve.targeted_resolve)?;
+    Ok(())
+}
+
+fn report_maybe_diesel(config: &Config, resolve: &Resolve) -> CargoResult<()> {
+    if resolve
+        .iter()
+        .any(|pid| pid.name() == "diesel" && pid.version().major == 1)
+        && resolve.iter().any(|pid| pid.name() == "diesel_migrations")
+    {
+        config.shell().note(
+            "\
+This project appears to use both diesel and diesel_migrations. These packages have
+a known issue where the build may fail due to the version 2 resolver preventing
+feature unification between those two packages. See
+<https://github.com/rust-lang/cargo/issues/9450> for some potential workarounds.
+",
+        )?;
+    }
     Ok(())
 }
 
@@ -330,7 +344,7 @@ pub fn fix_maybe_exec_rustc(config: &Config) -> CargoResult<bool> {
     // that we have to back it all out.
     if !fixes.files.is_empty() {
         let mut cmd = rustc.build_command();
-        args.apply(&mut cmd);
+        args.apply(&mut cmd, config);
         cmd.arg("--error-format=json");
         let output = cmd.output().context("failed to spawn rustc")?;
 
@@ -369,7 +383,7 @@ pub fn fix_maybe_exec_rustc(config: &Config) -> CargoResult<bool> {
     // - If `--broken-code`, show the error messages.
     // - If the fix succeeded, show any remaining warnings.
     let mut cmd = rustc.build_command();
-    args.apply(&mut cmd);
+    args.apply(&mut cmd, config);
     for arg in args.format_args {
         // Add any json/error format arguments that Cargo wants. This allows
         // things like colored output to work correctly.
@@ -406,10 +420,12 @@ fn rustfix_crate(
     // process at a time. If two invocations concurrently check a crate then
     // it's likely to corrupt it.
     //
-    // We currently do this by assigning the name on our lock to the manifest
-    // directory.
-    let dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is missing?");
-    let _lock = LockServerClient::lock(&lock_addr.parse()?, dir)?;
+    // Historically this used per-source-file locking, then per-package
+    // locking. It now uses a single, global lock as some users do things like
+    // #[path] or include!() of shared files between packages. Serializing
+    // makes it slower, but is the only safe way to prevent concurrent
+    // modification.
+    let _lock = LockServerClient::lock(&lock_addr.parse()?, "global")?;
 
     // Next up, this is a bit suspicious, but we *iteratively* execute rustc and
     // collect suggestions to feed to rustfix. Once we hit our limit of times to
@@ -457,7 +473,7 @@ fn rustfix_crate(
             // We'll generate new errors below.
             file.errors_applying_fixes.clear();
         }
-        rustfix_and_fix(&mut fixes, rustc, filename, args)?;
+        rustfix_and_fix(&mut fixes, rustc, filename, args, config)?;
         let mut progress_yet_to_be_made = false;
         for (path, file) in fixes.files.iter_mut() {
             if file.errors_applying_fixes.is_empty() {
@@ -499,6 +515,7 @@ fn rustfix_and_fix(
     rustc: &ProcessBuilder,
     filename: &Path,
     args: &FixArgs,
+    config: &Config,
 ) -> Result<(), Error> {
     // If not empty, filter by these lints.
     // TODO: implement a way to specify this.
@@ -506,7 +523,7 @@ fn rustfix_and_fix(
 
     let mut cmd = rustc.build_command();
     cmd.arg("--error-format=json");
-    args.apply(&mut cmd);
+    args.apply(&mut cmd, config);
     let output = cmd.output().with_context(|| {
         format!(
             "failed to execute `{}`",
@@ -763,7 +780,7 @@ impl FixArgs {
         })
     }
 
-    fn apply(&self, cmd: &mut Command) {
+    fn apply(&self, cmd: &mut Command, config: &Config) {
         cmd.arg(&self.file);
         cmd.args(&self.other).arg("--cap-lints=warn");
         if let Some(edition) = self.enabled_edition {
@@ -775,7 +792,13 @@ impl FixArgs {
 
         if let Some(edition) = self.prepare_for_edition {
             if edition.supports_compat_lint() {
-                cmd.arg("-W").arg(format!("rust-{}-compatibility", edition));
+                if config.nightly_features_allowed {
+                    cmd.arg("--force-warn")
+                        .arg(format!("rust-{}-compatibility", edition))
+                        .arg("-Zunstable-options");
+                } else {
+                    cmd.arg("-W").arg(format!("rust-{}-compatibility", edition));
+                }
             }
         }
     }

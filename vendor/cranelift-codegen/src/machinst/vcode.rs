@@ -41,8 +41,6 @@ use std::string::String;
 pub type InsnIndex = u32;
 /// Index referring to a basic block in VCode.
 pub type BlockIndex = u32;
-/// Range of an instructions in VCode.
-pub type InsnRange = core::ops::Range<InsnIndex>;
 
 /// VCodeInst wraps all requirements for a MachInst to be in VCode: it must be
 /// a `MachInst` and it must be able to emit itself at least to a `SizeCodeSink`.
@@ -207,11 +205,6 @@ impl<I: VCodeInst> VCodeBuilder<I> {
         }
     }
 
-    /// Are there any reference-typed values at all among the vregs?
-    pub fn have_ref_values(&self) -> bool {
-        self.vcode.have_ref_values()
-    }
-
     /// Set the current block as the entry block.
     pub fn set_entry(&mut self, block: BlockIndex) {
         self.vcode.entry = block;
@@ -262,11 +255,6 @@ impl<I: VCodeInst> VCodeBuilder<I> {
                 .safepoint_insns
                 .push(InstIx::new((self.vcode.insts.len() - 1) as u32));
         }
-    }
-
-    /// Get the current source location.
-    pub fn get_srcloc(&self) -> SourceLoc {
-        self.cur_srcloc
     }
 
     /// Set the current source location.
@@ -344,16 +332,6 @@ impl<I: VCodeInst> VCode<I> {
         self.vreg_types[vreg.get_index()]
     }
 
-    /// Are there any reference-typed values at all among the vregs?
-    pub fn have_ref_values(&self) -> bool {
-        self.have_ref_values
-    }
-
-    /// Get the entry block.
-    pub fn entry(&self) -> BlockIndex {
-        self.entry
-    }
-
     /// Get the number of blocks. Block indices will be in the range `0 ..
     /// (self.num_blocks() - 1)`.
     pub fn num_blocks(&self) -> usize {
@@ -363,11 +341,6 @@ impl<I: VCodeInst> VCode<I> {
     /// Stack frame size for the full function's body.
     pub fn frame_size(&self) -> u32 {
         self.abi.frame_size()
-    }
-
-    /// Inbound stack-args size.
-    pub fn stack_args_size(&self) -> u32 {
-        self.abi.stack_args_size()
     }
 
     /// Get the successors for a block.
@@ -473,13 +446,21 @@ impl<I: VCodeInst> VCode<I> {
 
     /// Emit the instructions to a `MachBuffer`, containing fixed-up code and external
     /// reloc/trap/etc. records ready for use.
-    pub fn emit(&self) -> MachBuffer<I>
+    pub fn emit(
+        &self,
+    ) -> (
+        MachBuffer<I>,
+        Vec<CodeOffset>,
+        Vec<(CodeOffset, CodeOffset)>,
+    )
     where
         I: MachInstEmit,
     {
         let _tt = timing::vcode_emit();
         let mut buffer = MachBuffer::new();
         let mut state = I::State::new(&*self.abi);
+        let cfg_metadata = self.flags().machine_code_cfg_info();
+        let mut bb_starts: Vec<Option<CodeOffset>> = vec![];
 
         // The first M MachLabels are reserved for block indices, the next N MachLabels for
         // constants.
@@ -491,6 +472,7 @@ impl<I: VCodeInst> VCode<I> {
 
         let mut safepoint_idx = 0;
         let mut cur_srcloc = None;
+        let mut last_offset = None;
         for block in 0..self.num_blocks() {
             let block = block as BlockIndex;
             let new_offset = I::align_basic_block(buffer.cur_offset());
@@ -504,6 +486,23 @@ impl<I: VCodeInst> VCode<I> {
             let (start, end) = self.block_ranges[block as usize];
             buffer.bind_label(MachLabel::from_block(block));
             label_insn_iix[block as usize] = start;
+
+            if cfg_metadata {
+                // Track BB starts. If we have backed up due to MachBuffer
+                // branch opts, note that the removed blocks were removed.
+                let cur_offset = buffer.cur_offset();
+                if last_offset.is_some() && cur_offset <= last_offset.unwrap() {
+                    for i in (0..bb_starts.len()).rev() {
+                        if bb_starts[i].is_some() && cur_offset > bb_starts[i].unwrap() {
+                            break;
+                        }
+                        bb_starts[i] = None;
+                    }
+                }
+                bb_starts.push(Some(cur_offset));
+                last_offset = Some(cur_offset);
+            }
+
             for iix in start..end {
                 let srcloc = self.srclocs[iix as usize];
                 if cur_srcloc != Some(srcloc) {
@@ -580,7 +579,28 @@ impl<I: VCodeInst> VCode<I> {
             *self.insts_layout.borrow_mut() = (inst_ends, label_insn_iix, buffer.cur_offset());
         }
 
-        buffer
+        // Create `bb_edges` and final (filtered) `bb_starts`.
+        let mut final_bb_starts = vec![];
+        let mut bb_edges = vec![];
+        if cfg_metadata {
+            for block in 0..self.num_blocks() {
+                if bb_starts[block].is_none() {
+                    // Block was deleted by MachBuffer; skip.
+                    continue;
+                }
+                let from = bb_starts[block].unwrap();
+
+                final_bb_starts.push(from);
+                // Resolve each `succ` label and add edges.
+                let succs = self.block_succs(BlockIx::new(block as u32));
+                for succ in succs.iter() {
+                    let to = buffer.resolve_label_offset(MachLabel::from_block(succ.get()));
+                    bb_edges.push((from, to));
+                }
+            }
+        }
+
+        (buffer, final_bb_starts, bb_edges)
     }
 
     /// Generates value-label ranges.
@@ -837,11 +857,6 @@ impl VCodeConstants {
                 }
             }
         }
-    }
-
-    /// Retrieve a byte slice for the given [VCodeConstant], if available.
-    pub fn get(&self, constant: VCodeConstant) -> Option<&[u8]> {
-        self.constants.get(constant).map(|d| d.as_slice())
     }
 
     /// Return the number of constants inserted.

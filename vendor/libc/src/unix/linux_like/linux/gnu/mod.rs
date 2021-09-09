@@ -128,6 +128,19 @@ s! {
         pub keepcost: ::c_int,
     }
 
+    pub struct mallinfo2 {
+        pub arena: ::size_t,
+        pub ordblks: ::size_t,
+        pub smblks: ::size_t,
+        pub hblks: ::size_t,
+        pub hblkhd: ::size_t,
+        pub usmblks: ::size_t,
+        pub fsmblks: ::size_t,
+        pub uordblks: ::size_t,
+        pub fordblks: ::size_t,
+        pub keepcost: ::size_t,
+    }
+
     pub struct nlmsghdr {
         pub nlmsg_len: u32,
         pub nlmsg_type: u16,
@@ -299,6 +312,19 @@ s! {
         pub ch_type: ::Elf32_Word,
         pub ch_size: ::Elf32_Word,
         pub ch_addralign: ::Elf32_Word,
+    }
+
+    pub struct seminfo {
+        pub semmap: ::c_int,
+        pub semmni: ::c_int,
+        pub semmns: ::c_int,
+        pub semmnu: ::c_int,
+        pub semmsl: ::c_int,
+        pub semopm: ::c_int,
+        pub semume: ::c_int,
+        pub semusz: ::c_int,
+        pub semvmx: ::c_int,
+        pub semaem: ::c_int,
     }
 }
 
@@ -1226,6 +1252,20 @@ extern "C" {
         offset: ::off_t,
         flags: ::c_int,
     ) -> ::ssize_t;
+    pub fn preadv64v2(
+        fd: ::c_int,
+        iov: *const ::iovec,
+        iovcnt: ::c_int,
+        offset: ::off64_t,
+        flags: ::c_int,
+    ) -> ::ssize_t;
+    pub fn pwritev64v2(
+        fd: ::c_int,
+        iov: *const ::iovec,
+        iovcnt: ::c_int,
+        offset: ::off64_t,
+        flags: ::c_int,
+    ) -> ::ssize_t;
     pub fn renameat2(
         olddirfd: ::c_int,
         oldpath: *const ::c_char,
@@ -1281,6 +1321,7 @@ extern "C" {
     ) -> ::c_int;
     pub fn sched_getcpu() -> ::c_int;
     pub fn mallinfo() -> ::mallinfo;
+    pub fn mallinfo2() -> ::mallinfo2;
     pub fn malloc_usable_size(ptr: *mut ::c_void) -> ::size_t;
     pub fn getpwent_r(
         pwd: *mut ::passwd,
@@ -1301,6 +1342,12 @@ extern "C" {
 extern "C" {
     pub fn dlmopen(lmid: Lmid_t, filename: *const ::c_char, flag: ::c_int) -> *mut ::c_void;
     pub fn dlinfo(handle: *mut ::c_void, request: ::c_int, info: *mut ::c_void) -> ::c_int;
+    pub fn dladdr1(
+        addr: *const ::c_void,
+        info: *mut ::Dl_info,
+        extra_info: *mut *mut ::c_void,
+        flags: ::c_int,
+    ) -> ::c_int;
 }
 
 cfg_if! {

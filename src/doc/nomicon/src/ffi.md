@@ -1,6 +1,6 @@
 # Foreign Function Interface
 
-# Introduction
+## Introduction
 
 This guide will use the [snappy](https://github.com/google/snappy)
 compression/decompression library as an introduction to writing bindings for
@@ -28,6 +28,7 @@ and add `extern crate libc;` to your crate root.
 The following is a minimal example of calling a foreign function which will
 compile if snappy is installed:
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 extern crate libc;
 use libc::size_t;
@@ -61,6 +62,7 @@ of keeping the binding correct at runtime.
 
 The `extern` block can be extended to cover the entire snappy API:
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 extern crate libc;
 use libc::{c_int, size_t};
@@ -85,7 +87,7 @@ extern {
 # fn main() {}
 ```
 
-# Creating a safe interface
+## Creating a safe interface
 
 The raw C API needs to be wrapped to provide memory safety and make use of higher-level concepts
 like vectors. A library can choose to expose only the safe, high-level interface and hide the unsafe
@@ -96,6 +98,7 @@ vectors as pointers to memory. Rust's vectors are guaranteed to be a contiguous 
 length is the number of elements currently contained, and the capacity is the total size in elements of
 the allocated memory. The length is less than or equal to the capacity.
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 # extern crate libc;
 # use libc::{c_int, size_t};
@@ -120,6 +123,7 @@ required capacity to hold the compressed output. The vector can then be passed t
 `snappy_compress` function as an output parameter. An output parameter is also passed to retrieve
 the true length after compression for setting the length.
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 # extern crate libc;
 # use libc::{size_t, c_int};
@@ -146,6 +150,7 @@ pub fn compress(src: &[u8]) -> Vec<u8> {
 Decompression is similar, because snappy stores the uncompressed size as part of the compression
 format and `snappy_uncompressed_length` will retrieve the exact buffer size required.
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 # extern crate libc;
 # use libc::{size_t, c_int};
@@ -180,6 +185,7 @@ pub fn uncompress(src: &[u8]) -> Option<Vec<u8>> {
 
 Then, we can add some tests to show how to use them.
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 # extern crate libc;
 # use libc::{c_int, size_t};
@@ -234,7 +240,7 @@ mod tests {
 }
 ```
 
-# Destructors
+## Destructors
 
 Foreign libraries often hand off ownership of resources to the calling code.
 When this occurs, we must use Rust's destructors to provide safety and guarantee
@@ -242,7 +248,7 @@ the release of these resources (especially in the case of panic).
 
 For more about destructors, see the [Drop trait](../std/ops/trait.Drop.html).
 
-# Callbacks from C code to Rust functions
+## Callbacks from C code to Rust functions
 
 Some external libraries require the usage of callbacks to report back their
 current state or intermediate data to the caller.
@@ -295,7 +301,6 @@ void trigger_callback() {
 In this example Rust's `main()` will call `trigger_callback()` in C,
 which would, in turn, call back to `callback()` in Rust.
 
-
 ## Targeting callbacks to Rust objects
 
 The former example showed how a global function can be called from C code.
@@ -311,7 +316,6 @@ referenced Rust object.
 Rust code:
 
 ```rust,no_run
-#[repr(C)]
 struct RustObject {
     a: i32,
     // Other members...
@@ -384,7 +388,7 @@ This can be achieved by unregistering the callback in the object's
 destructor and designing the library in a way that guarantees that no
 callback will be performed after deregistration.
 
-# Linking
+## Linking
 
 The `link` attribute on `extern` blocks provides the basic building block for
 instructing rustc how it will link to native libraries. There are two accepted
@@ -433,7 +437,7 @@ A few examples of how this model can be used are:
 
 On macOS, frameworks behave with the same semantics as a dynamic library.
 
-# Unsafe blocks
+## Unsafe blocks
 
 Some operations, like dereferencing raw pointers or calling functions that have been marked
 unsafe are only allowed inside unsafe blocks. Unsafe blocks isolate unsafety and are a promise to
@@ -448,12 +452,13 @@ unsafe fn kaboom(ptr: *const i32) -> i32 { *ptr }
 
 This function can only be called from an `unsafe` block or another `unsafe` function.
 
-# Accessing foreign globals
+## Accessing foreign globals
 
 Foreign APIs often export a global variable which could do something like track
 global state. In order to access these variables, you declare them in `extern`
 blocks with the `static` keyword:
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 extern crate libc;
 
@@ -472,6 +477,7 @@ Alternatively, you may need to alter global state provided by a foreign
 interface. To do this, statics can be declared with `mut` so we can mutate
 them.
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 extern crate libc;
 
@@ -498,12 +504,13 @@ fn main() {
 Note that all interaction with a `static mut` is unsafe, both reading and
 writing. Dealing with global mutable state requires a great deal of care.
 
-# Foreign calling conventions
+## Foreign calling conventions
 
 Most foreign code exposes a C ABI, and Rust uses the platform's C calling convention by default when
 calling foreign functions. Some foreign functions, most notably the Windows API, use other calling
 conventions. Rust provides a way to tell the compiler which convention to use:
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 extern crate libc;
 
@@ -540,7 +547,7 @@ however, windows uses the `C` calling convention, so `C` would be used. This
 means that in our previous example, we could have used `extern "system" { ... }`
 to define a block for all windows systems, not only x86 ones.
 
-# Interoperability with foreign code
+## Interoperability with foreign code
 
 Rust guarantees that the layout of a `struct` is compatible with the platform's
 representation in C only if the `#[repr(C)]` attribute is applied to it.
@@ -565,7 +572,7 @@ The [`libc` crate on crates.io][libc] includes type aliases and function
 definitions for the C standard library in the `libc` module, and Rust links
 against `libc` and `libm` by default.
 
-# Variadic functions
+## Variadic functions
 
 In C, functions can be 'variadic', meaning they accept a variable number of arguments. This can
 be achieved in Rust by specifying `...` within the argument list of a foreign function declaration:
@@ -584,13 +591,13 @@ fn main() {
 
 Normal Rust functions can *not* be variadic:
 
-```ignore
+```rust,compile_fail
 // This will not compile
 
-fn foo(x: i32, ...) { }
+fn foo(x: i32, ...) {}
 ```
 
-# The "nullable pointer optimization"
+## The "nullable pointer optimization"
 
 Certain Rust types are defined to never be `null`. This includes references (`&T`,
 `&mut T`), boxes (`Box<T>`), and function pointers (`extern "abi" fn()`). When
@@ -615,6 +622,7 @@ callback, which gets called in certain situations. The callback is passed a func
 and an integer and it is supposed to run the function with the integer as a parameter. So
 we have function pointers flying across the FFI boundary in both directions.
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 extern crate libc;
 use libc::c_int;
@@ -655,7 +663,7 @@ void register(void (*f)(int (*)(int), int)) {
 
 No `transmute` required!
 
-# Calling Rust code from C
+## Calling Rust code from C
 
 You may wish to compile Rust code in a way so that it can be called from C. This is
 fairly easy, but requires a few things:
@@ -673,7 +681,7 @@ discussed above in "[Foreign Calling
 Conventions](ffi.html#foreign-calling-conventions)". The `no_mangle`
 attribute turns off Rust's name mangling, so that it is easier to link to.
 
-# FFI and panics
+## FFI and panics
 
 It’s important to be mindful of `panic!`s when working with FFI. A `panic!`
 across an FFI boundary is undefined behavior. If you’re writing code that may
@@ -702,11 +710,10 @@ for more information.
 
 [`catch_unwind`]: ../std/panic/fn.catch_unwind.html
 
-# Representing opaque structs
+## Representing opaque structs
 
-Sometimes, a C library wants to provide a pointer to something, but not let you
-know the internal details of the thing it wants. The simplest way is to use a
-`void *` argument:
+Sometimes, a C library wants to provide a pointer to something, but not let you know the internal details of the thing it wants.
+A stable and simple way is to use a `void *` argument:
 
 ```c
 void foo(void *arg);
@@ -715,6 +722,7 @@ void bar(void *arg);
 
 We can represent this in Rust with the `c_void` type:
 
+<!-- ignore: requires libc crate -->
 ```rust,ignore
 extern crate libc;
 
@@ -775,3 +783,9 @@ Notice that it is a really bad idea to use an empty enum as FFI type.
 The compiler relies on empty enums being uninhabited, so handling values of type
 `&Empty` is a huge footgun and can lead to buggy program behavior (by triggering
 undefined behavior).
+
+> **NOTE:** The simplest way would use "extern types".
+But it's currently (as of June 2021) unstable and has some unresolved questions, see the [RFC page][extern-type-rfc] and the [tracking issue][extern-type-issue] for more details.
+
+[extern-type-issue]: https://github.com/rust-lang/rust/issues/43467
+[extern-type-rfc]: https://rust-lang.github.io/rfcs/1861-extern-types.html

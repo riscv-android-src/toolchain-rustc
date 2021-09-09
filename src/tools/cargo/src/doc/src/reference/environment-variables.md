@@ -35,11 +35,17 @@ system:
 * `RUSTDOCFLAGS` — A space-separated list of custom flags to pass to all `rustdoc`
   invocations that Cargo performs. In contrast with [`cargo rustdoc`], this is
   useful for passing a flag to *all* `rustdoc` instances. See
-  [`build.rustdocflags`] for some more ways to set flags.
+  [`build.rustdocflags`] for some more ways to set flags. This string is
+  split by whitespace; for a more robust encoding of multiple arguments,
+  set `CARGO_ENCODED_RUSTDOCFLAGS` instead with arguments separated by
+  `0x1f` (ASCII Unit Separator).
 * `RUSTFLAGS` — A space-separated list of custom flags to pass to all compiler
   invocations that Cargo performs. In contrast with [`cargo rustc`], this is
   useful for passing a flag to *all* compiler instances. See
-  [`build.rustflags`] for some more ways to set flags.
+  [`build.rustflags`] for some more ways to set flags. This string is
+  split by whitespace; for a more robust encoding of multiple arguments,
+  set `CARGO_ENCODED_RUSTFLAGS` instead with arguments separated by
+  `0x1f` (ASCII Unit Separator).
 * `CARGO_INCREMENTAL` — If this is set to 1 then Cargo will force [incremental
   compilation] to be enabled for the current compilation, and when set to 0 it
   will force disabling it. If this env var isn't present then cargo's defaults
@@ -227,7 +233,6 @@ corresponding environment variable is set to the empty string, `""`.
   where integration tests or benchmarks are free to put any data needed by
   the tests/benches. Cargo initially creates this directory but doesn't
   manage its content in any way, this is the responsibility of the test code.
-  There are separate directories for `debug` and `release` profiles.
 
 [integration test]: cargo-targets.md#integration-tests
 [`env` macro]: ../../std/macro.env.html
@@ -334,11 +339,20 @@ let out_dir = env::var("OUT_DIR").unwrap();
 * `RUSTC`, `RUSTDOC` — the compiler and documentation generator that Cargo has
                        resolved to use, passed to the build script so it might
                        use it as well.
+* `RUSTC_WRAPPER` — the `rustc` wrapper, if any, that Cargo is using.
+                    See [`build.rustc-wrapper`].
+* `RUSTC_WORKSPACE_WRAPPER` — the `rustc` wrapper, if any, that Cargo is
+			      using for workspace members. See
+			      [`build.rustc-workspace-wrapper`].
 * `RUSTC_LINKER` — The path to the linker binary that Cargo has resolved to use
                    for the current target, if specified. The linker can be
                    changed by editing `.cargo/config.toml`; see the documentation
                    about [cargo configuration][cargo-config] for more
                    information.
+* `CARGO_ENCODED_RUSTFLAGS` — extra flags that Cargo invokes `rustc`
+			      with, separated by a `0x1f` character
+			      (ASCII Unit Separator). See
+			      [`build.rustflags`].
 * `CARGO_PKG_<var>` - The package information variables, with the same names and values as are [provided during crate building][variables set for crates].
 
 [unix-like platforms]: ../../reference/conditional-compilation.html#unix-and-windows

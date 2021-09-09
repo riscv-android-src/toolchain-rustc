@@ -174,6 +174,13 @@ Instead, explicitly check for `None`, `Err`, etc.
 `rust-analyzer` is not a library, we don't need to test for API misuse, and we have to handle any user input without panics.
 Panic messages in the logs from the `#[should_panic]` tests are confusing.
 
+## `#[ignore]`
+
+Do not `#[ignore]` tests.
+If the test currently does not work, assert the wrong behavior and add a fixme explaining why it is wrong.
+
+**Rationale:** noticing when the behavior is fixed, making sure that even the wrong behavior is acceptable (ie, not a panic).
+
 ## Function Preconditions
 
 Express function preconditions in types and force the caller to provide them (rather than checking in callee):
@@ -297,6 +304,7 @@ More generally, always prefer types on the left
 &[T]         &Vec<T>
 &str         &String
 Option<&T>   &Option<T>
+&Path        &PathBuf
 ```
 
 **Rationale:** types on the left are strictly more general.
@@ -304,7 +312,7 @@ Even when generality is not required, consistency is important.
 
 ## Constructors
 
-Prefer `Default` to zero-argument `new` function
+Prefer `Default` to zero-argument `new` function.
 
 ```rust
 // GOOD
@@ -332,6 +340,10 @@ Prefer `Default` even it has to be implemented manually.
 Use `Vec::new` rather than `vec![]`.
 
 **Rationale:** uniformity, strength reduction.
+
+Avoid using "dummy" states to implement a `Default`.
+If a type doesn't have a sensible default, empty value, don't hide it.
+Let the caller explicitly decide what's the right initial state is.
 
 ## Functions Over Objects
 
@@ -482,42 +494,6 @@ fn foo(bar: Option<Bar>) { ... }
 Splitting the two different control flows into two functions simplifies each path, and remove cross-dependencies between the two paths.
 If there's common code between `foo` and `foo_with_bar`, extract *that* into a common helper.
 
-## Avoid Monomorphization
-
-Avoid making a lot of code type parametric, *especially* on the boundaries between crates.
-
-```rust
-// GOOD
-fn frobnicate(f: impl FnMut()) {
-    frobnicate_impl(&mut f)
-}
-fn frobnicate_impl(f: &mut dyn FnMut()) {
-    // lots of code
-}
-
-// BAD
-fn frobnicate(f: impl FnMut()) {
-    // lots of code
-}
-```
-
-Avoid `AsRef` polymorphism, it pays back only for widely used libraries:
-
-```rust
-// GOOD
-fn frobnicate(f: &Path) {
-}
-
-// BAD
-fn frobnicate(f: impl AsRef<Path>) {
-}
-```
-
-**Rationale:** Rust uses monomorphization to compile generic code, meaning that for each instantiation of a generic functions with concrete types, the function is compiled afresh, *per crate*.
-This allows for exceptionally good performance, but leads to increased compile times.
-Runtime performance obeys 80%/20% rule -- only a small fraction of code is hot.
-Compile time **does not** obey this rule -- all code has to be compiled.
-
 ## Appropriate String Types
 
 When interfacing with OS APIs, use `OsString`, even if the original source of data is utf-8 encoded.
@@ -609,6 +585,42 @@ pub fn reachable_nodes(node: Node) -> FxHashSet<Node> {
 ```
 
 **Rationale:** re-use allocations, accumulator style is more concise for complex cases.
+
+## Avoid Monomorphization
+
+Avoid making a lot of code type parametric, *especially* on the boundaries between crates.
+
+```rust
+// GOOD
+fn frobnicate(f: impl FnMut()) {
+    frobnicate_impl(&mut f)
+}
+fn frobnicate_impl(f: &mut dyn FnMut()) {
+    // lots of code
+}
+
+// BAD
+fn frobnicate(f: impl FnMut()) {
+    // lots of code
+}
+```
+
+Avoid `AsRef` polymorphism, it pays back only for widely used libraries:
+
+```rust
+// GOOD
+fn frobnicate(f: &Path) {
+}
+
+// BAD
+fn frobnicate(f: impl AsRef<Path>) {
+}
+```
+
+**Rationale:** Rust uses monomorphization to compile generic code, meaning that for each instantiation of a generic functions with concrete types, the function is compiled afresh, *per crate*.
+This allows for exceptionally good performance, but leads to increased compile times.
+Runtime performance obeys 80%/20% rule -- only a small fraction of code is hot.
+Compile time **does not** obey this rule -- all code has to be compiled.
 
 # Style
 
@@ -773,6 +785,38 @@ impl Parent {
 **Rationale:** easier to get the sense of the API by visually scanning the file.
 If function bodies are folded in the editor, the source code should read as documentation for the public API.
 
+## Context Parameters
+
+Some parameters are threaded unchanged through many function calls.
+They determine the "context" of the operation.
+Pass such parameters first, not last.
+If there are several context parameters, consider packing them into a `struct Ctx` and passing it as `&self`.
+
+```rust
+// GOOD
+fn dfs(graph: &Graph, v: Vertex) -> usize {
+    let mut visited = FxHashSet::default();
+    return go(graph, &mut visited, v);
+
+    fn go(graph: &Graph, visited: &mut FxHashSet<Vertex>, v: usize) -> usize {
+        ...
+    }
+}
+
+// BAD
+fn dfs(v: Vertex, graph: &Graph) -> usize {
+    fn go(v: usize, graph: &Graph, visited: &mut FxHashSet<Vertex>) -> usize {
+        ...
+    }
+
+    let mut visited = FxHashSet::default();
+    go(v, graph, &mut visited)
+}
+```
+
+**Rationale:** consistency.
+Context-first works better when non-context parameter is a lambda.
+
 ## Variable Naming
 
 Use boring and long names for local variables ([yay code completion](https://github.com/rust-analyzer/rust-analyzer/pull/4162#discussion_r417130973)).
@@ -884,7 +928,6 @@ let buf = {
 };
 
 // BAD
-
 let buf = prepare_buf(&mut arena, item);
 
 ...
@@ -901,6 +944,36 @@ Exception: if you want to make use of `return` or `?`.
 **Rationale:** single-use functions change frequently, adding or removing parameters adds churn.
 A block serves just as well to delineate a bit of logic, but has access to all the context.
 Re-using originally single-purpose function often leads to bad coupling.
+
+## Local Helper Functions
+
+Put nested helper functions at the end of the enclosing functions
+(this requires using return statement).
+Don't nest more than one level deep.
+
+```rust
+// GOOD
+fn dfs(graph: &Graph, v: Vertex) -> usize {
+    let mut visited = FxHashSet::default();
+    return go(graph, &mut visited, v);
+
+    fn go(graph: &Graph, visited: &mut FxHashSet<Vertex>, v: usize) -> usize {
+        ...
+    }
+}
+
+// BAD
+fn dfs(graph: &Graph, v: Vertex) -> usize {
+    fn go(graph: &Graph, visited: &mut FxHashSet<Vertex>, v: usize) -> usize {
+        ...
+    }
+
+    let mut visited = FxHashSet::default();
+    go(graph, &mut visited, v)
+}
+```
+
+**Rationale:** consistency, improved top-down readability.
 
 ## Helper Variables
 

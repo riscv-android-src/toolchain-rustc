@@ -210,7 +210,7 @@ where
 					})
 					.try_buffer_unordered(client_buffer_size)
 					// Filter out previously ignored service errors as `None`s
-					.try_filter_map(|x| futures::future::ok(x))
+					.try_filter_map(futures::future::ok)
 					// we use `select_with_weak` here, instead of `select`, to close the stream
 					// as soon as the ipc pipe is closed
 					.select_with_weak(receiver.map(Ok));
@@ -360,7 +360,7 @@ mod tests {
 			reply.expect("there should be one reply")
 		};
 
-		let mut rt = tokio::runtime::Runtime::new().unwrap();
+		let rt = tokio::runtime::Runtime::new().unwrap();
 		rt.block_on(reply).expect("wait for reply")
 	}
 
@@ -609,9 +609,10 @@ mod tests {
 			tx.send(true).expect("failed to report that the server has stopped");
 		});
 
-		let mut rt = tokio::runtime::Runtime::new().unwrap();
+		let rt = tokio::runtime::Runtime::new().unwrap();
 		rt.block_on(async move {
-			let timeout = tokio::time::delay_for(Duration::from_millis(500));
+			let timeout = tokio::time::sleep(Duration::from_millis(500));
+			futures::pin_mut!(timeout);
 
 			match futures::future::select(rx, timeout).await {
 				futures::future::Either::Left((result, _)) => {

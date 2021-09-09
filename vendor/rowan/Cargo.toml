@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "rowan"
-version = "0.13.0-pre.6"
+version = "0.13.0-pre.7"
 authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
 exclude = [".github/", "bors.toml", "rustfmt.toml"]
 description = "Library for generic lossless syntax trees"
@@ -23,7 +23,7 @@ repository = "https://github.com/rust-analyzer/rowan"
 version = "2.0.0"
 
 [dependencies.hashbrown]
-version = "0.9"
+version = "0.11.2"
 features = ["inline-more"]
 default-features = false
 

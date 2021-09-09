@@ -20,7 +20,7 @@ use crate::core::resolver::CliFeatures;
 use crate::core::source::Source;
 use crate::core::{Package, SourceId, Workspace};
 use crate::ops;
-use crate::sources::{RegistrySource, SourceConfigMap, CRATES_IO_REGISTRY};
+use crate::sources::{RegistrySource, SourceConfigMap, CRATES_IO_DOMAIN, CRATES_IO_REGISTRY};
 use crate::util::config::{self, Config, SslVersionConfig, SslVersionConfigRange};
 use crate::util::errors::CargoResult;
 use crate::util::important_paths::find_root_manifest_for_wd;
@@ -138,34 +138,12 @@ fn verify_dependencies(
     registry_src: SourceId,
 ) -> CargoResult<()> {
     for dep in pkg.dependencies().iter() {
-        if dep.source_id().is_path() || dep.source_id().is_git() {
-            if !dep.specified_req() {
-                if !dep.is_transitive() {
-                    // dev-dependencies will be stripped in TomlManifest::prepare_for_publish
-                    continue;
-                }
-                let which = if dep.source_id().is_path() {
-                    "path"
-                } else {
-                    "git"
-                };
-                let dep_version_source = dep.registry_id().map_or_else(
-                    || "crates.io".to_string(),
-                    |registry_id| registry_id.display_registry_name(),
-                );
-                bail!(
-                    "all dependencies must have a version specified when publishing.\n\
-                     dependency `{}` does not specify a version\n\
-                     Note: The published dependency will use the version from {},\n\
-                     the `{}` specification will be removed from the dependency declaration.",
-                    dep.package_name(),
-                    dep_version_source,
-                    which,
-                )
-            }
+        if super::check_dep_has_version(dep, true)? {
+            continue;
+        }
         // TomlManifest::prepare_for_publish will rewrite the dependency
         // to be just the `version` field.
-        } else if dep.source_id() != registry_src {
+        if dep.source_id() != registry_src {
             if !dep.source_id().is_registry() {
                 // Consider making SourceId::kind a public type that we can
                 // exhaustively match on. Using match can help ensure that
@@ -560,7 +538,7 @@ pub fn configure_http_handle(config: &Config, handle: &mut Easy) -> CargoResult<
     if let Some(user_agent) = &http.user_agent {
         handle.useragent(user_agent)?;
     } else {
-        handle.useragent(&version().to_string())?;
+        handle.useragent(&format!("cargo {}", version()))?;
     }
 
     fn to_ssl_version(s: &str) -> CargoResult<SslVersion> {
@@ -752,7 +730,7 @@ pub fn registry_login(
         "Login",
         format!(
             "token for `{}` saved",
-            reg.as_ref().map_or("crates.io", String::as_str)
+            reg.as_ref().map_or(CRATES_IO_DOMAIN, String::as_str)
         ),
     )?;
     Ok(())
@@ -760,7 +738,7 @@ pub fn registry_login(
 
 pub fn registry_logout(config: &Config, reg: Option<String>) -> CargoResult<()> {
     let (registry, reg_cfg, _) = registry(config, None, None, reg.clone(), false, false)?;
-    let reg_name = reg.as_deref().unwrap_or("crates.io");
+    let reg_name = reg.as_deref().unwrap_or(CRATES_IO_DOMAIN);
     if reg_cfg.credential_process.is_none() && reg_cfg.token.is_none() {
         config.shell().status(
             "Logout",

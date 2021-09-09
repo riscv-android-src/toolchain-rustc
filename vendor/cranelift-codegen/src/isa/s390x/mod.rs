@@ -3,6 +3,7 @@
 use crate::ir::condcodes::IntCC;
 use crate::ir::Function;
 use crate::isa::s390x::settings as s390x_settings;
+#[cfg(feature = "unwind")]
 use crate::isa::unwind::systemv::RegisterMappingError;
 use crate::isa::Builder as IsaBuilder;
 use crate::machinst::{compile, MachBackend, MachCompileResult, TargetIsaAdapter, VCode};
@@ -56,7 +57,7 @@ impl S390xBackend {
         func: &Function,
         flags: shared_settings::Flags,
     ) -> CodegenResult<VCode<inst::Inst>> {
-        let emit_info = EmitInfo::new(flags.clone());
+        let emit_info = EmitInfo::new(flags.clone(), self.isa_flags.clone());
         let abi = Box::new(abi::S390xABICallee::new(func, flags)?);
         compile::compile::<S390xBackend>(func, self, abi, emit_info)
     }
@@ -70,7 +71,7 @@ impl MachBackend for S390xBackend {
     ) -> CodegenResult<MachCompileResult> {
         let flags = self.flags();
         let vcode = self.compile_vcode(func, flags.clone())?;
-        let buffer = vcode.emit();
+        let (buffer, bb_starts, bb_edges) = vcode.emit();
         let frame_size = vcode.frame_size();
         let value_labels_ranges = vcode.value_labels_ranges();
         let stackslot_offsets = vcode.stackslot_offsets().clone();
@@ -89,6 +90,8 @@ impl MachBackend for S390xBackend {
             disasm,
             value_labels_ranges,
             stackslot_offsets,
+            bb_starts,
+            bb_edges,
         })
     }
 
@@ -118,7 +121,12 @@ impl MachBackend for S390xBackend {
     }
 
     fn unsigned_add_overflow_condition(&self) -> IntCC {
-        unimplemented!()
+        // The ADD LOGICAL family of instructions set the condition code
+        // differently from normal comparisons, in a way that cannot be
+        // represented by any of the standard IntCC values.  So we use a
+        // dummy value here, which gets remapped to the correct condition
+        // code mask during lowering.
+        IntCC::UnsignedGreaterThan
     }
 
     fn unsigned_sub_overflow_condition(&self) -> IntCC {

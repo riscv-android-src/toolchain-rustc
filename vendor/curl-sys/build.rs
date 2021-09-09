@@ -1,8 +1,3 @@
-extern crate cc;
-extern crate pkg_config;
-#[cfg(target_env = "msvc")]
-extern crate vcpkg;
-
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -133,6 +128,8 @@ fn main() {
         .define("OS", "\"unknown\"") // TODO
         .define("HAVE_ZLIB_H", None)
         .define("HAVE_LIBZ", None)
+        .define("HAVE_BOOL_T", None)
+        .define("HAVE_STDBOOL_H", None)
         .file("curl/lib/asyn-thread.c")
         .file("curl/lib/altsvc.c")
         .file("curl/lib/base64.c")
@@ -161,6 +158,7 @@ fn main() {
         .file("curl/lib/hostcheck.c")
         .file("curl/lib/hostip.c")
         .file("curl/lib/hostip6.c")
+        .file("curl/lib/hsts.c")
         .file("curl/lib/http.c")
         .file("curl/lib/http2.c")
         .file("curl/lib/http_chunks.c")
@@ -305,7 +303,6 @@ fn main() {
             .define("HAVE_NETDB_H", None)
             .define("HAVE_NETINET_IN_H", None)
             .define("HAVE_NETINET_TCP_H", None)
-            .define("HAVE_POLL_FINE", None)
             .define("HAVE_POLL_H", None)
             .define("HAVE_FCNTL_O_NONBLOCK", None)
             .define("HAVE_SYS_SELECT_H", None)
@@ -341,7 +338,11 @@ fn main() {
                 .define("HAVE_MACH_ABSOLUTE_TIME", None);
         } else {
             cfg.define("HAVE_CLOCK_GETTIME_MONOTONIC", None)
-                .define("HAVE_GETTIMEOFDAY", None);
+                .define("HAVE_GETTIMEOFDAY", None)
+                // poll() on various versions of macOS are janky, so only use it
+                // on non-macOS unix-likes. This matches the official default
+                // build configuration as well.
+                .define("HAVE_POLL_FINE", None);
         }
 
         if cfg!(feature = "spnego") {
@@ -385,6 +386,7 @@ fn main() {
     if target.contains("-apple-") {
         println!("cargo:rustc-link-lib=framework=Security");
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
+        println!("cargo:rustc-link-lib=framework=SystemConfiguration");
     }
 }
 

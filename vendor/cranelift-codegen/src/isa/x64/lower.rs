@@ -1668,8 +1668,8 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                 let rhs = put_input_in_reg(ctx, inputs[1]);
                 let dst = get_output_reg(ctx, outputs[0]).only_reg().unwrap();
 
-                if isa_flags.use_avx512f_simd() || isa_flags.use_avx512vl_simd() {
-                    // With the right AVX512 features (VL, DQ) this operation
+                if isa_flags.use_avx512vl_simd() && isa_flags.use_avx512dq_simd() {
+                    // With the right AVX512 features (VL + DQ) this operation
                     // can lower to a single operation.
                     ctx.emit(Inst::xmm_rm_r_evex(
                         Avx512Opcode::Vpmullq,
@@ -1905,7 +1905,7 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
             let dst = get_output_reg(ctx, outputs[0]).only_reg().unwrap();
             let ty = ty.unwrap();
             if ty == types::I64X2 {
-                if isa_flags.use_avx512f_simd() || isa_flags.use_avx512vl_simd() {
+                if isa_flags.use_avx512vl_simd() && isa_flags.use_avx512f_simd() {
                     ctx.emit(Inst::xmm_unary_rm_r_evex(Avx512Opcode::Vpabsq, src, dst));
                 } else {
                     // If `VPABSQ` from AVX512 is unavailable, we use a separate register, `tmp`, to
@@ -2426,7 +2426,7 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                 ));
             } else if dst_ty == types::I64X2 && op == Opcode::Sshr {
                 // The `sshr.i8x16` CLIF instruction has no single x86 instruction in the older feature sets; newer ones
-                // like AVX512VL and AVX512F include VPSRAQ, a 128-bit instruction that would fit here, but this backend
+                // like AVX512VL + AVX512F include VPSRAQ, a 128-bit instruction that would fit here, but this backend
                 // does not currently have support for EVEX encodings (TODO when EVEX support is available, add an
                 // alternate lowering here). To remedy this, we extract each 64-bit lane to a GPR, shift each using a
                 // scalar instruction, and insert the shifted values back in the `dst` XMM register.
@@ -3079,81 +3079,92 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                     ));
                 }
             } else {
-                // For SIMD 4.4 we use Mula's algroithm (https://arxiv.org/pdf/1611.07612.pdf)
-                //
-                //__m128i count_bytes ( __m128i v) {
-                //    __m128i lookup = _mm_setr_epi8(0 ,1 ,1 ,2 ,1 ,2 ,2 ,3 ,1 ,2 ,2 ,3 ,2 ,3 ,3 ,4) ;
-                //    __m128i low_mask = _mm_set1_epi8 (0 x0f ) ;
-                //    __m128i lo = _mm_and_si128 (v, low_mask ) ;
-                //    __m128i hi = _mm_and_si128 (_mm_srli_epi16 (v, 4) , low_mask ) ;
-                //    __m128i cnt1 = _mm_shuffle_epi8 (lookup , lo) ;
-                //    __m128i cnt2 = _mm_shuffle_epi8 (lookup , hi) ;
-                //    return _mm_add_epi8 (cnt1 , cnt2 ) ;
-                //}
-                //
-                // Details of the above algorithm can be found in the reference noted above, but the basics
-                // are to create a lookup table that pre populates the popcnt values for each number [0,15].
-                // The algorithm uses shifts to isolate 4 bit sections of the vector, pshufb as part of the
-                // lookup process, and adds together the results.
-
-                // Get input vector and destination
+                // Lower `popcount` for vectors.
                 let ty = ty.unwrap();
-                let lhs = put_input_in_reg(ctx, inputs[0]);
+                let src = put_input_in_reg(ctx, inputs[0]);
                 let dst = get_output_reg(ctx, outputs[0]).only_reg().unwrap();
 
-                // __m128i lookup = _mm_setr_epi8(0 ,1 ,1 ,2 ,1 ,2 ,2 ,3 ,1 ,2 ,2 ,3 ,2 ,3 ,3 ,4);
-                static POPCOUNT_4BIT: [u8; 16] = [
-                    0x00, 0x01, 0x01, 0x02, 0x01, 0x02, 0x02, 0x03, 0x01, 0x02, 0x02, 0x03, 0x02,
-                    0x03, 0x03, 0x04,
-                ];
-                let lookup = ctx.use_constant(VCodeConstantData::WellKnown(&POPCOUNT_4BIT));
+                if isa_flags.use_avx512vl_simd() && isa_flags.use_avx512bitalg_simd() {
+                    // When AVX512VL and AVX512BITALG are available,
+                    // `popcnt.i8x16` can be lowered to a single instruction.
+                    assert_eq!(ty, types::I8X16);
+                    ctx.emit(Inst::xmm_unary_rm_r_evex(
+                        Avx512Opcode::Vpopcntb,
+                        RegMem::reg(src),
+                        dst,
+                    ));
+                } else {
+                    // For SIMD 4.4 we use Mula's algorithm (https://arxiv.org/pdf/1611.07612.pdf)
+                    //
+                    //__m128i count_bytes ( __m128i v) {
+                    //    __m128i lookup = _mm_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4);
+                    //    __m128i low_mask = _mm_set1_epi8 (0x0f);
+                    //    __m128i lo = _mm_and_si128 (v, low_mask);
+                    //    __m128i hi = _mm_and_si128 (_mm_srli_epi16 (v, 4), low_mask);
+                    //    __m128i cnt1 = _mm_shuffle_epi8 (lookup, lo);
+                    //    __m128i cnt2 = _mm_shuffle_epi8 (lookup, hi);
+                    //    return _mm_add_epi8 (cnt1, cnt2);
+                    //}
+                    //
+                    // Details of the above algorithm can be found in the reference noted above, but the basics
+                    // are to create a lookup table that pre populates the popcnt values for each number [0,15].
+                    // The algorithm uses shifts to isolate 4 bit sections of the vector, pshufb as part of the
+                    // lookup process, and adds together the results.
 
-                // Create a mask for lower 4bits of each subword.
-                static LOW_MASK: [u8; 16] = [0x0F; 16];
-                let low_mask_const = ctx.use_constant(VCodeConstantData::WellKnown(&LOW_MASK));
-                let low_mask = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
-                ctx.emit(Inst::xmm_load_const(low_mask_const, low_mask, ty));
+                    // __m128i lookup = _mm_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4);
+                    static POPCOUNT_4BIT: [u8; 16] = [
+                        0x00, 0x01, 0x01, 0x02, 0x01, 0x02, 0x02, 0x03, 0x01, 0x02, 0x02, 0x03,
+                        0x02, 0x03, 0x03, 0x04,
+                    ];
+                    let lookup = ctx.use_constant(VCodeConstantData::WellKnown(&POPCOUNT_4BIT));
 
-                // __m128i lo = _mm_and_si128 (v, low_mask );
-                let lo = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
-                ctx.emit(Inst::gen_move(lo, low_mask.to_reg(), types::I8X16));
-                ctx.emit(Inst::xmm_rm_r(SseOpcode::Pand, RegMem::reg(lhs), lo));
+                    // Create a mask for lower 4bits of each subword.
+                    static LOW_MASK: [u8; 16] = [0x0F; 16];
+                    let low_mask_const = ctx.use_constant(VCodeConstantData::WellKnown(&LOW_MASK));
+                    let low_mask = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
+                    ctx.emit(Inst::xmm_load_const(low_mask_const, low_mask, ty));
 
-                // __m128i hi = _mm_and_si128 (_mm_srli_epi16 (v, 4) , low_mask ) ;
-                ctx.emit(Inst::gen_move(dst, lhs, ty));
-                ctx.emit(Inst::xmm_rmi_reg(SseOpcode::Psrlw, RegMemImm::imm(4), dst));
-                let tmp = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
-                ctx.emit(Inst::gen_move(tmp, low_mask.to_reg(), types::I8X16));
-                ctx.emit(Inst::xmm_rm_r(
-                    SseOpcode::Pand,
-                    RegMem::reg(dst.to_reg()),
-                    tmp,
-                ));
+                    // __m128i lo = _mm_and_si128 (v, low_mask);
+                    let lo = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
+                    ctx.emit(Inst::gen_move(lo, low_mask.to_reg(), types::I8X16));
+                    ctx.emit(Inst::xmm_rm_r(SseOpcode::Pand, RegMem::reg(src), lo));
 
-                // __m128i cnt1 = _mm_shuffle_epi8 (lookup , lo) ;
-                let tmp2 = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
-                ctx.emit(Inst::xmm_load_const(lookup, tmp2, ty));
-                ctx.emit(Inst::gen_move(dst, tmp2.to_reg(), types::I8X16));
+                    // __m128i hi = _mm_and_si128 (_mm_srli_epi16 (v, 4), low_mask);
+                    ctx.emit(Inst::gen_move(dst, src, ty));
+                    ctx.emit(Inst::xmm_rmi_reg(SseOpcode::Psrlw, RegMemImm::imm(4), dst));
+                    let tmp = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
+                    ctx.emit(Inst::gen_move(tmp, low_mask.to_reg(), types::I8X16));
+                    ctx.emit(Inst::xmm_rm_r(
+                        SseOpcode::Pand,
+                        RegMem::reg(dst.to_reg()),
+                        tmp,
+                    ));
 
-                ctx.emit(Inst::xmm_rm_r(
-                    SseOpcode::Pshufb,
-                    RegMem::reg(lo.to_reg()),
-                    dst,
-                ));
+                    // __m128i cnt1 = _mm_shuffle_epi8 (lookup, lo);
+                    let tmp2 = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
+                    ctx.emit(Inst::xmm_load_const(lookup, tmp2, ty));
+                    ctx.emit(Inst::gen_move(dst, tmp2.to_reg(), types::I8X16));
 
-                // __m128i cnt2 = _mm_shuffle_epi8 (lookup , hi) ;
-                ctx.emit(Inst::xmm_rm_r(
-                    SseOpcode::Pshufb,
-                    RegMem::reg(tmp.to_reg()),
-                    tmp2,
-                ));
+                    ctx.emit(Inst::xmm_rm_r(
+                        SseOpcode::Pshufb,
+                        RegMem::reg(lo.to_reg()),
+                        dst,
+                    ));
 
-                // return _mm_add_epi8 (cnt1 , cnt2 ) ;
-                ctx.emit(Inst::xmm_rm_r(
-                    SseOpcode::Paddb,
-                    RegMem::reg(tmp2.to_reg()),
-                    dst,
-                ));
+                    // __m128i cnt2 = _mm_shuffle_epi8 (lookup , hi) ;
+                    ctx.emit(Inst::xmm_rm_r(
+                        SseOpcode::Pshufb,
+                        RegMem::reg(tmp.to_reg()),
+                        tmp2,
+                    ));
+
+                    // return _mm_add_epi8 (cnt1 , cnt2 ) ;
+                    ctx.emit(Inst::xmm_rm_r(
+                        SseOpcode::Paddb,
+                        RegMem::reg(tmp2.to_reg()),
+                        dst,
+                    ));
+                }
             }
         }
 
@@ -3206,12 +3217,7 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
             ctx.emit(Inst::setcc(CC::Z, dst));
         }
 
-        Opcode::Uextend
-        | Opcode::Sextend
-        | Opcode::Bint
-        | Opcode::Breduce
-        | Opcode::Bextend
-        | Opcode::Ireduce => {
+        Opcode::Uextend | Opcode::Sextend | Opcode::Breduce | Opcode::Bextend | Opcode::Ireduce => {
             let src_ty = ctx.input_ty(insn, 0);
             let dst_ty = ctx.output_ty(insn, 0);
 
@@ -3225,7 +3231,7 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                 assert!(src_ty.bits() <= 64);
                 let src = put_input_in_reg(ctx, inputs[0]);
                 let dst = get_output_reg(ctx, outputs[0]);
-                assert!(op == Opcode::Uextend || op == Opcode::Sextend || op == Opcode::Bint);
+                assert!(op == Opcode::Uextend || op == Opcode::Sextend);
                 // Extend to 64 bits first.
 
                 let ext_mode = ExtMode::new(src_ty.bits(), /* dst bits = */ 64);
@@ -3267,15 +3273,17 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                 // Sextend requires a sign-extended move, but all the other opcodes are simply a move
                 // from a zero-extended source. Here is why this works, in each case:
                 //
-                // - Bint: Bool-to-int. We always represent a bool as a 0 or 1, so we merely need to
-                // zero-extend here.
-                //
-                // - Breduce, Bextend: changing width of a boolean. We represent a bool as a 0 or 1, so
-                // again, this is a zero-extend / no-op.
+                // - Breduce, Bextend: changing width of a boolean. We
+                //   represent a bool as a 0 or -1, so Breduce can mask, while
+                //   Bextend must sign-extend.
                 //
                 // - Ireduce: changing width of an integer. Smaller ints are stored with undefined
                 // high-order bits, so we can simply do a copy.
-                if src_ty == types::I32 && dst_ty == types::I64 && op != Opcode::Sextend {
+                let is_sextend = match op {
+                    Opcode::Sextend | Opcode::Bextend => true,
+                    _ => false,
+                };
+                if src_ty == types::I32 && dst_ty == types::I64 && !is_sextend {
                     // As a particular x64 extra-pattern matching opportunity, all the ALU opcodes on
                     // 32-bits will zero-extend the upper 32-bits, so we can even not generate a
                     // zero-extended move in this case.
@@ -3313,7 +3321,7 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                 );
 
                 if let Some(ext_mode) = ext_mode {
-                    if op == Opcode::Sextend {
+                    if is_sextend {
                         ctx.emit(Inst::movsx_rm_r(ext_mode, src, dst));
                     } else {
                         ctx.emit(Inst::movzx_rm_r(ext_mode, src, dst));
@@ -3321,6 +3329,32 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                 } else {
                     ctx.emit(Inst::mov64_rm_r(src, dst));
                 }
+            }
+        }
+
+        Opcode::Bint => {
+            // Booleans are stored as all-zeroes (0) or all-ones (-1). We AND
+            // out the LSB to give a 0 / 1-valued integer result.
+            let rn = put_input_in_reg(ctx, inputs[0]);
+            let rd = get_output_reg(ctx, outputs[0]);
+            let ty = ctx.output_ty(insn, 0);
+
+            ctx.emit(Inst::gen_move(rd.regs()[0], rn, types::I64));
+            ctx.emit(Inst::alu_rmi_r(
+                OperandSize::Size64,
+                AluRmiROpcode::And,
+                RegMemImm::imm(1),
+                rd.regs()[0],
+            ));
+
+            if ty == types::I128 {
+                let upper = rd.regs()[1];
+                ctx.emit(Inst::alu_rmi_r(
+                    OperandSize::Size64,
+                    AluRmiROpcode::Xor,
+                    RegMemImm::reg(upper.to_reg()),
+                    upper,
+                ));
             }
         }
 
@@ -4046,12 +4080,32 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
             ctx.emit(Inst::xmm_unary_rm_r(SseOpcode::Cvtss2sd, src, dst));
         }
 
+        Opcode::FvpromoteLow => {
+            let src = RegMem::reg(put_input_in_reg(ctx, inputs[0]));
+            let dst = get_output_reg(ctx, outputs[0]).only_reg().unwrap();
+            ctx.emit(Inst::xmm_unary_rm_r(
+                SseOpcode::Cvtps2pd,
+                RegMem::from(src),
+                dst,
+            ));
+        }
+
         Opcode::Fdemote => {
             // We can't guarantee the RHS (if a load) is 128-bit aligned, so we
             // must avoid merging a load here.
             let src = RegMem::reg(put_input_in_reg(ctx, inputs[0]));
             let dst = get_output_reg(ctx, outputs[0]).only_reg().unwrap();
             ctx.emit(Inst::xmm_unary_rm_r(SseOpcode::Cvtsd2ss, src, dst));
+        }
+
+        Opcode::Fvdemote => {
+            let src = RegMem::reg(put_input_in_reg(ctx, inputs[0]));
+            let dst = get_output_reg(ctx, outputs[0]).only_reg().unwrap();
+            ctx.emit(Inst::xmm_unary_rm_r(
+                SseOpcode::Cvtpd2ps,
+                RegMem::from(src),
+                dst,
+            ));
         }
 
         Opcode::FcvtFromSint => {
@@ -4152,8 +4206,8 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                 let src = put_input_in_reg(ctx, inputs[0]);
                 let dst = get_output_reg(ctx, outputs[0]).only_reg().unwrap();
 
-                if isa_flags.use_avx512f_simd() || isa_flags.use_avx512vl_simd() {
-                    // When either AVX512VL or AVX512F are available,
+                if isa_flags.use_avx512vl_simd() && isa_flags.use_avx512f_simd() {
+                    // When AVX512VL and AVX512F are available,
                     // `fcvt_from_uint` can be lowered to a single instruction.
                     ctx.emit(Inst::xmm_unary_rm_r_evex(
                         Avx512Opcode::Vcvtudq2ps,
@@ -5540,35 +5594,55 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
                 // `src` so we disregard this register).
                 ctx.emit(Inst::xmm_rm_r(SseOpcode::Pshufb, RegMem::from(tmp), dst));
             } else {
-                // If `lhs` and `rhs` are different, we must shuffle each separately and then OR
-                // them together. This is necessary due to PSHUFB semantics. As in the case above,
-                // we build the `constructed_mask` for each case statically.
+                if isa_flags.use_avx512vl_simd() && isa_flags.use_avx512vbmi_simd() {
+                    assert!(
+                        mask.iter().all(|b| *b < 32),
+                        "shuffle mask values must be between 0 and 31"
+                    );
 
-                // PSHUFB the `lhs` argument into `tmp0`, placing zeroes for unused lanes.
-                let tmp0 = ctx.alloc_tmp(lhs_ty).only_reg().unwrap();
-                ctx.emit(Inst::gen_move(tmp0, lhs, lhs_ty));
-                let constructed_mask = mask.iter().cloned().map(zero_unknown_lane_index).collect();
-                let constant = ctx.use_constant(VCodeConstantData::Generated(constructed_mask));
-                let tmp1 = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
-                ctx.emit(Inst::xmm_load_const(constant, tmp1, ty));
-                ctx.emit(Inst::xmm_rm_r(SseOpcode::Pshufb, RegMem::from(tmp1), tmp0));
+                    // Load the mask into the destination register.
+                    let constant = ctx.use_constant(VCodeConstantData::Generated(mask.into()));
+                    ctx.emit(Inst::xmm_load_const(constant, dst, ty));
 
-                // PSHUFB the second argument, placing zeroes for unused lanes.
-                let constructed_mask = mask
-                    .iter()
-                    .map(|b| b.wrapping_sub(16))
-                    .map(zero_unknown_lane_index)
-                    .collect();
-                let constant = ctx.use_constant(VCodeConstantData::Generated(constructed_mask));
-                let tmp2 = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
-                ctx.emit(Inst::xmm_load_const(constant, tmp2, ty));
-                ctx.emit(Inst::xmm_rm_r(SseOpcode::Pshufb, RegMem::from(tmp2), dst));
+                    // VPERMI2B has the exact semantics of Wasm's shuffle:
+                    // permute the bytes in `src1` and `src2` using byte indexes
+                    // in `dst` and store the byte results in `dst`.
+                    ctx.emit(Inst::xmm_rm_r_evex(
+                        Avx512Opcode::Vpermi2b,
+                        RegMem::reg(rhs),
+                        lhs,
+                        dst,
+                    ));
+                } else {
+                    // If `lhs` and `rhs` are different, we must shuffle each separately and then OR
+                    // them together. This is necessary due to PSHUFB semantics. As in the case above,
+                    // we build the `constructed_mask` for each case statically.
 
-                // OR the shuffled registers (the mechanism and lane-size for OR-ing the registers
-                // is not important).
-                ctx.emit(Inst::xmm_rm_r(SseOpcode::Orps, RegMem::from(tmp0), dst));
+                    // PSHUFB the `lhs` argument into `tmp0`, placing zeroes for unused lanes.
+                    let tmp0 = ctx.alloc_tmp(lhs_ty).only_reg().unwrap();
+                    ctx.emit(Inst::gen_move(tmp0, lhs, lhs_ty));
+                    let constructed_mask =
+                        mask.iter().cloned().map(zero_unknown_lane_index).collect();
+                    let constant = ctx.use_constant(VCodeConstantData::Generated(constructed_mask));
+                    let tmp1 = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
+                    ctx.emit(Inst::xmm_load_const(constant, tmp1, ty));
+                    ctx.emit(Inst::xmm_rm_r(SseOpcode::Pshufb, RegMem::from(tmp1), tmp0));
 
-                // TODO when AVX512 is enabled we should replace this sequence with a single VPERMB
+                    // PSHUFB the second argument, placing zeroes for unused lanes.
+                    let constructed_mask = mask
+                        .iter()
+                        .map(|b| b.wrapping_sub(16))
+                        .map(zero_unknown_lane_index)
+                        .collect();
+                    let constant = ctx.use_constant(VCodeConstantData::Generated(constructed_mask));
+                    let tmp2 = ctx.alloc_tmp(types::I8X16).only_reg().unwrap();
+                    ctx.emit(Inst::xmm_load_const(constant, tmp2, ty));
+                    ctx.emit(Inst::xmm_rm_r(SseOpcode::Pshufb, RegMem::from(tmp2), dst));
+
+                    // OR the shuffled registers (the mechanism and lane-size for OR-ing the registers
+                    // is not important).
+                    ctx.emit(Inst::xmm_rm_r(SseOpcode::Orps, RegMem::from(tmp0), dst));
+                }
             }
         }
 
@@ -5897,6 +5971,47 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
             }
         },
 
+        // Unimplemented opcodes below. These are not currently used by Wasm
+        // lowering or other known embeddings, but should be either supported or
+        // removed eventually.
+        Opcode::Uload8x8Complex
+        | Opcode::Sload8x8Complex
+        | Opcode::Uload16x4Complex
+        | Opcode::Sload16x4Complex
+        | Opcode::Uload32x2Complex
+        | Opcode::Sload32x2Complex => {
+            unimplemented!("Vector load {:?} not implemented", op);
+        }
+
+        Opcode::Cls => unimplemented!("Cls not supported"),
+
+        Opcode::Fma => unimplemented!("Fma not supported"),
+
+        Opcode::BorNot | Opcode::BxorNot => {
+            unimplemented!("or-not / xor-not opcodes not implemented");
+        }
+
+        Opcode::Bmask => unimplemented!("Bmask not implemented"),
+
+        Opcode::Trueif | Opcode::Trueff => unimplemented!("trueif / trueff not implemented"),
+
+        Opcode::ConstAddr => unimplemented!("ConstAddr not implemented"),
+
+        Opcode::Vsplit | Opcode::Vconcat => {
+            unimplemented!("Vector split/concat ops not implemented.");
+        }
+
+        Opcode::SqmulRoundSat | Opcode::Uunarrow => {
+            unimplemented!("unimplemented lowering for opcode {:?}", op)
+        }
+
+        // Opcodes that should be removed by legalization. These should
+        // eventually be removed if/when we replace in-situ legalization with
+        // something better.
+        Opcode::Ifcmp | Opcode::Ffcmp => {
+            panic!("Should never reach ifcmp/ffcmp as isel root!");
+        }
+
         Opcode::IaddImm
         | Opcode::ImulImm
         | Opcode::UdivImm
@@ -5922,10 +6037,111 @@ fn lower_insn_to_regs<C: LowerCtx<I = Inst>>(
         | Opcode::RotrImm
         | Opcode::IshlImm
         | Opcode::UshrImm
-        | Opcode::SshrImm => {
+        | Opcode::SshrImm
+        | Opcode::IcmpImm
+        | Opcode::IfcmpImm => {
             panic!("ALU+imm and ALU+carry ops should not appear here!");
         }
-        _ => unimplemented!("unimplemented lowering for opcode {:?}", op),
+
+        Opcode::StackLoad | Opcode::StackStore => {
+            panic!("Direct stack memory access not supported; should have been legalized");
+        }
+
+        Opcode::GlobalValue => {
+            panic!("global_value should have been removed by legalization!");
+        }
+
+        Opcode::HeapAddr => {
+            panic!("heap_addr should have been removed by legalization!");
+        }
+
+        Opcode::TableAddr => {
+            panic!("table_addr should have been removed by legalization!");
+        }
+
+        Opcode::Safepoint => {
+            panic!("safepoint instructions not used by new backend's safepoints!");
+        }
+
+        Opcode::Spill
+        | Opcode::Fill
+        | Opcode::FillNop
+        | Opcode::Regmove
+        | Opcode::CopySpecial
+        | Opcode::CopyToSsa
+        | Opcode::CopyNop
+        | Opcode::AdjustSpDown
+        | Opcode::AdjustSpUpImm
+        | Opcode::AdjustSpDownImm
+        | Opcode::IfcmpSp
+        | Opcode::Regspill
+        | Opcode::Regfill
+        | Opcode::Copy
+        | Opcode::DummySargT => {
+            panic!("Unused opcode should not be encountered.");
+        }
+
+        Opcode::JumpTableEntry | Opcode::JumpTableBase => {
+            panic!("Should not appear: we handle BrTable directly");
+        }
+
+        Opcode::Trapz | Opcode::Trapnz | Opcode::ResumableTrapnz => {
+            panic!("trapz / trapnz / resumable_trapnz should have been removed by legalization!");
+        }
+
+        Opcode::Jump
+        | Opcode::Fallthrough
+        | Opcode::Brz
+        | Opcode::Brnz
+        | Opcode::BrIcmp
+        | Opcode::Brif
+        | Opcode::Brff
+        | Opcode::IndirectJumpTableBr
+        | Opcode::BrTable => {
+            panic!("Branch opcode reached non-branch lowering logic!");
+        }
+
+        Opcode::X86Udivmodx
+        | Opcode::X86Sdivmodx
+        | Opcode::X86Umulx
+        | Opcode::X86Smulx
+        | Opcode::X86Cvtt2si
+        | Opcode::X86Fmin
+        | Opcode::X86Fmax
+        | Opcode::X86Push
+        | Opcode::X86Pop
+        | Opcode::X86Bsr
+        | Opcode::X86Bsf
+        | Opcode::X86Pblendw
+        | Opcode::X86Pshufd
+        | Opcode::X86Pshufb
+        | Opcode::X86Pextr
+        | Opcode::X86Pinsr
+        | Opcode::X86Insertps
+        | Opcode::X86Movsd
+        | Opcode::X86Movlhps
+        | Opcode::X86Palignr
+        | Opcode::X86Psll
+        | Opcode::X86Psrl
+        | Opcode::X86Psra
+        | Opcode::X86Ptest
+        | Opcode::X86Pmaxs
+        | Opcode::X86Pmaxu
+        | Opcode::X86Pmins
+        | Opcode::X86Pminu
+        | Opcode::X86Pmullq
+        | Opcode::X86Pmuludq
+        | Opcode::X86Punpckh
+        | Opcode::X86Punpckl
+        | Opcode::X86Vcvtudq2ps
+        | Opcode::X86ElfTlsGetAddr
+        | Opcode::X86MachoTlsGetAddr => {
+            panic!("x86-specific opcode in supposedly arch-neutral IR!");
+        }
+
+        Opcode::Nop => {
+            // Nothing.
+        }
     }
 
     Ok(())

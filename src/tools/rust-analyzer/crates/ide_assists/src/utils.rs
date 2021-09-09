@@ -4,28 +4,26 @@ pub(crate) mod suggest_name;
 
 use std::ops;
 
-use ast::TypeBoundsOwner;
 use hir::{Adt, HasSource, Semantics};
 use ide_db::{
     helpers::{FamousDefs, SnippetCap},
+    path_transform::PathTransform,
     RootDatabase,
 };
 use itertools::Itertools;
 use stdx::format_to;
 use syntax::{
-    ast::edit::AstNodeEdit,
-    ast::AttrsOwner,
-    ast::NameOwner,
-    ast::{self, edit, make, ArgListOwner, GenericParamsOwner},
+    ast::{
+        self,
+        edit::{self, AstNodeEdit},
+        make, ArgListOwner, AttrsOwner, GenericParamsOwner, NameOwner, TypeBoundsOwner,
+    },
     ted, AstNode, Direction, SmolStr,
     SyntaxKind::*,
     SyntaxNode, TextSize, T,
 };
 
-use crate::{
-    assist_context::{AssistBuilder, AssistContext},
-    path_transform::PathTransform,
-};
+use crate::assist_context::{AssistBuilder, AssistContext};
 
 pub(crate) fn unwrap_trivial_block(block: ast::BlockExpr) -> ast::Expr {
     extract_trivial_expression(&block)
@@ -50,15 +48,14 @@ pub fn extract_trivial_expression(block: &ast::BlockExpr) -> Option<ast::Expr> {
         return Some(expr);
     }
     // Unwrap `{ continue; }`
-    let (stmt,) = block.statements().next_tuple()?;
+    let stmt = block.statements().next()?;
     if let ast::Stmt::ExprStmt(expr_stmt) = stmt {
         if has_anything_else(expr_stmt.syntax()) {
             return None;
         }
         let expr = expr_stmt.expr()?;
-        match expr.syntax().kind() {
-            CONTINUE_EXPR | BREAK_EXPR | RETURN_EXPR => return Some(expr),
-            _ => (),
+        if matches!(expr.syntax().kind(), CONTINUE_EXPR | BREAK_EXPR | RETURN_EXPR) {
+            return Some(expr);
         }
     }
     None
@@ -73,11 +70,7 @@ pub fn extract_trivial_expression(block: &ast::BlockExpr) -> Option<ast::Expr> {
 pub fn test_related_attribute(fn_def: &ast::Fn) -> Option<ast::Attr> {
     fn_def.attrs().find_map(|attr| {
         let path = attr.path()?;
-        if path.syntax().text().to_string().contains("test") {
-            Some(attr)
-        } else {
-            None
-        }
+        path.syntax().text().to_string().contains("test").then(|| attr)
     })
 }
 
@@ -219,10 +212,7 @@ pub(crate) fn invert_boolean_expression(
     sema: &Semantics<RootDatabase>,
     expr: ast::Expr,
 ) -> ast::Expr {
-    if let Some(expr) = invert_special_case(sema, &expr) {
-        return expr;
-    }
-    make::expr_prefix(T![!], expr)
+    invert_special_case(sema, &expr).unwrap_or_else(|| make::expr_prefix(T![!], expr))
 }
 
 fn invert_special_case(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Option<ast::Expr> {
@@ -267,8 +257,13 @@ fn invert_special_case(sema: &Semantics<RootDatabase>, expr: &ast::Expr) -> Opti
                 pe.expr()
             }
         }
-        // FIXME:
-        // ast::Expr::Literal(true | false )
+        ast::Expr::Literal(lit) => match lit.kind() {
+            ast::LiteralKind::Bool(b) => match b {
+                true => Some(ast::Expr::Literal(make::expr_literal("false"))),
+                false => Some(ast::Expr::Literal(make::expr_literal("true"))),
+            },
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -492,7 +487,7 @@ pub(crate) fn add_method_to_adt(
     let start_offset = impl_def
         .and_then(|impl_def| find_impl_block_end(impl_def, &mut buf))
         .unwrap_or_else(|| {
-            buf = generate_impl_text(&adt, &buf);
+            buf = generate_impl_text(adt, &buf);
             adt.syntax().text_range().end()
         });
 

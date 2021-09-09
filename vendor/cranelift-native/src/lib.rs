@@ -91,14 +91,20 @@ pub fn builder_with_options(
         if std::is_x86_feature_detected!("bmi2") {
             isa_builder.enable("has_bmi2").unwrap();
         }
+        if std::is_x86_feature_detected!("avx512bitalg") {
+            isa_builder.enable("has_avx512bitalg").unwrap();
+        }
         if std::is_x86_feature_detected!("avx512dq") {
             isa_builder.enable("has_avx512dq").unwrap();
+        }
+        if std::is_x86_feature_detected!("avx512f") {
+            isa_builder.enable("has_avx512f").unwrap();
         }
         if std::is_x86_feature_detected!("avx512vl") {
             isa_builder.enable("has_avx512vl").unwrap();
         }
-        if std::is_x86_feature_detected!("avx512f") {
-            isa_builder.enable("has_avx512f").unwrap();
+        if std::is_x86_feature_detected!("avx512vbmi") {
+            isa_builder.enable("has_avx512vbmi").unwrap();
         }
         if std::is_x86_feature_detected!("lzcnt") {
             isa_builder.enable("has_lzcnt").unwrap();
@@ -116,6 +122,26 @@ pub fn builder_with_options(
 
         if std::is_aarch64_feature_detected!("lse") {
             isa_builder.enable("has_lse").unwrap();
+        }
+    }
+
+    // There is no is_s390x_feature_detected macro yet, so for now
+    // we use getauxval from the libc crate directly.
+    #[cfg(all(target_arch = "s390x", target_os = "linux"))]
+    {
+        use cranelift_codegen::settings::Configurable;
+
+        if !infer_native_flags {
+            return Ok(isa_builder);
+        }
+
+        let v = unsafe { libc::getauxval(libc::AT_HWCAP) };
+        const HWCAP_S390X_VXRS_EXT2: libc::c_ulong = 32768;
+        if (v & HWCAP_S390X_VXRS_EXT2) != 0 {
+            isa_builder.enable("has_vxrs_ext2").unwrap();
+            // There is no separate HWCAP bit for mie2, so assume
+            // that any machine with vxrs_ext2 also has mie2.
+            isa_builder.enable("has_mie2").unwrap();
         }
     }
 

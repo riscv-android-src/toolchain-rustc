@@ -15,6 +15,8 @@
 //! At present, however, we do run collection across all items in the
 //! crate as a kind of pass. This should eventually be factored away.
 
+// ignore-tidy-filelength
+
 use crate::astconv::{AstConv, SizedByDefault};
 use crate::bounds::Bounds;
 use crate::check::intrinsic::intrinsic_operation_unsafety;
@@ -33,7 +35,6 @@ use rustc_hir::def_id::{DefId, LocalDefId, LOCAL_CRATE};
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::weak_lang_items;
 use rustc_hir::{GenericParamKind, HirId, Node};
-use rustc_middle::hir::map::blocks::FnLikeNode;
 use rustc_middle::hir::map::Map;
 use rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc_middle::mir::mono::Linkage;
@@ -75,7 +76,6 @@ pub fn provide(providers: &mut Providers) {
         generics_of,
         predicates_of,
         predicates_defined_on,
-        projection_ty_from_predicates,
         explicit_predicates_of,
         super_predicates_of,
         super_predicates_that_define_assoc_type,
@@ -91,6 +91,7 @@ pub fn provide(providers: &mut Providers) {
         generator_kind,
         codegen_fn_attrs,
         collect_mod_item_types,
+        should_inherit_track_caller,
         ..*providers
     };
 }
@@ -144,6 +145,7 @@ crate fn placeholder_type_error(
     placeholder_types: Vec<Span>,
     suggest: bool,
     hir_ty: Option<&hir::Ty<'_>>,
+    kind: &'static str,
 ) {
     if placeholder_types.is_empty() {
         return;
@@ -173,13 +175,12 @@ crate fn placeholder_type_error(
         ));
     }
 
-    let mut err = bad_placeholder_type(tcx, placeholder_types);
+    let mut err = bad_placeholder_type(tcx, placeholder_types, kind);
 
     // Suggest, but only if it is not a function in const or static
     if suggest {
         let mut is_fn = false;
-        let mut is_const = false;
-        let mut is_static = false;
+        let mut is_const_or_static = false;
 
         if let Some(hir_ty) = hir_ty {
             if let hir::TyKind::BareFn(_) = hir_ty.kind {
@@ -189,19 +190,26 @@ crate fn placeholder_type_error(
                 let parent_id = tcx.hir().get_parent_node(hir_ty.hir_id);
                 let parent_node = tcx.hir().get(parent_id);
 
-                if let hir::Node::Item(item) = parent_node {
-                    if let hir::ItemKind::Const(_, _) = item.kind {
-                        is_const = true;
-                    } else if let hir::ItemKind::Static(_, _, _) = item.kind {
-                        is_static = true;
-                    }
-                }
+                is_const_or_static = match parent_node {
+                    Node::Item(&hir::Item {
+                        kind: hir::ItemKind::Const(..) | hir::ItemKind::Static(..),
+                        ..
+                    })
+                    | Node::TraitItem(&hir::TraitItem {
+                        kind: hir::TraitItemKind::Const(..),
+                        ..
+                    })
+                    | Node::ImplItem(&hir::ImplItem {
+                        kind: hir::ImplItemKind::Const(..), ..
+                    }) => true,
+                    _ => false,
+                };
             }
         }
 
         // if function is wrapped around a const or static,
         // then don't show the suggestion
-        if !(is_fn && (is_const || is_static)) {
+        if !(is_fn && is_const_or_static) {
             err.multipart_suggestion(
                 "use type parameters instead",
                 sugg,
@@ -229,7 +237,15 @@ fn reject_placeholder_type_signatures_in_item(tcx: TyCtxt<'tcx>, item: &'tcx hir
     let mut visitor = PlaceholderHirTyCollector::default();
     visitor.visit_item(item);
 
-    placeholder_type_error(tcx, Some(generics.span), generics.params, visitor.0, suggest, None);
+    placeholder_type_error(
+        tcx,
+        Some(generics.span),
+        generics.params,
+        visitor.0,
+        suggest,
+        None,
+        item.kind.descr(),
+    );
 }
 
 impl Visitor<'tcx> for CollectItemTypesVisitor<'tcx> {
@@ -295,13 +311,17 @@ impl Visitor<'tcx> for CollectItemTypesVisitor<'tcx> {
 fn bad_placeholder_type(
     tcx: TyCtxt<'tcx>,
     mut spans: Vec<Span>,
+    kind: &'static str,
 ) -> rustc_errors::DiagnosticBuilder<'tcx> {
+    let kind = if kind.ends_with('s') { format!("{}es", kind) } else { format!("{}s", kind) };
+
     spans.sort();
     let mut err = struct_span_err!(
         tcx.sess,
         spans.clone(),
         E0121,
-        "the type placeholder `_` is not allowed within types on item signatures",
+        "the type placeholder `_` is not allowed within types on item signatures for {}",
+        kind
     );
     for span in spans {
         err.span_label(span, "not allowed in type signatures");
@@ -337,11 +357,7 @@ impl AstConv<'tcx> for ItemCtxt<'tcx> {
     }
 
     fn default_constness_for_trait_bounds(&self) -> hir::Constness {
-        if let Some(fn_like) = FnLikeNode::from_node(self.node()) {
-            fn_like.constness()
-        } else {
-            hir::Constness::NotConst
-        }
+        self.node().constness()
     }
 
     fn get_type_parameter_bounds(
@@ -375,7 +391,7 @@ impl AstConv<'tcx> for ItemCtxt<'tcx> {
         _: Option<&ty::GenericParamDef>,
         span: Span,
     ) -> &'tcx Const<'tcx> {
-        bad_placeholder_type(self.tcx(), vec![span]).emit();
+        bad_placeholder_type(self.tcx(), vec![span], "generic").emit();
         // Typeck doesn't expect erased regions to be returned from `type_of`.
         let ty = self.tcx.fold_regions(ty, &mut false, |r, _| match r {
             ty::ReErased => self.tcx.lifetimes.re_static,
@@ -739,7 +755,15 @@ fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) {
                     hir::ForeignItemKind::Static(..) => {
                         let mut visitor = PlaceholderHirTyCollector::default();
                         visitor.visit_foreign_item(item);
-                        placeholder_type_error(tcx, None, &[], visitor.0, false, None);
+                        placeholder_type_error(
+                            tcx,
+                            None,
+                            &[],
+                            visitor.0,
+                            false,
+                            None,
+                            "static variable",
+                        );
                     }
                     _ => (),
                 }
@@ -806,6 +830,22 @@ fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) {
             match it.kind {
                 hir::ItemKind::Fn(..) => tcx.ensure().fn_sig(def_id),
                 hir::ItemKind::OpaqueTy(..) => tcx.ensure().item_bounds(def_id),
+                hir::ItemKind::Const(ty, ..) | hir::ItemKind::Static(ty, ..) => {
+                    // (#75889): Account for `const C: dyn Fn() -> _ = "";`
+                    if let hir::TyKind::TraitObject(..) = ty.kind {
+                        let mut visitor = PlaceholderHirTyCollector::default();
+                        visitor.visit_item(it);
+                        placeholder_type_error(
+                            tcx,
+                            None,
+                            &[],
+                            visitor.0,
+                            false,
+                            None,
+                            it.kind.descr(),
+                        );
+                    }
+                }
                 _ => (),
             }
         }
@@ -831,7 +871,7 @@ fn convert_trait_item(tcx: TyCtxt<'_>, trait_item_id: hir::TraitItemId) {
             // Account for `const C: _;`.
             let mut visitor = PlaceholderHirTyCollector::default();
             visitor.visit_trait_item(trait_item);
-            placeholder_type_error(tcx, None, &[], visitor.0, false, None);
+            placeholder_type_error(tcx, None, &[], visitor.0, false, None, "constant");
         }
 
         hir::TraitItemKind::Type(_, Some(_)) => {
@@ -840,7 +880,7 @@ fn convert_trait_item(tcx: TyCtxt<'_>, trait_item_id: hir::TraitItemId) {
             // Account for `type T = _;`.
             let mut visitor = PlaceholderHirTyCollector::default();
             visitor.visit_trait_item(trait_item);
-            placeholder_type_error(tcx, None, &[], visitor.0, false, None);
+            placeholder_type_error(tcx, None, &[], visitor.0, false, None, "associated type");
         }
 
         hir::TraitItemKind::Type(_, None) => {
@@ -850,7 +890,7 @@ fn convert_trait_item(tcx: TyCtxt<'_>, trait_item_id: hir::TraitItemId) {
             let mut visitor = PlaceholderHirTyCollector::default();
             visitor.visit_trait_item(trait_item);
 
-            placeholder_type_error(tcx, None, &[], visitor.0, false, None);
+            placeholder_type_error(tcx, None, &[], visitor.0, false, None, "associated type");
         }
     };
 
@@ -872,7 +912,7 @@ fn convert_impl_item(tcx: TyCtxt<'_>, impl_item_id: hir::ImplItemId) {
             let mut visitor = PlaceholderHirTyCollector::default();
             visitor.visit_impl_item(impl_item);
 
-            placeholder_type_error(tcx, None, &[], visitor.0, false, None);
+            placeholder_type_error(tcx, None, &[], visitor.0, false, None, "associated type");
         }
         hir::ImplItemKind::Const(..) => {}
     }
@@ -1693,11 +1733,12 @@ fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> ty::PolyFnSig<'_> {
                         ty::ReErased => tcx.lifetimes.re_static,
                         _ => r,
                     });
+                    let fn_sig = ty::Binder::dummy(fn_sig);
 
                     let mut visitor = PlaceholderHirTyCollector::default();
                     visitor.visit_ty(ty);
-                    let mut diag = bad_placeholder_type(tcx, visitor.0);
-                    let ret_ty = fn_sig.output();
+                    let mut diag = bad_placeholder_type(tcx, visitor.0, "return type");
+                    let ret_ty = fn_sig.skip_binder().output();
                     if ret_ty != tcx.ty_error() {
                         if !ret_ty.is_closure() {
                             let ret_ty_str = match ret_ty.kind() {
@@ -1723,7 +1764,7 @@ fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> ty::PolyFnSig<'_> {
                     }
                     diag.emit();
 
-                    ty::Binder::bind(fn_sig, tcx)
+                    fn_sig
                 }
                 None => <dyn AstConv<'_>>::ty_of_fn(
                     &icx,
@@ -1767,10 +1808,13 @@ fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> ty::PolyFnSig<'_> {
             let ty = tcx.type_of(tcx.hir().get_parent_did(hir_id).to_def_id());
             let inputs =
                 data.fields().iter().map(|f| tcx.type_of(tcx.hir().local_def_id(f.hir_id)));
-            ty::Binder::bind(
-                tcx.mk_fn_sig(inputs, ty, false, hir::Unsafety::Normal, abi::Abi::Rust),
-                tcx,
-            )
+            ty::Binder::dummy(tcx.mk_fn_sig(
+                inputs,
+                ty,
+                false,
+                hir::Unsafety::Normal,
+                abi::Abi::Rust,
+            ))
         }
 
         Expr(&hir::Expr { kind: hir::ExprKind::Closure(..), .. }) => {
@@ -2054,7 +2098,7 @@ fn gather_explicit_predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericP
                 param.bounds.iter().for_each(|bound| match bound {
                     hir::GenericBound::Outlives(lt) => {
                         let bound = <dyn AstConv<'_>>::ast_region_to_region(&icx, &lt, None);
-                        let outlives = ty::Binder::bind(ty::OutlivesPredicate(region, bound), tcx);
+                        let outlives = ty::Binder::dummy(ty::OutlivesPredicate(region, bound));
                         predicates.insert((outlives.to_predicate(tcx), lt.span));
                     }
                     _ => bug!(),
@@ -2260,6 +2304,16 @@ fn const_evaluatable_predicates_of<'tcx>(
                 ));
             }
         }
+
+        fn visit_const_param_default(&mut self, _param: HirId, _ct: &'tcx hir::AnonConst) {
+            // Do not look into const param defaults,
+            // these get checked when they are actually instantiated.
+            //
+            // We do not want the following to error:
+            //
+            //     struct Foo<const N: usize, const M: usize = { N + 1 }>;
+            //     struct Bar<const N: usize>(Foo<N, 3>);
+        }
     }
 
     let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
@@ -2348,29 +2402,6 @@ fn explicit_predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericPredicat
     } else {
         gather_explicit_predicates_of(tcx, def_id)
     }
-}
-
-fn projection_ty_from_predicates(
-    tcx: TyCtxt<'tcx>,
-    key: (
-        // ty_def_id
-        DefId,
-        // def_id of `N` in `<T as Trait>::N`
-        DefId,
-    ),
-) -> Option<ty::ProjectionTy<'tcx>> {
-    let (ty_def_id, item_def_id) = key;
-    let mut projection_ty = None;
-    for (predicate, _) in tcx.predicates_of(ty_def_id).predicates {
-        if let ty::PredicateKind::Projection(projection_predicate) = predicate.kind().skip_binder()
-        {
-            if item_def_id == projection_predicate.projection_ty.item_def_id {
-                projection_ty = Some(projection_predicate.projection_ty);
-                break;
-            }
-        }
-    }
-    projection_ty
 }
 
 /// Converts a specific `GenericBound` from the AST into a set of
@@ -2651,7 +2682,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
     let attrs = tcx.get_attrs(id);
 
     let mut codegen_fn_attrs = CodegenFnAttrs::new();
-    if should_inherit_track_caller(tcx, id) {
+    if tcx.should_inherit_track_caller(id) {
         codegen_fn_attrs.flags |= CodegenFnAttrFlags::TRACK_CALLER;
     }
 
@@ -2919,6 +2950,36 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                     .emit();
                     None
                 }
+            };
+        } else if tcx.sess.check_name(attr, sym::repr) {
+            codegen_fn_attrs.alignment = match attr.meta_item_list() {
+                Some(items) => match items.as_slice() {
+                    [item] => match item.name_value_literal() {
+                        Some((sym::align, literal)) => {
+                            let alignment = rustc_attr::parse_alignment(&literal.kind);
+
+                            match alignment {
+                                Ok(align) => Some(align),
+                                Err(msg) => {
+                                    struct_span_err!(
+                                        tcx.sess.diagnostic(),
+                                        attr.span,
+                                        E0589,
+                                        "invalid `repr(align)` attribute: {}",
+                                        msg
+                                    )
+                                    .emit();
+
+                                    None
+                                }
+                            }
+                        }
+                        _ => None,
+                    },
+                    [] => None,
+                    _ => None,
+                },
+                None => None,
             };
         }
     }

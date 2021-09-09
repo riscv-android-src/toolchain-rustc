@@ -40,8 +40,6 @@
 #define RANDOM_FILE "/dev/random"
 #define VERSION "0.0.0" /* TODO */
 
-#define RETSIGTYPE void
-
 #define STDC_HEADERS 1
 
 #ifdef _BITS64
@@ -55,13 +53,6 @@
 #define SIZEOF_SIZE_T 4
 #define SIZEOF_TIME_T 4
 #endif
-
-#define HAVE_GETNAMEINFO 1
-#define GETNAMEINFO_QUAL_ARG1 const
-#define GETNAMEINFO_TYPE_ARG1 struct sockaddr *
-#define GETNAMEINFO_TYPE_ARG2 int
-#define GETNAMEINFO_TYPE_ARG46 long
-#define GETNAMEINFO_TYPE_ARG7 int
 
 #define HAVE_RECV 1
 #define RECV_TYPE_ARG1 int
@@ -105,13 +96,10 @@
 #define HAVE_ERRNO_H 1
 #define HAVE_FCNTL 1
 #define HAVE_FCNTL_H 1
-#define HAVE_FDOPEN 1
-#define HAVE_FORK 1
 #define HAVE_FREEADDRINFO 1
 #define HAVE_FTRUNCATE 1
 #define HAVE_GETADDRINFO 1
 #define HAVE_GETEUID 1
-#define HAVE_GETHOSTBYADDR 1
 #define HAVE_GETHOSTBYNAME 1
 #define HAVE_GETHOSTNAME 1
 #define HAVE_GETPPID 1
@@ -145,7 +133,6 @@
 #define HAVE_OPENSSL_SSL_H 1
 #define HAVE_OPENSSL_X509_H 1
 
-#define HAVE_PERROR 1
 #define HAVE_PIPE 1
 #define HAVE_POLL 1
 #define HAVE_POLL_FINE 1

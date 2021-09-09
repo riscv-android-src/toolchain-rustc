@@ -4,7 +4,7 @@ use either::Either;
 use hir::{HasVisibility, ScopeDef};
 use rustc_hash::FxHashSet;
 
-use crate::{context::CompletionContext, Completions};
+use crate::{context::CompletionContext, patterns::ImmediateLocation, Completions};
 
 /// Complete dot accesses, i.e. fields or methods.
 pub(crate) fn complete_dot(acc: &mut Completions, ctx: &CompletionContext) {
@@ -13,12 +13,12 @@ pub(crate) fn complete_dot(acc: &mut Completions, ctx: &CompletionContext) {
         _ => return complete_undotted_self(acc, ctx),
     };
 
-    let receiver_ty = match ctx.sema.type_of_expr(&dot_receiver) {
+    let receiver_ty = match ctx.sema.type_of_expr(dot_receiver) {
         Some(ty) => ty,
         _ => return,
     };
 
-    if ctx.is_call {
+    if matches!(ctx.completion_location, Some(ImmediateLocation::MethodCall { .. })) {
         cov_mark::hit!(test_no_struct_field_completion_for_method_call);
     } else {
         complete_fields(ctx, &receiver_ty, |field, ty| match field {
@@ -33,7 +33,7 @@ fn complete_undotted_self(acc: &mut Completions, ctx: &CompletionContext) {
     if !ctx.config.enable_self_on_the_fly {
         return;
     }
-    if !ctx.is_trivial_path || ctx.is_path_disallowed() {
+    if !ctx.is_trivial_path() || ctx.is_path_disallowed() || !ctx.expects_expression() {
         return;
     }
     ctx.scope.process_all_names(&mut |name, def| {
@@ -101,10 +101,13 @@ fn complete_methods(
 mod tests {
     use expect_test::{expect, Expect};
 
-    use crate::{test_utils::completion_list, CompletionKind};
+    use crate::{
+        tests::{check_edit, filtered_completion_list},
+        CompletionKind,
+    };
 
     fn check(ra_fixture: &str, expect: Expect) {
-        let actual = completion_list(ra_fixture, CompletionKind::Reference);
+        let actual = filtered_completion_list(ra_fixture, CompletionKind::Reference);
         expect.assert_eq(&actual);
     }
 
@@ -250,8 +253,23 @@ impl Trait for A {}
 fn foo(a: A) { a.$0 }
 "#,
             expect![[r#"
-                me the_method() fn(&self)
+                me the_method() (as Trait) fn(&self)
             "#]],
+        );
+        check_edit(
+            "the_method",
+            r#"
+struct A {}
+trait Trait { fn the_method(&self); }
+impl Trait for A {}
+fn foo(a: A) { a.$0 }
+"#,
+            r#"
+struct A {}
+trait Trait { fn the_method(&self); }
+impl Trait for A {}
+fn foo(a: A) { a.the_method()$0 }
+"#,
         );
     }
 
@@ -265,7 +283,7 @@ impl<T> Trait for T {}
 fn foo(a: &A) { a.$0 }
 ",
             expect![[r#"
-                me the_method() fn(&self)
+                me the_method() (as Trait) fn(&self)
             "#]],
         );
     }
@@ -283,7 +301,7 @@ impl Trait for A {}
 fn foo(a: A) { a.$0 }
 ",
             expect![[r#"
-                me the_method() fn(&self)
+                me the_method() (as Trait) fn(&self)
             "#]],
         );
     }
@@ -498,10 +516,7 @@ mod foo {
     fn issue_8931() {
         check(
             r#"
-#[lang = "fn_once"]
-trait FnOnce<Args> {
-    type Output;
-}
+//- minicore: fn
 struct S;
 
 struct Foo;

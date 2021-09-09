@@ -8,11 +8,15 @@ when we talked about `'a: 'b`, it was ok for `'a` to live _exactly_ as long as
 gets dropped at the same time as another, right? This is why we used the
 following desugaring of `let` statements:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 let x;
 let y;
 ```
 
+desugaring to:
+
+<!-- ignore: desugared code -->
 ```rust,ignore
 {
     let x;
@@ -29,6 +33,7 @@ definition. There are some more details about order of drop in [RFC 1857][rfc185
 
 Let's do this:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 let tuple = (vec![], vec![]);
 ```
@@ -203,7 +208,7 @@ of an inspector's destructor might access that borrowed data.
 Therefore, the drop checker forces all borrowed data in a value to
 strictly outlive that value.
 
-# An Escape Hatch
+## An Escape Hatch
 
 The precise rules that govern drop checking may be less restrictive in
 the future.
@@ -259,7 +264,8 @@ lifetime `'b` and that the only uses of `T` will be moves or drops, but omit
 the attribute from `'a` and `U`, because we do access data with that lifetime
 and that type:
 
-```rust,ignore
+```rust
+#![feature(dropck_eyepatch)]
 use std::fmt::Display;
 
 struct Inspector<'a, 'b, T, U: Display>(&'a u8, &'b u8, T, U);
@@ -283,7 +289,7 @@ other avenues for such indirect access.)
 
 Here is an example of invoking a callback:
 
-```rust,ignore
+```rust
 struct Inspector<T>(T, &'static str, Box<for <'r> fn(&'r T) -> String>);
 
 impl<T> Drop for Inspector<T> {
@@ -297,7 +303,7 @@ impl<T> Drop for Inspector<T> {
 
 Here is an example of a trait method call:
 
-```rust,ignore
+```rust
 use std::fmt;
 
 struct Inspector<T: fmt::Display>(T, &'static str);
@@ -318,17 +324,17 @@ directly within it.
 
 In all of the above cases where the `&'a u8` is accessed in the
 destructor, adding the `#[may_dangle]`
-attribute makes the type vulnerable to misuse that the borrower
+attribute makes the type vulnerable to misuse that the borrow
 checker will not catch, inviting havoc. It is better to avoid adding
 the attribute.
 
-# A related side note about drop order
+## A related side note about drop order
 
 While the drop order of fields inside a struct is defined, relying on it is
 fragile and subtle. When the order matters, it is better to use the
 [`ManuallyDrop`] wrapper.
 
-# Is that all about drop checker?
+## Is that all about drop checker?
 
 It turns out that when writing unsafe code, we generally don't need to
 worry at all about doing the right thing for the drop checker. However there

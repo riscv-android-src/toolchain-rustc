@@ -4,7 +4,7 @@
 //! but we can't process `.rlib` and need source code instead. The source code
 //! is typically installed with `rustup component add rust-src` command.
 
-use std::{convert::TryFrom, env, ops, path::PathBuf, process::Command};
+use std::{convert::TryFrom, env, fs, ops, path::PathBuf, process::Command};
 
 use anyhow::{format_err, Result};
 use la_arena::{Arena, Idx};
@@ -68,11 +68,12 @@ impl Sysroot {
     pub fn load(sysroot_src_dir: &AbsPath) -> Result<Sysroot> {
         let mut sysroot = Sysroot { crates: Arena::default() };
 
-        for name in SYSROOT_CRATES.trim().lines() {
-            let root = [format!("{}/src/lib.rs", name), format!("lib{}/lib.rs", name)]
+        for path in SYSROOT_CRATES.trim().lines() {
+            let name = path.split('/').last().unwrap();
+            let root = [format!("{}/src/lib.rs", path), format!("lib{}/lib.rs", path)]
                 .iter()
                 .map(|it| sysroot_src_dir.join(it))
-                .find(|it| it.exists());
+                .find(|it| fs::metadata(it).is_ok());
 
             if let Some(root) = root {
                 sysroot.crates.alloc(SysrootCrateData {
@@ -94,6 +95,12 @@ impl Sysroot {
         if let Some(alloc) = sysroot.by_name("alloc") {
             if let Some(core) = sysroot.by_name("core") {
                 sysroot.crates[alloc].deps.push(core);
+            }
+        }
+
+        if let Some(proc_macro) = sysroot.by_name("proc_macro") {
+            if let Some(std) = sysroot.by_name("std") {
+                sysroot.crates[proc_macro].deps.push(std);
             }
         }
 
@@ -135,19 +142,19 @@ fn discover_sysroot_src_dir(
         let path = AbsPathBuf::try_from(path.as_str())
             .map_err(|path| format_err!("RUST_SRC_PATH must be absolute: {}", path.display()))?;
         let core = path.join("core");
-        if core.exists() {
+        if fs::metadata(&core).is_ok() {
             log::debug!("Discovered sysroot by RUST_SRC_PATH: {}", path.display());
             return Ok(path);
         }
         log::debug!("RUST_SRC_PATH is set, but is invalid (no core: {:?}), ignoring", core);
     }
 
-    get_rust_src(&sysroot_path)
+    get_rust_src(sysroot_path)
         .or_else(|| {
             let mut rustup = Command::new(toolchain::rustup());
             rustup.current_dir(current_dir).args(&["component", "add", "rust-src"]);
             utf8_stdout(rustup).ok()?;
-            get_rust_src(&sysroot_path)
+            get_rust_src(sysroot_path)
         })
         .ok_or_else(|| {
             format_err!(
@@ -164,7 +171,7 @@ try installing the Rust source the same way you installed rustc",
 fn get_rustc_src(sysroot_path: &AbsPath) -> Option<AbsPathBuf> {
     let rustc_src = sysroot_path.join("lib/rustlib/rustc-src/rust/compiler/rustc/Cargo.toml");
     log::debug!("Checking for rustc source code: {}", rustc_src.display());
-    if rustc_src.exists() {
+    if fs::metadata(&rustc_src).is_ok() {
         Some(rustc_src)
     } else {
         None
@@ -175,7 +182,7 @@ fn get_rust_src(sysroot_path: &AbsPath) -> Option<AbsPathBuf> {
     // Try the new path first since the old one still exists.
     let rust_src = sysroot_path.join("lib/rustlib/src/rust");
     log::debug!("Checking sysroot (looking for `library` and `src` dirs): {}", rust_src.display());
-    ["library", "src"].iter().map(|it| rust_src.join(it)).find(|it| it.exists())
+    ["library", "src"].iter().map(|it| rust_src.join(it)).find(|it| fs::metadata(it).is_ok())
 }
 
 impl SysrootCrateData {
@@ -191,9 +198,8 @@ panic_abort
 panic_unwind
 proc_macro
 profiler_builtins
-rtstartup
 std
-stdarch
+stdarch/crates/std_detect
 term
 test
 unwind";
@@ -204,9 +210,7 @@ core
 panic_abort
 panic_unwind
 profiler_builtins
-rtstartup
-proc_macro
-stdarch
+std_detect
 term
 test
 unwind";

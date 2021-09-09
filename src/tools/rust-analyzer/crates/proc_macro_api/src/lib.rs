@@ -11,24 +11,24 @@ mod rpc;
 mod version;
 
 use base_db::{Env, ProcMacro};
+use paths::{AbsPath, AbsPathBuf};
 use std::{
     ffi::OsStr,
     io,
-    path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use tt::{SmolStr, Subtree};
 
-use crate::process::{ProcMacroProcessSrv, ProcMacroProcessThread};
+use crate::process::ProcMacroProcessSrv;
 
 pub use rpc::{ExpansionResult, ExpansionTask, ListMacrosResult, ListMacrosTask, ProcMacroKind};
 pub use version::{read_dylib_info, RustCInfo};
 
 #[derive(Debug, Clone)]
 struct ProcMacroProcessExpander {
-    process: Arc<ProcMacroProcessSrv>,
-    dylib_path: PathBuf,
+    process: Arc<Mutex<ProcMacroProcessSrv>>,
+    dylib_path: AbsPathBuf,
     name: SmolStr,
 }
 
@@ -56,44 +56,59 @@ impl base_db::ProcMacroExpander for ProcMacroProcessExpander {
             env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         };
 
-        let result: ExpansionResult = self.process.send_task(msg::Request::ExpansionMacro(task))?;
+        let result: ExpansionResult = self
+            .process
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .send_task(msg::Request::ExpansionMacro(task))?;
         Ok(result.expansion)
     }
 }
 
 #[derive(Debug)]
 pub struct ProcMacroClient {
-    process: Arc<ProcMacroProcessSrv>,
-    thread: ProcMacroProcessThread,
+    /// Currently, the proc macro process expands all procedural macros sequentially.
+    ///
+    /// That means that concurrent salsa requests may block each other when expanding proc macros,
+    /// which is unfortunate, but simple and good enough for the time being.
+    ///
+    /// Therefore, we just wrap the `ProcMacroProcessSrv` in a mutex here.
+    process: Arc<Mutex<ProcMacroProcessSrv>>,
 }
 
 impl ProcMacroClient {
+    /// Spawns an external process as the proc macro server and returns a client connected to it.
     pub fn extern_process(
-        process_path: PathBuf,
+        process_path: AbsPathBuf,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> io::Result<ProcMacroClient> {
-        let (thread, process) = ProcMacroProcessSrv::run(process_path, args)?;
-        Ok(ProcMacroClient { process: Arc::new(process), thread })
+        let process = ProcMacroProcessSrv::run(process_path, args)?;
+        Ok(ProcMacroClient { process: Arc::new(Mutex::new(process)) })
     }
 
-    pub fn by_dylib_path(&self, dylib_path: &Path) -> Vec<ProcMacro> {
+    pub fn by_dylib_path(&self, dylib_path: &AbsPath) -> Vec<ProcMacro> {
         let _p = profile::span("ProcMacroClient::by_dylib_path");
         match version::read_dylib_info(dylib_path) {
             Ok(info) => {
                 if info.version.0 < 1 || info.version.1 < 47 {
-                    eprintln!("proc-macro {} built by {:#?} is not supported by Rust Analyzer, please update your rust version.", dylib_path.to_string_lossy(), info);
+                    eprintln!("proc-macro {} built by {:#?} is not supported by Rust Analyzer, please update your rust version.", dylib_path.display(), info);
                 }
             }
             Err(err) => {
                 eprintln!(
                     "proc-macro {} failed to find the given version. Reason: {}",
-                    dylib_path.to_string_lossy(),
+                    dylib_path.display(),
                     err
                 );
             }
         }
 
-        let macros = match self.process.find_proc_macros(dylib_path) {
+        let macros = match self
+            .process
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .find_proc_macros(dylib_path)
+        {
             Err(err) => {
                 eprintln!("Failed to find proc macros. Error: {:#?}", err);
                 return vec![];
@@ -113,7 +128,7 @@ impl ProcMacroClient {
                 let expander = Arc::new(ProcMacroProcessExpander {
                     process: self.process.clone(),
                     name: name.clone(),
-                    dylib_path: dylib_path.into(),
+                    dylib_path: dylib_path.to_path_buf(),
                 });
 
                 ProcMacro { name, kind, expander }

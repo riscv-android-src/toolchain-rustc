@@ -652,7 +652,8 @@ impl<M: ABIMachineSpec> ABICalleeImpl<M> {
                 || call_conv.extends_baldrdash()
                 || call_conv.extends_windows_fastcall()
                 || call_conv == isa::CallConv::AppleAarch64
-                || call_conv == isa::CallConv::WasmtimeSystemV,
+                || call_conv == isa::CallConv::WasmtimeSystemV
+                || call_conv == isa::CallConv::WasmtimeAppleAarch64,
             "Unsupported calling convention: {:?}",
             call_conv
         );
@@ -1154,38 +1155,6 @@ impl<M: ABIMachineSpec> ABICallee for ABICalleeImpl<M> {
 
     fn set_clobbered(&mut self, clobbered: Set<Writable<RealReg>>) {
         self.clobbered = clobbered;
-    }
-
-    /// Load from a stackslot.
-    fn load_stackslot(
-        &self,
-        slot: StackSlot,
-        offset: u32,
-        ty: Type,
-        into_regs: ValueRegs<Writable<Reg>>,
-    ) -> SmallInstVec<Self::I> {
-        // Offset from beginning of stackslot area, which is at nominal SP (see
-        // [MemArg::NominalSPOffset] for more details on nominal SP tracking).
-        let stack_off = self.stackslots[slot] as i64;
-        let sp_off: i64 = stack_off + (offset as i64);
-        trace!("load_stackslot: slot {} -> sp_off {}", slot, sp_off);
-        gen_load_stack_multi::<M>(StackAMode::NominalSPOffset(sp_off, ty), into_regs, ty)
-    }
-
-    /// Store to a stackslot.
-    fn store_stackslot(
-        &self,
-        slot: StackSlot,
-        offset: u32,
-        ty: Type,
-        from_regs: ValueRegs<Reg>,
-    ) -> SmallInstVec<Self::I> {
-        // Offset from beginning of stackslot area, which is at nominal SP (see
-        // [MemArg::NominalSPOffset] for more details on nominal SP tracking).
-        let stack_off = self.stackslots[slot] as i64;
-        let sp_off: i64 = stack_off + (offset as i64);
-        trace!("store_stackslot: slot {} -> sp_off {}", slot, sp_off);
-        gen_store_stack_multi::<M>(StackAMode::NominalSPOffset(sp_off, ty), from_regs, ty)
     }
 
     /// Produce an instruction that computes a stackslot address.

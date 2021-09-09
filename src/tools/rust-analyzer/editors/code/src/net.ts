@@ -73,14 +73,14 @@ export interface GithubRelease {
     assets: Array<{
         name: string;
         // eslint-disable-next-line camelcase
-        browser_download_url: string;
+        browser_download_url: vscode.Uri;
     }>;
 }
 
 interface DownloadOpts {
     progressTitle: string;
-    url: string;
-    dest: string;
+    url: vscode.Uri;
+    dest: vscode.Uri;
     mode?: number;
     gunzip?: boolean;
     httpProxy?: string;
@@ -90,9 +90,10 @@ export async function download(opts: DownloadOpts) {
     // Put artifact into a temporary file (in the same dir for simplicity)
     // to prevent partially downloaded files when user kills vscode
     // This also avoids overwriting running executables
-    const dest = path.parse(opts.dest);
     const randomHex = crypto.randomBytes(5).toString("hex");
-    const tempFile = path.join(dest.dir, `${dest.name}${randomHex}`);
+    const rawDest = path.parse(opts.dest.fsPath);
+    const oldServerPath = vscode.Uri.joinPath(vscode.Uri.file(rawDest.dir), `${rawDest.name}-stale-${randomHex}${rawDest.ext}`);
+    const tempFilePath = vscode.Uri.joinPath(vscode.Uri.file(rawDest.dir), `${rawDest.name}${randomHex}`);
 
     await vscode.window.withProgress(
         {
@@ -102,7 +103,7 @@ export async function download(opts: DownloadOpts) {
         },
         async (progress, _cancellationToken) => {
             let lastPercentage = 0;
-            await downloadFile(opts.url, tempFile, opts.mode, !!opts.gunzip, opts.httpProxy, (readBytes, totalBytes) => {
+            await downloadFile(opts.url, tempFilePath, opts.mode, !!opts.gunzip, opts.httpProxy, (readBytes, totalBytes) => {
                 const newPercentage = Math.round((readBytes / totalBytes) * 100);
                 if (newPercentage !== lastPercentage) {
                     progress.report({
@@ -116,28 +117,69 @@ export async function download(opts: DownloadOpts) {
         }
     );
 
-    await fs.promises.rename(tempFile, opts.dest);
+    // Try to rename a running server to avoid EPERM on Windows
+    // NB: this can lead to issues if a running Code instance tries to restart the server.
+    try {
+        await vscode.workspace.fs.rename(opts.dest, oldServerPath, { overwrite: true });
+        log.info(`Renamed old server binary ${opts.dest.fsPath} to ${oldServerPath.fsPath}`);
+    } catch (err) {
+        const fsErr = err as vscode.FileSystemError;
+        // This is supposed to return `FileNotFound`, alas...
+        if (!fsErr.code || fsErr.code !== "FileNotFound" && fsErr.code !== "EntryNotFound") {
+            log.error(`Cannot rename existing server instance: ${err}`);
+        }
+    }
+    try {
+        await vscode.workspace.fs.rename(tempFilePath, opts.dest, { overwrite: true });
+    } catch (err) {
+        log.error(`Cannot update server binary: ${err}`);
+    }
+
+    // Now try to remove any stale server binaries
+    const serverDir = vscode.Uri.file(rawDest.dir);
+    try {
+        const entries = await vscode.workspace.fs.readDirectory(serverDir);
+        for (const [entry, _] of entries) {
+            try {
+                if (entry.includes(`${rawDest.name}-stale-`)) {
+                    const uri = vscode.Uri.joinPath(serverDir, entry);
+                    try {
+                        await vscode.workspace.fs.delete(uri);
+                        log.info(`Removed old server binary ${uri.fsPath}`);
+                    } catch (err) {
+                        log.error(`Unable to remove old server binary ${uri.fsPath}`);
+                    }
+                }
+            } catch (err) {
+                log.error(`Unable to parse ${entry}`);
+            }
+        }
+    } catch (err) {
+        log.error(`Unable to enumerate contents of ${serverDir.fsPath}`);
+    }
 }
 
 async function downloadFile(
-    url: string,
-    destFilePath: fs.PathLike,
+    url: vscode.Uri,
+    destFilePath: vscode.Uri,
     mode: number | undefined,
     gunzip: boolean,
     httpProxy: string | null | undefined,
     onProgress: (readBytes: number, totalBytes: number) => void
 ): Promise<void> {
+    const urlString = url.toString();
+
     const res = await (() => {
         if (httpProxy) {
-            log.debug(`Downloading ${url} via proxy: ${httpProxy}`);
-            return fetch(url, { agent: new HttpsProxyAgent(httpProxy) });
+            log.debug(`Downloading ${urlString} via proxy: ${httpProxy}`);
+            return fetch(urlString, { agent: new HttpsProxyAgent(httpProxy) });
         }
 
-        return fetch(url);
+        return fetch(urlString);
     })();
 
     if (!res.ok) {
-        log.error("Error", res.status, "while downloading file from", url);
+        log.error("Error", res.status, "while downloading file from", urlString);
         log.error({ body: await res.text(), headers: res.headers });
 
         throw new Error(`Got response ${res.status} when trying to download a file.`);
@@ -146,7 +188,7 @@ async function downloadFile(
     const totalBytes = Number(res.headers.get('content-length'));
     assert(!Number.isNaN(totalBytes), "Sanity check of content-length protocol");
 
-    log.debug("Downloading file of", totalBytes, "bytes size from", url, "to", destFilePath);
+    log.debug("Downloading file of", totalBytes, "bytes size from", urlString, "to", destFilePath.fsPath);
 
     let readBytes = 0;
     res.body.on("data", (chunk: Buffer) => {
@@ -154,7 +196,7 @@ async function downloadFile(
         onProgress(readBytes, totalBytes);
     });
 
-    const destFileStream = fs.createWriteStream(destFilePath, { mode });
+    const destFileStream = fs.createWriteStream(destFilePath.fsPath, { mode });
     const srcStream = gunzip ? res.body.pipe(zlib.createGunzip()) : res.body;
 
     await pipeline(srcStream, destFileStream);

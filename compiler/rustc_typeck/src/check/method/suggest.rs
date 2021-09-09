@@ -933,6 +933,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     item_name
                 );
                 err.span_label(item_name.span, &format!("private {}", kind));
+                let sp = self
+                    .tcx
+                    .hir()
+                    .span_if_local(def_id)
+                    .unwrap_or_else(|| self.tcx.def_span(def_id));
+                err.span_label(sp, &format!("private {} defined here", kind));
                 self.suggest_valid_traits(&mut err, out_of_scope_traits);
                 err.emit();
             }
@@ -1591,7 +1597,7 @@ fn compute_all_traits(tcx: TyCtxt<'_>, (): ()) -> &[DefId] {
             _ => {}
         }
     }
-    for &cnum in tcx.crates().iter() {
+    for &cnum in tcx.crates(()).iter() {
         let def_id = DefId { krate: cnum, index: CRATE_DEF_INDEX };
         handle_external_res(tcx, &mut traits, &mut external_mods, Res::Def(DefKind::Mod, def_id));
     }
@@ -1650,16 +1656,16 @@ impl intravisit::Visitor<'tcx> for UsePlacementFinder<'tcx> {
                 _ => {
                     if self.span.map_or(true, |span| item.span < span) {
                         if !item.span.from_expansion() {
+                            self.span = Some(item.span.shrink_to_lo());
                             // Don't insert between attributes and an item.
                             let attrs = self.tcx.hir().attrs(item.hir_id());
-                            if attrs.is_empty() {
-                                self.span = Some(item.span.shrink_to_lo());
-                            } else {
-                                // Find the first attribute on the item.
-                                for attr in attrs {
-                                    if self.span.map_or(true, |span| attr.span < span) {
-                                        self.span = Some(attr.span.shrink_to_lo());
-                                    }
+                            // Find the first attribute on the item.
+                            // FIXME: This is broken for active attributes.
+                            for attr in attrs {
+                                if !attr.span.is_dummy()
+                                    && self.span.map_or(true, |span| attr.span < span)
+                                {
+                                    self.span = Some(attr.span.shrink_to_lo());
                                 }
                             }
                         }

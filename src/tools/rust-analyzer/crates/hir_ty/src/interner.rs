@@ -93,7 +93,13 @@ impl chalk_ir::interner::Interner for Interner {
         alias: &chalk_ir::AliasTy<Interner>,
         fmt: &mut fmt::Formatter<'_>,
     ) -> Option<fmt::Result> {
-        tls::with_current_program(|prog| Some(prog?.debug_alias(alias, fmt)))
+        use std::fmt::Debug;
+        match alias {
+            chalk_ir::AliasTy::Projection(projection_ty) => {
+                Interner::debug_projection_ty(projection_ty, fmt)
+            }
+            chalk_ir::AliasTy::Opaque(opaque_ty) => Some(opaque_ty.fmt(fmt)),
+        }
     }
 
     fn debug_projection_ty(
@@ -114,7 +120,7 @@ impl chalk_ir::interner::Interner for Interner {
         opaque_ty_id: chalk_ir::OpaqueTyId<Self>,
         fmt: &mut fmt::Formatter<'_>,
     ) -> Option<fmt::Result> {
-        Some(fmt.debug_struct("OpaqueTyId").field("index", &opaque_ty_id.0).finish())
+        Some(write!(fmt, "OpaqueTy#{}", opaque_ty_id.0))
     }
 
     fn debug_ty(ty: &chalk_ir::Ty<Interner>, fmt: &mut fmt::Formatter<'_>) -> Option<fmt::Result> {
@@ -331,7 +337,7 @@ impl chalk_ir::interner::Interner for Interner {
         &self,
         clauses: &'a Self::InternedProgramClauses,
     ) -> &'a [chalk_ir::ProgramClause<Self>] {
-        &clauses
+        clauses
     }
 
     fn intern_quantified_where_clauses<E>(
@@ -373,7 +379,7 @@ impl chalk_ir::interner::Interner for Interner {
         &self,
         canonical_var_kinds: &'a Self::InternedCanonicalVarKinds,
     ) -> &'a [chalk_ir::CanonicalVarKind<Self>] {
-        &canonical_var_kinds
+        canonical_var_kinds
     }
 
     fn intern_constraints<E>(
@@ -413,7 +419,7 @@ impl chalk_ir::interner::Interner for Interner {
         &self,
         variances: &'a Self::InternedVariances,
     ) -> &'a [chalk_ir::Variance] {
-        &variances
+        variances
     }
 }
 

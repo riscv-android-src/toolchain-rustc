@@ -854,9 +854,10 @@ mod tests {
     use cranelift_codegen::ir::{
         AbiParam, ExternalName, Function, InstBuilder, MemFlags, Signature,
     };
-    use cranelift_codegen::isa::CallConv;
+    use cranelift_codegen::isa::{CallConv, TargetFrontendConfig};
     use cranelift_codegen::settings;
     use cranelift_codegen::verifier::verify_function;
+    use target_lexicon::PointerWidth;
 
     fn sample_function(lazy_seal: bool) {
         let mut sig = Signature::new(CallConv::SystemV);
@@ -968,23 +969,18 @@ mod tests {
         sample_function(true)
     }
 
+    /// Helper function to construct a fixed frontend configuration.
+    fn systemv_frontend_config() -> TargetFrontendConfig {
+        TargetFrontendConfig {
+            default_call_conv: CallConv::SystemV,
+            pointer_width: PointerWidth::U64,
+        }
+    }
+
     #[test]
     fn memcpy() {
-        use core::str::FromStr;
-        use cranelift_codegen::{isa, settings};
-
-        let shared_builder = settings::builder();
-        let shared_flags = settings::Flags::new(shared_builder);
-
-        let triple =
-            ::target_lexicon::Triple::from_str("x86_64").expect("Couldn't create x86_64 triple");
-
-        let target = isa::lookup(triple)
-            .ok()
-            .map(|b| b.finish(shared_flags))
-            .expect("This test requires x86_64 support.");
-
-        let mut sig = Signature::new(target.default_call_conv());
+        let frontend_config = systemv_frontend_config();
+        let mut sig = Signature::new(frontend_config.default_call_conv);
         sig.returns.push(AbiParam::new(I32));
 
         let mut fn_ctx = FunctionBuilderContext::new();
@@ -996,8 +992,8 @@ mod tests {
             let x = Variable::new(0);
             let y = Variable::new(1);
             let z = Variable::new(2);
-            builder.declare_var(x, target.pointer_type());
-            builder.declare_var(y, target.pointer_type());
+            builder.declare_var(x, frontend_config.pointer_type());
+            builder.declare_var(y, frontend_config.pointer_type());
             builder.declare_var(z, I32);
             builder.append_block_params_for_function_params(block0);
             builder.switch_to_block(block0);
@@ -1005,7 +1001,7 @@ mod tests {
             let src = builder.use_var(x);
             let dest = builder.use_var(y);
             let size = builder.use_var(y);
-            builder.call_memcpy(target.frontend_config(), dest, src, size);
+            builder.call_memcpy(frontend_config, dest, src, size);
             builder.ins().return_(&[size]);
 
             builder.seal_all_blocks();
@@ -1032,21 +1028,8 @@ block0:
 
     #[test]
     fn small_memcpy() {
-        use core::str::FromStr;
-        use cranelift_codegen::{isa, settings};
-
-        let shared_builder = settings::builder();
-        let shared_flags = settings::Flags::new(shared_builder);
-
-        let triple =
-            ::target_lexicon::Triple::from_str("x86_64").expect("Couldn't create x86_64 triple");
-
-        let target = isa::lookup(triple)
-            .ok()
-            .map(|b| b.finish(shared_flags))
-            .expect("This test requires x86_64 support.");
-
-        let mut sig = Signature::new(target.default_call_conv());
+        let frontend_config = systemv_frontend_config();
+        let mut sig = Signature::new(frontend_config.default_call_conv);
         sig.returns.push(AbiParam::new(I32));
 
         let mut fn_ctx = FunctionBuilderContext::new();
@@ -1057,8 +1040,8 @@ block0:
             let block0 = builder.create_block();
             let x = Variable::new(0);
             let y = Variable::new(16);
-            builder.declare_var(x, target.pointer_type());
-            builder.declare_var(y, target.pointer_type());
+            builder.declare_var(x, frontend_config.pointer_type());
+            builder.declare_var(y, frontend_config.pointer_type());
             builder.append_block_params_for_function_params(block0);
             builder.switch_to_block(block0);
 
@@ -1066,7 +1049,7 @@ block0:
             let dest = builder.use_var(y);
             let size = 8;
             builder.emit_small_memory_copy(
-                target.frontend_config(),
+                frontend_config,
                 dest,
                 src,
                 size,
@@ -1099,21 +1082,8 @@ block0:
 
     #[test]
     fn not_so_small_memcpy() {
-        use core::str::FromStr;
-        use cranelift_codegen::{isa, settings};
-
-        let shared_builder = settings::builder();
-        let shared_flags = settings::Flags::new(shared_builder);
-
-        let triple =
-            ::target_lexicon::Triple::from_str("x86_64").expect("Couldn't create x86_64 triple");
-
-        let target = isa::lookup(triple)
-            .ok()
-            .map(|b| b.finish(shared_flags))
-            .expect("This test requires x86_64 support.");
-
-        let mut sig = Signature::new(target.default_call_conv());
+        let frontend_config = systemv_frontend_config();
+        let mut sig = Signature::new(frontend_config.default_call_conv);
         sig.returns.push(AbiParam::new(I32));
 
         let mut fn_ctx = FunctionBuilderContext::new();
@@ -1124,8 +1094,8 @@ block0:
             let block0 = builder.create_block();
             let x = Variable::new(0);
             let y = Variable::new(16);
-            builder.declare_var(x, target.pointer_type());
-            builder.declare_var(y, target.pointer_type());
+            builder.declare_var(x, frontend_config.pointer_type());
+            builder.declare_var(y, frontend_config.pointer_type());
             builder.append_block_params_for_function_params(block0);
             builder.switch_to_block(block0);
 
@@ -1133,7 +1103,7 @@ block0:
             let dest = builder.use_var(y);
             let size = 8192;
             builder.emit_small_memory_copy(
-                target.frontend_config(),
+                frontend_config,
                 dest,
                 src,
                 size,
@@ -1169,21 +1139,8 @@ block0:
 
     #[test]
     fn small_memset() {
-        use core::str::FromStr;
-        use cranelift_codegen::{isa, settings};
-
-        let shared_builder = settings::builder();
-        let shared_flags = settings::Flags::new(shared_builder);
-
-        let triple =
-            ::target_lexicon::Triple::from_str("x86_64").expect("Couldn't create x86_64 triple");
-
-        let target = isa::lookup(triple)
-            .ok()
-            .map(|b| b.finish(shared_flags))
-            .expect("This test requires x86_64 support.");
-
-        let mut sig = Signature::new(target.default_call_conv());
+        let frontend_config = systemv_frontend_config();
+        let mut sig = Signature::new(frontend_config.default_call_conv);
         sig.returns.push(AbiParam::new(I32));
 
         let mut fn_ctx = FunctionBuilderContext::new();
@@ -1193,13 +1150,13 @@ block0:
 
             let block0 = builder.create_block();
             let y = Variable::new(16);
-            builder.declare_var(y, target.pointer_type());
+            builder.declare_var(y, frontend_config.pointer_type());
             builder.append_block_params_for_function_params(block0);
             builder.switch_to_block(block0);
 
             let dest = builder.use_var(y);
             let size = 8;
-            builder.emit_small_memset(target.frontend_config(), dest, 1, size, 8, MemFlags::new());
+            builder.emit_small_memset(frontend_config, dest, 1, size, 8, MemFlags::new());
             builder.ins().return_(&[dest]);
 
             builder.seal_all_blocks();
@@ -1222,21 +1179,8 @@ block0:
 
     #[test]
     fn not_so_small_memset() {
-        use core::str::FromStr;
-        use cranelift_codegen::{isa, settings};
-
-        let shared_builder = settings::builder();
-        let shared_flags = settings::Flags::new(shared_builder);
-
-        let triple =
-            ::target_lexicon::Triple::from_str("x86_64").expect("Couldn't create x86_64 triple");
-
-        let target = isa::lookup(triple)
-            .ok()
-            .map(|b| b.finish(shared_flags))
-            .expect("This test requires x86_64 support.");
-
-        let mut sig = Signature::new(target.default_call_conv());
+        let frontend_config = systemv_frontend_config();
+        let mut sig = Signature::new(frontend_config.default_call_conv);
         sig.returns.push(AbiParam::new(I32));
 
         let mut fn_ctx = FunctionBuilderContext::new();
@@ -1246,13 +1190,13 @@ block0:
 
             let block0 = builder.create_block();
             let y = Variable::new(16);
-            builder.declare_var(y, target.pointer_type());
+            builder.declare_var(y, frontend_config.pointer_type());
             builder.append_block_params_for_function_params(block0);
             builder.switch_to_block(block0);
 
             let dest = builder.use_var(y);
             let size = 8192;
-            builder.emit_small_memset(target.frontend_config(), dest, 1, size, 8, MemFlags::new());
+            builder.emit_small_memset(frontend_config, dest, 1, size, 8, MemFlags::new());
             builder.ins().return_(&[dest]);
 
             builder.seal_all_blocks();

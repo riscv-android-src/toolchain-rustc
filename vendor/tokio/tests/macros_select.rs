@@ -1,5 +1,4 @@
-#![allow(clippy::blacklisted_name, clippy::stable_sort_primitive)]
-
+#![allow(clippy::blacklisted_name)]
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
 use tokio_test::{assert_ok, assert_pending, assert_ready};
@@ -153,7 +152,7 @@ async fn select_streams() {
         }
     }
 
-    msgs.sort();
+    msgs.sort_unstable();
     assert_eq!(&msgs[..], &[1, 2, 3]);
 }
 
@@ -360,12 +359,11 @@ async fn join_with_select() {
 async fn use_future_in_if_condition() {
     use tokio::time::{self, Duration};
 
-    let mut delay = time::delay_for(Duration::from_millis(50));
-
     tokio::select! {
-        _ = &mut delay, if !delay.is_elapsed() => {
+        _ = time::sleep(Duration::from_millis(50)), if false => {
+            panic!("if condition ignored")
         }
-        _ = async { 1 } => {
+        _ = async { 1u32 } => {
         }
     }
 }
@@ -460,6 +458,92 @@ async fn async_noop() {}
 async fn async_never() -> ! {
     use tokio::time::Duration;
     loop {
-        tokio::time::delay_for(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+// From https://github.com/tokio-rs/tokio/issues/2857
+#[tokio::test]
+async fn mut_on_left_hand_side() {
+    let v = async move {
+        let ok = async { 1 };
+        tokio::pin!(ok);
+        tokio::select! {
+            mut a = &mut ok => {
+                a += 1;
+                a
+            }
+        }
+    }
+    .await;
+    assert_eq!(v, 2);
+}
+
+#[tokio::test]
+async fn biased_one_not_ready() {
+    let (_tx1, rx1) = oneshot::channel::<i32>();
+    let (tx2, rx2) = oneshot::channel::<i32>();
+    let (tx3, rx3) = oneshot::channel::<i32>();
+
+    tx2.send(2).unwrap();
+    tx3.send(3).unwrap();
+
+    let v = tokio::select! {
+        biased;
+
+        _ = rx1 => unreachable!(),
+        res = rx2 => {
+            assert_ok!(res)
+        },
+        _ = rx3 => {
+            panic!("This branch should never be activated because `rx2` should be polled before `rx3` due to `biased;`.")
+        }
+    };
+
+    assert_eq!(2, v);
+}
+
+#[tokio::test]
+async fn biased_eventually_ready() {
+    use tokio::task::yield_now;
+
+    let one = async {};
+    let two = async { yield_now().await };
+    let three = async { yield_now().await };
+
+    let mut count = 0u8;
+
+    tokio::pin!(one, two, three);
+
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = &mut two, if count < 2 => {
+                count += 1;
+                assert_eq!(count, 2);
+            }
+            _ = &mut three, if count < 3 => {
+                count += 1;
+                assert_eq!(count, 3);
+            }
+            _ = &mut one, if count < 1 => {
+                count += 1;
+                assert_eq!(count, 1);
+            }
+            else => break,
+        }
+    }
+
+    assert_eq!(count, 3);
+}
+
+// https://github.com/tokio-rs/tokio/issues/3830
+// https://github.com/rust-lang/rust-clippy/issues/7304
+#[warn(clippy::default_numeric_fallback)]
+pub async fn default_numeric_fallback() {
+    tokio::select! {
+        _ = async {} => (),
+        else => (),
     }
 }

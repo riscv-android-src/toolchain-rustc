@@ -23,9 +23,9 @@ impl RelocationSections {
     /// Create a new mapping using the section table.
     ///
     /// Skips relocation sections that do not use the given symbol table section.
-    pub fn parse<Elf: FileHeader>(
+    pub fn parse<'data, Elf: FileHeader, R: ReadRef<'data>>(
         endian: Elf::Endian,
-        sections: &SectionTable<Elf>,
+        sections: &SectionTable<'data, Elf, R>,
         symbol_section: usize,
     ) -> read::Result<Self> {
         let mut relocations = vec![0; sections.len()];
@@ -247,6 +247,10 @@ fn parse_relocation<Elf: FileHeader>(
             elf::R_AARCH64_PREL64 => (RelocationKind::Relative, 64),
             elf::R_AARCH64_PREL32 => (RelocationKind::Relative, 32),
             elf::R_AARCH64_PREL16 => (RelocationKind::Relative, 16),
+            elf::R_AARCH64_CALL26 => {
+                encoding = RelocationEncoding::AArch64Call;
+                (RelocationKind::PltRelative, 26)
+            }
             r_type => (RelocationKind::Elf(r_type), 0),
         },
         elf::EM_ARM => match reloc.r_type(endian, false) {

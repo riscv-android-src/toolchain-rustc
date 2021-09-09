@@ -1,11 +1,10 @@
 use crate::infer::InferCtxtExt as _;
-use crate::traits::{self, PredicateObligation};
+use crate::traits::{self, ObligationCause, PredicateObligation};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::vec_map::VecMap;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
-use rustc_hir::Node;
 use rustc_infer::infer::error_reporting::unexpected_hidden_region_diagnostic;
 use rustc_infer::infer::free_regions::FreeRegionRelations;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
@@ -84,6 +83,7 @@ pub struct OpaqueTypeDecl<'tcx> {
 }
 
 /// Whether member constraints should be generated for all opaque types
+#[derive(Debug)]
 pub enum GenerateMemberConstraints {
     /// The default, used by typeck
     WhenRequired,
@@ -355,8 +355,6 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         opaque_types: &OpaqueTypeMap<'tcx>,
         free_region_relations: &FRR,
     ) {
-        debug!("constrain_opaque_types()");
-
         for &(opaque_type_key, opaque_defn) in opaque_types {
             self.constrain_opaque_type(
                 opaque_type_key,
@@ -368,6 +366,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     }
 
     /// See `constrain_opaque_types` for documentation.
+    #[instrument(level = "debug", skip(self, free_region_relations))]
     fn constrain_opaque_type<FRR: FreeRegionRelations<'tcx>>(
         &self,
         opaque_type_key: OpaqueTypeKey<'tcx>,
@@ -377,15 +376,11 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     ) {
         let def_id = opaque_type_key.def_id;
 
-        debug!("constrain_opaque_type()");
-        debug!("constrain_opaque_type: def_id={:?}", def_id);
-        debug!("constrain_opaque_type: opaque_defn={:#?}", opaque_defn);
-
         let tcx = self.tcx;
 
         let concrete_ty = self.resolve_vars_if_possible(opaque_defn.concrete_ty);
 
-        debug!("constrain_opaque_type: concrete_ty={:?}", concrete_ty);
+        debug!(?concrete_ty);
 
         let first_own_region = match opaque_defn.origin {
             hir::OpaqueTyOrigin::FnReturn | hir::OpaqueTyOrigin::AsyncFn => {
@@ -398,14 +393,12 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 // type foo::<'p0..'pn>::Foo<'q0..'qm>
                 // fn foo<l0..'ln>() -> foo::<'static..'static>::Foo<'l0..'lm>.
                 //
-                // For these types we onlt iterate over `'l0..lm` below.
+                // For these types we only iterate over `'l0..lm` below.
                 tcx.generics_of(def_id).parent_count
             }
             // These opaque type inherit all lifetime parameters from their
             // parent, so we have to check them all.
-            hir::OpaqueTyOrigin::Binding
-            | hir::OpaqueTyOrigin::TyAlias
-            | hir::OpaqueTyOrigin::Misc => 0,
+            hir::OpaqueTyOrigin::TyAlias => 0,
         };
 
         let span = tcx.def_span(def_id);
@@ -413,10 +406,10 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         // If there are required region bounds, we can use them.
         if opaque_defn.has_required_region_bounds {
             let bounds = tcx.explicit_item_bounds(def_id);
-            debug!("constrain_opaque_type: predicates: {:#?}", bounds);
+            debug!("{:#?}", bounds);
             let bounds: Vec<_> =
                 bounds.iter().map(|(bound, _)| bound.subst(tcx, opaque_type_key.substs)).collect();
-            debug!("constrain_opaque_type: bounds={:#?}", bounds);
+            debug!("{:#?}", bounds);
             let opaque_type = tcx.mk_opaque(def_id, opaque_type_key.substs);
 
             let required_region_bounds =
@@ -455,8 +448,8 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             };
 
             // Compute the least upper bound of it with the other regions.
-            debug!("constrain_opaque_types: least_region={:?}", least_region);
-            debug!("constrain_opaque_types: subst_region={:?}", subst_region);
+            debug!(?least_region);
+            debug!(?subst_region);
             match least_region {
                 None => least_region = Some(subst_region),
                 Some(lr) => {
@@ -487,7 +480,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         }
 
         let least_region = least_region.unwrap_or(tcx.lifetimes.re_static);
-        debug!("constrain_opaque_types: least_region={:?}", least_region);
+        debug!(?least_region);
 
         if let GenerateMemberConstraints::IfNoStaticBound = mode {
             if least_region != tcx.lifetimes.re_static {
@@ -569,6 +562,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     /// - `substs`, the substs  used to instantiate this opaque type
     /// - `instantiated_ty`, the inferred type C1 -- fully resolved, lifted version of
     ///   `opaque_defn.concrete_ty`
+    #[instrument(skip(self))]
     fn infer_opaque_definition_from_instantiation(
         &self,
         opaque_type_key: OpaqueTypeKey<'tcx>,
@@ -577,11 +571,6 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     ) -> Ty<'tcx> {
         let OpaqueTypeKey { def_id, substs } = opaque_type_key;
 
-        debug!(
-            "infer_opaque_definition_from_instantiation(def_id={:?}, instantiated_ty={:?})",
-            def_id, instantiated_ty
-        );
-
         // Use substs to build up a reverse map from regions to their
         // identity mappings. This is necessary because of `impl
         // Trait` lifetimes are computed by replacing existing
@@ -589,6 +578,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         // `impl Trait` return type, resulting in the parameters
         // shifting.
         let id_substs = InternalSubsts::identity_for_item(self.tcx, def_id);
+        debug!(?id_substs);
         let map: FxHashMap<GenericArg<'tcx>, GenericArg<'tcx>> =
             substs.iter().enumerate().map(|(index, subst)| (subst, id_substs[index])).collect();
 
@@ -603,7 +593,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             instantiated_ty,
             span,
         ));
-        debug!("infer_opaque_definition_from_instantiation: definition_ty={:?}", definition_ty);
+        debug!(?definition_ty);
 
         definition_ty
     }
@@ -858,7 +848,7 @@ impl TypeFolder<'tcx> for ReverseMapper<'tcx> {
                 self.tcx.mk_generator(def_id, substs, movability)
             }
 
-            ty::Param(..) => {
+            ty::Param(param) => {
                 // Look it up in the substitution list.
                 match self.map.get(&ty.into()).map(|k| k.unpack()) {
                     // Found it in the substitution list; replace with the parameter from the
@@ -866,6 +856,7 @@ impl TypeFolder<'tcx> for ReverseMapper<'tcx> {
                     Some(GenericArgKind::Type(t1)) => t1,
                     Some(u) => panic!("type mapped to unexpected kind: {:?}", u),
                     None => {
+                        debug!(?param, ?self.map);
                         self.tcx
                             .sess
                             .struct_span_err(
@@ -932,8 +923,8 @@ struct Instantiator<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Instantiator<'a, 'tcx> {
+    #[instrument(skip(self))]
     fn instantiate_opaque_types_in_map<T: TypeFoldable<'tcx>>(&mut self, value: T) -> T {
-        debug!("instantiate_opaque_types_in_map(value={:?})", value);
         let tcx = self.infcx.tcx;
         value.fold_with(&mut BottomUpFolder {
             tcx,
@@ -982,8 +973,8 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
                             let opaque_parent_hir_id = tcx.hir().get_parent_item(opaque_hir_id);
                             parent_def_id == tcx.hir().local_def_id(opaque_parent_hir_id)
                         };
-                        let (in_definition_scope, origin) = match tcx.hir().find(opaque_hir_id) {
-                            Some(Node::Item(item)) => match item.kind {
+                        let (in_definition_scope, origin) =
+                            match tcx.hir().expect_item(opaque_hir_id).kind {
                                 // Anonymous `impl Trait`
                                 hir::ItemKind::OpaqueTy(hir::OpaqueTy {
                                     impl_trait_fn: Some(parent),
@@ -999,13 +990,8 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
                                     may_define_opaque_type(tcx, self.parent_def_id, opaque_hir_id),
                                     origin,
                                 ),
-                                _ => (def_scope_default(), hir::OpaqueTyOrigin::Misc),
-                            },
-                            _ => bug!(
-                                "expected item, found {}",
-                                tcx.hir().node_to_string(opaque_hir_id),
-                            ),
-                        };
+                                _ => (def_scope_default(), hir::OpaqueTyOrigin::TyAlias),
+                            };
                         if in_definition_scope {
                             let opaque_type_key =
                                 OpaqueTypeKey { def_id: def_id.to_def_id(), substs };
@@ -1057,8 +1043,11 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
             item_bounds.iter().map(|(bound, _)| bound.subst(tcx, substs)).collect();
 
         let param_env = tcx.param_env(def_id);
-        let InferOk { value: bounds, obligations } =
-            infcx.partially_normalize_associated_types_in(span, self.body_id, param_env, bounds);
+        let InferOk { value: bounds, obligations } = infcx.partially_normalize_associated_types_in(
+            ObligationCause::misc(span, self.body_id),
+            param_env,
+            bounds,
+        );
         self.obligations.extend(obligations);
 
         debug!("instantiate_opaque_types: bounds={:?}", bounds);

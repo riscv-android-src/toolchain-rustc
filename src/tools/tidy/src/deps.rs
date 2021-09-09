@@ -28,18 +28,16 @@ const LICENSES: &[&str] = &[
 const EXCEPTIONS: &[(&str, &str)] = &[
     ("mdbook", "MPL-2.0"),                                  // mdbook
     ("openssl", "Apache-2.0"),                              // cargo, mdbook
-    ("fuchsia-zircon-sys", "BSD-3-Clause"),                 // rustdoc, rustc, cargo
-    ("fuchsia-zircon", "BSD-3-Clause"), // rustdoc, rustc, cargo (jobserver & tempdir)
-    ("colored", "MPL-2.0"),             // rustfmt
-    ("ordslice", "Apache-2.0"),         // rls
-    ("ryu", "Apache-2.0 OR BSL-1.0"),   // rls/cargo/... (because of serde)
-    ("bytesize", "Apache-2.0"),         // cargo
-    ("im-rc", "MPL-2.0+"),              // cargo
-    ("sized-chunks", "MPL-2.0+"),       // cargo via im-rc
-    ("bitmaps", "MPL-2.0+"),            // cargo via im-rc
+    ("colored", "MPL-2.0"),                                 // rustfmt
+    ("ordslice", "Apache-2.0"),                             // rls
+    ("ryu", "Apache-2.0 OR BSL-1.0"),                       // rls/cargo/... (because of serde)
+    ("bytesize", "Apache-2.0"),                             // cargo
+    ("im-rc", "MPL-2.0+"),                                  // cargo
+    ("sized-chunks", "MPL-2.0+"),                           // cargo via im-rc
+    ("bitmaps", "MPL-2.0+"),                                // cargo via im-rc
     ("crossbeam-queue", "MIT/Apache-2.0 AND BSD-2-Clause"), // rls via rayon
-    ("instant", "BSD-3-Clause"),        // rustc_driver/tracing-subscriber/parking_lot
-    ("snap", "BSD-3-Clause"),           // rustc
+    ("instant", "BSD-3-Clause"), // rustc_driver/tracing-subscriber/parking_lot
+    ("snap", "BSD-3-Clause"),    // rustc
     // FIXME: this dependency violates the documentation comment above:
     ("fortanix-sgx-abi", "MPL-2.0"), // libstd but only for `sgx` target
 ];
@@ -115,8 +113,6 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "fixedbitset",
     "flate2",
     "fortanix-sgx-abi",
-    "fuchsia-zircon",
-    "fuchsia-zircon-sys",
     "generic-array",
     "getopts",
     "getrandom",
@@ -130,7 +126,6 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "itertools",
     "itoa",
     "jobserver",
-    "kernel32-sys",
     "lazy_static",
     "libc",
     "libz-sys",
@@ -222,7 +217,6 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "version_check",
     "wasi",
     "winapi",
-    "winapi-build",
     "winapi-i686-pc-windows-gnu",
     "winapi-util",
     "winapi-x86_64-pc-windows-gnu",
@@ -254,6 +248,7 @@ const PERMITTED_CRANELIFT_DEPENDENCIES: &[&str] = &[
     "libloading",
     "log",
     "mach",
+    "memchr",
     "object",
     "regalloc",
     "region",
@@ -287,6 +282,7 @@ pub fn check(root: &Path, cargo: &Path, bad: &mut bool) {
     check_exceptions(&metadata, EXCEPTIONS, runtime_ids, bad);
     check_dependencies(&metadata, PERMITTED_DEPENDENCIES, RESTRICTED_DEPENDENCY_CRATES, bad);
     check_crate_duplicate(&metadata, FORBIDDEN_TO_HAVE_DUPLICATES, bad);
+    check_rustfix(&metadata, bad);
 
     // Check rustc_codegen_cranelift independently as it has it's own workspace.
     let mut cmd = cargo_metadata::MetadataCommand::new();
@@ -545,5 +541,24 @@ fn normal_deps_of_r<'a>(
         .unwrap_or_else(|| panic!("could not find `{}` in resolve", pkg_id));
     for dep in &node.deps {
         normal_deps_of_r(resolve, &dep.pkg, result);
+    }
+}
+
+fn check_rustfix(metadata: &Metadata, bad: &mut bool) {
+    let cargo = pkg_from_name(metadata, "cargo");
+    let compiletest = pkg_from_name(metadata, "compiletest");
+    let cargo_deps = deps_of(metadata, &cargo.id);
+    let compiletest_deps = deps_of(metadata, &compiletest.id);
+    let cargo_rustfix = cargo_deps.iter().find(|p| p.name == "rustfix").unwrap();
+    let compiletest_rustfix = compiletest_deps.iter().find(|p| p.name == "rustfix").unwrap();
+    if cargo_rustfix.version != compiletest_rustfix.version {
+        tidy_error!(
+            bad,
+            "cargo's rustfix version {} does not match compiletest's rustfix version {}\n\
+             rustfix should be kept in sync, update the cargo side first, and then update \
+             compiletest along with cargo.",
+            cargo_rustfix.version,
+            compiletest_rustfix.version
+        );
     }
 }

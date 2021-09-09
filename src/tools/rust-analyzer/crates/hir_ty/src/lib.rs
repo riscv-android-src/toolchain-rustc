@@ -21,7 +21,6 @@ mod utils;
 mod walk;
 pub mod db;
 pub mod diagnostics;
-pub mod diagnostics_sink;
 pub mod display;
 pub mod method_resolution;
 pub mod primitive;
@@ -50,7 +49,7 @@ use crate::{db::HirDatabase, utils::generics};
 pub use autoderef::autoderef;
 pub use builder::TyBuilder;
 pub use chalk_ext::*;
-pub use infer::{could_unify, InferenceResult};
+pub use infer::{could_unify, InferenceDiagnostic, InferenceResult};
 pub use interner::Interner;
 pub use lower::{
     associated_type_shorthand_candidates, callable_item_sig, CallableDefId, ImplTraitLoweringMode,
@@ -113,6 +112,7 @@ pub type Canonical<T> = chalk_ir::Canonical<T>;
 pub type FnSig = chalk_ir::FnSig<Interner>;
 
 pub type InEnvironment<T> = chalk_ir::InEnvironment<T>;
+pub type Environment = chalk_ir::Environment<Interner>;
 pub type DomainGoal = chalk_ir::DomainGoal<Interner>;
 pub type Goal = chalk_ir::Goal<Interner>;
 pub type AliasEq = chalk_ir::AliasEq<Interner>;

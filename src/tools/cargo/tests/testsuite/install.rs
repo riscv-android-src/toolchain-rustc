@@ -94,14 +94,14 @@ fn multiple_pkgs() {
             "\
 [UPDATING] `[..]` index
 [DOWNLOADING] crates ...
-[DOWNLOADED] foo v0.0.1 (registry `[CWD]/registry`)
+[DOWNLOADED] foo v0.0.1 (registry `dummy-registry`)
 [INSTALLING] foo v0.0.1
 [COMPILING] foo v0.0.1
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/foo[EXE]
 [INSTALLED] package `foo v0.0.1` (executable `foo[EXE]`)
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.0.2 (registry `[CWD]/registry`)
+[DOWNLOADED] bar v0.0.2 (registry `dummy-registry`)
 [INSTALLING] bar v0.0.2
 [COMPILING] bar v0.0.2
 [FINISHED] release [optimized] target(s) in [..]
@@ -154,14 +154,14 @@ fn multiple_pkgs_path_set() {
             "\
 [UPDATING] `[..]` index
 [DOWNLOADING] crates ...
-[DOWNLOADED] foo v0.0.1 (registry `[CWD]/registry`)
+[DOWNLOADED] foo v0.0.1 (registry `dummy-registry`)
 [INSTALLING] foo v0.0.1
 [COMPILING] foo v0.0.1
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/foo[EXE]
 [INSTALLED] package `foo v0.0.1` (executable `foo[EXE]`)
 [DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.0.2 (registry `[CWD]/registry`)
+[DOWNLOADED] bar v0.0.2 (registry `dummy-registry`)
 [INSTALLING] bar v0.0.2
 [COMPILING] bar v0.0.2
 [FINISHED] release [optimized] target(s) in [..]
@@ -400,6 +400,23 @@ fn install_target_dir() {
 }
 
 #[cargo_test]
+#[cfg(target_os = "linux")]
+fn install_path_with_lowercase_cargo_toml() {
+    let toml = paths::root().join("cargo.toml");
+    fs::write(toml, "").unwrap();
+
+    cargo_process("install --path .")
+        .with_status(101)
+        .with_stderr(
+            "\
+[ERROR] `[CWD]` does not contain a Cargo.toml file, \
+but found cargo.toml please try to rename it to Cargo.toml. --path must point to a directory containing a Cargo.toml file.
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn multiple_crates_error() {
     let p = git::repo(&paths::root().join("foo"))
         .file("Cargo.toml", &basic_manifest("foo", "0.1.0"))
@@ -414,7 +431,9 @@ fn multiple_crates_error() {
         .with_stderr(
             "\
 [UPDATING] git repository [..]
-[ERROR] multiple packages with binaries found: bar, foo
+[ERROR] multiple packages with binaries found: bar, foo. \
+When installing a git repository, cargo will always search the entire repo for any Cargo.toml. \
+Please specify which to install.
 ",
         )
         .run();
@@ -723,9 +742,7 @@ fn compile_failure() {
     found at `[..]target`
 
 Caused by:
-  could not compile `foo`
-
-To learn more, run the command again with --verbose.
+  could not compile `foo` due to previous error
 ",
         )
         .run();
@@ -756,6 +773,26 @@ fn git_repo() {
         .run();
     assert_has_installed_exe(cargo_home(), "foo");
     assert_has_installed_exe(cargo_home(), "foo");
+}
+
+#[cargo_test]
+#[cfg(target_os = "linux")]
+fn git_repo_with_lowercase_cargo_toml() {
+    let p = git::repo(&paths::root().join("foo"))
+        .file("cargo.toml", &basic_manifest("foo", "0.1.0"))
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    cargo_process("install --git")
+        .arg(p.url().to_string())
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] git repository [..]
+[ERROR] Could not find Cargo.toml in `[..]`, but found cargo.toml please try to rename it to Cargo.toml
+",
+        )
+        .run();
 }
 
 #[cargo_test]
@@ -1658,8 +1695,9 @@ fn install_yanked_cargo_package() {
     cargo_process("install baz --version 0.0.1")
         .with_status(101)
         .with_stderr_contains(
-            "error: cannot install package `baz`, it has been yanked from registry \
-         `https://github.com/rust-lang/crates.io-index`",
+            "\
+[ERROR] cannot install package `baz`, it has been yanked from registry `crates-io`
+",
         )
         .run();
 }
@@ -1754,24 +1792,24 @@ fn install_semver_metadata() {
     cargo_process("install foo --registry alternative --version 1.0.0+abc").run();
     cargo_process("install foo --registry alternative")
         .with_stderr("\
-[UPDATING] `[ROOT]/alternative-registry` index
-[IGNORED] package `foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)` is already installed, use --force to override
+[UPDATING] `alternative` index
+[IGNORED] package `foo v1.0.0+abc (registry `alternative`)` is already installed, use --force to override
 [WARNING] be sure to add [..]
 ")
         .run();
     // "Updating" is not displayed here due to the --version fast-path.
     cargo_process("install foo --registry alternative --version 1.0.0+abc")
         .with_stderr("\
-[IGNORED] package `foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)` is already installed, use --force to override
+[IGNORED] package `foo v1.0.0+abc (registry `alternative`)` is already installed, use --force to override
 [WARNING] be sure to add [..]
 ")
         .run();
     cargo_process("install foo --registry alternative --version 1.0.0 --force")
         .with_stderr(
             "\
-[UPDATING] `[ROOT]/alternative-registry` index
-[INSTALLING] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
-[COMPILING] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
+[UPDATING] `alternative` index
+[INSTALLING] foo v1.0.0+abc (registry `alternative`)
+[COMPILING] foo v1.0.0+abc (registry `alternative`)
 [FINISHED] [..]
 [REPLACING] [ROOT]/home/.cargo/bin/foo[EXE]
 [REPLACED] package [..]
@@ -1783,16 +1821,18 @@ fn install_semver_metadata() {
     paths::home().join(".cargo/registry").rm_rf();
     paths::home().join(".cargo/bin").rm_rf();
     cargo_process("install foo --registry alternative --version 1.0.0")
-        .with_stderr("\
-[UPDATING] `[ROOT]/alternative-registry` index
+        .with_stderr(
+            "\
+[UPDATING] `alternative` index
 [DOWNLOADING] crates ...
-[DOWNLOADED] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
-[INSTALLING] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
-[COMPILING] foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)
+[DOWNLOADED] foo v1.0.0+abc (registry `alternative`)
+[INSTALLING] foo v1.0.0+abc (registry `alternative`)
+[COMPILING] foo v1.0.0+abc (registry `alternative`)
 [FINISHED] [..]
 [INSTALLING] [ROOT]/home/.cargo/bin/foo[EXE]
-[INSTALLED] package `foo v1.0.0+abc (registry `[ROOT]/alternative-registry`)` (executable `foo[EXE]`)
+[INSTALLED] package `foo v1.0.0+abc (registry `alternative`)` (executable `foo[EXE]`)
 [WARNING] be sure to add [..]
-")
+",
+        )
         .run();
 }

@@ -3,44 +3,24 @@
 use crate::dylib;
 use crate::ProcMacroSrv;
 use expect_test::Expect;
+use paths::AbsPathBuf;
 use proc_macro_api::ListMacrosTask;
 use std::str::FromStr;
 
 pub mod fixtures {
-    use cargo_metadata::Message;
-    use std::path::PathBuf;
-    use std::process::Command;
-
-    // Use current project metadata to get the proc-macro dylib path
     pub fn proc_macro_test_dylib_path() -> std::path::PathBuf {
-        let name = "proc_macro_test";
-        let version = "0.0.0";
-        let command = Command::new(toolchain::cargo())
-            .args(&["check", "--tests", "--message-format", "json"])
-            .output()
-            .unwrap()
-            .stdout;
-
-        for message in Message::parse_stream(command.as_slice()) {
-            match message.unwrap() {
-                Message::CompilerArtifact(artifact) => {
-                    if artifact.target.kind.contains(&"proc-macro".to_string()) {
-                        let repr = format!("{} {}", name, version);
-                        if artifact.package_id.repr.starts_with(&repr) {
-                            return PathBuf::from(&artifact.filenames[0]);
-                        }
-                    }
-                }
-                _ => (), // Unknown message
-            }
-        }
-
-        panic!("No proc-macro dylib for {} found!", name);
+        proc_macro_test::PROC_MACRO_TEST_LOCATION.into()
     }
 }
 
-fn parse_string(code: &str) -> Option<crate::rustc_server::TokenStream> {
-    Some(crate::rustc_server::TokenStream::from_str(code).unwrap())
+fn parse_string(code: &str) -> Option<crate::abis::abi_1_47::TokenStream> {
+    // This is a bit strange. We need to parse a string into a token stream into
+    // order to create a tt::SubTree from it in fixtures. `into_subtree` is
+    // implemented by all the ABIs we have so we arbitrarily choose one ABI to
+    // write a `parse_string` function for and use that. The tests don't really
+    // care which ABI we're using as the `into_subtree` function isn't part of
+    // the ABI and shouldn't change between ABI versions.
+    crate::abis::abi_1_47::TokenStream::from_str(code).ok()
 }
 
 pub fn assert_expand(macro_name: &str, ra_fixture: &str, expect: Expect) {
@@ -62,7 +42,7 @@ fn assert_expand_impl(macro_name: &str, input: &str, attr: Option<&str>, expect:
 }
 
 pub fn list() -> Vec<String> {
-    let path = fixtures::proc_macro_test_dylib_path();
+    let path = AbsPathBuf::assert(fixtures::proc_macro_test_dylib_path());
     let task = ListMacrosTask { lib: path };
     let mut srv = ProcMacroSrv::default();
     let res = srv.list_macros(&task).unwrap();

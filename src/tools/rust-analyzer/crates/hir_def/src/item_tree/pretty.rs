@@ -2,6 +2,8 @@
 
 use std::fmt::{self, Write};
 
+use itertools::Itertools;
+
 use crate::{
     attr::RawAttrs,
     generics::{WherePredicate, WherePredicateTypeTarget},
@@ -30,16 +32,16 @@ pub(super) fn print_item_tree(tree: &ItemTree) -> String {
 
 macro_rules! w {
     ($dst:expr, $($arg:tt)*) => {
-        drop(write!($dst, $($arg)*))
+        { let _ = write!($dst, $($arg)*); }
     };
 }
 
 macro_rules! wln {
     ($dst:expr) => {
-        drop(writeln!($dst))
+        { let _ = writeln!($dst); }
     };
     ($dst:expr, $($arg:tt)*) => {
-        drop(writeln!($dst, $($arg)*))
+        { let _ = writeln!($dst, $($arg)*); }
     };
 }
 
@@ -63,7 +65,7 @@ impl<'a> Printer<'a> {
     fn blank(&mut self) {
         let mut iter = self.buf.chars().rev().fuse();
         match (iter.next(), iter.next()) {
-            (Some('\n'), Some('\n')) | (Some('\n'), None) | (None, None) => {}
+            (Some('\n'), Some('\n') | None) | (None, None) => {}
             (Some('\n'), Some(_)) => {
                 self.buf.push('\n');
             }
@@ -77,7 +79,7 @@ impl<'a> Printer<'a> {
 
     fn whitespace(&mut self) {
         match self.buf.chars().next_back() {
-            None | Some('\n') | Some(' ') => {}
+            None | Some('\n' | ' ') => {}
             _ => self.buf.push(' '),
         }
     }
@@ -426,7 +428,7 @@ impl<'a> Printer<'a> {
                         w!(self, " {{");
                         self.indented(|this| {
                             for item in &**items {
-                                this.print_mod_item((*item).into());
+                                this.print_mod_item(*item);
                             }
                         });
                         wln!(self, "}}");
@@ -542,6 +544,10 @@ impl<'a> Printer<'a> {
 
             match bound.as_ref() {
                 TypeBound::Path(path) => self.print_path(path),
+                TypeBound::ForLifetime(lifetimes, path) => {
+                    w!(self, "for<{}> ", lifetimes.iter().format(", "));
+                    self.print_path(path);
+                }
                 TypeBound::Lifetime(lt) => w!(self, "{}", lt.name),
                 TypeBound::Error => w!(self, "{{unknown}}"),
             }

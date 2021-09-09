@@ -2,7 +2,6 @@ mod globs;
 mod incremental;
 mod macros;
 mod mod_resolution;
-mod diagnostics;
 mod primitives;
 
 use std::sync::Arc;
@@ -330,7 +329,7 @@ pub struct Baz;
 "#,
         expect![[r#"
             crate
-            Baz: t v
+            Baz: t
             foo: t
 
             crate::foo
@@ -814,6 +813,29 @@ fn bar() {}
             bar: v
             baz: v
             foo: t
+        "#]],
+    );
+}
+
+#[test]
+fn self_imports_only_types() {
+    check(
+        r#"
+//- /main.rs
+mod m {
+    pub macro S() {}
+    pub struct S;
+}
+
+use self::m::S::{self};
+    "#,
+        expect![[r#"
+            crate
+            S: t
+            m: t
+
+            crate::m
+            S: t v m
         "#]],
     );
 }

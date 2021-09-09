@@ -84,11 +84,13 @@ use crate::{AssistContext, AssistId, AssistKind, Assists, GroupLabel};
 // ```
 pub(crate) fn auto_import(acc: &mut Assists, ctx: &AssistContext) -> Option<()> {
     let (import_assets, syntax_under_caret) = find_importable_node(ctx)?;
-    let proposed_imports =
+    let mut proposed_imports =
         import_assets.search_for_imports(&ctx.sema, ctx.config.insert_use.prefix_kind);
     if proposed_imports.is_empty() {
         return None;
     }
+    // we aren't interested in different namespaces
+    proposed_imports.dedup_by(|a, b| a.import_path == b.import_path);
 
     let range = ctx.sema.original_range(&syntax_under_caret).range;
     let group_label = group_label(import_assets.import_candidate());
@@ -103,8 +105,9 @@ pub(crate) fn auto_import(acc: &mut Assists, ctx: &AssistContext) -> Option<()> 
                 let scope = match scope.clone() {
                     ImportScope::File(it) => ImportScope::File(builder.make_mut(it)),
                     ImportScope::Module(it) => ImportScope::Module(builder.make_mut(it)),
+                    ImportScope::Block(it) => ImportScope::Block(builder.make_mut(it)),
                 };
-                insert_use(&scope, mod_path_to_ast(&import.import_path), ctx.config.insert_use);
+                insert_use(&scope, mod_path_to_ast(&import.import_path), &ctx.config.insert_use);
             },
         );
     }
@@ -120,6 +123,11 @@ pub(super) fn find_importable_node(ctx: &AssistContext) -> Option<(ImportAssets,
     {
         ImportAssets::for_method_call(&method_under_caret, &ctx.sema)
             .zip(Some(method_under_caret.syntax().clone()))
+    } else if let Some(pat) = ctx
+        .find_node_at_offset_with_descend::<ast::IdentPat>()
+        .filter(ast::IdentPat::is_simple_ident)
+    {
+        ImportAssets::for_ident_pat(&pat, &ctx.sema).zip(Some(pat.syntax().clone()))
     } else {
         None
     }
@@ -141,6 +149,7 @@ fn group_label(import_candidate: &ImportCandidate) -> GroupLabel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::tests::{check_assist, check_assist_not_applicable, check_assist_target};
 
     #[test]
@@ -971,6 +980,7 @@ mod bar {
 
     #[test]
     fn uses_abs_path_with_extern_crate_clash() {
+        cov_mark::check!(ambiguous_crate_start);
         check_assist(
             auto_import,
             r#"
@@ -991,6 +1001,31 @@ mod foo {}
 const _: () = {
     Foo
 };
+"#,
+        );
+    }
+
+    #[test]
+    fn works_on_ident_patterns() {
+        check_assist(
+            auto_import,
+            r#"
+mod foo {
+    pub struct Foo {}
+}
+fn foo() {
+    let Foo$0;
+}
+"#,
+            r#"
+use foo::Foo;
+
+mod foo {
+    pub struct Foo {}
+}
+fn foo() {
+    let Foo;
+}
 "#,
         );
     }

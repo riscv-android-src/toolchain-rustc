@@ -24,6 +24,7 @@ use crate::data_value::DataValue;
 use log::{debug, trace};
 use regalloc::{Reg, Writable};
 use smallvec::SmallVec;
+use std::cmp;
 
 //============================================================================
 // Result enum types.
@@ -154,6 +155,14 @@ impl NarrowValueMode {
             NarrowValueMode::None => false,
             NarrowValueMode::ZeroExtend32 | NarrowValueMode::SignExtend32 => true,
             NarrowValueMode::ZeroExtend64 | NarrowValueMode::SignExtend64 => false,
+        }
+    }
+
+    fn is_signed(&self) -> bool {
+        match self {
+            NarrowValueMode::SignExtend32 | NarrowValueMode::SignExtend64 => true,
+            NarrowValueMode::ZeroExtend32 | NarrowValueMode::ZeroExtend64 => false,
+            NarrowValueMode::None => false,
         }
     }
 }
@@ -438,7 +447,15 @@ pub(crate) fn put_input_in_rse_imm12<C: LowerCtx<I = Inst>>(
 ) -> ResultRSEImm12 {
     if let Some(imm_value) = input_to_const(ctx, input) {
         if let Some(i) = Imm12::maybe_from_u64(imm_value) {
-            return ResultRSEImm12::Imm12(i);
+            let out_ty_bits = ty_bits(ctx.input_ty(input.insn, input.input));
+            let is_negative = (i.bits as u64) & (1 << (cmp::max(out_ty_bits, 1) - 1)) != 0;
+
+            // This condition can happen if we matched a value that overflows the output type of
+            // its `iconst` when viewed as a signed value (i.e. iconst.i8 200).
+            // When that happens we need to lower as a negative value, which we cannot do here.
+            if !(narrow_mode.is_signed() && is_negative) {
+                return ResultRSEImm12::Imm12(i);
+            }
         }
     }
 
@@ -692,6 +709,63 @@ fn collect_address_addends<C: LowerCtx<I = Inst>>(
     (result64, result32, offset)
 }
 
+/// Lower the address of a pair load or store.
+pub(crate) fn lower_pair_address<C: LowerCtx<I = Inst>>(
+    ctx: &mut C,
+    roots: &[InsnInput],
+    offset: i32,
+) -> PairAMode {
+    // Collect addends through an arbitrary tree of 32-to-64-bit sign/zero
+    // extends and addition ops. We update these as we consume address
+    // components, so they represent the remaining addends not yet handled.
+    let (mut addends64, mut addends32, args_offset) = collect_address_addends(ctx, roots);
+    let offset = args_offset + (offset as i64);
+
+    trace!(
+        "lower_pair_address: addends64 {:?}, addends32 {:?}, offset {}",
+        addends64,
+        addends32,
+        offset
+    );
+
+    // Pairs basically only have reg + imm formats so we only have to worry about those
+
+    let base_reg = if let Some(reg64) = addends64.pop() {
+        reg64
+    } else if let Some((reg32, extendop)) = addends32.pop() {
+        let tmp = ctx.alloc_tmp(I64).only_reg().unwrap();
+        let signed = match extendop {
+            ExtendOp::SXTW => true,
+            ExtendOp::UXTW => false,
+            _ => unreachable!(),
+        };
+        ctx.emit(Inst::Extend {
+            rd: tmp,
+            rn: reg32,
+            signed,
+            from_bits: 32,
+            to_bits: 64,
+        });
+        tmp.to_reg()
+    } else {
+        zero_reg()
+    };
+
+    let addr = ctx.alloc_tmp(I64).only_reg().unwrap();
+    ctx.emit(Inst::gen_move(addr, base_reg, I64));
+
+    // We have the base register, if we have any others, we need to add them
+    lower_add_addends(ctx, addr, addends64, addends32);
+
+    // Figure out what offset we should emit
+    let imm7 = SImm7Scaled::maybe_from_i64(offset, I64).unwrap_or_else(|| {
+        lower_add_immediate(ctx, addr, addr.to_reg(), offset);
+        SImm7Scaled::maybe_from_i64(0, I64).unwrap()
+    });
+
+    PairAMode::SignedOffset(addr.to_reg(), imm7)
+}
+
 /// Lower the address of a load or store.
 pub(crate) fn lower_address<C: LowerCtx<I = Inst>>(
     ctx: &mut C,
@@ -792,36 +866,23 @@ pub(crate) fn lower_address<C: LowerCtx<I = Inst>>(
     // If there is any offset, load that first into `addr`, and add the `reg`
     // that we kicked out of the `AMode`; otherwise, start with that reg.
     if offset != 0 {
-        // If we can fit offset or -offset in an imm12, use an add-imm
-        // to combine the reg and offset. Otherwise, load value first then add.
-        if let Some(imm12) = Imm12::maybe_from_u64(offset as u64) {
-            ctx.emit(Inst::AluRRImm12 {
-                alu_op: ALUOp::Add64,
-                rd: addr,
-                rn: reg,
-                imm12,
-            });
-        } else if let Some(imm12) = Imm12::maybe_from_u64(offset.wrapping_neg() as u64) {
-            ctx.emit(Inst::AluRRImm12 {
-                alu_op: ALUOp::Sub64,
-                rd: addr,
-                rn: reg,
-                imm12,
-            });
-        } else {
-            lower_constant_u64(ctx, addr, offset as u64);
-            ctx.emit(Inst::AluRRR {
-                alu_op: ALUOp::Add64,
-                rd: addr,
-                rn: addr.to_reg(),
-                rm: reg,
-            });
-        }
+        lower_add_immediate(ctx, addr, reg, offset)
     } else {
         ctx.emit(Inst::gen_move(addr, reg, I64));
     }
 
     // Now handle reg64 and reg32-extended components.
+    lower_add_addends(ctx, addr, addends64, addends32);
+
+    memarg
+}
+
+fn lower_add_addends<C: LowerCtx<I = Inst>>(
+    ctx: &mut C,
+    rd: Writable<Reg>,
+    addends64: AddressAddend64List,
+    addends32: AddressAddend32List,
+) {
     for reg in addends64 {
         // If the register is the stack reg, we must move it to another reg
         // before adding it.
@@ -834,8 +895,8 @@ pub(crate) fn lower_address<C: LowerCtx<I = Inst>>(
         };
         ctx.emit(Inst::AluRRR {
             alu_op: ALUOp::Add64,
-            rd: addr,
-            rn: addr.to_reg(),
+            rd,
+            rn: rd.to_reg(),
             rm: reg,
         });
     }
@@ -843,14 +904,42 @@ pub(crate) fn lower_address<C: LowerCtx<I = Inst>>(
         assert!(reg != stack_reg());
         ctx.emit(Inst::AluRRRExtend {
             alu_op: ALUOp::Add64,
-            rd: addr,
-            rn: addr.to_reg(),
+            rd,
+            rn: rd.to_reg(),
             rm: reg,
             extendop,
         });
     }
+}
 
-    memarg
+/// Adds into `rd` a signed imm pattern matching the best instruction for it.
+// TODO: This function is duplicated in ctx.gen_add_imm
+fn lower_add_immediate<C: LowerCtx<I = Inst>>(ctx: &mut C, dst: Writable<Reg>, src: Reg, imm: i64) {
+    // If we can fit offset or -offset in an imm12, use an add-imm
+    // Otherwise, lower the constant first then add.
+    if let Some(imm12) = Imm12::maybe_from_u64(imm as u64) {
+        ctx.emit(Inst::AluRRImm12 {
+            alu_op: ALUOp::Add64,
+            rd: dst,
+            rn: src,
+            imm12,
+        });
+    } else if let Some(imm12) = Imm12::maybe_from_u64(imm.wrapping_neg() as u64) {
+        ctx.emit(Inst::AluRRImm12 {
+            alu_op: ALUOp::Sub64,
+            rd: dst,
+            rn: src,
+            imm12,
+        });
+    } else {
+        lower_constant_u64(ctx, dst, imm as u64);
+        ctx.emit(Inst::AluRRR {
+            alu_op: ALUOp::Add64,
+            rd: dst,
+            rn: dst.to_reg(),
+            rm: src,
+        });
+    }
 }
 
 pub(crate) fn lower_constant_u64<C: LowerCtx<I = Inst>>(
@@ -1154,12 +1243,43 @@ pub(crate) fn maybe_input_insn_via_conv<C: LowerCtx<I = Inst>>(
     None
 }
 
-pub(crate) fn lower_icmp_or_ifcmp_to_flags<C: LowerCtx<I = Inst>>(
+/// Specifies what [lower_icmp] should do when lowering
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum IcmpOutput {
+    /// Only sets flags, discarding the results
+    Flags,
+    /// Materializes the results into a register. The flags set may be incorrect
+    Register(Writable<Reg>),
+}
+
+impl IcmpOutput {
+    pub fn reg(&self) -> Option<Writable<Reg>> {
+        match self {
+            IcmpOutput::Flags => None,
+            IcmpOutput::Register(reg) => Some(*reg),
+        }
+    }
+}
+
+/// Lower an icmp comparision
+///
+/// We can lower into the status flags, or materialize the result into a register
+/// This is controlled by the `output` parameter.
+pub(crate) fn lower_icmp<C: LowerCtx<I = Inst>>(
     ctx: &mut C,
     insn: IRInst,
-    is_signed: bool,
-) {
-    debug!("lower_icmp_or_ifcmp_to_flags: insn {}", insn);
+    condcode: IntCC,
+    output: IcmpOutput,
+) -> CodegenResult<()> {
+    debug!(
+        "lower_icmp: insn {}, condcode: {}, output: {:?}",
+        insn, condcode, output
+    );
+
+    let rd = output.reg().unwrap_or(writable_zero_reg());
+    let inputs = insn_inputs(ctx, insn);
+    let cond = lower_condcode(condcode);
+    let is_signed = condcode_is_signed(condcode);
     let ty = ctx.input_ty(insn, 0);
     let bits = ty_bits(ty);
     let narrow_mode = match (bits <= 32, is_signed) {
@@ -1168,14 +1288,149 @@ pub(crate) fn lower_icmp_or_ifcmp_to_flags<C: LowerCtx<I = Inst>>(
         (false, true) => NarrowValueMode::SignExtend64,
         (false, false) => NarrowValueMode::ZeroExtend64,
     };
-    let inputs = [InsnInput { insn, input: 0 }, InsnInput { insn, input: 1 }];
-    let ty = ctx.input_ty(insn, 0);
-    let rn = put_input_in_reg(ctx, inputs[0], narrow_mode);
-    let rm = put_input_in_rse_imm12(ctx, inputs[1], narrow_mode);
-    debug!("lower_icmp_or_ifcmp_to_flags: rn = {:?} rm = {:?}", rn, rm);
-    let alu_op = choose_32_64(ty, ALUOp::SubS32, ALUOp::SubS64);
-    let rd = writable_zero_reg();
-    ctx.emit(alu_inst_imm12(alu_op, rd, rn, rm));
+
+    if ty == I128 {
+        let lhs = put_input_in_regs(ctx, inputs[0]);
+        let rhs = put_input_in_regs(ctx, inputs[1]);
+
+        let tmp1 = ctx.alloc_tmp(I64).only_reg().unwrap();
+        let tmp2 = ctx.alloc_tmp(I64).only_reg().unwrap();
+
+        match condcode {
+            IntCC::Equal | IntCC::NotEqual => {
+                // eor     tmp1, lhs_lo, rhs_lo
+                // eor     tmp2, lhs_hi, rhs_hi
+                // adds    xzr, tmp1, tmp2
+                // cset    dst, {eq, ne}
+
+                ctx.emit(Inst::AluRRR {
+                    alu_op: ALUOp::Eor64,
+                    rd: tmp1,
+                    rn: lhs.regs()[0],
+                    rm: rhs.regs()[0],
+                });
+                ctx.emit(Inst::AluRRR {
+                    alu_op: ALUOp::Eor64,
+                    rd: tmp2,
+                    rn: lhs.regs()[1],
+                    rm: rhs.regs()[1],
+                });
+                ctx.emit(Inst::AluRRR {
+                    alu_op: ALUOp::AddS64,
+                    rd: writable_zero_reg(),
+                    rn: tmp1.to_reg(),
+                    rm: tmp2.to_reg(),
+                });
+
+                if let IcmpOutput::Register(rd) = output {
+                    materialize_bool_result(ctx, insn, rd, cond);
+                }
+            }
+            IntCC::Overflow | IntCC::NotOverflow => {
+                // We can do an 128bit add while throwing away the results
+                // and check the overflow flags at the end.
+                //
+                // adds    xzr, lhs_lo, rhs_lo
+                // adcs    xzr, lhs_hi, rhs_hi
+                // cset    dst, {vs, vc}
+
+                ctx.emit(Inst::AluRRR {
+                    alu_op: ALUOp::AddS64,
+                    rd: writable_zero_reg(),
+                    rn: lhs.regs()[0],
+                    rm: rhs.regs()[0],
+                });
+                ctx.emit(Inst::AluRRR {
+                    alu_op: ALUOp::AdcS64,
+                    rd: writable_zero_reg(),
+                    rn: lhs.regs()[1],
+                    rm: rhs.regs()[1],
+                });
+
+                if let IcmpOutput::Register(rd) = output {
+                    materialize_bool_result(ctx, insn, rd, cond);
+                }
+            }
+            _ => {
+                // cmp     lhs_lo, rhs_lo
+                // cset    tmp1, unsigned_cond
+                // cmp     lhs_hi, rhs_hi
+                // cset    tmp2, cond
+                // csel    dst, tmp1, tmp2, eq
+
+                let rd = output.reg().unwrap_or(tmp1);
+                let unsigned_cond = lower_condcode(condcode.unsigned());
+
+                ctx.emit(Inst::AluRRR {
+                    alu_op: ALUOp::SubS64,
+                    rd: writable_zero_reg(),
+                    rn: lhs.regs()[0],
+                    rm: rhs.regs()[0],
+                });
+                materialize_bool_result(ctx, insn, tmp1, unsigned_cond);
+                ctx.emit(Inst::AluRRR {
+                    alu_op: ALUOp::SubS64,
+                    rd: writable_zero_reg(),
+                    rn: lhs.regs()[1],
+                    rm: rhs.regs()[1],
+                });
+                materialize_bool_result(ctx, insn, tmp2, cond);
+                ctx.emit(Inst::CSel {
+                    cond: Cond::Eq,
+                    rd,
+                    rn: tmp1.to_reg(),
+                    rm: tmp2.to_reg(),
+                });
+
+                if output == IcmpOutput::Flags {
+                    // We only need to guarantee that the flags for `cond` are correct, so we can
+                    // compare rd with 0 or 1
+
+                    // If we are doing compare or equal, we want to compare with 1 instead of zero
+                    if condcode.without_equal() != condcode {
+                        lower_constant_u64(ctx, tmp2, 1);
+                    }
+
+                    let xzr = zero_reg();
+                    let rd = rd.to_reg();
+                    let tmp2 = tmp2.to_reg();
+                    let (rn, rm) = match condcode {
+                        IntCC::SignedGreaterThanOrEqual => (rd, tmp2),
+                        IntCC::UnsignedGreaterThanOrEqual => (rd, tmp2),
+                        IntCC::SignedLessThanOrEqual => (tmp2, rd),
+                        IntCC::UnsignedLessThanOrEqual => (tmp2, rd),
+                        IntCC::SignedGreaterThan => (rd, xzr),
+                        IntCC::UnsignedGreaterThan => (rd, xzr),
+                        IntCC::SignedLessThan => (xzr, rd),
+                        IntCC::UnsignedLessThan => (xzr, rd),
+                        _ => unreachable!(),
+                    };
+
+                    ctx.emit(Inst::AluRRR {
+                        alu_op: ALUOp::SubS64,
+                        rd: writable_zero_reg(),
+                        rn,
+                        rm,
+                    });
+                }
+            }
+        }
+    } else if !ty.is_vector() {
+        let alu_op = choose_32_64(ty, ALUOp::SubS32, ALUOp::SubS64);
+        let rn = put_input_in_reg(ctx, inputs[0], narrow_mode);
+        let rm = put_input_in_rse_imm12(ctx, inputs[1], narrow_mode);
+        ctx.emit(alu_inst_imm12(alu_op, writable_zero_reg(), rn, rm));
+
+        if let IcmpOutput::Register(rd) = output {
+            materialize_bool_result(ctx, insn, rd, cond);
+        }
+    } else {
+        let rn = put_input_in_reg(ctx, inputs[0], narrow_mode);
+        let rm = put_input_in_reg(ctx, inputs[1], narrow_mode);
+        lower_vector_compare(ctx, rd, rn, rm, ty, cond)?;
+    }
+
+    Ok(())
 }
 
 pub(crate) fn lower_fcmp_or_ffcmp_to_flags<C: LowerCtx<I = Inst>>(ctx: &mut C, insn: IRInst) {
@@ -1248,7 +1503,10 @@ fn load_op_to_ty(op: Opcode) -> Option<Type> {
 
 /// Helper to lower a load instruction; this is used in several places, because
 /// a load can sometimes be merged into another operation.
-pub(crate) fn lower_load<C: LowerCtx<I = Inst>, F: FnMut(&mut C, Writable<Reg>, Type, AMode)>(
+pub(crate) fn lower_load<
+    C: LowerCtx<I = Inst>,
+    F: FnMut(&mut C, ValueRegs<Writable<Reg>>, Type, AMode),
+>(
     ctx: &mut C,
     ir_inst: IRInst,
     inputs: &[InsnInput],
@@ -1261,9 +1519,258 @@ pub(crate) fn lower_load<C: LowerCtx<I = Inst>, F: FnMut(&mut C, Writable<Reg>, 
 
     let off = ctx.data(ir_inst).load_store_offset().unwrap();
     let mem = lower_address(ctx, elem_ty, &inputs[..], off);
-    let rd = get_output_reg(ctx, output).only_reg().unwrap();
+    let rd = get_output_reg(ctx, output);
 
     f(ctx, rd, elem_ty, mem);
+}
+
+pub(crate) fn emit_shl_i128<C: LowerCtx<I = Inst>>(
+    ctx: &mut C,
+    src: ValueRegs<Reg>,
+    dst: ValueRegs<Writable<Reg>>,
+    amt: Reg,
+) {
+    let src_lo = src.regs()[0];
+    let src_hi = src.regs()[1];
+    let dst_lo = dst.regs()[0];
+    let dst_hi = dst.regs()[1];
+
+    //     mvn     inv_amt, amt
+    //     lsr     tmp1, src_lo, #1
+    //     lsl     tmp2, src_hi, amt
+    //     lsr     tmp1, tmp1, inv_amt
+    //     lsl     tmp3, src_lo, amt
+    //     tst     amt, #0x40
+    //     orr     tmp2, tmp2, tmp1
+    //     csel    dst_hi, tmp3, tmp2, ne
+    //     csel    dst_lo, xzr, tmp3, ne
+
+    let xzr = writable_zero_reg();
+    let inv_amt = ctx.alloc_tmp(I64).only_reg().unwrap();
+    let tmp1 = ctx.alloc_tmp(I64).only_reg().unwrap();
+    let tmp2 = ctx.alloc_tmp(I64).only_reg().unwrap();
+    let tmp3 = ctx.alloc_tmp(I64).only_reg().unwrap();
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::OrrNot32,
+        rd: inv_amt,
+        rn: xzr.to_reg(),
+        rm: amt,
+    });
+
+    ctx.emit(Inst::AluRRImmShift {
+        alu_op: ALUOp::Lsr64,
+        rd: tmp1,
+        rn: src_lo,
+        immshift: ImmShift::maybe_from_u64(1).unwrap(),
+    });
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::Lsl64,
+        rd: tmp2,
+        rn: src_hi,
+        rm: amt,
+    });
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::Lsr64,
+        rd: tmp1,
+        rn: tmp1.to_reg(),
+        rm: inv_amt.to_reg(),
+    });
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::Lsl64,
+        rd: tmp3,
+        rn: src_lo,
+        rm: amt,
+    });
+
+    ctx.emit(Inst::AluRRImmLogic {
+        alu_op: ALUOp::AndS64,
+        rd: xzr,
+        rn: amt,
+        imml: ImmLogic::maybe_from_u64(64, I64).unwrap(),
+    });
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::Orr64,
+        rd: tmp2,
+        rn: tmp2.to_reg(),
+        rm: tmp1.to_reg(),
+    });
+
+    ctx.emit(Inst::CSel {
+        cond: Cond::Ne,
+        rd: dst_hi,
+        rn: tmp3.to_reg(),
+        rm: tmp2.to_reg(),
+    });
+
+    ctx.emit(Inst::CSel {
+        cond: Cond::Ne,
+        rd: dst_lo,
+        rn: xzr.to_reg(),
+        rm: tmp3.to_reg(),
+    });
+}
+
+pub(crate) fn emit_shr_i128<C: LowerCtx<I = Inst>>(
+    ctx: &mut C,
+    src: ValueRegs<Reg>,
+    dst: ValueRegs<Writable<Reg>>,
+    amt: Reg,
+    is_signed: bool,
+) {
+    let src_lo = src.regs()[0];
+    let src_hi = src.regs()[1];
+    let dst_lo = dst.regs()[0];
+    let dst_hi = dst.regs()[1];
+
+    //     mvn       inv_amt, amt
+    //     lsl       tmp1, src_lo, #1
+    //     lsr       tmp2, src_hi, amt
+    //     lsl       tmp1, tmp1, inv_amt
+    //     lsr/asr   tmp3, src_lo, amt
+    //     tst       amt, #0x40
+    //     orr       tmp2, tmp2, tmp1
+    //
+    //     if signed:
+    //         asr     tmp4, src_hi, #63
+    //         csel    dst_hi, tmp4, tmp3, ne
+    //     else:
+    //         csel    dst_hi, xzr, tmp3, ne
+    //
+    //     csel      dst_lo, tmp3, tmp2, ne
+
+    let xzr = writable_zero_reg();
+    let inv_amt = ctx.alloc_tmp(I64).only_reg().unwrap();
+    let tmp1 = ctx.alloc_tmp(I64).only_reg().unwrap();
+    let tmp2 = ctx.alloc_tmp(I64).only_reg().unwrap();
+    let tmp3 = ctx.alloc_tmp(I64).only_reg().unwrap();
+    let tmp4 = ctx.alloc_tmp(I64).only_reg().unwrap();
+
+    let shift_op = if is_signed {
+        ALUOp::Asr64
+    } else {
+        ALUOp::Lsr64
+    };
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::OrrNot32,
+        rd: inv_amt,
+        rn: xzr.to_reg(),
+        rm: amt,
+    });
+
+    ctx.emit(Inst::AluRRImmShift {
+        alu_op: ALUOp::Lsl64,
+        rd: tmp1,
+        rn: src_hi,
+        immshift: ImmShift::maybe_from_u64(1).unwrap(),
+    });
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::Lsr64,
+        rd: tmp2,
+        rn: src_lo,
+        rm: amt,
+    });
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::Lsl64,
+        rd: tmp1,
+        rn: tmp1.to_reg(),
+        rm: inv_amt.to_reg(),
+    });
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: shift_op,
+        rd: tmp3,
+        rn: src_hi,
+        rm: amt,
+    });
+
+    ctx.emit(Inst::AluRRImmLogic {
+        alu_op: ALUOp::AndS64,
+        rd: xzr,
+        rn: amt,
+        imml: ImmLogic::maybe_from_u64(64, I64).unwrap(),
+    });
+
+    if is_signed {
+        ctx.emit(Inst::AluRRImmShift {
+            alu_op: ALUOp::Asr64,
+            rd: tmp4,
+            rn: src_hi,
+            immshift: ImmShift::maybe_from_u64(63).unwrap(),
+        });
+    }
+
+    ctx.emit(Inst::AluRRR {
+        alu_op: ALUOp::Orr64,
+        rd: tmp2,
+        rn: tmp2.to_reg(),
+        rm: tmp1.to_reg(),
+    });
+
+    ctx.emit(Inst::CSel {
+        cond: Cond::Ne,
+        rd: dst_hi,
+        rn: if is_signed { tmp4 } else { xzr }.to_reg(),
+        rm: tmp3.to_reg(),
+    });
+
+    ctx.emit(Inst::CSel {
+        cond: Cond::Ne,
+        rd: dst_lo,
+        rn: tmp3.to_reg(),
+        rm: tmp2.to_reg(),
+    });
+}
+
+pub(crate) fn emit_clz_i128<C: LowerCtx<I = Inst>>(
+    ctx: &mut C,
+    src: ValueRegs<Reg>,
+    dst: ValueRegs<Writable<Reg>>,
+) {
+    let src_lo = src.regs()[0];
+    let src_hi = src.regs()[1];
+    let dst_lo = dst.regs()[0];
+    let dst_hi = dst.regs()[1];
+
+    // clz dst_hi, src_hi
+    // clz dst_lo, src_lo
+    // lsr tmp, dst_hi, #6
+    // madd dst_lo, dst_lo, tmp, dst_hi
+    // mov  dst_hi, 0
+
+    let tmp = ctx.alloc_tmp(I64).only_reg().unwrap();
+
+    ctx.emit(Inst::BitRR {
+        rd: dst_hi,
+        rn: src_hi,
+        op: BitOp::Clz64,
+    });
+    ctx.emit(Inst::BitRR {
+        rd: dst_lo,
+        rn: src_lo,
+        op: BitOp::Clz64,
+    });
+    ctx.emit(Inst::AluRRImmShift {
+        alu_op: ALUOp::Lsr64,
+        rd: tmp,
+        rn: dst_hi.to_reg(),
+        immshift: ImmShift::maybe_from_u64(6).unwrap(),
+    });
+    ctx.emit(Inst::AluRRRR {
+        alu_op: ALUOp3::MAdd64,
+        rd: dst_lo,
+        rn: dst_lo.to_reg(),
+        rm: tmp.to_reg(),
+        ra: dst_hi.to_reg(),
+    });
+    lower_constant_u64(ctx, dst_hi, 0);
 }
 
 //=============================================================================

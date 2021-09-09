@@ -3,10 +3,7 @@
 Rust allows you to specify alternative data layout strategies from the default.
 There's also the [unsafe code guidelines] (note that it's **NOT** normative).
 
-
-
-
-# repr(C)
+## repr(C)
 
 This is the most important `repr`. It has fairly simple intent: do what C does.
 The order, size, and alignment of fields is exactly what you would expect from C
@@ -15,10 +12,10 @@ or C++. Any type you expect to pass through an FFI boundary should have
 necessary to soundly do more elaborate tricks with data layout such as
 reinterpreting values as a different type.
 
-We strongly recommend using [rust-bindgen][] and/or [cbindgen][] to manage your FFI
+We strongly recommend using [rust-bindgen] and/or [cbindgen] to manage your FFI
 boundaries for you. The Rust team works closely with those projects to ensure
 that they work robustly and are compatible with current and future guarantees
-about type layouts and reprs.
+about type layouts and `repr`s.
 
 The interaction of `repr(C)` with Rust's more exotic data layout features must be
 kept in mind. Due to its dual purpose as "for FFI" and "for layout control",
@@ -57,9 +54,7 @@ construct an instance of an enum that does not match one of its
 variants. (This allows exhaustive matches to continue to be written and
 compiled as normal.)
 
-
-
-# repr(transparent)
+## repr(transparent)
 
 This can only be used on structs with a single non-zero-sized field (there may
 be additional zero-sized fields). The effect is that the layout and ABI of the
@@ -75,9 +70,7 @@ Foo(f32)` to always have the same ABI as `f32`.
 
 More details are in the [RFC][rfc-transparent].
 
-
-
-# repr(u*), repr(i*)
+## repr(u*), repr(i*)
 
 These specify the size to make a fieldless enum. If the discriminant overflows
 the integer it has to fit in, it will produce a compile-time error. You can
@@ -96,15 +89,28 @@ in that there is a defined layout of the type. This makes it possible to
 pass the enum to C code, or access the type's raw representation and directly
 manipulate its tag and fields. See [the RFC][really-tagged] for details.
 
-Adding an explicit `repr` to an enum suppresses the null-pointer
-optimization.
+These `repr`s have no effect on a struct.
 
-These reprs have no effect on a struct.
+Adding an explicit `repr(u*)`, `repr(i*)`, or `repr(C)` to an enum suppresses the null-pointer optimization, like:
 
+```rust
+# use std::mem::size_of;
+enum MyOption<T> {
+    Some(T),
+    None,
+}
 
+#[repr(u8)]
+enum MyReprOption<T> {
+    Some(T),
+    None,
+}
 
+assert_eq!(8, size_of::<MyOption<&u16>>());
+assert_eq!(16, size_of::<MyReprOption<&u16>>());
+```
 
-# repr(packed)
+## repr(packed)
 
 `repr(packed)` forces Rust to strip any padding, and only align the type to a
 byte. This may improve the memory footprint, but will likely have other negative
@@ -117,17 +123,15 @@ compiler might be able to paper over alignment issues with shifts and masks.
 However if you take a reference to a packed field, it's unlikely that the
 compiler will be able to emit code to avoid an unaligned load.
 
-**[As of Rust 2018, this still can cause undefined behavior.][ub loads]**
+[As this can cause undefined behavior][ub loads], the lint has been implemented
+and it will become a hard error.
 
 `repr(packed)` is not to be used lightly. Unless you have extreme requirements,
 this should not be used.
 
 This repr is a modifier on `repr(C)` and `repr(Rust)`.
 
-
-
-
-# repr(align(n))
+## repr(align(n))
 
 `repr(align(n))` (where `n` is a power of two) forces the type to have an
 alignment of *at least* n.
@@ -138,10 +142,6 @@ kinds of concurrent code).
 
 This is a modifier on `repr(C)` and `repr(Rust)`. It is incompatible with
 `repr(packed)`.
-
-
-
-
 
 [unsafe code guidelines]: https://rust-lang.github.io/unsafe-code-guidelines/layout.html
 [drop flags]: drop-flags.html

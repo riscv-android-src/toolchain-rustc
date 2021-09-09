@@ -138,8 +138,8 @@ fn cargo_version() -> semver::Version {
     assert!(split.len() >= 2, "cargo -V output is unexpected: {}", out);
     let mut ver = semver::Version::parse(split[1]).expect("cargo -V semver could not be parsed");
     // Don't care about metadata, it is awkward to compare.
-    ver.pre = Vec::new();
-    ver.build = Vec::new();
+    ver.pre = semver::Prerelease::EMPTY;
+    ver.build = semver::BuildMetadata::EMPTY;
     ver
 }
 
@@ -596,4 +596,12 @@ fn advanced_feature_configuration() {
             .features(CargoOpt::AllFeatures)
     });
     assert_eq!(sorted!(all_flag_variants), sorted!(all_features));
+}
+
+#[test]
+fn depkind_to_string() {
+    assert_eq!(DependencyKind::Normal.to_string(), "normal");
+    assert_eq!(DependencyKind::Development.to_string(), "dev");
+    assert_eq!(DependencyKind::Build.to_string(), "build");
+    assert_eq!(DependencyKind::Unknown.to_string(), "Unknown");
 }

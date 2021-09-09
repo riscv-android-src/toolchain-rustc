@@ -30,7 +30,7 @@ impl ast::UseTree {
         let suffix = if self.path().as_ref() == Some(prefix) && self.use_tree_list().is_none() {
             make::path_unqualified(make::path_segment_self())
         } else {
-            match split_path_prefix(&prefix) {
+            match split_path_prefix(prefix) {
                 Some(it) => it,
                 None => return self.clone(),
             }
@@ -95,7 +95,7 @@ impl fmt::Display for IndentLevel {
         let indent = if len <= spaces.len() {
             &spaces[..len]
         } else {
-            buf = iter::repeat(' ').take(len).collect::<String>();
+            buf = " ".repeat(len);
             &buf
         };
         fmt::Display::fmt(indent, f)
@@ -228,7 +228,7 @@ fn single_node(element: impl Into<SyntaxElement>) -> RangeInclusive<SyntaxElemen
 #[test]
 fn test_increase_indent() {
     let arm_list = {
-        let arm = make::match_arm(iter::once(make::wildcard_pat().into()), make::expr_unit());
+        let arm = make::match_arm(iter::once(make::wildcard_pat().into()), None, make::expr_unit());
         make::match_arm_list(vec![arm.clone(), arm])
     };
     assert_eq!(

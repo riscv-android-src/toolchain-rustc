@@ -45,6 +45,7 @@ define_semantic_token_types![
     (BOOLEAN, "boolean"),
     (BRACE, "brace"),
     (BRACKET, "bracket"),
+    (BUILTIN_ATTRIBUTE, "builtinAttribute"),
     (BUILTIN_TYPE, "builtinType"),
     (CHAR, "character"),
     (COLON, "colon"),
@@ -93,6 +94,7 @@ define_semantic_token_modifiers![
     (CONSUMING, "consuming"),
     (ASYNC, "async"),
     (LIBRARY, "library"),
+    (PUBLIC, "public"),
     (UNSAFE, "unsafe"),
     (ATTRIBUTE_MODIFIER, "attribute"),
     (TRAIT_MODIFIER, "trait"),
@@ -112,7 +114,7 @@ impl ops::BitOrAssign<SemanticTokenModifier> for ModifierSet {
 
 /// Tokens are encoded relative to each other.
 ///
-/// This is a direct port of https://github.com/microsoft/vscode-languageserver-node/blob/f425af9de46a0187adb78ec8a46b9b2ce80c5412/server/src/sematicTokens.proposed.ts#L45
+/// This is a direct port of <https://github.com/microsoft/vscode-languageserver-node/blob/f425af9de46a0187adb78ec8a46b9b2ce80c5412/server/src/sematicTokens.proposed.ts#L45>
 pub(crate) struct SemanticTokensBuilder {
     id: String,
     prev_line: u32,

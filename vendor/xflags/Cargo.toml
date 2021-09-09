@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "xflags"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
 exclude = [".github/", "bors.toml", "rustfmt.toml"]
 description = "Moderately simple command line arguments parser."
@@ -21,4 +21,4 @@ categories = ["command-line-interface"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/matklad/xflags"
 [dependencies.xflags-macros]
-version = "=0.2.1"
+version = "=0.2.2"

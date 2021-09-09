@@ -1,6 +1,11 @@
 Recent Changes (arrayvec)
 =========================
 
+## 0.7.1
+
+- Add new ArrayVec methods `.take()` and `.into_inner_unchecked()` by @conradludgate
+- `clone_from` now uses `truncate` when needed by @a1phyr
+
 ## 0.7.0
 
 - `fn new_const` is now the way to const-construct arrayvec and arraystring,
@@ -8,7 +13,11 @@ Recent Changes (arrayvec)
   This works around performance issue #182, where the const fn version did not
   optimize well. Change by @bluss with thanks to @rodrimati1992 and @niklasf
   for analyzing the problem.
+
 - The deprecated feature flag `unstable-const-fn` was removed, since it's not needed
+
+- Optimize `.retain()` by using the same algorithm as in std, change by @niklasf,
+  issue #174. Original optimization in Rust std by @oxalica in rust-lang/rust/pull/81126
 
 ## 0.6.1
 

@@ -1,5 +1,5 @@
 /*----------------------------------------------------------------------------
-Copyright (c) 2018, Microsoft Research, Daan Leijen
+Copyright (c) 2018-2021, Microsoft Research, Daan Leijen
 This is free software; you can redistribute it and/or modify it under the
 terms of the MIT license. A copy of the license can be found in the file
 "LICENSE" at the root of this distribution.
@@ -359,7 +359,9 @@ static void mi_heap_absorb(mi_heap_t* heap, mi_heap_t* from) {
   // turns out to be ok as `_mi_heap_delayed_free` only visits the list and calls a 
   // the regular `_mi_free_delayed_block` which is safe.
   _mi_heap_delayed_free(from);  
+  #if !defined(_MSC_VER) || (_MSC_VER > 1900) // somehow the following line gives an error in VS2015, issue #353
   mi_assert_internal(mi_atomic_load_ptr_relaxed(mi_block_t,&from->thread_delayed_free) == NULL);
+  #endif
 
   // and reset the `from` heap
   mi_heap_reset_pages(from);  

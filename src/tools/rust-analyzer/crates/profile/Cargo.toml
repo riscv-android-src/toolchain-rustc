@@ -3,7 +3,6 @@ name = "profile"
 version = "0.0.0"
 description = "TBD"
 license = "MIT OR Apache-2.0"
-authors = ["rust-analyzer developers"]
 edition = "2018"
 
 [lib]
@@ -19,6 +18,9 @@ jemalloc-ctl = { version = "0.4.1", package = "tikv-jemalloc-ctl", optional = tr
 
 [target.'cfg(target_os = "linux")'.dependencies]
 perf-event = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.8", features = ["psapi"] }
 
 [features]
 cpu_profiler = []

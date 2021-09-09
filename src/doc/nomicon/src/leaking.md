@@ -49,8 +49,6 @@ library:
 * `Rc`
 * `thread::scoped::JoinGuard`
 
-
-
 ## Drain
 
 `drain` is a collections API that moves data out of the container without
@@ -71,6 +69,7 @@ unwinding-safe! Easy!
 
 Now consider the following:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 let mut vec = vec![Box::new(0); 4];
 
@@ -105,9 +104,6 @@ mem::forget us in the middle of the iteration, all that does is *leak even more*
 Since we've accepted that mem::forget is safe, this is definitely safe. We call
 leaks causing more leaks a *leak amplification*.
 
-
-
-
 ## Rc
 
 Rc is an interesting case because at first glance it doesn't appear to be a
@@ -121,6 +117,7 @@ Nope.
 
 Let's consider a simplified implementation of Rc:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 struct Rc<T> {
     ptr: *mut RcBox<T>,
@@ -177,9 +174,6 @@ This can be solved by just checking the `ref_count` and doing *something*. The
 standard library's stance is to just abort, because your program has become
 horribly degenerate. Also *oh my gosh* it's such a ridiculous corner case.
 
-
-
-
 ## thread::scoped::JoinGuard
 
 The thread::scoped API intended to allow threads to be spawned that reference
@@ -187,6 +181,7 @@ data on their parent's stack without any synchronization over that data by
 ensuring the parent joins the thread before any of the shared data goes out
 of scope.
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 pub fn scoped<'a, F>(f: F) -> JoinGuard<'a>
     where F: FnOnce() + Send + 'a
@@ -204,6 +199,7 @@ of the closed-over data goes out of scope in the parent.
 
 Usage looked like:
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 let mut data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 {
@@ -232,6 +228,7 @@ let mut data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 In principle, this totally works! Rust's ownership system perfectly ensures it!
 ...except it relies on a destructor being called to be safe.
 
+<!-- ignore: simplified code -->
 ```rust,ignore
 let mut data = Box::new(0);
 {

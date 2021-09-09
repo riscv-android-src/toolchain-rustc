@@ -163,14 +163,14 @@ fn legacy_macro_items() {
     // correctly.
     check_at(
         r#"
-macro_rules! hit {
+macro_rules! mark {
     () => {
         struct Hit {}
     }
 }
 
 fn f() {
-    hit!();
+    mark!();
     $0
 }
 "#,
@@ -193,20 +193,20 @@ use core::cov_mark;
 
 fn f() {
     fn nested() {
-        cov_mark::hit!(Hit);
+        cov_mark::mark!(Hit);
         $0
     }
 }
 //- /core.rs crate:core
 pub mod cov_mark {
     #[macro_export]
-    macro_rules! _hit {
+    macro_rules! _mark {
         ($name:ident) => {
             struct $name {}
         }
     }
 
-    pub use crate::_hit as hit;
+    pub use crate::_mark as mark;
 }
 "#,
         expect![[r#"
@@ -311,4 +311,74 @@ mod m {
         main: v
     "#]],
     );
+}
+
+#[test]
+fn nested_macro_item_decl() {
+    cov_mark::check!(macro_call_in_macro_stmts_is_added_to_item_tree);
+    check_at(
+        r#"
+macro_rules! inner_declare {
+    ($ident:ident) => {
+        static $ident: u32 = 0;
+    };
+}
+macro_rules! declare {
+    ($ident:ident) => {
+        inner_declare!($ident);
+    };
+}
+
+fn foo() {
+    declare!(bar);
+    bar;
+    $0
+}
+        "#,
+        expect![[r#"
+            block scope
+            bar: v
+
+            crate
+            foo: v
+        "#]],
+    )
+}
+
+#[test]
+fn is_visible_from_same_def_map() {
+    // Regression test for https://github.com/rust-analyzer/rust-analyzer/issues/9481
+    cov_mark::check!(is_visible_from_same_block_def_map);
+    check_at(
+        r#"
+fn outer() {
+    mod command {
+        use crate::name;
+    }
+
+    mod tests {
+        use super::*;
+    }
+    $0
+}
+        "#,
+        expect![[r#"
+            block scope
+            command: t
+            name: _
+            tests: t
+
+            block scope::command
+            name: _
+
+            block scope::tests
+            name: _
+            outer: v
+
+            crate
+            outer: v
+        "#]],
+    );
+    // FIXME: `name` should not be visible in the block scope. This happens because ItemTrees store
+    // inner items incorrectly.
 }

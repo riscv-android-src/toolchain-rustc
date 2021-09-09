@@ -145,6 +145,21 @@
 //!
 //! <br>
 
+#![allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::enum_glob_use,
+    clippy::from_iter_instead_of_collect,
+    clippy::module_name_repetitions,
+    clippy::must_use_candidate,
+    clippy::needless_doctest_main,
+    clippy::needless_pass_by_value,
+    clippy::redundant_else,
+    clippy::toplevel_ref_arg,
+    clippy::unreadable_literal
+)]
+
 extern crate proc_macro;
 
 mod attr;

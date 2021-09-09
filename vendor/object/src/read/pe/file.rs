@@ -30,7 +30,7 @@ where
     pub(super) dos_header: &'data pe::ImageDosHeader,
     pub(super) nt_headers: &'data Pe,
     pub(super) data_directories: &'data [pe::ImageDataDirectory],
-    pub(super) common: CoffCommon<'data>,
+    pub(super) common: CoffCommon<'data, R>,
     pub(super) data: R,
 }
 
@@ -75,7 +75,13 @@ where
         self.nt_headers
     }
 
-    fn data_directory(&self, id: usize) -> Option<&'data pe::ImageDataDirectory> {
+    /// Returns the section table of this binary.
+    pub fn section_table(&self) -> SectionTable<'data> {
+        self.common.sections
+    }
+
+    /// Returns the data directory at the given index.
+    pub fn data_directory(&self, id: usize) -> Option<&'data pe::ImageDataDirectory> {
         self.data_directories
             .get(id)
             .filter(|d| d.size.get(LE) != 0)
@@ -83,6 +89,11 @@ where
 
     fn data_at(&self, va: u32) -> Option<Bytes<'data>> {
         self.common.sections.pe_data_at(self.data, va).map(Bytes)
+    }
+
+    /// Returns this binary data.
+    pub fn data(&self) -> R {
+        self.data
     }
 }
 
@@ -105,9 +116,9 @@ where
     type SectionIterator = PeSectionIterator<'data, 'file, Pe, R>;
     type Comdat = PeComdat<'data, 'file, Pe, R>;
     type ComdatIterator = PeComdatIterator<'data, 'file, Pe, R>;
-    type Symbol = CoffSymbol<'data, 'file>;
-    type SymbolIterator = CoffSymbolIterator<'data, 'file>;
-    type SymbolTable = CoffSymbolTable<'data, 'file>;
+    type Symbol = CoffSymbol<'data, 'file, R>;
+    type SymbolIterator = CoffSymbolIterator<'data, 'file, R>;
+    type SymbolTable = CoffSymbolTable<'data, 'file, R>;
     type DynamicRelocationIterator = NoDynamicRelocationIterator;
 
     fn architecture(&self) -> Architecture {
@@ -172,7 +183,7 @@ where
         PeComdatIterator { file: self }
     }
 
-    fn symbol_by_index(&'file self, index: SymbolIndex) -> Result<CoffSymbol<'data, 'file>> {
+    fn symbol_by_index(&'file self, index: SymbolIndex) -> Result<CoffSymbol<'data, 'file, R>> {
         let symbol = self.common.symbols.symbol(index.0)?;
         Ok(CoffSymbol {
             file: &self.common,
@@ -181,18 +192,18 @@ where
         })
     }
 
-    fn symbols(&'file self) -> CoffSymbolIterator<'data, 'file> {
+    fn symbols(&'file self) -> CoffSymbolIterator<'data, 'file, R> {
         CoffSymbolIterator {
             file: &self.common,
             index: 0,
         }
     }
 
-    fn symbol_table(&'file self) -> Option<CoffSymbolTable<'data, 'file>> {
+    fn symbol_table(&'file self) -> Option<CoffSymbolTable<'data, 'file, R>> {
         Some(CoffSymbolTable { file: &self.common })
     }
 
-    fn dynamic_symbols(&'file self) -> CoffSymbolIterator<'data, 'file> {
+    fn dynamic_symbols(&'file self) -> CoffSymbolIterator<'data, 'file, R> {
         CoffSymbolIterator {
             file: &self.common,
             // Hack: don't return any.
@@ -200,7 +211,7 @@ where
         }
     }
 
-    fn dynamic_symbol_table(&'file self) -> Option<CoffSymbolTable<'data, 'file>> {
+    fn dynamic_symbol_table(&'file self) -> Option<CoffSymbolTable<'data, 'file, R>> {
         None
     }
 
@@ -636,7 +647,7 @@ pub trait ImageNtHeaders: Debug + Pod {
     ///
     /// `data` must be the entire file data.
     #[inline]
-    fn symbols<'data, R: ReadRef<'data>>(&self, data: R) -> read::Result<SymbolTable<'data>> {
+    fn symbols<'data, R: ReadRef<'data>>(&self, data: R) -> read::Result<SymbolTable<'data, R>> {
         SymbolTable::parse(self.file_header(), data)
     }
 }

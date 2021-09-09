@@ -1,6 +1,6 @@
 //! Renderer for type aliases.
 
-use hir::HasSource;
+use hir::{AsAssocItem, HasSource};
 use ide_db::SymbolKind;
 use syntax::{
     ast::{NameOwner, TypeAlias},
@@ -16,7 +16,14 @@ pub(crate) fn render_type_alias<'a>(
     ctx: RenderContext<'a>,
     type_alias: hir::TypeAlias,
 ) -> Option<CompletionItem> {
-    TypeAliasRender::new(ctx, type_alias)?.render()
+    TypeAliasRender::new(ctx, type_alias)?.render(false)
+}
+
+pub(crate) fn render_type_alias_with_eq<'a>(
+    ctx: RenderContext<'a>,
+    type_alias: hir::TypeAlias,
+) -> Option<CompletionItem> {
+    TypeAliasRender::new(ctx, type_alias)?.render(true)
 }
 
 #[derive(Debug)]
@@ -32,12 +39,18 @@ impl<'a> TypeAliasRender<'a> {
         Some(TypeAliasRender { ctx, type_alias, ast_node })
     }
 
-    fn render(self) -> Option<CompletionItem> {
-        let name = self.name()?;
+    fn render(self, with_eq: bool) -> Option<CompletionItem> {
+        let name = self.ast_node.name().map(|name| {
+            if with_eq {
+                format!("{} = ", name.text())
+            } else {
+                name.text().to_string()
+            }
+        })?;
         let detail = self.detail();
 
         let mut item =
-            CompletionItem::new(CompletionKind::Reference, self.ctx.source_range(), name);
+            CompletionItem::new(CompletionKind::Reference, self.ctx.source_range(), name.clone());
         item.kind(SymbolKind::TypeAlias)
             .set_documentation(self.ctx.docs(self.type_alias))
             .set_deprecated(
@@ -46,11 +59,15 @@ impl<'a> TypeAliasRender<'a> {
             )
             .detail(detail);
 
-        Some(item.build())
-    }
+        let db = self.ctx.db();
+        if let Some(actm) = self.type_alias.as_assoc_item(db) {
+            if let Some(trt) = actm.containing_trait_or_trait_impl(db) {
+                item.trait_name(trt.name(db).to_string());
+                item.insert_text(name.clone());
+            }
+        }
 
-    fn name(&self) -> Option<String> {
-        self.ast_node.name().map(|name| name.text().to_string())
+        Some(item.build())
     }
 
     fn detail(&self) -> String {

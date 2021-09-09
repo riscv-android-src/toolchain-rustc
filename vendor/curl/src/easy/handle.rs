@@ -9,12 +9,12 @@ use std::time::Duration;
 use curl_sys;
 use libc::c_void;
 
-use easy::handler::{self, InfoType, ReadError, SeekResult, WriteError};
-use easy::handler::{Auth, NetRc, ProxyType, SslOpt};
-use easy::handler::{HttpVersion, IpResolve, SslVersion, TimeCondition};
-use easy::{Easy2, Handler};
-use easy::{Form, List};
-use Error;
+use crate::easy::handler::{self, InfoType, ReadError, SeekResult, WriteError};
+use crate::easy::handler::{Auth, NetRc, ProxyType, SslOpt};
+use crate::easy::handler::{HttpVersion, IpResolve, SslVersion, TimeCondition};
+use crate::easy::{Easy2, Handler};
+use crate::easy::{Form, List};
+use crate::Error;
 
 /// Raw bindings to a libcurl "easy session".
 ///
@@ -563,6 +563,11 @@ impl Easy {
         self.inner.connect_to(list)
     }
 
+    /// Same as [`Easy2::path_as_is`](struct.Easy2.html#method.path_as_is)
+    pub fn path_as_is(&mut self, as_is: bool) -> Result<(), Error> {
+        self.inner.path_as_is(as_is)
+    }
+
     /// Same as [`Easy2::proxy`](struct.Easy2.html#method.proxy)
     pub fn proxy(&mut self, url: &str) -> Result<(), Error> {
         self.inner.proxy(url)
@@ -1080,6 +1085,11 @@ impl Easy {
     /// Same as [`Easy2::ssl_options`](struct.Easy2.html#method.ssl_options)
     pub fn ssl_options(&mut self, bits: &SslOpt) -> Result<(), Error> {
         self.inner.ssl_options(bits)
+    }
+
+    /// Same as [`Easy2::pinned_public_key`](struct.Easy2.html#method.pinned_public_key)
+    pub fn pinned_public_key(&mut self, pubkey: &str) -> Result<(), Error> {
+        self.inner.pinned_public_key(pubkey)
     }
 
     // =========================================================================

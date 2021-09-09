@@ -31,6 +31,8 @@ pub(super) fn complete_derive(
                 let lookup = components.join(", ");
                 let label = components.iter().rev().join(", ");
                 (label, Some(lookup))
+            } else if existing_derives.contains(&derive) {
+                continue;
             } else {
                 (derive, None)
             };
@@ -75,75 +77,3 @@ const DEFAULT_DERIVE_COMPLETIONS: &[DeriveDependencies] = &[
     DeriveDependencies { label: "Ord", dependencies: &["PartialOrd", "Eq", "PartialEq"] },
     DeriveDependencies { label: "PartialOrd", dependencies: &["PartialEq"] },
 ];
-
-#[cfg(test)]
-mod tests {
-    use expect_test::{expect, Expect};
-
-    use crate::{test_utils::completion_list, CompletionKind};
-
-    fn check(ra_fixture: &str, expect: Expect) {
-        let actual = completion_list(ra_fixture, CompletionKind::Attribute);
-        expect.assert_eq(&actual);
-    }
-
-    #[test]
-    fn no_completion_for_incorrect_derive() {
-        check(r#"#[derive{$0)] struct Test;"#, expect![[]])
-    }
-
-    #[test]
-    #[ignore] // FIXME: Fixtures cant test proc-macros/derives yet as we cant specify them in fixtures
-    fn empty_derive() {
-        check(
-            r#"#[derive($0)] struct Test;"#,
-            expect![[r#"
-                at Clone
-                at Clone, Copy
-                at Debug
-                at Default
-                at Hash
-                at PartialEq
-                at PartialEq, Eq
-                at PartialEq, PartialOrd
-                at PartialEq, Eq, PartialOrd, Ord
-            "#]],
-        );
-    }
-
-    #[test]
-    #[ignore] // FIXME: Fixtures cant test proc-macros/derives yet as we cant specify them in fixtures
-    fn derive_with_input() {
-        check(
-            r#"#[derive(serde::Serialize, PartialEq, $0)] struct Test;"#,
-            expect![[r#"
-                at Clone
-                at Clone, Copy
-                at Debug
-                at Default
-                at Hash
-                at Eq
-                at PartialOrd
-                at Eq, PartialOrd, Ord
-            "#]],
-        )
-    }
-
-    #[test]
-    #[ignore] // FIXME: Fixtures cant test proc-macros/derives yet as we cant specify them in fixtures
-    fn derive_with_input2() {
-        check(
-            r#"#[derive($0 serde::Serialize, PartialEq)] struct Test;"#,
-            expect![[r#"
-                at Clone
-                at Clone, Copy
-                at Debug
-                at Default
-                at Hash
-                at Eq
-                at PartialOrd
-                at Eq, PartialOrd, Ord
-            "#]],
-        )
-    }
-}

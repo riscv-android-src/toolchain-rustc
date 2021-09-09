@@ -14,26 +14,29 @@ use vfs::{loader::Handle, AbsPath, AbsPathBuf};
 
 use crate::reload::{ProjectFolders, SourceRootConfig};
 
-pub struct LoadCargoConfig {
-    pub load_out_dirs_from_check: bool,
-    pub wrap_rustc: bool,
-    pub with_proc_macro: bool,
+pub(crate) struct LoadCargoConfig {
+    pub(crate) load_out_dirs_from_check: bool,
+    pub(crate) wrap_rustc: bool,
+    pub(crate) with_proc_macro: bool,
+    pub(crate) prefill_caches: bool,
 }
 
-pub fn load_workspace_at(
+pub(crate) fn load_workspace_at(
     root: &Path,
     cargo_config: &CargoConfig,
     load_config: &LoadCargoConfig,
     progress: &dyn Fn(String),
 ) -> Result<(AnalysisHost, vfs::Vfs, Option<ProcMacroClient>)> {
     let root = AbsPathBuf::assert(std::env::current_dir()?.join(root));
+    eprintln!("root = {:?}", root);
     let root = ProjectManifest::discover_single(&root)?;
+    eprintln!("root = {:?}", root);
     let workspace = ProjectWorkspace::load(root, cargo_config, progress)?;
 
     load_workspace(workspace, load_config, progress)
 }
 
-pub fn load_workspace(
+fn load_workspace(
     ws: ProjectWorkspace,
     config: &LoadCargoConfig,
     progress: &dyn Fn(String),
@@ -47,7 +50,7 @@ pub fn load_workspace(
     };
 
     let proc_macro_client = if config.with_proc_macro {
-        let path = std::env::current_exe()?;
+        let path = AbsPathBuf::assert(std::env::current_exe()?);
         Some(ProcMacroClient::extern_process(path, &["proc-macro"]).unwrap())
     } else {
         None
@@ -82,6 +85,10 @@ pub fn load_workspace(
     log::debug!("crate graph: {:?}", crate_graph);
     let host =
         load_crate_graph(crate_graph, project_folders.source_root_config, &mut vfs, &receiver);
+
+    if config.prefill_caches {
+        host.analysis().prime_caches(|_| {})?;
+    }
     Ok((host, vfs, proc_macro_client))
 }
 
@@ -121,7 +128,7 @@ fn load_crate_graph(
             }
         }
     }
-    let source_roots = source_root_config.partition(&vfs);
+    let source_roots = source_root_config.partition(vfs);
     analysis_change.set_roots(source_roots);
 
     analysis_change.set_crate_graph(crate_graph);
@@ -137,21 +144,20 @@ mod tests {
     use hir::Crate;
 
     #[test]
-    fn test_loading_rust_analyzer() -> Result<()> {
+    fn test_loading_rust_analyzer() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
         let cargo_config = Default::default();
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: false,
             wrap_rustc: false,
             with_proc_macro: false,
+            prefill_caches: false,
         };
         let (host, _vfs, _proc_macro) =
-            load_workspace_at(path, &cargo_config, &load_cargo_config, &|_| {})?;
+            load_workspace_at(path, &cargo_config, &load_cargo_config, &|_| {}).unwrap();
 
         let n_crates = Crate::all(host.raw_database()).len();
         // RA has quite a few crates, but the exact count doesn't matter
         assert!(n_crates > 20);
-
-        Ok(())
     }
 }

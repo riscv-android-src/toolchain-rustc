@@ -15,6 +15,7 @@ use log::trace;
 
 use rustc_ast::Mutability;
 use rustc_middle::{mir, ty};
+use rustc_span::Symbol;
 use rustc_target::spec::abi::Abi;
 use rustc_target::spec::PanicStrategy;
 
@@ -40,6 +41,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// by libpanic_unwind to delegate the actual unwinding process to Miri.
     fn handle_miri_start_panic(
         &mut self,
+        abi: Abi,
+        link_name: Symbol,
         args: &[OpTy<'tcx, Tag>],
         unwind: StackPopUnwind,
     ) -> InterpResult<'tcx> {
@@ -48,7 +51,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         trace!("miri_start_panic: {:?}", this.frame().instance);
 
         // Get the raw pointer stored in arg[0] (the panic payload).
-        let &[ref payload] = check_arg_count(args)?;
+        let &[ref payload] = this.check_shim(abi, Abi::Rust, link_name, args)?;
         let payload = this.read_scalar(payload)?.check_init()?;
         let thread = this.active_thread_mut();
         assert!(thread.panic_payload.is_none(), "the panic runtime should avoid double-panics");
@@ -81,14 +84,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         // Get all the arguments.
         let &[ref try_fn, ref data, ref catch_fn] = check_arg_count(args)?;
-        let try_fn = this.read_scalar(try_fn)?.check_init()?;
+        let try_fn = this.read_pointer(try_fn)?;
         let data = this.read_scalar(data)?.check_init()?;
         let catch_fn = this.read_scalar(catch_fn)?.check_init()?;
 
         // Now we make a function call, and pass `data` as first and only argument.
         let f_instance = this.memory.get_fn(try_fn)?.as_instance()?;
         trace!("try_fn: {:?}", f_instance);
-        let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
+        let ret_place = MPlaceTy::dangling(this.machine.layouts.unit).into();
         this.call_function(
             f_instance,
             Abi::Rust,
@@ -142,9 +145,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             let payload = this.active_thread_mut().panic_payload.take().unwrap();
 
             // Push the `catch_fn` stackframe.
-            let f_instance = this.memory.get_fn(catch_unwind.catch_fn)?.as_instance()?;
+            let f_instance =
+                this.memory.get_fn(this.scalar_to_ptr(catch_unwind.catch_fn))?.as_instance()?;
             trace!("catch_fn: {:?}", f_instance);
-            let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
+            let ret_place = MPlaceTy::dangling(this.machine.layouts.unit).into();
             this.call_function(
                 f_instance,
                 Abi::Rust,
@@ -174,7 +178,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.call_function(
             panic,
             Abi::Rust,
-            &[msg.to_ref()],
+            &[msg.to_ref(this)],
             None,
             StackPopCleanup::Goto { ret: None, unwind },
         )

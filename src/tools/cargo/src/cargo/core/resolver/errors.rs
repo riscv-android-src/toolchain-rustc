@@ -129,6 +129,10 @@ pub(super) fn activation_error(
                     msg.push_str(link);
                     msg.push_str("` as well:\n");
                     msg.push_str(&describe_path(&cx.parents.path_to_bottom(p)));
+                    msg.push_str("\nOnly one package in the dependency graph may specify the same links value. This helps ensure that only one copy of a native library is linked in the final binary. ");
+                    msg.push_str("Try to adjust your dependencies so that only one package uses the links ='");
+                    msg.push_str(&*dep.package_name());
+                    msg.push_str("' value. For more information, see https://doc.rust-lang.org/cargo/reference/resolver.html#links.");
                 }
                 ConflictReason::MissingFeatures(features) => {
                     msg.push_str("\n\nthe package `");
@@ -280,13 +284,15 @@ pub(super) fn activation_error(
                 .filter(|&(d, _)| d < 4)
                 .collect();
             candidates.sort_by_key(|o| o.0);
-            let mut msg = format!(
-                "no matching package named `{}` found\n\
-                 location searched: {}\n",
-                dep.package_name(),
-                dep.source_id()
-            );
-            if !candidates.is_empty() {
+            let mut msg: String;
+            if candidates.is_empty() {
+                msg = format!("no matching package named `{}` found\n", dep.package_name());
+            } else {
+                msg = format!(
+                    "no matching package found\nsearched package name: `{}`\n",
+                    dep.package_name()
+                );
+
                 // If dependency package name is equal to the name of the candidate here
                 // it may be a prerelease package which hasn't been specified correctly
                 if dep.package_name() == candidates[0].1.name()
@@ -308,8 +314,9 @@ pub(super) fn activation_error(
                     if candidates.len() > 3 {
                         names.push("...");
                     }
-
-                    msg.push_str("perhaps you meant: ");
+                    // Vertically align first suggestion with missing crate name
+                    // so a typo jumps out at you.
+                    msg.push_str("perhaps you meant:      ");
                     msg.push_str(&names.iter().enumerate().fold(
                         String::default(),
                         |acc, (i, el)| match i {
@@ -319,9 +326,9 @@ pub(super) fn activation_error(
                         },
                     ));
                 }
-
                 msg.push('\n');
             }
+            msg.push_str(&format!("location searched: {}\n", dep.source_id()));
             msg.push_str("required by ");
             msg.push_str(&describe_path(
                 &cx.parents.path_to_bottom(&parent.package_id()),

@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "jsonrpc-core"
-version = "17.0.0"
+version = "18.0.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 description = "Transport agnostic rust implementation of JSON-RPC 2.0 Specification."
 homepage = "https://github.com/paritytech/jsonrpc"
@@ -24,6 +24,16 @@ license = "MIT"
 repository = "https://github.com/paritytech/jsonrpc"
 [dependencies.futures]
 version = "0.3"
+optional = true
+
+[dependencies.futures-executor]
+version = "0.3"
+optional = true
+
+[dependencies.futures-util]
+version = "0.3"
+features = ["std"]
+default-features = false
 
 [dependencies.log]
 version = "0.4"
@@ -39,6 +49,7 @@ version = "1.0"
 
 [features]
 arbitrary_precision = ["serde_json/arbitrary_precision"]
+default = ["futures-executor", "futures"]
 [badges.travis-ci]
 branch = "master"
 repository = "paritytech/jsonrpc"

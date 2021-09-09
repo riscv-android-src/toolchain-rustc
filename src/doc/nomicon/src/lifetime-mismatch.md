@@ -2,7 +2,7 @@
 
 Given the following code:
 
-```rust,edition2018,compile_fail
+```rust,compile_fail
 #[derive(Debug)]
 struct Foo;
 
@@ -40,6 +40,7 @@ What happened? Well, we got the exact same reasoning as we did for
 [Example 2 in the previous section][ex2]. We desugar the program and we get
 the following:
 
+<!-- ignore: desugared code -->
 ```rust,ignore
 struct Foo;
 
@@ -70,15 +71,13 @@ blows up in our face!
 This program is clearly correct according to the reference semantics we actually
 care about, but the lifetime system is too coarse-grained to handle that.
 
-
-
-# Improperly reduced borrows
+## Improperly reduced borrows
 
 The following code fails to compile, because Rust doesn't understand that the borrow
 is no longer needed and conservatively falls back to using a whole scope for it.
 This will eventually get fixed.
 
-```rust,edition2018,compile_fail
+```rust,compile_fail
 # use std::collections::HashMap;
 # use std::hash::Hash;
 fn get_default<'m, K, V>(map: &'m mut HashMap<K, V>, key: K) -> &'m mut V
@@ -119,6 +118,5 @@ error[E0499]: cannot borrow `*map` as mutable more than once at a time
 15 | |     }
    | |_____- returning this value requires that `*map` is borrowed for `'m`
 ```
-
 
 [ex2]: lifetimes.html#example-aliasing-a-mutable-reference

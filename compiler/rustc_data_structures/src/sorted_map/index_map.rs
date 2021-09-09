@@ -1,6 +1,5 @@
 //! A variant of `SortedMap` that preserves insertion order.
 
-use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
 
@@ -76,11 +75,7 @@ impl<I: Idx, K: Ord, V> SortedIndexMultiMap<I, K, V> {
     ///
     /// If there are multiple items that are equivalent to `key`, they will be yielded in
     /// insertion order.
-    pub fn get_by_key<Q: 'a>(&'a self, key: &Q) -> impl 'a + Iterator<Item = &'a V>
-    where
-        Q: Ord + ?Sized,
-        K: Borrow<Q>,
-    {
+    pub fn get_by_key(&'a self, key: K) -> impl 'a + Iterator<Item = &'a V> {
         self.get_by_key_enumerated(key).map(|(_, v)| v)
     }
 
@@ -89,77 +84,12 @@ impl<I: Idx, K: Ord, V> SortedIndexMultiMap<I, K, V> {
     ///
     /// If there are multiple items that are equivalent to `key`, they will be yielded in
     /// insertion order.
-    pub fn get_by_key_enumerated<Q>(&self, key: &Q) -> impl '_ + Iterator<Item = (I, &V)>
-    where
-        Q: Ord + ?Sized,
-        K: Borrow<Q>,
-    {
-        // FIXME: This should be in the standard library as `equal_range`. See rust-lang/rfcs#2184.
-        match self.binary_search_idx(key) {
-            Err(_) => self.idxs_to_items_enumerated(&[]),
-
-            Ok(idx) => {
-                let start = self.find_lower_bound(key, idx);
-                let end = self.find_upper_bound(key, idx);
-                self.idxs_to_items_enumerated(&self.idx_sorted_by_item_key[start..end])
-            }
-        }
-    }
-
-    fn binary_search_idx<Q>(&self, key: &Q) -> Result<usize, usize>
-    where
-        Q: Ord + ?Sized,
-        K: Borrow<Q>,
-    {
-        self.idx_sorted_by_item_key.binary_search_by(|&idx| self.items[idx].0.borrow().cmp(key))
-    }
-
-    /// Returns the index into the `idx_sorted_by_item_key` array of the first item equal to
-    /// `key`.
-    ///
-    /// `initial` must be an index into that same array for an item that is equal to `key`.
-    fn find_lower_bound<Q>(&self, key: &Q, initial: usize) -> usize
-    where
-        Q: Ord + ?Sized,
-        K: Borrow<Q>,
-    {
-        debug_assert!(self.items[self.idx_sorted_by_item_key[initial]].0.borrow() == key);
-
-        // FIXME: At present, this uses linear search, meaning lookup is only `O(log n)` if duplicate
-        // entries are rare. It would be better to start with a linear search for the common case but
-        // fall back to an exponential search if many duplicates are found. This applies to
-        // `upper_bound` as well.
-        let mut start = initial;
-        while start != 0 && self.items[self.idx_sorted_by_item_key[start - 1]].0.borrow() == key {
-            start -= 1;
-        }
-
-        start
-    }
-
-    /// Returns the index into the `idx_sorted_by_item_key` array of the first item greater than
-    /// `key`, or `self.len()` if no such item exists.
-    ///
-    /// `initial` must be an index into that same array for an item that is equal to `key`.
-    fn find_upper_bound<Q>(&self, key: &Q, initial: usize) -> usize
-    where
-        Q: Ord + ?Sized,
-        K: Borrow<Q>,
-    {
-        debug_assert!(self.items[self.idx_sorted_by_item_key[initial]].0.borrow() == key);
-
-        // See the FIXME for `find_lower_bound`.
-        let mut end = initial + 1;
-        let len = self.items.len();
-        while end < len && self.items[self.idx_sorted_by_item_key[end]].0.borrow() == key {
-            end += 1;
-        }
-
-        end
-    }
-
-    fn idxs_to_items_enumerated(&'a self, idxs: &'a [I]) -> impl 'a + Iterator<Item = (I, &'a V)> {
-        idxs.iter().map(move |&idx| (idx, &self.items[idx].1))
+    pub fn get_by_key_enumerated(&'a self, key: K) -> impl '_ + Iterator<Item = (I, &V)> {
+        let lower_bound = self.idx_sorted_by_item_key.partition_point(|&i| self.items[i].0 < key);
+        self.idx_sorted_by_item_key[lower_bound..].iter().map_while(move |&i| {
+            let (k, v) = &self.items[i];
+            (k == &key).then_some((i, v))
+        })
     }
 }
 

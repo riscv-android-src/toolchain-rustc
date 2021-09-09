@@ -9,7 +9,7 @@ LL | pass_nonterminal!(n!());
    |
    = note: this error originates in the macro `pass_nonterminal` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0552]: unrecognized representation hint
+error[E0693]: incorrect `repr(align)` attribute format: `align` takes exactly one argument in parentheses
   --> $DIR/nonterminal-expansion.rs:5:16
    |
 LL |         #[repr(align($n))]
@@ -22,4 +22,4 @@ LL | pass_nonterminal!(n!());
 
 error: aborting due to 2 previous errors
 
-For more information about this error, try `rustc --explain E0552`.
+For more information about this error, try `rustc --explain E0693`.

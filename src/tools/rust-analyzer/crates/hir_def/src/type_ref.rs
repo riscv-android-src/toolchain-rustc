@@ -119,7 +119,7 @@ impl LifetimeRef {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TypeBound {
     Path(Path),
-    // ForLifetime(Vec<LifetimeRef>, Path), FIXME ForLifetime
+    ForLifetime(Box<[Name]>, Path),
     Lifetime(LifetimeRef),
     Error,
 }
@@ -128,7 +128,7 @@ impl TypeRef {
     /// Converts an `ast::TypeRef` to a `hir::TypeRef`.
     pub fn from_ast(ctx: &LowerCtx, node: ast::Type) -> Self {
         match node {
-            ast::Type::ParenType(inner) => TypeRef::from_ast_opt(&ctx, inner.ty()),
+            ast::Type::ParenType(inner) => TypeRef::from_ast_opt(ctx, inner.ty()),
             ast::Type::TupleType(inner) => {
                 TypeRef::Tuple(inner.fields().map(|it| TypeRef::from_ast(ctx, it)).collect())
             }
@@ -142,7 +142,7 @@ impl TypeRef {
                     .unwrap_or(TypeRef::Error)
             }
             ast::Type::PtrType(inner) => {
-                let inner_ty = TypeRef::from_ast_opt(&ctx, inner.ty());
+                let inner_ty = TypeRef::from_ast_opt(ctx, inner.ty());
                 let mutability = Mutability::from_mutable(inner.mut_token().is_some());
                 TypeRef::RawPtr(Box::new(inner_ty), mutability)
             }
@@ -156,13 +156,13 @@ impl TypeRef {
                     .map(ConstScalar::usize_from_literal_expr)
                     .unwrap_or(ConstScalar::Unknown);
 
-                TypeRef::Array(Box::new(TypeRef::from_ast_opt(&ctx, inner.ty())), len)
+                TypeRef::Array(Box::new(TypeRef::from_ast_opt(ctx, inner.ty())), len)
             }
             ast::Type::SliceType(inner) => {
-                TypeRef::Slice(Box::new(TypeRef::from_ast_opt(&ctx, inner.ty())))
+                TypeRef::Slice(Box::new(TypeRef::from_ast_opt(ctx, inner.ty())))
             }
             ast::Type::RefType(inner) => {
-                let inner_ty = TypeRef::from_ast_opt(&ctx, inner.ty());
+                let inner_ty = TypeRef::from_ast_opt(ctx, inner.ty());
                 let lifetime = inner.lifetime().map(|lt| LifetimeRef::new(&lt));
                 let mutability = Mutability::from_mutable(inner.mut_token().is_some());
                 TypeRef::Reference(Box::new(inner_ty), lifetime, mutability)
@@ -180,7 +180,7 @@ impl TypeRef {
                         is_varargs = param.dotdotdot_token().is_some();
                     }
 
-                    pl.params().map(|p| p.ty()).map(|it| TypeRef::from_ast_opt(&ctx, it)).collect()
+                    pl.params().map(|p| p.ty()).map(|it| TypeRef::from_ast_opt(ctx, it)).collect()
                 } else {
                     Vec::new()
                 };
@@ -188,7 +188,7 @@ impl TypeRef {
                 TypeRef::Fn(params, is_varargs)
             }
             // for types are close enough for our purposes to the inner type for now...
-            ast::Type::ForType(inner) => TypeRef::from_ast_opt(&ctx, inner.ty()),
+            ast::Type::ForType(inner) => TypeRef::from_ast_opt(ctx, inner.ty()),
             ast::Type::ImplTraitType(inner) => {
                 TypeRef::ImplTrait(type_bounds_from_ast(ctx, inner.type_bound_list()))
             }
@@ -229,11 +229,13 @@ impl TypeRef {
                 TypeRef::RawPtr(type_ref, _)
                 | TypeRef::Reference(type_ref, ..)
                 | TypeRef::Array(type_ref, _)
-                | TypeRef::Slice(type_ref) => go(&type_ref, f),
+                | TypeRef::Slice(type_ref) => go(type_ref, f),
                 TypeRef::ImplTrait(bounds) | TypeRef::DynTrait(bounds) => {
                     for bound in bounds {
                         match bound.as_ref() {
-                            TypeBound::Path(path) => go_path(path, f),
+                            TypeBound::Path(path) | TypeBound::ForLifetime(_, path) => {
+                                go_path(path, f)
+                            }
                             TypeBound::Lifetime(_) | TypeBound::Error => (),
                         }
                     }
@@ -263,7 +265,9 @@ impl TypeRef {
                         }
                         for bound in &binding.bounds {
                             match bound.as_ref() {
-                                TypeBound::Path(path) => go_path(path, f),
+                                TypeBound::Path(path) | TypeBound::ForLifetime(_, path) => {
+                                    go_path(path, f)
+                                }
                                 TypeBound::Lifetime(_) | TypeBound::Error => (),
                             }
                         }
@@ -287,20 +291,29 @@ pub(crate) fn type_bounds_from_ast(
 
 impl TypeBound {
     pub(crate) fn from_ast(ctx: &LowerCtx, node: ast::TypeBound) -> Self {
+        let lower_path_type = |path_type: ast::PathType| ctx.lower_path(path_type.path()?);
+
         match node.kind() {
             ast::TypeBoundKind::PathType(path_type) => {
-                let path = match path_type.path() {
-                    Some(p) => p,
-                    None => return TypeBound::Error,
-                };
-
-                let path = match ctx.lower_path(path) {
-                    Some(p) => p,
-                    None => return TypeBound::Error,
-                };
-                TypeBound::Path(path)
+                lower_path_type(path_type).map(TypeBound::Path).unwrap_or(TypeBound::Error)
             }
-            ast::TypeBoundKind::ForType(_) => TypeBound::Error, // FIXME ForType
+            ast::TypeBoundKind::ForType(for_type) => {
+                let lt_refs = match for_type.generic_param_list() {
+                    Some(gpl) => gpl
+                        .lifetime_params()
+                        .flat_map(|lp| lp.lifetime().map(|lt| Name::new_lifetime(&lt)))
+                        .collect(),
+                    None => Box::default(),
+                };
+                let path = for_type.ty().and_then(|ty| match ty {
+                    ast::Type::PathType(path_type) => lower_path_type(path_type),
+                    _ => None,
+                });
+                match path {
+                    Some(p) => TypeBound::ForLifetime(lt_refs, p),
+                    None => TypeBound::Error,
+                }
+            }
             ast::TypeBoundKind::Lifetime(lifetime) => {
                 TypeBound::Lifetime(LifetimeRef::new(&lifetime))
             }
@@ -309,8 +322,8 @@ impl TypeBound {
 
     pub fn as_path(&self) -> Option<&Path> {
         match self {
-            TypeBound::Path(p) => Some(p),
-            _ => None,
+            TypeBound::Path(p) | TypeBound::ForLifetime(_, p) => Some(p),
+            TypeBound::Lifetime(_) | TypeBound::Error => None,
         }
     }
 }

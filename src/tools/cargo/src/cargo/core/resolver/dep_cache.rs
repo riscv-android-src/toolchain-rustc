@@ -13,7 +13,8 @@ use crate::core::resolver::context::Context;
 use crate::core::resolver::errors::describe_path;
 use crate::core::resolver::types::{ConflictReason, DepInfo, FeaturesSet};
 use crate::core::resolver::{
-    ActivateError, ActivateResult, CliFeatures, RequestedFeatures, ResolveOpts,
+    ActivateError, ActivateResult, CliFeatures, RequestedFeatures, ResolveOpts, VersionOrdering,
+    VersionPreferences,
 };
 use crate::core::{Dependency, FeatureValue, PackageId, PackageIdSpec, Registry, Summary};
 use crate::util::errors::CargoResult;
@@ -21,14 +22,13 @@ use crate::util::interning::InternedString;
 
 use anyhow::Context as _;
 use log::debug;
-use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 pub struct RegistryQueryer<'a> {
     pub registry: &'a mut (dyn Registry + 'a),
     replacements: &'a [(PackageIdSpec, Dependency)],
-    try_to_use: &'a HashSet<PackageId>,
+    version_prefs: &'a VersionPreferences,
     /// If set the list of dependency candidates will be sorted by minimal
     /// versions first. That allows `cargo update -Z minimal-versions` which will
     /// specify minimum dependency versions to be used.
@@ -48,13 +48,13 @@ impl<'a> RegistryQueryer<'a> {
     pub fn new(
         registry: &'a mut dyn Registry,
         replacements: &'a [(PackageIdSpec, Dependency)],
-        try_to_use: &'a HashSet<PackageId>,
+        version_prefs: &'a VersionPreferences,
         minimal_versions: bool,
     ) -> Self {
         RegistryQueryer {
             registry,
             replacements,
-            try_to_use,
+            version_prefs,
             minimal_versions,
             registry_cache: HashMap::new(),
             summary_cache: HashMap::new(),
@@ -164,28 +164,16 @@ impl<'a> RegistryQueryer<'a> {
             }
         }
 
-        // When we attempt versions for a package we'll want to do so in a
-        // sorted fashion to pick the "best candidates" first. Currently we try
-        // prioritized summaries (those in `try_to_use`) and failing that we
-        // list everything from the maximum version to the lowest version.
-        ret.sort_unstable_by(|a, b| {
-            let a_in_previous = self.try_to_use.contains(&a.package_id());
-            let b_in_previous = self.try_to_use.contains(&b.package_id());
-            let previous_cmp = a_in_previous.cmp(&b_in_previous).reverse();
-            match previous_cmp {
-                Ordering::Equal => {
-                    let cmp = a.version().cmp(b.version());
-                    if self.minimal_versions {
-                        // Lower version ordered first.
-                        cmp
-                    } else {
-                        // Higher version ordered first.
-                        cmp.reverse()
-                    }
-                }
-                _ => previous_cmp,
-            }
-        });
+        // When we attempt versions for a package we'll want to do so in a sorted fashion to pick
+        // the "best candidates" first. VersionPreferences implements this notion.
+        self.version_prefs.sort_summaries(
+            &mut ret,
+            if self.minimal_versions {
+                VersionOrdering::MinimumVersionsFirst
+            } else {
+                VersionOrdering::MaximumVersionsFirst
+            },
+        );
 
         let out = Rc::new(ret);
 
@@ -405,12 +393,12 @@ impl Requirements<'_> {
         &mut self,
         package: InternedString,
         feat: InternedString,
-        dep_prefix: bool,
+        weak: bool,
     ) -> Result<(), RequirementError> {
         // If `package` is indeed an optional dependency then we activate the
         // feature named `package`, but otherwise if `package` is a required
         // dependency then there's no feature associated with it.
-        if !dep_prefix
+        if !weak
             && self
                 .summary
                 .dependencies()
@@ -456,12 +444,11 @@ impl Requirements<'_> {
             FeatureValue::DepFeature {
                 dep_name,
                 dep_feature,
-                dep_prefix,
                 // Weak features are always activated in the dependency
                 // resolver. They will be narrowed inside the new feature
                 // resolver.
-                weak: _,
-            } => self.require_dep_feature(*dep_name, *dep_feature, *dep_prefix)?,
+                weak,
+            } => self.require_dep_feature(*dep_name, *dep_feature, *weak)?,
         };
         Ok(())
     }

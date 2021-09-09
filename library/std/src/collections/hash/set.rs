@@ -202,7 +202,6 @@ impl<T, S> HashSet<T, S> {
     /// v.insert(1);
     /// assert_eq!(v.len(), 1);
     /// ```
-    #[doc(alias = "length")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn len(&self) -> usize {
@@ -875,7 +874,6 @@ where
     /// assert_eq!(set.remove(&2), true);
     /// assert_eq!(set.remove(&2), false);
     /// ```
-    #[doc(alias = "delete")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool
@@ -914,6 +912,7 @@ where
     /// Retains only the elements specified by the predicate.
     ///
     /// In other words, remove all elements `e` such that `f(&e)` returns `false`.
+    /// The elements are visited in unsorted (and unspecified) order.
     ///
     /// # Examples
     ///
