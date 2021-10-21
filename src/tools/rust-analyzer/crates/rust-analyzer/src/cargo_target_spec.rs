@@ -2,7 +2,7 @@
 
 use cfg::{CfgAtom, CfgExpr};
 use ide::{FileId, RunnableKind, TestId};
-use project_model::{self, TargetKind};
+use project_model::{self, ManifestPath, TargetKind};
 use vfs::AbsPathBuf;
 
 use crate::{global_state::GlobalStateSnapshot, Result};
@@ -14,7 +14,7 @@ use crate::{global_state::GlobalStateSnapshot, Result};
 #[derive(Clone)]
 pub(crate) struct CargoTargetSpec {
     pub(crate) workspace_root: AbsPathBuf,
-    pub(crate) cargo_toml: AbsPathBuf,
+    pub(crate) cargo_toml: ManifestPath,
     pub(crate) package: String,
     pub(crate) target: String,
     pub(crate) target_kind: TargetKind,
@@ -191,7 +191,7 @@ mod tests {
     use super::*;
 
     use cfg::CfgExpr;
-    use mbe::ast_to_token_tree;
+    use mbe::syntax_node_to_token_tree;
     use syntax::{
         ast::{self, AstNode},
         SmolStr,
@@ -201,7 +201,7 @@ mod tests {
         let cfg_expr = {
             let source_file = ast::SourceFile::parse(cfg).ok().unwrap();
             let tt = source_file.syntax().descendants().find_map(ast::TokenTree::cast).unwrap();
-            let (tt, _) = ast_to_token_tree(&tt);
+            let (tt, _) = syntax_node_to_token_tree(tt.syntax());
             CfgExpr::parse(&tt)
         };
 

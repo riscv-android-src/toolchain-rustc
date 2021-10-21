@@ -1,7 +1,7 @@
 //! The main loop of `rust-analyzer` responsible for dispatching LSP
 //! requests/replies and notifications back to the client.
 use std::{
-    env, fmt,
+    fmt,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -9,20 +9,19 @@ use std::{
 use always_assert::always;
 use crossbeam_channel::{select, Receiver};
 use ide::{FileId, PrimeCachesProgress};
-use ide_db::base_db::VfsPath;
-use lsp_server::{Connection, Notification, Request, Response};
+use ide_db::base_db::{SourceDatabaseExt, VfsPath};
+use lsp_server::{Connection, Notification, Request};
 use lsp_types::notification::Notification as _;
-use project_model::BuildDataCollector;
 use vfs::ChangeKind;
 
 use crate::{
     config::Config,
     dispatch::{NotificationDispatcher, RequestDispatcher},
-    document::DocumentData,
     from_proto,
     global_state::{file_id_to_url, url_to_file_id, GlobalState},
     handlers, lsp_ext,
     lsp_utils::{apply_document_changes, is_cancelled, notification_is, Progress},
+    mem_docs::DocumentData,
     reload::{BuildDataProgress, ProjectWorkspaceProgress},
     Result,
 };
@@ -61,7 +60,7 @@ enum Event {
 
 #[derive(Debug)]
 pub(crate) enum Task {
-    Response(Response),
+    Response(lsp_server::Response),
     Diagnostics(Vec<(FileId, Vec<lsp_types::Diagnostic>)>),
     PrimeCaches(PrimeCachesProgress),
     FetchWorkspace(ProjectWorkspaceProgress),
@@ -236,12 +235,7 @@ impl GlobalState {
                                     let workspaces_updated = !Arc::ptr_eq(&old, &self.workspaces);
 
                                     if self.config.run_build_scripts() && workspaces_updated {
-                                        let mut collector =
-                                            BuildDataCollector::new(self.config.wrap_rustc());
-                                        for ws in self.workspaces.iter() {
-                                            ws.collect_build_data_configs(&mut collector);
-                                        }
-                                        self.fetch_build_data_request(collector)
+                                        self.fetch_build_data_request()
                                     }
 
                                     (Progress::End, None)
@@ -311,7 +305,7 @@ impl GlobalState {
                             let vfs = &mut self.vfs.write().0;
                             for (path, contents) in files {
                                 let path = VfsPath::from(path);
-                                if !self.mem_docs.contains_key(&path) {
+                                if !self.mem_docs.contains(&path) {
                                     vfs.set_file_contents(path, contents);
                                 }
                             }
@@ -412,30 +406,65 @@ impl GlobalState {
         }
 
         let state_changed = self.process_changes();
+        let memdocs_added_or_removed = self.mem_docs.take_changes();
 
-        if self.is_quiescent() && !was_quiescent {
-            for flycheck in &self.flycheck {
-                flycheck.update();
-            }
-        }
-
-        if self.is_quiescent() && (!was_quiescent || state_changed) {
-            self.update_file_notifications_on_threadpool();
-
-            // Refresh semantic tokens if the client supports it.
-            if self.config.semantic_tokens_refresh() {
-                self.semantic_tokens_cache.lock().clear();
-                self.send_request::<lsp_types::request::SemanticTokensRefesh>((), |_, _| ());
+        if self.is_quiescent() {
+            if !was_quiescent {
+                for flycheck in &self.flycheck {
+                    flycheck.update();
+                }
             }
 
-            // Refresh code lens if the client supports it.
-            if self.config.code_lens_refresh() {
-                self.send_request::<lsp_types::request::CodeLensRefresh>((), |_, _| ());
+            if !was_quiescent || state_changed {
+                // Ensure that only one cache priming task can run at a time
+                self.prime_caches_queue.request_op();
+                if self.prime_caches_queue.should_start_op() {
+                    self.task_pool.handle.spawn_with_sender({
+                        let analysis = self.snapshot().analysis;
+                        move |sender| {
+                            let cb = |progress| {
+                                sender.send(Task::PrimeCaches(progress)).unwrap();
+                            };
+                            match analysis.prime_caches(cb) {
+                                Ok(()) => (),
+                                Err(_canceled) => (),
+                            }
+                        }
+                    });
+                }
+
+                // Refresh semantic tokens if the client supports it.
+                if self.config.semantic_tokens_refresh() {
+                    self.semantic_tokens_cache.lock().clear();
+                    self.send_request::<lsp_types::request::SemanticTokensRefesh>((), |_, _| ());
+                }
+
+                // Refresh code lens if the client supports it.
+                if self.config.code_lens_refresh() {
+                    self.send_request::<lsp_types::request::CodeLensRefresh>((), |_, _| ());
+                }
+            }
+
+            if !was_quiescent || state_changed || memdocs_added_or_removed {
+                if self.config.publish_diagnostics() {
+                    self.update_diagnostics()
+                }
             }
         }
 
         if let Some(diagnostic_changes) = self.diagnostics.take_changes() {
             for file_id in diagnostic_changes {
+                let db = self.analysis_host.raw_database();
+                let source_root = db.file_source_root(file_id);
+                if db.source_root(source_root).is_library {
+                    // Only publish diagnostics for files in the workspace, not from crates.io deps
+                    // or the sysroot.
+                    // While theoretically these should never have errors, we have quite a few false
+                    // positives particularly in the stdlib, and those diagnostics would stay around
+                    // forever if we emitted them here.
+                    continue;
+                }
+
                 let url = file_id_to_url(&self.vfs.read().0, file_id);
                 let diagnostics = self.diagnostics.diagnostics_for(file_id).cloned().collect();
                 let version = from_proto::vfs_path(&url)
@@ -458,12 +487,10 @@ impl GlobalState {
         let loop_duration = loop_start.elapsed();
         if loop_duration > Duration::from_millis(100) {
             log::warn!("overly long loop turn: {:?}", loop_duration);
-            if env::var("RA_PROFILE").is_ok() {
-                self.show_message(
-                    lsp_types::MessageType::Error,
-                    format!("overly long loop turn: {:?}", loop_duration),
-                )
-            }
+            self.poke_rust_analyzer_developer(format!(
+                "overly long loop turn: {:?}",
+                loop_duration
+            ));
         }
         Ok(())
     }
@@ -472,7 +499,7 @@ impl GlobalState {
         self.register_request(&req, request_received);
 
         if self.shutdown_requested {
-            self.respond(Response::new_err(
+            self.respond(lsp_server::Response::new_err(
                 req.id,
                 lsp_server::ErrorCode::InvalidRequest as i32,
                 "Shutdown already requested.".to_owned(),
@@ -588,56 +615,44 @@ impl GlobalState {
                     if this
                         .mem_docs
                         .insert(path.clone(), DocumentData::new(params.text_document.version))
-                        .is_some()
+                        .is_err()
                     {
                         log::error!("duplicate DidOpenTextDocument: {}", path)
                     }
-                    let changed = this
-                        .vfs
+                    this.vfs
                         .write()
                         .0
                         .set_file_contents(path, Some(params.text_document.text.into_bytes()));
-
-                    // If the VFS contents are unchanged, update diagnostics, since `handle_event`
-                    // won't see any changes. This avoids missing diagnostics when opening a file.
-                    //
-                    // If the file *was* changed, `handle_event` will already recompute and send
-                    // diagnostics. We can't do it here, since the *current* file contents might be
-                    // unset in salsa, since the VFS change hasn't been applied to the database yet.
-                    if !changed {
-                        this.maybe_update_diagnostics();
-                    }
                 }
                 Ok(())
             })?
             .on::<lsp_types::notification::DidChangeTextDocument>(|this, params| {
                 if let Ok(path) = from_proto::vfs_path(&params.text_document.uri) {
-                    let doc = match this.mem_docs.get_mut(&path) {
-                        Some(doc) => doc,
+                    match this.mem_docs.get_mut(&path) {
+                        Some(doc) => {
+                            // The version passed in DidChangeTextDocument is the version after all edits are applied
+                            // so we should apply it before the vfs is notified.
+                            doc.version = params.text_document.version;
+                        }
                         None => {
                             log::error!("expected DidChangeTextDocument: {}", path);
                             return Ok(());
                         }
                     };
+
                     let vfs = &mut this.vfs.write().0;
                     let file_id = vfs.file_id(&path).unwrap();
                     let mut text = String::from_utf8(vfs.file_contents(file_id).to_vec()).unwrap();
                     apply_document_changes(&mut text, params.content_changes);
 
-                    // The version passed in DidChangeTextDocument is the version after all edits are applied
-                    // so we should apply it before the vfs is notified.
-                    doc.version = params.text_document.version;
-
-                    vfs.set_file_contents(path.clone(), Some(text.into_bytes()));
+                    vfs.set_file_contents(path, Some(text.into_bytes()));
                 }
                 Ok(())
             })?
             .on::<lsp_types::notification::DidCloseTextDocument>(|this, params| {
-                let mut version = None;
                 if let Ok(path) = from_proto::vfs_path(&params.text_document.uri) {
-                    match this.mem_docs.remove(&path) {
-                        Some(doc) => version = Some(doc.version),
-                        None => log::error!("orphan DidCloseTextDocument: {}", path),
+                    if this.mem_docs.remove(&path).is_err() {
+                        log::error!("orphan DidCloseTextDocument: {}", path);
                     }
 
                     this.semantic_tokens_cache.lock().remove(&params.text_document.uri);
@@ -646,17 +661,6 @@ impl GlobalState {
                         this.loader.handle.invalidate(path.to_path_buf());
                     }
                 }
-
-                // Clear the diagnostics for the previously known version of the file.
-                // This prevents stale "cargo check" diagnostics if the file is
-                // closed, "cargo check" is run and then the file is reopened.
-                this.send_notification::<lsp_types::notification::PublishDiagnostics>(
-                    lsp_types::PublishDiagnosticsParams {
-                        uri: params.text_document.uri,
-                        diagnostics: Vec::new(),
-                        version,
-                    },
-                );
                 Ok(())
             })?
             .on::<lsp_types::notification::DidSaveTextDocument>(|this, params| {
@@ -680,7 +684,7 @@ impl GlobalState {
                     },
                     |this, resp| {
                         log::debug!("config update response: '{:?}", resp);
-                        let Response { error, result, .. } = resp;
+                        let lsp_server::Response { error, result, .. } = resp;
 
                         match (error, result) {
                             (Some(err), _) => {
@@ -715,55 +719,33 @@ impl GlobalState {
             .finish();
         Ok(())
     }
-    fn update_file_notifications_on_threadpool(&mut self) {
-        self.maybe_update_diagnostics();
 
-        // Ensure that only one cache priming task can run at a time
-        self.prime_caches_queue.request_op(());
-        if self.prime_caches_queue.should_start_op().is_none() {
-            return;
-        }
-
-        self.task_pool.handle.spawn_with_sender({
-            let snap = self.snapshot();
-            move |sender| {
-                let cb = |progress| {
-                    sender.send(Task::PrimeCaches(progress)).unwrap();
-                };
-                match snap.analysis.prime_caches(cb) {
-                    Ok(()) => (),
-                    Err(_canceled) => (),
-                }
-            }
-        });
-    }
-    fn maybe_update_diagnostics(&mut self) {
+    fn update_diagnostics(&mut self) {
         let subscriptions = self
             .mem_docs
-            .keys()
+            .iter()
             .map(|path| self.vfs.read().0.file_id(path).unwrap())
             .collect::<Vec<_>>();
 
         log::trace!("updating notifications for {:?}", subscriptions);
-        if self.config.publish_diagnostics() {
-            let snapshot = self.snapshot();
-            self.task_pool.handle.spawn(move || {
-                let diagnostics = subscriptions
-                    .into_iter()
-                    .filter_map(|file_id| {
-                        handlers::publish_diagnostics(&snapshot, file_id)
-                            .map_err(|err| {
-                                if !is_cancelled(&*err) {
-                                    log::error!("failed to compute diagnostics: {:?}", err);
-                                }
-                                ()
-                            })
-                            .ok()
-                            .map(|diags| (file_id, diags))
-                    })
-                    .collect::<Vec<_>>();
-                Task::Diagnostics(diagnostics)
-            })
-        }
+
+        let snapshot = self.snapshot();
+        self.task_pool.handle.spawn(move || {
+            let diagnostics = subscriptions
+                .into_iter()
+                .filter_map(|file_id| {
+                    handlers::publish_diagnostics(&snapshot, file_id)
+                        .map_err(|err| {
+                            if !is_cancelled(&*err) {
+                                log::error!("failed to compute diagnostics: {:?}", err);
+                            }
+                            ()
+                        })
+                        .ok()
+                        .map(|diags| (file_id, diags))
+                })
+                .collect::<Vec<_>>();
+            Task::Diagnostics(diagnostics)
+        })
     }
 }

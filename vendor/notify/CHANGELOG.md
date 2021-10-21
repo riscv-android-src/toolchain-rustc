@@ -19,6 +19,34 @@
 
 ## unreleased
 
+## 5.0.0-pre.12 (2021-08-12)
+
+- CHANGE: Move creation of watcher into trait [#345]
+- CHANGE: Add EventHandler trait to replace EventFn [#346]
+- FIX: Fix build failure on x86_64-unknown-netbsd [#347]
+
+[#345]: https://github.com/notify-rs/notify/pull/345
+[#346]: https://github.com/notify-rs/notify/pull/346
+[#347]: https://github.com/notify-rs/notify/pull/347
+
+## 5.0.0-pre.11 (2021-07-22)
+
+- FEATURE: Add `Kqueue` backend for use on BSD [#335]
+- CHANGE: Change EventFn to take FnMut [#333]
+- CHANGE: Make `Watcher` object safe [#336]
+- FIX: Join thread in `fseven` on shutdown [#337]
+- FIX: Only check for ENOSPC on inotify_add_watch in `inotify` [#330]
+- FIX: Free context when stream is deallocated in `fsevent` [#329]
+- DOCS: Fix missing comma in docs [#340]
+
+[#333]: https://github.com/notify-rs/notify/pull/333
+[#336]: https://github.com/notify-rs/notify/pull/336
+[#340]: https://github.com/notify-rs/notify/pull/340
+[#337]: https://github.com/notify-rs/notify/pull/337
+[#335]: https://github.com/notify-rs/notify/pull/335
+[#330]: https://github.com/notify-rs/notify/pull/330
+[#329]: https://github.com/notify-rs/notify/pull/329
+
 ## 5.0.0-pre.10 (2021-06-04)
 
 - FIX: Make StreamContextInfo `Send` to fix soundness issue [#325]

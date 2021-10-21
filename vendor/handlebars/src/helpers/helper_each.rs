@@ -5,7 +5,7 @@ use crate::block::{BlockContext, BlockParams};
 use crate::context::Context;
 use crate::error::RenderError;
 use crate::helpers::{HelperDef, HelperResult};
-use crate::json::value::{to_json, JsonTruthy};
+use crate::json::value::to_json;
 use crate::output::Output;
 use crate::registry::Registry;
 use crate::render::{Helper, RenderContext, Renderable};
@@ -79,9 +79,11 @@ impl HelperDef for EachHelper {
         let template = h.template();
 
         match template {
-            Some(t) => match (value.value().is_truthy(false), value.value()) {
-                (true, &Json::Array(ref list)) => {
-                    let block_context = create_block(&value)?;
+            Some(t) => match *value.value() {
+                Json::Array(ref list)
+                    if !list.is_empty() || (list.is_empty() && h.inverse().is_none()) =>
+                {
+                    let block_context = create_block(&value);
                     rc.push_block(block_context);
 
                     let len = list.len();
@@ -94,9 +96,9 @@ impl HelperDef for EachHelper {
                             let is_last = i == len - 1;
 
                             let index = to_json(i);
-                            block.set_local_var("@first".to_string(), to_json(is_first));
-                            block.set_local_var("@last".to_string(), to_json(is_last));
-                            block.set_local_var("@index".to_string(), index.clone());
+                            block.set_local_var("first", to_json(is_first));
+                            block.set_local_var("last", to_json(is_last));
+                            block.set_local_var("index", index.clone());
 
                             update_block_context(block, array_path, i.to_string(), is_first, &v);
                             set_block_param(block, h, array_path, &index, &v)?;
@@ -108,8 +110,10 @@ impl HelperDef for EachHelper {
                     rc.pop_block();
                     Ok(())
                 }
-                (true, &Json::Object(ref obj)) => {
-                    let block_context = create_block(&value)?;
+                Json::Object(ref obj)
+                    if !obj.is_empty() || (obj.is_empty() && h.inverse().is_none()) =>
+                {
+                    let block_context = create_block(&value);
                     rc.push_block(block_context);
 
                     let mut is_first = true;
@@ -119,8 +123,8 @@ impl HelperDef for EachHelper {
                         if let Some(ref mut block) = rc.block_mut() {
                             let key = to_json(k);
 
-                            block.set_local_var("@first".to_string(), to_json(is_first));
-                            block.set_local_var("@key".to_string(), key.clone());
+                            block.set_local_var("first", to_json(is_first));
+                            block.set_local_var("key", key.clone());
 
                             update_block_context(block, obj_path, k.to_string(), is_first, &v);
                             set_block_param(block, h, obj_path, &key, &v)?;
@@ -136,16 +140,15 @@ impl HelperDef for EachHelper {
                     rc.pop_block();
                     Ok(())
                 }
-                (false, _) => {
+                _ => {
                     if let Some(else_template) = h.inverse() {
-                        else_template.render(r, ctx, rc, out)?;
+                        else_template.render(r, ctx, rc, out)
+                    } else if r.strict_mode() {
+                        Err(RenderError::strict_error(value.relative_path()))
+                    } else {
+                        Ok(())
                     }
-                    Ok(())
                 }
-                _ => Err(RenderError::new(format!(
-                    "Param type is not iterable: {:?}",
-                    value.value()
-                ))),
             },
             None => Ok(()),
         }
@@ -161,6 +164,19 @@ mod test {
     use serde_json::value::Value as Json;
     use std::collections::BTreeMap;
     use std::str::FromStr;
+
+    #[test]
+    fn test_empty_each() {
+        let mut hbs = Registry::new();
+        hbs.set_strict_mode(true);
+
+        let data = json!({
+            "a": [ ],
+        });
+
+        let template = "{{#each a}}each{{/each}}";
+        assert_eq!(hbs.render_template(template, &data).unwrap(), "");
+    }
 
     #[test]
     fn test_each() {
@@ -478,5 +494,100 @@ mod test {
         let input = json!(0);
         let rendered = reg.render_template(template, &input).unwrap();
         assert_eq!("01", rendered);
+    }
+
+    #[test]
+    fn test_non_iterable() {
+        let reg = Registry::new();
+        let template = "{{#each this}}each block{{else}}else block{{/each}}";
+        let input = json!("strings aren't iterable");
+        let rendered = reg.render_template(template, &input).unwrap();
+        assert_eq!("else block", rendered);
+    }
+
+    #[test]
+    fn test_recursion() {
+        let mut reg = Registry::new();
+        assert!(reg
+            .register_template_string(
+                "walk",
+                "(\
+                    {{#each this}}\
+                        {{#if @key}}{{@key}}{{else}}{{@index}}{{/if}}: \
+                        {{this}} \
+                        {{> walk this}}, \
+                    {{/each}}\
+                )",
+            )
+            .is_ok());
+
+        let input = json!({
+            "array": [42, {"wow": "cool"}, [[]]],
+            "object": { "a": { "b": "c", "d": ["e"] } },
+            "string": "hi"
+        });
+        let expected_output = "(\
+            array: [42, [object], [[], ], ] (\
+                0: 42 (), \
+                1: [object] (wow: cool (), ), \
+                2: [[], ] (0: [] (), ), \
+            ), \
+            object: [object] (\
+                a: [object] (\
+                    b: c (), \
+                    d: [e, ] (0: e (), ), \
+                ), \
+            ), \
+            string: hi (), \
+        )";
+
+        let rendered = reg.render("walk", &input).unwrap();
+        assert_eq!(expected_output, rendered);
+    }
+
+    #[test]
+    fn test_strict_each() {
+        let mut reg = Registry::new();
+
+        assert!(reg
+            .render_template("{{#each data}}{{/each}}", &json!({}))
+            .is_ok());
+        assert!(reg
+            .render_template("{{#each data}}{{/each}}", &json!({"data": 24}))
+            .is_ok());
+
+        reg.set_strict_mode(true);
+
+        assert!(reg
+            .render_template("{{#each data}}{{/each}}", &json!({}))
+            .is_err());
+        assert!(reg
+            .render_template("{{#each data}}{{/each}}", &json!({"data": 24}))
+            .is_err());
+        assert!(reg
+            .render_template("{{#each data}}{{else}}food{{/each}}", &json!({}))
+            .is_ok());
+        assert!(reg
+            .render_template("{{#each data}}{{else}}food{{/each}}", &json!({"data": 24}))
+            .is_ok());
+    }
+
+    #[test]
+    fn newline_stripping_for_each() {
+        let reg = Registry::new();
+
+        let tpl = r#"<ul>
+  {{#each a}}
+    {{!-- comment --}}
+    <li>{{this}}</li>
+  {{/each}}
+</ul>"#;
+        assert_eq!(
+            r#"<ul>
+    <li>0</li>
+    <li>1</li>
+</ul>"#,
+            reg.render_template(tpl, &json!({"a": [0, 1]})).unwrap()
+        );
     }
 }

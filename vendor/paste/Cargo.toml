@@ -13,19 +13,21 @@
 [package]
 edition = "2018"
 name = "paste"
-version = "0.1.18"
+version = "1.0.5"
 authors = ["David Tolnay <dtolnay@gmail.com>"]
 description = "Macros for all your token pasting needs"
 readme = "README.md"
+categories = ["no-std"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dtolnay/paste"
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
-[dependencies.paste-impl]
-version = "=0.1.18"
 
-[dependencies.proc-macro-hack]
-version = "0.5.9"
+[lib]
+proc-macro = true
+[dev-dependencies.paste-test-suite]
+version = "0"
+
 [dev-dependencies.rustversion]
 version = "1.0"
 

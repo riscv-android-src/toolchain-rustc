@@ -76,7 +76,7 @@ pub use crate::{
     expand_macro::ExpandedMacro,
     file_structure::{StructureNode, StructureNodeKind},
     folding_ranges::{Fold, FoldKind},
-    highlight_related::HighlightedRange,
+    highlight_related::{HighlightRelatedConfig, HighlightedRange},
     hover::{HoverAction, HoverConfig, HoverDocFormat, HoverGotoTypeData, HoverResult},
     inlay_hints::{InlayHint, InlayHintsConfig, InlayKind},
     join_lines::JoinLinesConfig,
@@ -418,9 +418,9 @@ impl Analysis {
     pub fn hover(
         &self,
         config: &HoverConfig,
-        position: FilePosition,
+        range: FileRange,
     ) -> Cancellable<Option<RangeInfo<HoverResult>>> {
-        self.with_db(|db| hover::hover(db, position, config))
+        self.with_db(|db| hover::hover(db, range, config))
     }
 
     /// Return URL(s) for the documentation of the symbol under the cursor.
@@ -496,9 +496,12 @@ impl Analysis {
     /// Computes all ranges to highlight for a given item in a file.
     pub fn highlight_related(
         &self,
+        config: HighlightRelatedConfig,
         position: FilePosition,
     ) -> Cancellable<Option<Vec<HighlightedRange>>> {
-        self.with_db(|db| highlight_related::highlight_related(&Semantics::new(db), position))
+        self.with_db(|db| {
+            highlight_related::highlight_related(&Semantics::new(db), config, position)
+        })
     }
 
     /// Computes syntax highlighting for the given file range.

@@ -12,12 +12,12 @@
 
 [package]
 name = "stacker"
-version = "0.1.12"
+version = "0.1.14"
 authors = ["Alex Crichton <alex@alexcrichton.com>", "Simonas Kazlauskas <git@kazlauskas.me>"]
 build = "build.rs"
 description = "A stack growth library useful when implementing deeply recursive algorithms that\nmay accidentally blow the stack.\n"
 homepage = "https://github.com/rust-lang/stacker"
-documentation = "https://docs.rs/stacker/0.1.12"
+documentation = "https://docs.rs/stacker/0.1.14"
 readme = "README.md"
 license = "MIT/Apache-2.0"
 repository = "https://github.com/rust-lang/stacker"
@@ -27,7 +27,7 @@ name = "stacker"
 test = false
 doctest = false
 [dependencies.cfg-if]
-version = "0.1.6"
+version = "1.0.0"
 
 [dependencies.libc]
 version = "0.2.45"
@@ -35,7 +35,7 @@ version = "0.2.45"
 [dependencies.psm]
 version = "0.1.7"
 [build-dependencies.cc]
-version = "1.0"
+version = "1.0.2"
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3.6"
 features = ["memoryapi", "winbase", "fibersapi", "processthreadsapi", "minwindef"]

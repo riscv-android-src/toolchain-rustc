@@ -8,26 +8,24 @@ use std::{sync::Arc, time::Instant};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use flycheck::FlycheckHandle;
 use ide::{Analysis, AnalysisHost, Cancellable, Change, FileId};
-use ide_db::base_db::{CrateId, VfsPath};
+use ide_db::base_db::CrateId;
 use lsp_types::{SemanticTokens, Url};
 use parking_lot::{Mutex, RwLock};
-use project_model::{
-    BuildDataCollector, BuildDataResult, CargoWorkspace, ProcMacroClient, ProjectWorkspace, Target,
-};
+use proc_macro_api::ProcMacroClient;
+use project_model::{CargoWorkspace, ProjectWorkspace, Target, WorkspaceBuildScripts};
 use rustc_hash::FxHashMap;
 use vfs::AnchoredPathBuf;
 
 use crate::{
     config::Config,
     diagnostics::{CheckFixes, DiagnosticCollection},
-    document::DocumentData,
     from_proto,
     line_index::{LineEndings, LineIndex},
     lsp_ext,
     main_loop::Task,
+    mem_docs::MemDocs,
     op_queue::OpQueue,
     reload::SourceRootConfig,
-    request_metrics::{LatestRequests, RequestMetrics},
     thread_pool::TaskPool,
     to_proto::url_from_abs_path,
     Result,
@@ -57,7 +55,7 @@ pub(crate) struct GlobalState {
     pub(crate) config: Arc<Config>,
     pub(crate) analysis_host: AnalysisHost,
     pub(crate) diagnostics: DiagnosticCollection,
-    pub(crate) mem_docs: FxHashMap<VfsPath, DocumentData>,
+    pub(crate) mem_docs: MemDocs,
     pub(crate) semantic_tokens_cache: Arc<Mutex<FxHashMap<Url, SemanticTokens>>>,
     pub(crate) shutdown_requested: bool,
     pub(crate) last_reported_status: Option<lsp_ext::ServerStatusParams>,
@@ -74,19 +72,37 @@ pub(crate) struct GlobalState {
     pub(crate) vfs_progress_n_total: usize,
     pub(crate) vfs_progress_n_done: usize,
 
-    /// For both `workspaces` and `workspace_build_data`, the field stores the
-    /// data we actually use, while the `OpQueue` stores the result of the last
-    /// fetch.
+    /// `workspaces` field stores the data we actually use, while the `OpQueue`
+    /// stores the result of the last fetch.
     ///
-    /// If the fetch (partially) fails, we do not update the values.
+    /// If the fetch (partially) fails, we do not update the current value.
+    ///
+    /// The handling of build data is subtle. We fetch workspace in two phases:
+    ///
+    /// *First*, we run `cargo metadata`, which gives us fast results for
+    /// initial analysis.
+    ///
+    /// *Second*, we run `cargo check` which runs build scripts and compiles
+    /// proc macros.
+    ///
+    /// We need both for the precise analysis, but we want rust-analyzer to be
+    /// at least partially available just after the first phase. That's because
+    /// first phase is much faster, and is much less likely to fail.
+    ///
+    /// This creates a complication -- by the time the second phase completes,
+    /// the results of the fist phase could be invalid. That is, while we run
+    /// `cargo check`, the user edits `Cargo.toml`, we notice this, and the new
+    /// `cargo metadata` completes before `cargo check`.
+    ///
+    /// An additional complication is that we want to avoid needless work. When
+    /// the user just adds comments or whitespace to Cargo.toml, we do not want
+    /// to invalidate any salsa caches.
     pub(crate) workspaces: Arc<Vec<ProjectWorkspace>>,
-    pub(crate) fetch_workspaces_queue: OpQueue<(), Vec<anyhow::Result<ProjectWorkspace>>>,
-    pub(crate) workspace_build_data: Option<BuildDataResult>,
+    pub(crate) fetch_workspaces_queue: OpQueue<Vec<anyhow::Result<ProjectWorkspace>>>,
     pub(crate) fetch_build_data_queue:
-        OpQueue<BuildDataCollector, Option<anyhow::Result<BuildDataResult>>>,
-    pub(crate) prime_caches_queue: OpQueue<(), ()>,
+        OpQueue<(Arc<Vec<ProjectWorkspace>>, Vec<anyhow::Result<WorkspaceBuildScripts>>)>,
 
-    latest_requests: Arc<RwLock<LatestRequests>>,
+    pub(crate) prime_caches_queue: OpQueue<()>,
 }
 
 /// An immutable snapshot of the world's state at a point in time.
@@ -94,12 +110,13 @@ pub(crate) struct GlobalStateSnapshot {
     pub(crate) config: Arc<Config>,
     pub(crate) analysis: Analysis,
     pub(crate) check_fixes: CheckFixes,
-    pub(crate) latest_requests: Arc<RwLock<LatestRequests>>,
-    mem_docs: FxHashMap<VfsPath, DocumentData>,
+    mem_docs: MemDocs,
     pub(crate) semantic_tokens_cache: Arc<Mutex<FxHashMap<Url, SemanticTokens>>>,
     vfs: Arc<RwLock<(vfs::Vfs, FxHashMap<FileId, LineEndings>)>>,
     pub(crate) workspaces: Arc<Vec<ProjectWorkspace>>,
 }
+
+impl std::panic::UnwindSafe for GlobalStateSnapshot {}
 
 impl GlobalState {
     pub(crate) fn new(sender: Sender<lsp_server::Message>, config: Config) -> GlobalState {
@@ -127,7 +144,7 @@ impl GlobalState {
             config: Arc::new(config.clone()),
             analysis_host,
             diagnostics: Default::default(),
-            mem_docs: FxHashMap::default(),
+            mem_docs: MemDocs::default(),
             semantic_tokens_cache: Arc::new(Default::default()),
             shutdown_requested: false,
             last_reported_status: None,
@@ -146,11 +163,9 @@ impl GlobalState {
 
             workspaces: Arc::new(Vec::new()),
             fetch_workspaces_queue: OpQueue::default(),
-            workspace_build_data: None,
             prime_caches_queue: OpQueue::default(),
 
             fetch_build_data_queue: OpQueue::default(),
-            latest_requests: Default::default(),
         };
         // Apply any required database inputs from the config.
         this.update_configuration(config);
@@ -211,7 +226,6 @@ impl GlobalState {
             workspaces: Arc::clone(&self.workspaces),
             analysis: self.analysis_host.analysis(),
             vfs: Arc::clone(&self.vfs),
-            latest_requests: Arc::clone(&self.latest_requests),
             check_fixes: Arc::clone(&self.diagnostics.check_fixes),
             mem_docs: self.mem_docs.clone(),
             semantic_tokens_cache: Arc::clone(&self.semantic_tokens_cache),
@@ -250,10 +264,14 @@ impl GlobalState {
     }
     pub(crate) fn respond(&mut self, response: lsp_server::Response) {
         if let Some((method, start)) = self.req_queue.incoming.complete(response.id.clone()) {
+            if let Some(err) = &response.error {
+                if err.message.starts_with("server panicked") {
+                    self.poke_rust_analyzer_developer(format!("{}, check the log", err.message))
+                }
+            }
+
             let duration = start.elapsed();
-            log::info!("handled req#{} in {:?}", response.id, duration);
-            let metrics = RequestMetrics { id: response.id.clone(), method, duration };
-            self.latest_requests.write().record(metrics);
+            log::info!("handled {} - ({}) in {:0.2?}", method, response.id, duration);
             self.send(response.into());
         }
     }

@@ -18,38 +18,50 @@ pub struct HighlightedRange {
     pub access: Option<ReferenceAccess>,
 }
 
+#[derive(Default, Clone)]
+pub struct HighlightRelatedConfig {
+    pub references: bool,
+    pub exit_points: bool,
+    pub break_points: bool,
+    pub yield_points: bool,
+}
+
 // Feature: Highlight Related
 //
 // Highlights constructs related to the thing under the cursor:
 // - if on an identifier, highlights all references to that identifier in the current file
 // - if on an `async` or `await token, highlights all yield points for that async context
-// - if on a `return` token, `?` character or `->` return type arrow, highlights all exit points for that context
+// - if on a `return` or `fn` keyword, `?` character or `->` return type arrow, highlights all exit points for that context
 // - if on a `break`, `loop`, `while` or `for` token, highlights all break points for that loop or block context
+//
+// Note: `?` and `->` do not currently trigger this behavior in the VSCode editor.
 pub(crate) fn highlight_related(
     sema: &Semantics<RootDatabase>,
+    config: HighlightRelatedConfig,
     position: FilePosition,
 ) -> Option<Vec<HighlightedRange>> {
     let _p = profile::span("highlight_related");
     let syntax = sema.parse(position.file_id).syntax().clone();
 
     let token = pick_best_token(syntax.token_at_offset(position.offset), |kind| match kind {
-        T![?] => 2, // prefer `?` when the cursor is sandwiched like `await$0?`
-        T![await]
-        | T![async]
-        | T![return]
-        | T![break]
-        | T![loop]
-        | T![for]
-        | T![while]
-        | T![->] => 1,
+        T![?] => 3, // prefer `?` when the cursor is sandwiched like in `await$0?`
+        T![->] => 2,
+        kind if kind.is_keyword() => 1,
         _ => 0,
     })?;
 
     match token.kind() {
-        T![return] | T![?] | T![->] => highlight_exit_points(sema, token),
-        T![await] | T![async] => highlight_yield_points(token),
-        T![break] | T![loop] | T![for] | T![while] => highlight_break_points(token),
-        _ => highlight_references(sema, &syntax, position),
+        T![?] if config.exit_points && token.parent().and_then(ast::TryExpr::cast).is_some() => {
+            highlight_exit_points(sema, token)
+        }
+        T![fn] | T![return] | T![->] if config.exit_points => highlight_exit_points(sema, token),
+        T![await] | T![async] if config.yield_points => highlight_yield_points(token),
+        T![for] if config.break_points && token.parent().and_then(ast::ForExpr::cast).is_some() => {
+            highlight_break_points(token)
+        }
+        T![break] | T![loop] | T![while] if config.break_points => highlight_break_points(token),
+        _ if config.references => highlight_references(sema, &syntax, position),
+        _ => None,
     }
 }
 
@@ -111,7 +123,7 @@ fn highlight_exit_points(
                 }
             }
             ast::Expr::MethodCallExpr(_) | ast::Expr::CallExpr(_) | ast::Expr::MacroCall(_) => {
-                if sema.type_of_expr(&expr).map_or(false, |ty| ty.is_never()) {
+                if sema.type_of_expr(&expr).map_or(false, |ty| ty.original.is_never()) {
                     highlights
                         .push(HighlightedRange { access: None, range: expr.syntax().text_range() });
                 }
@@ -217,8 +229,8 @@ fn highlight_yield_points(token: SyntaxToken) -> Option<Vec<HighlightedRange>> {
         async_token: Option<SyntaxToken>,
         body: Option<ast::Expr>,
     ) -> Option<Vec<HighlightedRange>> {
-        let mut highlights = Vec::new();
-        highlights.push(HighlightedRange { access: None, range: async_token?.text_range() });
+        let mut highlights =
+            vec![HighlightedRange { access: None, range: async_token?.text_range() }];
         if let Some(body) = body {
             body.walk(&mut |expr| {
                 if let ast::Expr::AwaitExpr(expr) = expr {
@@ -260,8 +272,20 @@ mod tests {
     use super::*;
 
     fn check(ra_fixture: &str) {
+        let config = HighlightRelatedConfig {
+            break_points: true,
+            exit_points: true,
+            references: true,
+            yield_points: true,
+        };
+
+        check_with_config(ra_fixture, config);
+    }
+
+    fn check_with_config(ra_fixture: &str, config: HighlightRelatedConfig) {
         let (analysis, pos, annotations) = fixture::annotations(ra_fixture);
-        let hls = analysis.highlight_related(pos).unwrap().unwrap();
+
+        let hls = analysis.highlight_related(config, pos).unwrap().unwrap_or(Vec::default());
 
         let mut expected = annotations
             .into_iter()
@@ -451,6 +475,25 @@ fn foo() ->$0 u32 {
     }
 
     #[test]
+    fn test_hl_exit_points3() {
+        check(
+            r#"
+fn$0 foo() -> u32 {
+    if true {
+        return 0;
+     // ^^^^^^
+    }
+
+    0?;
+  // ^
+    0xDEAD_BEEF
+ // ^^^^^^^^^^^
+}
+"#,
+        );
+    }
+
+    #[test]
     fn test_hl_prefer_ref_over_tail_exit() {
         check(
             r#"
@@ -509,6 +552,9 @@ fn foo() ->$0 u32 {
             5
          // ^
         }
+    } else if false {
+        0
+     // ^
     } else {
         match 5 {
             6 => 100,
@@ -725,5 +771,188 @@ fn foo() {
 }
 "#,
         );
+    }
+
+    #[test]
+    fn test_hl_disabled_ref_local() {
+        let config = HighlightRelatedConfig {
+            references: false,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+        };
+
+        let ra_fixture = r#"
+fn foo() {
+    let x$0 = 5;
+    let y = x * 2;
+}"#;
+
+        check_with_config(ra_fixture, config);
+    }
+
+    #[test]
+    fn test_hl_disabled_ref_local_preserved_break() {
+        let config = HighlightRelatedConfig {
+            references: false,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+        };
+
+        let ra_fixture = r#"
+fn foo() {
+    let x$0 = 5;
+    let y = x * 2;
+
+    loop {
+        break;
+    }
+}"#;
+
+        check_with_config(ra_fixture, config.clone());
+
+        let ra_fixture = r#"
+fn foo() {
+    let x = 5;
+    let y = x * 2;
+
+    loop$0 {
+//  ^^^^
+        break;
+//      ^^^^^
+    }
+}"#;
+
+        check_with_config(ra_fixture, config);
+    }
+
+    #[test]
+    fn test_hl_disabled_ref_local_preserved_yield() {
+        let config = HighlightRelatedConfig {
+            references: false,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+        };
+
+        let ra_fixture = r#"
+async fn foo() {
+    let x$0 = 5;
+    let y = x * 2;
+
+    0.await;
+}"#;
+
+        check_with_config(ra_fixture, config.clone());
+
+        let ra_fixture = r#"
+    async fn foo() {
+//  ^^^^^
+        let x = 5;
+        let y = x * 2;
+
+        0.await$0;
+//        ^^^^^
+}"#;
+
+        check_with_config(ra_fixture, config);
+    }
+
+    #[test]
+    fn test_hl_disabled_ref_local_preserved_exit() {
+        let config = HighlightRelatedConfig {
+            references: false,
+            break_points: true,
+            exit_points: true,
+            yield_points: true,
+        };
+
+        let ra_fixture = r#"
+fn foo() -> i32 {
+    let x$0 = 5;
+    let y = x * 2;
+
+    if true {
+        return y;
+    }
+
+    0?
+}"#;
+
+        check_with_config(ra_fixture, config.clone());
+
+        let ra_fixture = r#"
+fn foo() ->$0 i32 {
+    let x = 5;
+    let y = x * 2;
+
+    if true {
+        return y;
+//      ^^^^^^
+    }
+
+    0?
+//   ^
+"#;
+
+        check_with_config(ra_fixture, config);
+    }
+
+    #[test]
+    fn test_hl_disabled_break() {
+        let config = HighlightRelatedConfig {
+            references: true,
+            break_points: false,
+            exit_points: true,
+            yield_points: true,
+        };
+
+        let ra_fixture = r#"
+fn foo() {
+    loop {
+        break$0;
+    }
+}"#;
+
+        check_with_config(ra_fixture, config);
+    }
+
+    #[test]
+    fn test_hl_disabled_yield() {
+        let config = HighlightRelatedConfig {
+            references: true,
+            break_points: true,
+            exit_points: true,
+            yield_points: false,
+        };
+
+        let ra_fixture = r#"
+async$0 fn foo() {
+    0.await;
+}"#;
+
+        check_with_config(ra_fixture, config);
+    }
+
+    #[test]
+    fn test_hl_disabled_exit() {
+        let config = HighlightRelatedConfig {
+            references: true,
+            break_points: true,
+            exit_points: false,
+            yield_points: true,
+        };
+
+        let ra_fixture = r#"
+fn foo() ->$0 i32 {
+    if true {
+        return -1;
+    }
+
+    42
+}"#;
+
+        check_with_config(ra_fixture, config);
     }
 }

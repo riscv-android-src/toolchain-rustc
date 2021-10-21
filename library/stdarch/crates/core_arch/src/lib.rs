@@ -5,8 +5,6 @@
 #![deny(rust_2018_idioms)]
 #![feature(
     asm,
-    const_fn_union,
-    const_fn_transmute,
     const_panic,
     custom_inner_attributes,
     link_llvm_intrinsics,
@@ -39,7 +37,6 @@
     bench_black_box
 )]
 #![cfg_attr(test, feature(test, abi_vectorcall))]
-#![cfg_attr(target_arch = "wasm32", feature(wasm_simd_const))]
 #![deny(clippy::missing_inline_in_public_items)]
 #![allow(
     clippy::inline_always,

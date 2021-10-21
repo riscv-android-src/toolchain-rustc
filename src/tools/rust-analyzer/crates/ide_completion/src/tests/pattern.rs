@@ -1,21 +1,21 @@
 //! Completion tests for pattern position.
 use expect_test::{expect, Expect};
 
-use crate::tests::{completion_list, BASE_FIXTURE};
+use crate::tests::{completion_list, BASE_ITEMS_FIXTURE};
 
-fn check(ra_fixture: &str, expect: Expect) {
+fn check_empty(ra_fixture: &str, expect: Expect) {
     let actual = completion_list(ra_fixture);
     expect.assert_eq(&actual)
 }
 
-fn check_with(ra_fixture: &str, expect: Expect) {
-    let actual = completion_list(&format!("{}\n{}", BASE_FIXTURE, ra_fixture));
+fn check(ra_fixture: &str, expect: Expect) {
+    let actual = completion_list(&format!("{}\n{}", BASE_ITEMS_FIXTURE, ra_fixture));
     expect.assert_eq(&actual)
 }
 
 #[test]
 fn ident_rebind_pat() {
-    check(
+    check_empty(
         r#"
 fn quux() {
     let en$0 @ x
@@ -29,7 +29,7 @@ fn quux() {
 
 #[test]
 fn ident_ref_pat() {
-    check(
+    check_empty(
         r#"
 fn quux() {
     let ref en$0
@@ -39,7 +39,7 @@ fn quux() {
             kw mut
         "#]],
     );
-    check(
+    check_empty(
         r#"
 fn quux() {
     let ref en$0 @ x
@@ -54,7 +54,7 @@ fn quux() {
 #[test]
 fn ident_ref_mut_pat() {
     // FIXME mut is already here, don't complete it again
-    check(
+    check_empty(
         r#"
 fn quux() {
     let ref mut en$0
@@ -64,7 +64,7 @@ fn quux() {
             kw mut
         "#]],
     );
-    check(
+    check_empty(
         r#"
 fn quux() {
     let ref mut en$0 @ x
@@ -78,7 +78,7 @@ fn quux() {
 
 #[test]
 fn ref_pat() {
-    check(
+    check_empty(
         r#"
 fn quux() {
     let &en$0
@@ -89,7 +89,7 @@ fn quux() {
         "#]],
     );
     // FIXME mut is already here, don't complete it again
-    check(
+    check_empty(
         r#"
 fn quux() {
     let &mut en$0
@@ -103,7 +103,7 @@ fn quux() {
 
 #[test]
 fn refutable() {
-    check_with(
+    check(
         r#"
 fn foo() {
     if let a$0
@@ -122,14 +122,13 @@ fn foo() {
             bn TupleV    TupleV($1)$0
             ev TupleV
             ct CONST
-            ma makro!(…) #[macro_export] macro_rules! makro
         "##]],
     );
 }
 
 #[test]
 fn irrefutable() {
-    check_with(
+    check(
         r#"
 fn foo() {
    let a$0
@@ -143,14 +142,13 @@ fn foo() {
             st Tuple
             st Unit
             ma makro!(…) #[macro_export] macro_rules! makro
-            ma makro!(…) #[macro_export] macro_rules! makro
         "##]],
     );
 }
 
 #[test]
 fn in_param() {
-    check_with(
+    check(
         r#"
 fn foo(a$0) {
 }
@@ -163,14 +161,13 @@ fn foo(a$0) {
             st Tuple
             st Unit
             ma makro!(…) #[macro_export] macro_rules! makro
-            ma makro!(…) #[macro_export] macro_rules! makro
         "##]],
     );
 }
 
 #[test]
 fn only_fn_like_macros() {
-    check(
+    check_empty(
         r#"
 macro_rules! m { ($e:expr) => { $e } }
 
@@ -190,7 +187,7 @@ fn foo() {
 
 #[test]
 fn in_simple_macro_call() {
-    check(
+    check_empty(
         r#"
 macro_rules! m { ($e:expr) => { $e } }
 enum E { X }
@@ -210,7 +207,7 @@ fn foo() {
 
 #[test]
 fn omits_private_fields_pat() {
-    check(
+    check_empty(
         r#"
 mod foo {
     pub struct Record { pub field: i32, _field: i32 }
@@ -235,32 +232,9 @@ fn outer() {
     )
 }
 
-// #[test]
-// fn only_shows_ident_completion() {
-//     check_edit(
-//         "Foo",
-//         r#"
-// struct Foo(i32);
-// fn main() {
-//     match Foo(92) {
-//         a$0(92) => (),
-//     }
-// }
-// "#,
-//         r#"
-// struct Foo(i32);
-// fn main() {
-//     match Foo(92) {
-//         Foo(92) => (),
-//     }
-// }
-// "#,
-//     );
-// }
-
 #[test]
 fn completes_self_pats() {
-    check(
+    check_empty(
         r#"
 struct Foo(i32);
 impl Foo {
@@ -282,35 +256,33 @@ impl Foo {
 }
 
 #[test]
-fn completes_qualified_variant() {
+fn enum_qualified() {
+    // FIXME: Don't show functions, they aren't patterns
     check(
         r#"
-enum Foo {
-    Bar { baz: i32 }
+impl Enum {
+    type AssocType = ();
+    const ASSOC_CONST: () = ();
+    fn assoc_fn() {}
 }
-impl Foo {
-    fn foo() {
-        match {Foo::Bar { baz: 0 }} {
-            B$0
-        }
-    }
+fn func() {
+    if let Enum::$0 = unknown {}
 }
-    "#,
+"#,
         expect![[r#"
-            kw mut
-            bn Self::Bar Self::Bar { baz$1 }$0
-            ev Self::Bar { baz: i32 }
-            bn Foo::Bar  Foo::Bar { baz$1 }$0
-            ev Foo::Bar  { baz: i32 }
-            sp Self
-            en Foo
+            ev TupleV(…)   (u32)
+            ev RecordV     { field: u32 }
+            ev UnitV       ()
+            ct ASSOC_CONST const ASSOC_CONST: () = ();
+            fn assoc_fn()  fn()
+            ta AssocType   type AssocType = ();
         "#]],
-    )
+    );
 }
 
 #[test]
 fn completes_in_record_field_pat() {
-    check(
+    check_empty(
         r#"
 struct Foo { bar: Bar }
 struct Bar(u32);
@@ -328,12 +300,50 @@ fn outer(Foo { bar: $0 }: Foo) {}
 
 #[test]
 fn skips_in_record_field_pat_name() {
-    check(
+    check_empty(
         r#"
 struct Foo { bar: Bar }
 struct Bar(u32);
 fn outer(Foo { bar$0 }: Foo) {}
 "#,
         expect![[r#""#]],
+    )
+}
+
+#[test]
+fn completes_in_fn_param() {
+    check_empty(
+        r#"
+struct Foo { bar: Bar }
+struct Bar(u32);
+fn foo($0) {}
+"#,
+        expect![[r#"
+            kw mut
+            bn Foo Foo { bar$1 }: Foo$0
+            st Foo
+            bn Bar Bar($1): Bar$0
+            st Bar
+        "#]],
+    )
+}
+
+#[test]
+fn completes_in_closure_param() {
+    check_empty(
+        r#"
+struct Foo { bar: Bar }
+struct Bar(u32);
+fn foo() {
+    |$0| {};
+}
+"#,
+        expect![[r#"
+            kw mut
+            bn Foo Foo { bar$1 }$0
+            st Foo
+            bn Bar Bar($1)$0
+            st Bar
+        "#]],
     )
 }

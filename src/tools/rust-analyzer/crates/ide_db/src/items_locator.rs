@@ -5,8 +5,9 @@
 use either::Either;
 use hir::{
     import_map::{self, ImportKind},
-    AsAssocItem, Crate, ItemInNs, ModuleDef, Semantics,
+    AsAssocItem, Crate, ItemInNs, Semantics,
 };
+use limit::Limit;
 use syntax::{ast, AstNode, SyntaxKind::NAME};
 
 use crate::{
@@ -17,7 +18,7 @@ use crate::{
 };
 
 /// A value to use, when uncertain which limit to pick.
-pub const DEFAULT_QUERY_SEARCH_LIMIT: usize = 40;
+pub const DEFAULT_QUERY_SEARCH_LIMIT: Limit = Limit::new(40);
 
 /// Three possible ways to search for the name in associated and/or other items.
 #[derive(Debug, Clone, Copy)]
@@ -146,7 +147,5 @@ fn get_name_definition(
 }
 
 fn is_assoc_item(item: ItemInNs, db: &RootDatabase) -> bool {
-    item.as_module_def_id()
-        .and_then(|module_def_id| ModuleDef::from(module_def_id).as_assoc_item(db))
-        .is_some()
+    item.as_module_def().and_then(|module_def| module_def.as_assoc_item(db)).is_some()
 }

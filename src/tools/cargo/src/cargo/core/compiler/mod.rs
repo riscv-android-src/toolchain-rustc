@@ -796,6 +796,7 @@ fn build_base_args(
     let bcx = cx.bcx;
     let Profile {
         ref opt_level,
+        codegen_backend,
         codegen_units,
         debuginfo,
         debug_assertions,
@@ -858,6 +859,10 @@ fn build_base_args(
         if let Some(split) = split_debuginfo {
             cmd.arg("-C").arg(format!("split-debuginfo={}", split));
         }
+    }
+
+    if let Some(backend) = codegen_backend {
+        cmd.arg("-Z").arg(&format!("codegen-backend={}", backend));
     }
 
     if let Some(n) = codegen_units {
@@ -980,7 +985,10 @@ fn build_base_args(
             let exe_path = cx
                 .files()
                 .bin_link_for_target(bin_target, unit.kind, cx.bcx)?;
-            let key = format!("CARGO_BIN_EXE_{}", bin_target.name());
+            let name = bin_target
+                .binary_filename()
+                .unwrap_or(bin_target.name().to_string());
+            let key = format!("CARGO_BIN_EXE_{}", name);
             cmd.env(&key, exe_path);
         }
     }

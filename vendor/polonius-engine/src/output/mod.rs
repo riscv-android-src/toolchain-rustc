@@ -82,16 +82,17 @@ pub struct Output<T: FactTypes> {
     pub dump_enabled: bool,
 
     // these are just for debugging
-    pub borrow_live_at: FxHashMap<T::Point, Vec<T::Loan>>,
-    pub restricts: FxHashMap<T::Point, BTreeMap<T::Origin, BTreeSet<T::Loan>>>,
-    pub restricts_anywhere: FxHashMap<T::Origin, BTreeSet<T::Loan>>,
+    pub loan_live_at: FxHashMap<T::Point, Vec<T::Loan>>,
+    pub origin_contains_loan_at: FxHashMap<T::Point, BTreeMap<T::Origin, BTreeSet<T::Loan>>>,
+    pub origin_contains_loan_anywhere: FxHashMap<T::Origin, BTreeSet<T::Loan>>,
     pub origin_live_on_entry: FxHashMap<T::Point, Vec<T::Origin>>,
-    pub invalidates: FxHashMap<T::Point, Vec<T::Loan>>,
+    pub loan_invalidated_at: FxHashMap<T::Point, Vec<T::Loan>>,
     pub subset: FxHashMap<T::Point, BTreeMap<T::Origin, BTreeSet<T::Origin>>>,
     pub subset_anywhere: FxHashMap<T::Origin, BTreeSet<T::Origin>>,
     pub var_live_on_entry: FxHashMap<T::Point, Vec<T::Variable>>,
     pub var_drop_live_on_entry: FxHashMap<T::Point, Vec<T::Variable>>,
     pub path_maybe_initialized_on_exit: FxHashMap<T::Point, Vec<T::Path>>,
+    pub path_maybe_uninitialized_on_exit: FxHashMap<T::Point, Vec<T::Path>>,
     pub known_contains: FxHashMap<T::Origin, BTreeSet<T::Loan>>,
     pub var_maybe_partly_initialized_on_exit: FxHashMap<T::Point, Vec<T::Variable>>,
 }
@@ -118,25 +119,32 @@ struct LivenessContext<T: FactTypes> {
 struct Context<'ctx, T: FactTypes> {
     // `Relation`s used as static inputs, by all variants
     origin_live_on_entry: Relation<(T::Origin, T::Point)>,
-    invalidates: Relation<(T::Loan, T::Point)>,
+    loan_invalidated_at: Relation<(T::Loan, T::Point)>,
 
     // static inputs used via `Variable`s, by all variants
-    outlives: &'ctx Vec<(T::Origin, T::Origin, T::Point)>,
-    borrow_region: &'ctx Vec<(T::Origin, T::Loan, T::Point)>,
+    subset_base: &'ctx Vec<(T::Origin, T::Origin, T::Point)>,
+    loan_issued_at: &'ctx Vec<(T::Origin, T::Loan, T::Point)>,
 
     // static inputs used by variants other than `LocationInsensitive`
-    cfg_node: &'ctx BTreeSet<T::Point>,
-    killed: Relation<(T::Loan, T::Point)>,
+    loan_killed_at: Relation<(T::Loan, T::Point)>,
     known_contains: Relation<(T::Origin, T::Loan)>,
     placeholder_origin: Relation<(T::Origin, ())>,
     placeholder_loan: Relation<(T::Loan, T::Origin)>,
 
-    // while this static input is unused by `LocationInsensitive`, it's depended on by initialization
-    // and liveness, so already computed by the time we get to borrowcking.
+    // The `known_placeholder_subset` relation in the facts does not necessarily contain all the
+    // transitive subsets. The transitive closure is always needed, so this version here is fully
+    // closed over.
+    known_placeholder_subset: Relation<(T::Origin, T::Origin)>,
+
+    // while this static input is unused by `LocationInsensitive`, it's depended on by
+    // initialization and liveness, so already computed by the time we get to borrowcking.
     cfg_edge: Relation<(T::Point, T::Point)>,
 
-    // Partial results possibly used by other variants as input
+    // Partial results possibly used by other variants as input. Not currently used yet.
+    #[allow(dead_code)]
     potential_errors: Option<FxHashSet<T::Loan>>,
+    #[allow(dead_code)]
+    potential_subset_errors: Option<Relation<(T::Origin, T::Origin)>>,
 }
 
 impl<T: FactTypes> Output<T> {
@@ -210,34 +218,38 @@ impl<T: FactTypes> Output<T> {
         //
         // Note: if rustc and polonius had more interaction, we could also delay or avoid
         // generating some of the facts that are now always present here. For example,
-        // the `LocationInsensitive` variant doesn't use the `killed` or `invalidates`
-        // relations, so we could technically delay passing them from rustc, when
-        // using this or the `Hybrid` variant, to after the pre-pass has made sure
-        // we actually need to compute the full analysis. If these facts happened to
-        // be recorded in separate MIR walks, we might also avoid generating those facts.
+        // the `LocationInsensitive` variant doesn't use the `loan_killed_at` relation, so we could
+        // technically delay computing and passing it from rustc, when using this or the `Hybrid`
+        // variants, to after the pre-pass has made sure we actually need to compute the full
+        // analysis. If these facts happened to be recorded in separate MIR walks, we might also
+        // avoid generating those facts.
 
         let origin_live_on_entry = origin_live_on_entry.into();
 
         // TODO: also flip the order of this relation's arguments in rustc
-        // from `invalidates(point, loan)` to `invalidates(loan, point)`.
+        // from `loan_invalidated_at(point, loan)` to `loan_invalidated_at(loan, point)`.
         // to avoid this allocation.
-        let invalidates = Relation::from_iter(
+        let loan_invalidated_at = Relation::from_iter(
             all_facts
-                .invalidates
+                .loan_invalidated_at
                 .iter()
                 .map(|&(point, loan)| (loan, point)),
         );
 
-        let killed = all_facts.killed.clone().into();
+        let loan_killed_at = all_facts.loan_killed_at.clone().into();
 
-        // `known_subset` is a list of all the `'a: 'b` subset relations the user gave:
+        // `known_placeholder_subset` is a list of all the `'a: 'b` subset relations the user gave:
         // it's not required to be transitive. `known_contains` is its transitive closure: a list
         // of all the known placeholder loans that each of these placeholder origins contains.
-        // Given the `known_subset`s `'a: 'b` and `'b: 'c`: in the `known_contains` relation, `'a`
-        // will also contain `'c`'s placeholder loan.
-        let known_subset = all_facts.known_subset.clone().into();
+        // Given the `known_placeholder_subset`s `'a: 'b` and `'b: 'c`: in the `known_contains`
+        // relation, `'a` will also contain `'c`'s placeholder loan.
+        let known_placeholder_subset = all_facts.known_placeholder_subset.clone().into();
         let known_contains =
-            Output::<T>::compute_known_contains(&known_subset, &all_facts.placeholder);
+            Output::<T>::compute_known_contains(&known_placeholder_subset, &all_facts.placeholder);
+
+        // Fully close over the `known_placeholder_subset` relation.
+        let known_placeholder_subset =
+            Output::<T>::compute_known_placeholder_subset(&known_placeholder_subset);
 
         let placeholder_origin: Relation<_> = Relation::from_iter(
             all_facts
@@ -256,59 +268,64 @@ impl<T: FactTypes> Output<T> {
         // Ask the variants to compute errors in their own way
         let mut ctx = Context {
             origin_live_on_entry,
-            invalidates,
+            loan_invalidated_at,
             cfg_edge,
-            cfg_node: &cfg_node,
-            outlives: &all_facts.outlives,
-            borrow_region: &all_facts.borrow_region,
-            killed,
+            subset_base: &all_facts.subset_base,
+            loan_issued_at: &all_facts.loan_issued_at,
+            loan_killed_at,
             known_contains,
+            known_placeholder_subset,
             placeholder_origin,
             placeholder_loan,
             potential_errors: None,
+            potential_subset_errors: None,
         };
 
-        let errors = match algorithm {
-            Algorithm::LocationInsensitive => location_insensitive::compute(&ctx, &mut result),
-            Algorithm::Naive => {
-                let (errors, subset_errors) = naive::compute(&ctx, &mut result);
+        let (errors, subset_errors) = match algorithm {
+            Algorithm::LocationInsensitive => {
+                let (potential_errors, potential_subset_errors) =
+                    location_insensitive::compute(&ctx, &mut result);
 
-                // Record illegal subset errors
-                for &(origin1, origin2, location) in subset_errors.iter() {
-                    result
-                        .subset_errors
-                        .entry(location)
-                        .or_default()
-                        .insert((origin1, origin2));
-                }
+                // Note: the error location is meaningless for a location-insensitive
+                // subset error analysis. This is acceptable here as this variant is not one
+                // which should be used directly besides debugging, the `Hybrid` variant will
+                // take advantage of its result.
+                let potential_subset_errors: Relation<(T::Origin, T::Origin, T::Point)> =
+                    Relation::from_iter(
+                        potential_subset_errors
+                            .into_iter()
+                            .map(|&(origin1, origin2)| (origin1, origin2, 0.into())),
+                    );
 
-                errors
+                (potential_errors, potential_subset_errors)
             }
+            Algorithm::Naive => naive::compute(&ctx, &mut result),
             Algorithm::DatafrogOpt => datafrog_opt::compute(&ctx, &mut result),
             Algorithm::Hybrid => {
-                // WIP: the `LocationInsensitive` variant doesn't compute any illegal subset
-                // relation errors. So using it as a quick pre-filter for illegal accesses
-                // errors will also end up skipping checking for subset errors.
-
                 // Execute the fast `LocationInsensitive` computation as a pre-pass:
                 // if it finds no possible errors, we don't need to do the more complex
                 // computations as they won't find errors either, and we can return early.
-                let potential_errors = location_insensitive::compute(&ctx, &mut result);
-                if potential_errors.is_empty() {
-                    potential_errors
+                let (potential_errors, potential_subset_errors) =
+                    location_insensitive::compute(&ctx, &mut result);
+
+                if potential_errors.is_empty() && potential_subset_errors.is_empty() {
+                    // There are no loan errors, nor subset errors, we can early return
+                    // empty errors lists and avoid doing the heavy analysis.
+                    (potential_errors, Vec::new().into())
                 } else {
                     // Record these potential errors as they can be used to limit the next
                     // variant's work to only these loans.
                     ctx.potential_errors =
                         Some(potential_errors.iter().map(|&(loan, _)| loan).collect());
+                    ctx.potential_subset_errors = Some(potential_subset_errors);
 
                     datafrog_opt::compute(&ctx, &mut result)
                 }
             }
             Algorithm::Compare => {
                 // Ensure the `Naive` and `DatafrogOpt` errors are the same
-                let (naive_errors, _) = naive::compute(&ctx, &mut result);
-                let opt_errors = datafrog_opt::compute(&ctx, &mut result);
+                let (naive_errors, naive_subset_errors) = naive::compute(&ctx, &mut result);
+                let (opt_errors, _) = datafrog_opt::compute(&ctx, &mut result);
 
                 // TODO: compare illegal subset relations errors as well here ?
 
@@ -338,13 +355,22 @@ impl<T: FactTypes> Output<T> {
                     debug!("Naive and optimized algorithms reported the same errors.");
                 }
 
-                naive_errors
+                (naive_errors, naive_subset_errors)
             }
         };
 
         // Record illegal access errors
         for &(loan, location) in errors.iter() {
             result.errors.entry(location).or_default().push(loan);
+        }
+
+        // Record illegal subset errors
+        for &(origin1, origin2, location) in subset_errors.iter() {
+            result
+                .subset_errors
+                .entry(location)
+                .or_default()
+                .insert((origin1, origin2));
         }
 
         // Record more debugging info when asked to do so
@@ -369,10 +395,10 @@ impl<T: FactTypes> Output<T> {
         result
     }
 
-    /// Computes the transitive closure of the `known_subset` relation, so that we have
+    /// Computes the transitive closure of the `known_placeholder_subset` relation, so that we have
     /// the full list of placeholder loans contained by the placeholder origins.
     fn compute_known_contains(
-        known_subset: &Relation<(T::Origin, T::Origin)>,
+        known_placeholder_subset: &Relation<(T::Origin, T::Origin)>,
         placeholder: &[(T::Origin, T::Loan)],
     ) -> Relation<(T::Origin, T::Loan)> {
         let mut iteration = datafrog::Iteration::new();
@@ -385,10 +411,10 @@ impl<T: FactTypes> Output<T> {
         while iteration.changed() {
             // known_contains(Origin2, Loan1) :-
             //   known_contains(Origin1, Loan1),
-            //   known_subset(Origin1, Origin2).
+            //   known_placeholder_subset(Origin1, Origin2).
             known_contains.from_join(
                 &known_contains,
-                known_subset,
+                known_placeholder_subset,
                 |&_origin1, &loan1, &origin2| (origin2, loan1),
             );
         }
@@ -396,22 +422,50 @@ impl<T: FactTypes> Output<T> {
         known_contains.complete()
     }
 
+    /// Computes the transitive closure of the `known_placeholder_subset` relation.
+    fn compute_known_placeholder_subset(
+        known_placeholder_subset_base: &Relation<(T::Origin, T::Origin)>,
+    ) -> Relation<(T::Origin, T::Origin)> {
+        use datafrog::{Iteration, RelationLeaper};
+        let mut iteration = Iteration::new();
+
+        let known_placeholder_subset = iteration.variable("known_placeholder_subset");
+
+        // known_placeholder_subset(Origin1, Origin2) :-
+        //   known_placeholder_subset_base(Origin1, Origin2).
+        known_placeholder_subset.extend(known_placeholder_subset_base.iter());
+
+        while iteration.changed() {
+            // known_placeholder_subset(Origin1, Origin3) :-
+            //   known_placeholder_subset(Origin1, Origin2),
+            //   known_placeholder_subset_base(Origin2, Origin3).
+            known_placeholder_subset.from_leapjoin(
+                &known_placeholder_subset,
+                known_placeholder_subset_base.extend_with(|&(_origin1, origin2)| origin2),
+                |&(origin1, _origin2), &origin3| (origin1, origin3),
+            );
+        }
+
+        known_placeholder_subset.complete()
+    }
+
     fn new(dump_enabled: bool) -> Self {
         Output {
             errors: FxHashMap::default(),
             subset_errors: FxHashMap::default(),
             dump_enabled,
-            borrow_live_at: FxHashMap::default(),
-            restricts: FxHashMap::default(),
-            restricts_anywhere: FxHashMap::default(),
+            loan_live_at: FxHashMap::default(),
+            origin_contains_loan_at: FxHashMap::default(),
+            origin_contains_loan_anywhere: FxHashMap::default(),
             origin_live_on_entry: FxHashMap::default(),
-            invalidates: FxHashMap::default(),
+            loan_invalidated_at: FxHashMap::default(),
             move_errors: FxHashMap::default(),
             subset: FxHashMap::default(),
             subset_anywhere: FxHashMap::default(),
             var_live_on_entry: FxHashMap::default(),
             var_drop_live_on_entry: FxHashMap::default(),
             path_maybe_initialized_on_exit: FxHashMap::default(),
+            path_maybe_uninitialized_on_exit: FxHashMap::default(),
             var_maybe_partly_initialized_on_exit: FxHashMap::default(),
             known_contains: FxHashMap::default(),
         }
@@ -424,25 +478,25 @@ impl<T: FactTypes> Output<T> {
         }
     }
 
-    pub fn borrows_in_scope_at(&self, location: T::Point) -> &[T::Loan] {
-        match self.borrow_live_at.get(&location) {
+    pub fn loans_in_scope_at(&self, location: T::Point) -> &[T::Loan] {
+        match self.loan_live_at.get(&location) {
             Some(p) => p,
             None => &[],
         }
     }
 
-    pub fn restricts_at(
+    pub fn origin_contains_loan_at(
         &self,
         location: T::Point,
     ) -> Cow<'_, BTreeMap<T::Origin, BTreeSet<T::Loan>>> {
         assert!(self.dump_enabled);
-        match self.restricts.get(&location) {
+        match self.origin_contains_loan_at.get(&location) {
             Some(map) => Cow::Borrowed(map),
             None => Cow::Owned(BTreeMap::default()),
         }
     }
 
-    pub fn regions_live_at(&self, location: T::Point) -> &[T::Origin] {
+    pub fn origins_live_at(&self, location: T::Point) -> &[T::Origin] {
         assert!(self.dump_enabled);
         match self.origin_live_on_entry.get(&location) {
             Some(v) => v,

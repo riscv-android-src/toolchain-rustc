@@ -1,3 +1,28 @@
+<a name="v0.1.3"></a>
+### v0.1.3 (2021-08-02)
+
+
+#### Bug Fixes
+
+*   set up MSRV in CI (#61) ([dfcc9080](https://github.com/hawkw/sharded-slab/commit/dfcc9080a62d08e359f298a9ffb0f275928b83e4), closes [#60](https://github.com/hawkw/sharded-slab/issues/60))
+* **tests:**  duplicate `hint` mod defs with loom ([0ce3fd91](https://github.com/hawkw/sharded-slab/commit/0ce3fd91feac8b4edb4f1ece6aebfc4ba4e50026))
+
+
+
+<a name="0.1.2"></a>
+### 0.1.2 (2021-08-01)
+
+
+#### Bug Fixes
+
+*   make debug assertions drop safe ([26d35a69](https://github.com/hawkw/sharded-slab/commit/26d35a695c9e5d7c62ab07cc5e66a0c6f8b6eade))
+
+#### Features
+
+*   improve panics on thread ID bit exhaustion ([9ecb8e61](https://github.com/hawkw/sharded-slab/commit/9ecb8e614f107f68b5c6ba770342ae72af1cd07b))
+
+
+
 <a name="0.1.1"></a>
 ## 0.1.1 (2021-1-4)
 

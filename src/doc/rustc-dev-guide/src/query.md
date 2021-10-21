@@ -41,6 +41,8 @@ The [Incremental Compilation in Detail][query-model] chapter gives a more
 in-depth description of what queries are and how they work.
 If you intend to write a query of your own, this is a good read.
 
+[query-model]: queries/incremental-compilation-in-detail.md
+
 ### Invoking queries
 
 To invoke a query is simple. The tcx ("type context") offers a method
@@ -58,7 +60,7 @@ method. The answer is that, for each query, the compiler maintains a
 cache – if your query has already been executed, then, the answer is
 simple: we clone the return value out of the cache and return it
 (therefore, you should try to ensure that the return types of queries
-are cheaply cloneable; insert a `Rc` if necessary).
+are cheaply cloneable; insert an `Rc` if necessary).
 
 #### Providers
 
@@ -288,4 +290,21 @@ rustc_queries! {
 
 `rustc_queries` macro will generate an appropriate `impl` automatically.
 
-[query-model]: queries/incremental-compilation-in-detail.md
+## External Links
+
+Related design ideas, and tracking issues:
+
+- Design document: [On-demand Rustc incremental design doc]
+- Tracking Issue: ["Red/Green" dependency tracking in compiler]
+
+More discussion and issues:
+
+- [GitHub issue #42633]
+- [Incremental Compilation Beta]
+- [Incremental Compilation Announcement]
+
+[On-demand Rustc incremental design doc]: https://github.com/nikomatsakis/rustc-on-demand-incremental-design-doc/blob/master/0000-rustc-on-demand-and-incremental.md
+["Red/Green" dependency tracking in compiler]: https://github.com/rust-lang/rust/issues/42293
+[GitHub issue #42633]: https://github.com/rust-lang/rust/issues/42633
+[Incremental Compilation Beta]: https://internals.rust-lang.org/t/incremental-compilation-beta/4721
+[Incremental Compilation Announcement]: https://blog.rust-lang.org/2016/09/08/incremental.html

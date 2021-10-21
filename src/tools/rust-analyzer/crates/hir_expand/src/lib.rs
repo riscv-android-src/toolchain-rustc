@@ -22,8 +22,7 @@ use either::Either;
 pub use mbe::{ExpandError, ExpandResult};
 pub use parser::FragmentKind;
 
-use std::hash::Hash;
-use std::sync::Arc;
+use std::{hash::Hash, iter, sync::Arc};
 
 use base_db::{impl_intern_key, salsa, CrateId, FileId, FileRange};
 use syntax::{
@@ -32,11 +31,13 @@ use syntax::{
     Direction, SyntaxNode, SyntaxToken, TextRange, TextSize,
 };
 
-use crate::ast_id_map::FileAstId;
-use crate::builtin_attr::BuiltinAttrExpander;
-use crate::builtin_derive::BuiltinDeriveExpander;
-use crate::builtin_macro::{BuiltinFnLikeExpander, EagerExpander};
-use crate::proc_macro::ProcMacroExpander;
+use crate::{
+    ast_id_map::FileAstId,
+    builtin_attr::BuiltinAttrExpander,
+    builtin_derive::BuiltinDeriveExpander,
+    builtin_macro::{BuiltinFnLikeExpander, EagerExpander},
+    proc_macro::ProcMacroExpander,
+};
 
 #[cfg(test)]
 mod test_db;
@@ -173,6 +174,10 @@ impl HirFileId {
             _ => false,
         }
     }
+
+    pub fn is_macro(self) -> bool {
+        matches!(self.0, HirFileIdRepr::MacroFile(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -206,12 +211,12 @@ impl MacroDefId {
 
     pub fn ast_id(&self) -> Either<AstId<ast::Macro>, AstId<ast::Fn>> {
         let id = match &self.kind {
-            MacroDefKind::Declarative(id) => id,
-            MacroDefKind::BuiltIn(_, id) => id,
-            MacroDefKind::BuiltInAttr(_, id) => id,
-            MacroDefKind::BuiltInDerive(_, id) => id,
-            MacroDefKind::BuiltInEager(_, id) => id,
             MacroDefKind::ProcMacro(.., id) => return Either::Right(*id),
+            MacroDefKind::Declarative(id)
+            | MacroDefKind::BuiltIn(_, id)
+            | MacroDefKind::BuiltInAttr(_, id)
+            | MacroDefKind::BuiltInDerive(_, id)
+            | MacroDefKind::BuiltInEager(_, id) => id,
         };
         Either::Left(*id)
     }
@@ -372,7 +377,7 @@ impl ExpansionInfo {
                     db::TokenExpander::MacroRules { def_site_token_map, .. }
                     | db::TokenExpander::MacroDef { def_site_token_map, .. },
                     Some(tt),
-                ) => (def_site_token_map, tt.as_ref().map(|tt| tt.syntax().clone())),
+                ) => (def_site_token_map, tt.syntax().cloned()),
                 _ => panic!("`Origin::Def` used with non-`macro_rules!` macro"),
             },
         };
@@ -449,7 +454,7 @@ impl InFile<SyntaxNode> {
         self,
         db: &dyn db::AstDatabase,
     ) -> impl Iterator<Item = InFile<SyntaxNode>> + '_ {
-        std::iter::successors(Some(self), move |node| match node.value.parent() {
+        iter::successors(Some(self), move |node| match node.value.parent() {
             Some(parent) => Some(node.with_value(parent)),
             None => {
                 let parent_node = node.file_id.call_node(db)?;
@@ -460,15 +465,10 @@ impl InFile<SyntaxNode> {
 }
 
 impl<'a> InFile<&'a SyntaxNode> {
+    /// Falls back to the macro call range if the node cannot be mapped up fully.
     pub fn original_file_range(self, db: &dyn db::AstDatabase) -> FileRange {
-        if let Some(range) = original_range_opt(db, self) {
-            let original_file = range.file_id.original_file(db);
-            if range.file_id == original_file.into() {
-                return FileRange { file_id: original_file, range: range.value };
-            }
-
-            log::error!("Fail to mapping up more for {:?}", range);
-            return FileRange { file_id: range.file_id.original_file(db), range: range.value };
+        if let Some(res) = self.original_file_range_opt(db) {
+            return res;
         }
 
         // Fall back to whole macro call.
@@ -479,7 +479,26 @@ impl<'a> InFile<&'a SyntaxNode> {
 
         let orig_file = node.file_id.original_file(db);
         assert_eq!(node.file_id, orig_file.into());
+
         FileRange { file_id: orig_file, range: node.value.text_range() }
+    }
+
+    /// Attempts to map the syntax node back up its macro calls.
+    pub fn original_file_range_opt(self, db: &dyn db::AstDatabase) -> Option<FileRange> {
+        match original_range_opt(db, self) {
+            Some(range) => {
+                let original_file = range.file_id.original_file(db);
+                if range.file_id != original_file.into() {
+                    log::error!("Failed mapping up more for {:?}", range);
+                }
+                Some(FileRange { file_id: original_file, range: range.value })
+            }
+            _ if !self.file_id.is_macro() => Some(FileRange {
+                file_id: self.file_id.original_file(db),
+                range: self.value.text_range(),
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -528,10 +547,10 @@ impl InFile<SyntaxToken> {
         self,
         db: &dyn db::AstDatabase,
     ) -> impl Iterator<Item = InFile<SyntaxNode>> + '_ {
-        self.value
-            .parent()
-            .into_iter()
-            .flat_map(move |parent| InFile::new(self.file_id, parent).ancestors_with_macros(db))
+        self.value.parent().into_iter().flat_map({
+            let file_id = self.file_id;
+            move |parent| InFile::new(file_id, parent).ancestors_with_macros(db)
+        })
     }
 }
 
@@ -542,6 +561,23 @@ impl<N: AstNode> InFile<N> {
 
     pub fn syntax(&self) -> InFile<&SyntaxNode> {
         self.with_value(self.value.syntax())
+    }
+
+    pub fn nodes_with_attributes<'db>(
+        self,
+        db: &'db dyn db::AstDatabase,
+    ) -> impl Iterator<Item = InFile<N>> + 'db
+    where
+        N: 'db,
+    {
+        iter::successors(Some(self), move |node| {
+            let InFile { file_id, value } = node.file_id.call_node(db)?;
+            N::cast(value).map(|n| InFile::new(file_id, n))
+        })
+    }
+
+    pub fn node_with_attributes(self, db: &dyn db::AstDatabase) -> InFile<N> {
+        self.nodes_with_attributes(db).last().unwrap()
     }
 }
 

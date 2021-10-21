@@ -8,10 +8,13 @@ use std::{
 
 use chalk_ir::{cast::Cast, fold::Shift, Mutability, TyVariableKind};
 use hir_def::{
-    expr::{Array, BinaryOp, Expr, ExprId, Literal, Statement, UnaryOp},
+    expr::{
+        ArithOp, Array, BinaryOp, CmpOp, Expr, ExprId, Literal, MatchGuard, Ordering, Statement,
+        UnaryOp,
+    },
     path::{GenericArg, GenericArgs},
     resolver::resolver_for_expr,
-    AssocContainerId, FieldId, Lookup,
+    AssocContainerId, FieldId, FunctionId, Lookup,
 };
 use hir_expand::name::{name, Name};
 use stdx::always;
@@ -23,7 +26,7 @@ use crate::{
     infer::coerce::CoerceMany,
     lower::lower_to_chalk_mutability,
     mapping::from_chalk,
-    method_resolution, op,
+    method_resolution,
     primitive::{self, UintTy},
     static_lifetime, to_chalk_trait_id,
     traits::FnTrait,
@@ -340,11 +343,25 @@ impl<'a> InferenceContext<'a> {
                     None => (Vec::new(), self.err_ty()),
                 };
                 self.register_obligations_for_call(&callee_ty);
-                self.check_call_arguments(args, &param_tys);
+
+                let expected_inputs = self.expected_inputs_for_expected_output(
+                    expected,
+                    ret_ty.clone(),
+                    param_tys.clone(),
+                );
+
+                self.check_call_arguments(args, &expected_inputs, &param_tys);
                 self.normalize_associated_types_in(ret_ty)
             }
             Expr::MethodCall { receiver, args, method_name, generic_args } => self
-                .infer_method_call(tgt_expr, *receiver, args, method_name, generic_args.as_deref()),
+                .infer_method_call(
+                    tgt_expr,
+                    *receiver,
+                    args,
+                    method_name,
+                    generic_args.as_deref(),
+                    expected,
+                ),
             Expr::Match { expr, arms } => {
                 let input_ty = self.infer_expr(*expr, &Expectation::none());
 
@@ -366,11 +383,20 @@ impl<'a> InferenceContext<'a> {
                 for arm in arms {
                     self.diverges = Diverges::Maybe;
                     let _pat_ty = self.infer_pat(arm.pat, &input_ty, BindingMode::default());
-                    if let Some(guard_expr) = arm.guard {
-                        self.infer_expr(
-                            guard_expr,
-                            &Expectation::has_type(TyKind::Scalar(Scalar::Bool).intern(&Interner)),
-                        );
+                    match arm.guard {
+                        Some(MatchGuard::If { expr: guard_expr }) => {
+                            self.infer_expr(
+                                guard_expr,
+                                &Expectation::has_type(
+                                    TyKind::Scalar(Scalar::Bool).intern(&Interner),
+                                ),
+                            );
+                        }
+                        Some(MatchGuard::IfLet { expr, pat }) => {
+                            let input_ty = self.infer_expr(expr, &Expectation::none());
+                            let _pat_ty = self.infer_pat(pat, &input_ty, BindingMode::default());
+                        }
+                        _ => {}
                     }
 
                     let arm_ty = self.infer_expr_inner(arm.expr, &expected);
@@ -437,7 +463,7 @@ impl<'a> InferenceContext<'a> {
                 TyKind::Never.intern(&Interner)
             }
             Expr::RecordLit { path, fields, spread } => {
-                let (ty, def_id) = self.resolve_variant(path.as_deref());
+                let (ty, def_id) = self.resolve_variant(path.as_deref(), false);
                 if let Some(variant) = def_id {
                     self.write_variant_resolution(tgt_expr.into(), variant);
                 }
@@ -575,7 +601,7 @@ impl<'a> InferenceContext<'a> {
                         // FIXME: record type error - expected reference but found ptr,
                         // which cannot be coerced
                     }
-                    Expectation::rvalue_hint(Ty::clone(exp_inner))
+                    Expectation::rvalue_hint(&mut self.table, Ty::clone(exp_inner))
                 } else {
                     Expectation::none()
                 };
@@ -646,33 +672,21 @@ impl<'a> InferenceContext<'a> {
                 }
             }
             Expr::BinaryOp { lhs, rhs, op } => match op {
-                Some(op) => {
-                    let lhs_expectation = match op {
-                        BinaryOp::LogicOp(..) => {
-                            Expectation::has_type(TyKind::Scalar(Scalar::Bool).intern(&Interner))
-                        }
-                        _ => Expectation::none(),
-                    };
-                    let lhs_ty = self.infer_expr(*lhs, &lhs_expectation);
-                    let lhs_ty = self.resolve_ty_shallow(&lhs_ty);
-                    let rhs_expectation = op::binary_op_rhs_expectation(*op, lhs_ty.clone());
-                    let rhs_ty = self.infer_expr(*rhs, &Expectation::has_type(rhs_expectation));
-                    let rhs_ty = self.resolve_ty_shallow(&rhs_ty);
-
-                    let ret = op::binary_op_return_ty(*op, lhs_ty.clone(), rhs_ty.clone());
-
-                    if ret.is_unknown() {
-                        cov_mark::hit!(infer_expr_inner_binary_operator_overload);
-
-                        self.resolve_associated_type_with_params(
-                            lhs_ty,
-                            self.resolve_binary_op_output(op),
-                            &[rhs_ty],
-                        )
-                    } else {
-                        ret
-                    }
+                Some(BinaryOp::Assignment { op: None }) => {
+                    let lhs_ty = self.infer_expr(*lhs, &Expectation::none());
+                    self.infer_expr_coerce(*rhs, &Expectation::has_type(lhs_ty));
+                    self.result.standard_types.unit.clone()
                 }
+                Some(BinaryOp::LogicOp(_)) => {
+                    let bool_ty = self.result.standard_types.bool_.clone();
+                    self.infer_expr_coerce(*lhs, &Expectation::HasType(bool_ty.clone()));
+                    let lhs_diverges = self.diverges;
+                    self.infer_expr_coerce(*rhs, &Expectation::HasType(bool_ty.clone()));
+                    // Depending on the LHS' value, the RHS can never execute.
+                    self.diverges = lhs_diverges;
+                    bool_ty
+                }
+                Some(op) => self.infer_overloadable_binop(*lhs, *op, *rhs, tgt_expr),
                 _ => self.err_ty(),
             },
             Expr::Range { lhs, rhs, range_type } => {
@@ -838,6 +852,62 @@ impl<'a> InferenceContext<'a> {
         ty
     }
 
+    fn infer_overloadable_binop(
+        &mut self,
+        lhs: ExprId,
+        op: BinaryOp,
+        rhs: ExprId,
+        tgt_expr: ExprId,
+    ) -> Ty {
+        let lhs_expectation = Expectation::none();
+        let lhs_ty = self.infer_expr(lhs, &lhs_expectation);
+        let rhs_ty = self.table.new_type_var();
+
+        let func = self.resolve_binop_method(op);
+        let func = match func {
+            Some(func) => func,
+            None => {
+                let rhs_ty = self.builtin_binary_op_rhs_expectation(op, lhs_ty.clone());
+                let rhs_ty = self.infer_expr_coerce(rhs, &Expectation::from_option(rhs_ty));
+                return self
+                    .builtin_binary_op_return_ty(op, lhs_ty, rhs_ty)
+                    .unwrap_or_else(|| self.err_ty());
+            }
+        };
+
+        let subst = TyBuilder::subst_for_def(self.db, func)
+            .push(lhs_ty.clone())
+            .push(rhs_ty.clone())
+            .build();
+        self.write_method_resolution(tgt_expr, func, subst.clone());
+
+        let method_ty = self.db.value_ty(func.into()).substitute(&Interner, &subst);
+        self.register_obligations_for_call(&method_ty);
+
+        self.infer_expr_coerce(rhs, &Expectation::has_type(rhs_ty.clone()));
+
+        let ret_ty = match method_ty.callable_sig(self.db) {
+            Some(sig) => sig.ret().clone(),
+            None => self.err_ty(),
+        };
+
+        let ret_ty = self.normalize_associated_types_in(ret_ty);
+
+        // FIXME: record autoref adjustments
+
+        // use knowledge of built-in binary ops, which can sometimes help inference
+        if let Some(builtin_rhs) = self.builtin_binary_op_rhs_expectation(op, lhs_ty.clone()) {
+            self.unify(&builtin_rhs, &rhs_ty);
+        }
+        if let Some(builtin_ret) =
+            self.builtin_binary_op_return_ty(op, lhs_ty.clone(), rhs_ty.clone())
+        {
+            self.unify(&builtin_ret, &ret_ty);
+        }
+
+        ret_ty
+    }
+
     fn infer_block(
         &mut self,
         expr: ExprId,
@@ -902,6 +972,7 @@ impl<'a> InferenceContext<'a> {
         args: &[ExprId],
         method_name: &Name,
         generic_args: Option<&GenericArgs>,
+        expected: &Expectation,
     ) -> Ty {
         let receiver_ty = self.infer_expr(receiver, &Expectation::none());
         let canonicalized_receiver = self.canonicalize(receiver_ty.clone());
@@ -935,7 +1006,7 @@ impl<'a> InferenceContext<'a> {
         };
         let method_ty = method_ty.substitute(&Interner, &substs);
         self.register_obligations_for_call(&method_ty);
-        let (expected_receiver_ty, param_tys, ret_ty) = match method_ty.callable_sig(self.db) {
+        let (formal_receiver_ty, param_tys, ret_ty) = match method_ty.callable_sig(self.db) {
             Some(sig) => {
                 if !sig.params().is_empty() {
                     (sig.params()[0].clone(), sig.params()[1..].to_vec(), sig.ret().clone())
@@ -945,13 +1016,44 @@ impl<'a> InferenceContext<'a> {
             }
             None => (self.err_ty(), Vec::new(), self.err_ty()),
         };
-        self.unify(&expected_receiver_ty, &receiver_ty);
+        self.unify(&formal_receiver_ty, &receiver_ty);
 
-        self.check_call_arguments(args, &param_tys);
+        let expected_inputs =
+            self.expected_inputs_for_expected_output(expected, ret_ty.clone(), param_tys.clone());
+
+        self.check_call_arguments(args, &expected_inputs, &param_tys);
         self.normalize_associated_types_in(ret_ty)
     }
 
-    fn check_call_arguments(&mut self, args: &[ExprId], param_tys: &[Ty]) {
+    fn expected_inputs_for_expected_output(
+        &mut self,
+        expected_output: &Expectation,
+        output: Ty,
+        inputs: Vec<Ty>,
+    ) -> Vec<Ty> {
+        if let Some(expected_ty) = expected_output.to_option(&mut self.table) {
+            let result = self.table.fudge_inference(|table| {
+                if table.try_unify(&expected_ty, &output).is_ok() {
+                    table.resolve_with_fallback(inputs, |var, kind, _, _| match kind {
+                        chalk_ir::VariableKind::Ty(tk) => var.to_ty(&Interner, tk).cast(&Interner),
+                        chalk_ir::VariableKind::Lifetime => {
+                            var.to_lifetime(&Interner).cast(&Interner)
+                        }
+                        chalk_ir::VariableKind::Const(ty) => {
+                            var.to_const(&Interner, ty).cast(&Interner)
+                        }
+                    })
+                } else {
+                    Vec::new()
+                }
+            });
+            result
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn check_call_arguments(&mut self, args: &[ExprId], expected_inputs: &[Ty], param_tys: &[Ty]) {
         // Quoting https://github.com/rust-lang/rust/blob/6ef275e6c3cb1384ec78128eceeb4963ff788dca/src/librustc_typeck/check/mod.rs#L3325 --
         // We do this in a pretty awful way: first we type-check any arguments
         // that are not closures, then we type-check the closures. This is so
@@ -959,14 +1061,45 @@ impl<'a> InferenceContext<'a> {
         // type-check the functions. This isn't really the right way to do this.
         for &check_closures in &[false, true] {
             let param_iter = param_tys.iter().cloned().chain(repeat(self.err_ty()));
-            for (&arg, param_ty) in args.iter().zip(param_iter) {
+            let expected_iter = expected_inputs
+                .iter()
+                .cloned()
+                .chain(param_iter.clone().skip(expected_inputs.len()));
+            for ((&arg, param_ty), expected_ty) in args.iter().zip(param_iter).zip(expected_iter) {
                 let is_closure = matches!(&self.body[arg], Expr::Lambda { .. });
                 if is_closure != check_closures {
                     continue;
                 }
 
+                // the difference between param_ty and expected here is that
+                // expected is the parameter when the expected *return* type is
+                // taken into account. So in `let _: &[i32] = identity(&[1, 2])`
+                // the expected type is already `&[i32]`, whereas param_ty is
+                // still an unbound type variable. We don't always want to force
+                // the parameter to coerce to the expected type (for example in
+                // `coerce_unsize_expected_type_4`).
                 let param_ty = self.normalize_associated_types_in(param_ty);
-                self.infer_expr_coerce(arg, &Expectation::has_type(param_ty.clone()));
+                let expected = Expectation::rvalue_hint(&mut self.table, expected_ty);
+                // infer with the expected type we have...
+                let ty = self.infer_expr_inner(arg, &expected);
+
+                // then coerce to either the expected type or just the formal parameter type
+                let coercion_target = if let Some(ty) = expected.only_has_type(&mut self.table) {
+                    // if we are coercing to the expectation, unify with the
+                    // formal parameter type to connect everything
+                    self.unify(&ty, &param_ty);
+                    ty
+                } else {
+                    param_ty
+                };
+                if !coercion_target.is_unknown() {
+                    if self.coerce(Some(arg), &ty, &coercion_target).is_err() {
+                        self.result.type_mismatches.insert(
+                            arg.into(),
+                            TypeMismatch { expected: coercion_target, actual: ty.clone() },
+                        );
+                    }
+                }
             }
         }
     }
@@ -1048,5 +1181,142 @@ impl<'a> InferenceContext<'a> {
                 CallableDefId::StructId(_) | CallableDefId::EnumVariantId(_) => {}
             }
         }
+    }
+
+    fn builtin_binary_op_return_ty(&mut self, op: BinaryOp, lhs_ty: Ty, rhs_ty: Ty) -> Option<Ty> {
+        let lhs_ty = self.resolve_ty_shallow(&lhs_ty);
+        let rhs_ty = self.resolve_ty_shallow(&rhs_ty);
+        match op {
+            BinaryOp::LogicOp(_) | BinaryOp::CmpOp(_) => {
+                Some(TyKind::Scalar(Scalar::Bool).intern(&Interner))
+            }
+            BinaryOp::Assignment { .. } => Some(TyBuilder::unit()),
+            BinaryOp::ArithOp(ArithOp::Shl | ArithOp::Shr) => {
+                // all integer combinations are valid here
+                if matches!(
+                    lhs_ty.kind(&Interner),
+                    TyKind::Scalar(Scalar::Int(_) | Scalar::Uint(_))
+                        | TyKind::InferenceVar(_, TyVariableKind::Integer)
+                ) && matches!(
+                    rhs_ty.kind(&Interner),
+                    TyKind::Scalar(Scalar::Int(_) | Scalar::Uint(_))
+                        | TyKind::InferenceVar(_, TyVariableKind::Integer)
+                ) {
+                    Some(lhs_ty)
+                } else {
+                    None
+                }
+            }
+            BinaryOp::ArithOp(_) => match (lhs_ty.kind(&Interner), rhs_ty.kind(&Interner)) {
+                // (int, int) | (uint, uint) | (float, float)
+                (TyKind::Scalar(Scalar::Int(_)), TyKind::Scalar(Scalar::Int(_)))
+                | (TyKind::Scalar(Scalar::Uint(_)), TyKind::Scalar(Scalar::Uint(_)))
+                | (TyKind::Scalar(Scalar::Float(_)), TyKind::Scalar(Scalar::Float(_))) => {
+                    Some(rhs_ty)
+                }
+                // ({int}, int) | ({int}, uint)
+                (
+                    TyKind::InferenceVar(_, TyVariableKind::Integer),
+                    TyKind::Scalar(Scalar::Int(_) | Scalar::Uint(_)),
+                ) => Some(rhs_ty),
+                // (int, {int}) | (uint, {int})
+                (
+                    TyKind::Scalar(Scalar::Int(_) | Scalar::Uint(_)),
+                    TyKind::InferenceVar(_, TyVariableKind::Integer),
+                ) => Some(lhs_ty),
+                // ({float} | float)
+                (
+                    TyKind::InferenceVar(_, TyVariableKind::Float),
+                    TyKind::Scalar(Scalar::Float(_)),
+                ) => Some(rhs_ty),
+                // (float, {float})
+                (
+                    TyKind::Scalar(Scalar::Float(_)),
+                    TyKind::InferenceVar(_, TyVariableKind::Float),
+                ) => Some(lhs_ty),
+                // ({int}, {int}) | ({float}, {float})
+                (
+                    TyKind::InferenceVar(_, TyVariableKind::Integer),
+                    TyKind::InferenceVar(_, TyVariableKind::Integer),
+                )
+                | (
+                    TyKind::InferenceVar(_, TyVariableKind::Float),
+                    TyKind::InferenceVar(_, TyVariableKind::Float),
+                ) => Some(rhs_ty),
+                _ => None,
+            },
+        }
+    }
+
+    fn builtin_binary_op_rhs_expectation(&mut self, op: BinaryOp, lhs_ty: Ty) -> Option<Ty> {
+        Some(match op {
+            BinaryOp::LogicOp(..) => TyKind::Scalar(Scalar::Bool).intern(&Interner),
+            BinaryOp::Assignment { op: None } => lhs_ty,
+            BinaryOp::CmpOp(CmpOp::Eq { .. }) => match self
+                .resolve_ty_shallow(&lhs_ty)
+                .kind(&Interner)
+            {
+                TyKind::Scalar(_) | TyKind::Str => lhs_ty,
+                TyKind::InferenceVar(_, TyVariableKind::Integer | TyVariableKind::Float) => lhs_ty,
+                _ => return None,
+            },
+            BinaryOp::ArithOp(ArithOp::Shl | ArithOp::Shr) => return None,
+            BinaryOp::CmpOp(CmpOp::Ord { .. })
+            | BinaryOp::Assignment { op: Some(_) }
+            | BinaryOp::ArithOp(_) => match self.resolve_ty_shallow(&lhs_ty).kind(&Interner) {
+                TyKind::Scalar(Scalar::Int(_) | Scalar::Uint(_) | Scalar::Float(_)) => lhs_ty,
+                TyKind::InferenceVar(_, TyVariableKind::Integer | TyVariableKind::Float) => lhs_ty,
+                _ => return None,
+            },
+        })
+    }
+
+    fn resolve_binop_method(&self, op: BinaryOp) -> Option<FunctionId> {
+        let (name, lang_item) = match op {
+            BinaryOp::LogicOp(_) => return None,
+            BinaryOp::ArithOp(aop) => match aop {
+                ArithOp::Add => (name!(add), "add"),
+                ArithOp::Mul => (name!(mul), "mul"),
+                ArithOp::Sub => (name!(sub), "sub"),
+                ArithOp::Div => (name!(div), "div"),
+                ArithOp::Rem => (name!(rem), "rem"),
+                ArithOp::Shl => (name!(shl), "shl"),
+                ArithOp::Shr => (name!(shr), "shr"),
+                ArithOp::BitXor => (name!(bitxor), "bitxor"),
+                ArithOp::BitOr => (name!(bitor), "bitor"),
+                ArithOp::BitAnd => (name!(bitand), "bitand"),
+            },
+            BinaryOp::Assignment { op: Some(aop) } => match aop {
+                ArithOp::Add => (name!(add_assign), "add_assign"),
+                ArithOp::Mul => (name!(mul_assign), "mul_assign"),
+                ArithOp::Sub => (name!(sub_assign), "sub_assign"),
+                ArithOp::Div => (name!(div_assign), "div_assign"),
+                ArithOp::Rem => (name!(rem_assign), "rem_assign"),
+                ArithOp::Shl => (name!(shl_assign), "shl_assign"),
+                ArithOp::Shr => (name!(shr_assign), "shr_assign"),
+                ArithOp::BitXor => (name!(bitxor_assign), "bitxor_assign"),
+                ArithOp::BitOr => (name!(bitor_assign), "bitor_assign"),
+                ArithOp::BitAnd => (name!(bitand_assign), "bitand_assign"),
+            },
+            BinaryOp::CmpOp(cop) => match cop {
+                CmpOp::Eq { negated: false } => (name!(eq), "eq"),
+                CmpOp::Eq { negated: true } => (name!(ne), "eq"),
+                CmpOp::Ord { ordering: Ordering::Less, strict: false } => {
+                    (name!(le), "partial_ord")
+                }
+                CmpOp::Ord { ordering: Ordering::Less, strict: true } => (name!(lt), "partial_ord"),
+                CmpOp::Ord { ordering: Ordering::Greater, strict: false } => {
+                    (name!(ge), "partial_ord")
+                }
+                CmpOp::Ord { ordering: Ordering::Greater, strict: true } => {
+                    (name!(gt), "partial_ord")
+                }
+            },
+            BinaryOp::Assignment { op: None } => return None,
+        };
+
+        let trait_ = self.resolve_lang_item(lang_item)?.as_trait()?;
+
+        self.db.trait_data(trait_).method_by_name(&name)
     }
 }

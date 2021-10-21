@@ -15,12 +15,11 @@
 #![allow(non_upper_case_globals, dead_code)]
 
 use crate::event::*;
-use crate::{Config, Error, EventFn, RecursiveMode, Result, Watcher};
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crate::{Config, Error, EventHandler, RecursiveMode, Result, Watcher};
+use crossbeam_channel::{unbounded, Sender};
 use fsevent_sys as fs;
 use fsevent_sys::core_foundation as cf;
 use std::collections::HashMap;
-use std::convert::AsRef;
 use std::ffi::CStr;
 use std::os::raw;
 use std::path::{Path, PathBuf};
@@ -64,8 +63,8 @@ pub struct FsEventWatcher {
     since_when: fs::FSEventStreamEventId,
     latency: cf::CFTimeInterval,
     flags: fs::FSEventStreamCreateFlags,
-    event_fn: Arc<Mutex<dyn EventFn>>,
-    runloop: Option<(cf::CFRunLoopRef, Receiver<()>)>,
+    event_handler: Arc<Mutex<dyn EventHandler>>,
+    runloop: Option<(cf::CFRunLoopRef, thread::JoinHandle<()>)>,
     recursive_info: HashMap<PathBuf, bool>,
 }
 
@@ -225,8 +224,23 @@ fn translate_flags(flags: StreamFlags, precise: bool) -> Vec<Event> {
 }
 
 struct StreamContextInfo {
-    event_fn: Arc<Mutex<dyn EventFn>>,
+    event_handler: Arc<Mutex<dyn EventHandler>>,
     recursive_info: HashMap<PathBuf, bool>,
+}
+
+// Free the context when the stream created by `FSEventStreamCreate` is released.
+extern "C" fn release_context(info: *const libc::c_void) {
+    // Safety:
+    // - The [documentation] for `FSEventStreamContext` states that `release` is only
+    //   called when the stream is deallocated, so it is safe to convert `info` back into a
+    //   box and drop it.
+    //
+    // [docs]: https://developer.apple.com/documentation/coreservices/fseventstreamcontext?language=objc
+    unsafe {
+        drop(Box::from_raw(
+            info as *const StreamContextInfo as *mut StreamContextInfo,
+        ));
+    }
 }
 
 extern "C" {
@@ -235,7 +249,7 @@ extern "C" {
 }
 
 impl FsEventWatcher {
-    fn from_event_fn(event_fn: Arc<Mutex<dyn EventFn>>) -> Result<Self> {
+    fn from_event_handler(event_handler: Arc<Mutex<dyn EventHandler>>) -> Result<Self> {
         Ok(FsEventWatcher {
             paths: unsafe {
                 cf::CFArrayCreateMutable(cf::kCFAllocatorDefault, 0, &cf::kCFTypeArrayCallBacks)
@@ -243,7 +257,7 @@ impl FsEventWatcher {
             since_when: fs::kFSEventStreamEventIdSinceNow,
             latency: 0.0,
             flags: fs::kFSEventStreamCreateFlagFileEvents | fs::kFSEventStreamCreateFlagNoDefer,
-            event_fn,
+            event_handler,
             runloop: None,
             recursive_info: HashMap::new(),
         })
@@ -275,7 +289,7 @@ impl FsEventWatcher {
             return;
         }
 
-        if let Some((runloop, done)) = self.runloop.take() {
+        if let Some((runloop, thread_handle)) = self.runloop.take() {
             unsafe {
                 let runloop = runloop as *mut raw::c_void;
 
@@ -286,22 +300,19 @@ impl FsEventWatcher {
                 cf::CFRunLoopStop(runloop);
             }
 
-            // sync done channel
-            match done.recv() {
-                Ok(()) => (),
-                Err(_) => panic!("the runloop may not be finished!"),
-            }
+            // Wait for the thread to shut down.
+            thread_handle.join().expect("thread to shut down");
         }
     }
 
-    fn remove_path<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let str_path = path.as_ref().to_str().unwrap();
+    fn remove_path(&mut self, path: &Path) -> Result<()> {
+        let str_path = path.to_str().unwrap();
         unsafe {
             let mut err: cf::CFErrorRef = ptr::null_mut();
             let cf_path = cf::str_path_to_cfstring_ref(str_path, &mut err);
             if cf_path.is_null() {
                 cf::CFRelease(err as cf::CFRef);
-                return Err(Error::watch_not_found().add_path(path.as_ref().into()));
+                return Err(Error::watch_not_found().add_path(path.into()));
             }
 
             let mut to_remove = Vec::new();
@@ -320,10 +331,10 @@ impl FsEventWatcher {
                 cf::CFArrayRemoveValueAtIndex(self.paths, *idx);
             }
         }
-        let p = if let Ok(canonicalized_path) = path.as_ref().canonicalize() {
+        let p = if let Ok(canonicalized_path) = path.canonicalize() {
             canonicalized_path
         } else {
-            path.as_ref().to_owned()
+            path.to_owned()
         };
         match self.recursive_info.remove(&p) {
             Some(_) => Ok(()),
@@ -332,15 +343,11 @@ impl FsEventWatcher {
     }
 
     // https://github.com/thibaudgg/rb-fsevent/blob/master/ext/fsevent_watch/main.c
-    fn append_path<P: AsRef<Path>>(
-        &mut self,
-        path: P,
-        recursive_mode: RecursiveMode,
-    ) -> Result<()> {
-        if !path.as_ref().exists() {
-            return Err(Error::path_not_found().add_path(path.as_ref().into()));
+    fn append_path(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+        if !path.exists() {
+            return Err(Error::path_not_found().add_path(path.into()));
         }
-        let str_path = path.as_ref().to_str().unwrap();
+        let str_path = path.to_str().unwrap();
         unsafe {
             let mut err: cf::CFErrorRef = ptr::null_mut();
             let cf_path = cf::str_path_to_cfstring_ref(str_path, &mut err);
@@ -348,13 +355,13 @@ impl FsEventWatcher {
                 // Most likely the directory was deleted, or permissions changed,
                 // while the above code was running.
                 cf::CFRelease(err as cf::CFRef);
-                return Err(Error::path_not_found().add_path(path.as_ref().into()));
+                return Err(Error::path_not_found().add_path(path.into()));
             }
             cf::CFArrayAppendValue(self.paths, cf_path);
             cf::CFRelease(cf_path);
         }
         self.recursive_info.insert(
-            path.as_ref().to_path_buf().canonicalize().unwrap(),
+            path.to_path_buf().canonicalize().unwrap(),
             recursive_mode.is_recursive(),
         );
         Ok(())
@@ -366,35 +373,20 @@ impl FsEventWatcher {
             return Err(Error::path_not_found());
         }
 
-        // done channel is used to sync quit status of runloop thread
-        let (done_tx, done_rx) = unbounded();
-
-        let info = StreamContextInfo {
-            event_fn: self.event_fn.clone(),
+        // We need to associate the stream context with our callback in order to propagate events
+        // to the rest of the system. This will be owned by the stream, and will be freed when the
+        // stream is closed. This means we will leak the context if we panic before reacing
+        // `FSEventStreamRelease`.
+        let context = Box::into_raw(Box::new(StreamContextInfo {
+            event_handler: self.event_handler.clone(),
             recursive_info: self.recursive_info.clone(),
-        };
-
-        // Unfortunately fsevents doesn't provide a mechanism for getting the context back from a
-        // stream after it's been created. So in order to avoid a memory leak in the normal case,
-        // we need to box the pointer up, alias the pointer, then drop it when the stream has
-        // completed. This box will be leaked if a panic is triggered before the inner thread has a
-        // chance to drop the box.
-        let context = Box::into_raw(Box::new(info));
-
-        // Safety
-        // - StreamContextInfo is Send+Sync.
-        // - This is safe to move into a thread because it will only be accessed when the stream is
-        //   completed and no longer accessing the context.
-        struct ContextPtr(*mut StreamContextInfo);
-        unsafe impl Send for ContextPtr {}
-
-        let thread_context_ptr = ContextPtr(context);
+        }));
 
         let stream_context = fs::FSEventStreamContext {
             version: 0,
             info: context as *mut libc::c_void,
             retain: None,
-            release: None,
+            release: Some(release_context),
             copy_description: None,
         };
 
@@ -424,7 +416,7 @@ impl FsEventWatcher {
         // channel to pass runloop around
         let (rl_tx, rl_rx) = unbounded();
 
-        thread::spawn(move || {
+        let thread_handle = thread::spawn(move || {
             let stream = stream.0;
 
             unsafe {
@@ -446,19 +438,10 @@ impl FsEventWatcher {
                 fs::FSEventStreamStop(stream);
                 fs::FSEventStreamInvalidate(stream);
                 fs::FSEventStreamRelease(stream);
-
-                // Safety:
-                // - It's safe to drop the context now that the stream has been shut down and no
-                //   longer references the context pointer.
-                let _context = Box::from_raw(thread_context_ptr.0);
             }
-
-            done_tx
-                .send(())
-                .expect("error while signal run loop is done");
         });
         // block until runloop has been sent
-        self.runloop = Some((rl_rx.recv().unwrap().0, done_rx));
+        self.runloop = Some((rl_rx.recv().unwrap().0, thread_handle));
 
         Ok(())
     }
@@ -499,7 +482,7 @@ unsafe fn callback_impl(
 ) {
     let event_paths = event_paths as *const *const libc::c_char;
     let info = info as *const StreamContextInfo;
-    let event_fn = &(*info).event_fn;
+    let event_handler = &(*info).event_handler;
 
     for p in 0..num_events {
         let path = CStr::from_ptr(*event_paths.add(p))
@@ -534,23 +517,24 @@ unsafe fn callback_impl(
         for ev in translate_flags(flag, true).into_iter() {
             // TODO: precise
             let ev = ev.add_path(path.clone());
-            let event_fn = event_fn.lock().expect("lock not to be poisoned");
-            (event_fn)(Ok(ev));
+            let mut event_handler = event_handler.lock().expect("lock not to be poisoned");
+            event_handler.handle_event(Ok(ev));
         }
     }
 }
 
 impl Watcher for FsEventWatcher {
-    fn new_immediate<F: EventFn>(event_fn: F) -> Result<FsEventWatcher> {
-        FsEventWatcher::from_event_fn(Arc::new(Mutex::new(event_fn)))
+    /// Create a new watcher.
+    fn new<F: EventHandler>(event_handler: F) -> Result<Self> {
+        Self::from_event_handler(Arc::new(Mutex::new(event_handler)))
     }
 
-    fn watch<P: AsRef<Path>>(&mut self, path: P, recursive_mode: RecursiveMode) -> Result<()> {
-        self.watch_inner(path.as_ref(), recursive_mode)
+    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+        self.watch_inner(path, recursive_mode)
     }
 
-    fn unwatch<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        self.unwatch_inner(path.as_ref())
+    fn unwatch(&mut self, path: &Path) -> Result<()> {
+        self.unwatch_inner(path)
     }
 
     fn configure(&mut self, config: Config) -> Result<bool> {
@@ -577,10 +561,9 @@ fn test_fsevent_watcher_drop() {
     let dir = tempfile::tempdir().unwrap();
 
     let (tx, rx) = std::sync::mpsc::channel();
-    let event_fn = move |res| tx.send(res).unwrap();
 
     {
-        let mut watcher: RecommendedWatcher = Watcher::new_immediate(event_fn).unwrap();
+        let mut watcher = FsEventWatcher::new(tx).unwrap();
         watcher.watch(dir.path(), RecursiveMode::Recursive).unwrap();
         thread::sleep(Duration::from_millis(2000));
         println!("is running -> {}", watcher.is_running());
@@ -601,7 +584,7 @@ fn test_fsevent_watcher_drop() {
 }
 
 #[test]
-fn test_steam_context_info_send() {
-    fn check_send<T: Send>() {}
+fn test_steam_context_info_send_and_sync() {
+    fn check_send<T: Send + Sync>() {}
     check_send::<StreamContextInfo>();
 }

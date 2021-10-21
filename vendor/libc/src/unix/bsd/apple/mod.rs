@@ -41,6 +41,18 @@ pub type sae_connid_t = u32;
 
 pub type mach_port_t = ::c_uint;
 pub type processor_flavor_t = ::c_int;
+pub type thread_flavor_t = natural_t;
+pub type thread_inspect_t = mach_port_t;
+pub type policy_t = ::c_int;
+pub type mach_vm_address_t = u64;
+pub type mach_vm_offset_t = u64;
+pub type mach_vm_size_t = u64;
+pub type vm_map_t = ::mach_port_t;
+pub type mem_entry_name_port_t = ::mach_port_t;
+pub type memory_object_t = ::mach_port_t;
+pub type memory_object_offset_t = ::c_ulonglong;
+pub type vm_inherit_t = ::c_uint;
+pub type vm_prot_t = ::c_int;
 
 pub type iconv_t = *mut ::c_void;
 
@@ -54,6 +66,14 @@ pub type processor_set_load_info_data_t = processor_set_load_info;
 pub type processor_set_load_info_t = *mut processor_set_load_info;
 pub type processor_info_t = *mut integer_t;
 pub type processor_info_array_t = *mut integer_t;
+
+pub type thread_info_t = *mut integer_t;
+pub type thread_basic_info_t = *mut thread_basic_info;
+pub type thread_basic_info_data_t = thread_basic_info;
+pub type thread_identifier_info_t = *mut thread_identifier_info;
+pub type thread_identifier_info_data_t = thread_identifier_info;
+pub type thread_extended_info_t = *mut thread_extended_info;
+pub type thread_extended_info_data_t = thread_extended_info;
 
 pub type thread_t = mach_port_t;
 pub type thread_policy_flavor_t = natural_t;
@@ -82,7 +102,6 @@ pub type CCCryptorStatus = i32;
 pub type CCRNGStatus = ::CCCryptorStatus;
 
 deprecated_mach! {
-    pub type vm_prot_t = ::c_int;
     pub type vm_size_t = ::uintptr_t;
     pub type mach_timebase_info_data_t = mach_timebase_info;
 }
@@ -806,6 +825,42 @@ s_no_extra_traits! {
         pub load_average: integer_t,
         pub mach_factor: integer_t,
     }
+
+    pub struct time_value_t {
+        pub seconds: integer_t,
+        pub microseconds: integer_t,
+    }
+
+    pub struct thread_basic_info {
+        pub user_time: time_value_t,
+        pub system_time: time_value_t,
+        pub cpu_usage: ::integer_t,
+        pub policy: ::policy_t,
+        pub run_state: ::integer_t,
+        pub flags: ::integer_t,
+        pub suspend_count: ::integer_t,
+        pub sleep_time: ::integer_t,
+    }
+
+    pub struct thread_identifier_info {
+        pub thread_id: u64,
+        pub thread_handle: u64,
+        pub dispatch_qaddr: u64,
+    }
+
+    pub struct thread_extended_info {
+        pub pth_user_time: u64,
+        pub pth_system_time: u64,
+        pub pth_cpu_usage: i32,
+        pub pth_policy: i32,
+        pub pth_run_state: i32,
+        pub pth_flags: i32,
+        pub pth_sleep_time: i32,
+        pub pth_curpri: i32,
+        pub pth_priority: i32,
+        pub pth_maxpriority: i32,
+        pub pth_name: [::c_char; MAXTHREADNAMESIZE],
+    }
 }
 
 impl siginfo_t {
@@ -1518,6 +1573,142 @@ cfg_if! {
                 self.thread_count.hash(state);
                 self.load_average.hash(state);
                 self.mach_factor.hash(state);
+            }
+        }
+
+        impl PartialEq for time_value_t {
+            fn eq(&self, other: &time_value_t) -> bool {
+                self.seconds == other.seconds
+                    && self.microseconds == other.microseconds
+            }
+        }
+        impl Eq for time_value_t {}
+        impl ::fmt::Debug for time_value_t {
+            fn fmt(&self, f: &mut ::fmt::Formatter) -> ::fmt::Result {
+                f.debug_struct("time_value_t")
+                    .field("seconds", &self.seconds)
+                    .field("microseconds", &self.seconds)
+                    .finish()
+            }
+        }
+        impl ::hash::Hash for time_value_t {
+            fn hash<H: ::hash::Hasher>(&self, state: &mut H) {
+                self.seconds.hash(state);
+                self.microseconds.hash(state);
+            }
+        }
+        impl PartialEq for thread_basic_info {
+            fn eq(&self, other: &thread_basic_info) -> bool {
+                self.user_time == other.user_time
+                    && self.system_time == other.system_time
+                    && self.cpu_usage == other.cpu_usage
+                    && self.policy == other.policy
+                    && self.run_state == other.run_state
+                    && self.flags == other.flags
+                    && self.suspend_count == other.suspend_count
+                    && self.sleep_time == other.sleep_time
+            }
+        }
+        impl Eq for thread_basic_info {}
+        impl ::fmt::Debug for thread_basic_info {
+            fn fmt(&self, f: &mut ::fmt::Formatter) -> ::fmt::Result {
+                f.debug_struct("thread_basic_info")
+                    .field("user_time", &self.user_time)
+                    .field("system_time", &self.system_time)
+                    .field("cpu_usage", &self.cpu_usage)
+                    .field("policy", &self.policy)
+                    .field("run_state", &self.run_state)
+                    .field("flags", &self.flags)
+                    .field("suspend_count", &self.suspend_count)
+                    .field("sleep_time", &self.sleep_time)
+                    .finish()
+            }
+        }
+        impl ::hash::Hash for thread_basic_info {
+            fn hash<H: ::hash::Hasher>(&self, state: &mut H) {
+                self.user_time.hash(state);
+                self.system_time.hash(state);
+                self.cpu_usage.hash(state);
+                self.policy.hash(state);
+                self.run_state.hash(state);
+                self.flags.hash(state);
+                self.suspend_count.hash(state);
+                self.sleep_time.hash(state);
+            }
+        }
+        impl PartialEq for thread_extended_info {
+            fn eq(&self, other: &thread_extended_info) -> bool {
+                self.pth_user_time == other.pth_user_time
+                    && self.pth_system_time == other.pth_system_time
+                    && self.pth_cpu_usage == other.pth_cpu_usage
+                    && self.pth_policy == other.pth_policy
+                    && self.pth_run_state == other.pth_run_state
+                    && self.pth_flags == other.pth_flags
+                    && self.pth_sleep_time == other.pth_sleep_time
+                    && self.pth_curpri == other.pth_curpri
+                    && self.pth_priority == other.pth_priority
+                    && self.pth_maxpriority == other.pth_maxpriority
+                    && self.pth_name
+                           .iter()
+                           .zip(other.pth_name.iter())
+                           .all(|(a,b)| a == b)
+            }
+        }
+        impl Eq for thread_extended_info {}
+        impl ::fmt::Debug for thread_extended_info {
+            fn fmt(&self, f: &mut ::fmt::Formatter) -> ::fmt::Result {
+                f.debug_struct("proc_threadinfo")
+                    .field("pth_user_time", &self.pth_user_time)
+                    .field("pth_system_time", &self.pth_system_time)
+                    .field("pth_cpu_usage", &self.pth_cpu_usage)
+                    .field("pth_policy", &self.pth_policy)
+                    .field("pth_run_state", &self.pth_run_state)
+                    .field("pth_flags", &self.pth_flags)
+                    .field("pth_sleep_time", &self.pth_sleep_time)
+                    .field("pth_curpri", &self.pth_curpri)
+                    .field("pth_priority", &self.pth_priority)
+                    .field("pth_maxpriority", &self.pth_maxpriority)
+                      // FIXME: .field("pth_name", &self.pth_name)
+                    .finish()
+            }
+        }
+        impl ::hash::Hash for thread_extended_info {
+            fn hash<H: ::hash::Hasher>(&self, state: &mut H) {
+                self.pth_user_time.hash(state);
+                self.pth_system_time.hash(state);
+                self.pth_cpu_usage.hash(state);
+                self.pth_policy.hash(state);
+                self.pth_run_state.hash(state);
+                self.pth_flags.hash(state);
+                self.pth_sleep_time.hash(state);
+                self.pth_curpri.hash(state);
+                self.pth_priority.hash(state);
+                self.pth_maxpriority.hash(state);
+                self.pth_name.hash(state);
+            }
+        }
+        impl PartialEq for thread_identifier_info {
+            fn eq(&self, other: &thread_identifier_info) -> bool {
+                self.thread_id == other.thread_id
+                    && self.thread_handle == other.thread_handle
+                    && self.dispatch_qaddr == other.dispatch_qaddr
+            }
+        }
+        impl Eq for thread_identifier_info {}
+        impl ::fmt::Debug for thread_identifier_info {
+            fn fmt(&self, f: &mut ::fmt::Formatter) -> ::fmt::Result {
+                f.debug_struct("thread_identifier_info")
+                    .field("thread_id", &self.thread_id)
+                    .field("thread_handlee", &self.thread_handle)
+                    .field("dispatch_qaddr", &self.dispatch_qaddr)
+                    .finish()
+            }
+        }
+        impl ::hash::Hash for thread_identifier_info {
+            fn hash<H: ::hash::Hasher>(&self, state: &mut H) {
+                self.thread_id.hash(state);
+                self.thread_handle.hash(state);
+                self.dispatch_qaddr.hash(state);
             }
         }
     }
@@ -3135,6 +3326,11 @@ pub const VM_LOADAVG: ::c_int = 2;
 pub const VM_MACHFACTOR: ::c_int = 4;
 pub const VM_SWAPUSAGE: ::c_int = 5;
 pub const VM_MAXID: ::c_int = 6;
+pub const VM_PROT_NONE: ::vm_prot_t = 0x00;
+pub const VM_PROT_READ: ::vm_prot_t = 0x01;
+pub const VM_PROT_WRITE: ::vm_prot_t = 0x02;
+pub const VM_PROT_EXECUTE: ::vm_prot_t = 0x04;
+pub const MEMORY_OBJECT_NULL: ::memory_object_t = 0;
 pub const HW_MACHINE: ::c_int = 1;
 pub const HW_MODEL: ::c_int = 2;
 pub const HW_NCPU: ::c_int = 3;
@@ -3525,6 +3721,19 @@ pub const THREAD_BACKGROUND_POLICY_DARWIN_BG: ::c_int = 0x1000;
 pub const THREAD_LATENCY_QOS_POLICY: ::c_int = 7;
 pub const THREAD_THROUGHPUT_QOS_POLICY: ::c_int = 8;
 
+// <mach/thread_info.h>
+pub const TH_STATE_RUNNING: ::c_int = 1;
+pub const TH_STATE_STOPPED: ::c_int = 2;
+pub const TH_STATE_WAITING: ::c_int = 3;
+pub const TH_STATE_UNINTERRUPTIBLE: ::c_int = 4;
+pub const TH_STATE_HALTED: ::c_int = 5;
+pub const TH_FLAGS_SWAPPED: ::c_int = 0x1;
+pub const TH_FLAGS_IDLE: ::c_int = 0x2;
+pub const TH_FLAGS_GLOBAL_FORCED_IDLE: ::c_int = 0x4;
+pub const THREAD_BASIC_INFO: ::c_int = 3;
+pub const THREAD_IDENTIFIER_INFO: ::c_int = 4;
+pub const THREAD_EXTENDED_INFO: ::c_int = 5;
+
 // CommonCrypto/CommonCryptoError.h
 pub const kCCSuccess: i32 = 0;
 pub const kCCParamError: i32 = -4300;
@@ -3572,6 +3781,15 @@ cfg_if! {
         pub const THREAD_THROUGHPUT_QOS_POLICY_COUNT: mach_msg_type_number_t =
             (::mem::size_of::<thread_throughput_qos_policy_data_t>() /
              ::mem::size_of::<integer_t>()) as mach_msg_type_number_t;
+        pub const THREAD_BASIC_INFO_COUNT: mach_msg_type_number_t =
+            (::mem::size_of::<thread_basic_info_data_t>() / ::mem::size_of::<integer_t>())
+            as mach_msg_type_number_t;
+        pub const THREAD_IDENTIFIER_INFO_COUNT: mach_msg_type_number_t =
+            (::mem::size_of::<thread_identifier_info_data_t>() / ::mem::size_of::<integer_t>())
+            as mach_msg_type_number_t;
+        pub const THREAD_EXTENDED_INFO_COUNT: mach_msg_type_number_t =
+            (::mem::size_of::<thread_extended_info_data_t>() / ::mem::size_of::<integer_t>())
+            as mach_msg_type_number_t;
     } else {
         fn __DARWIN_ALIGN32(p: usize) -> usize {
             let __DARWIN_ALIGNBYTES32: usize = ::mem::size_of::<u32>() - 1;
@@ -3584,6 +3802,9 @@ cfg_if! {
         pub const THREAD_BACKGROUND_POLICY_COUNT: mach_msg_type_number_t = 1;
         pub const THREAD_LATENCY_QOS_POLICY_COUNT: mach_msg_type_number_t = 1;
         pub const THREAD_THROUGHPUT_QOS_POLICY_COUNT: mach_msg_type_number_t = 1;
+        pub const THREAD_BASIC_INFO_COUNT: mach_msg_type_number_t = 10;
+        pub const THREAD_IDENTIFIER_INFO_COUNT: mach_msg_type_number_t = 6;
+        pub const THREAD_EXTENDED_INFO_COUNT: mach_msg_type_number_t = 28;
     }
 }
 
@@ -3759,6 +3980,7 @@ extern "C" {
     pub fn mach_thread_self() -> mach_port_t;
     pub fn pthread_setname_np(name: *const ::c_char) -> ::c_int;
     pub fn pthread_getname_np(thread: ::pthread_t, name: *mut ::c_char, len: ::size_t) -> ::c_int;
+    pub fn pthread_mach_thread_np(thread: ::pthread_t) -> ::mach_port_t;
     pub fn pthread_from_mach_thread_np(port: ::mach_port_t) -> ::pthread_t;
     pub fn pthread_get_stackaddr_np(thread: ::pthread_t) -> *mut ::c_void;
     pub fn pthread_get_stacksize_np(thread: ::pthread_t) -> ::size_t;
@@ -3829,6 +4051,12 @@ extern "C" {
         policy_info: thread_policy_t,
         count: *mut mach_msg_type_number_t,
         get_default: *mut boolean_t,
+    ) -> kern_return_t;
+    pub fn thread_info(
+        target_act: thread_inspect_t,
+        flavor: thread_flavor_t,
+        thread_info_out: thread_info_t,
+        thread_info_outCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
     pub fn __error() -> *mut ::c_int;
     pub fn backtrace(buf: *mut *mut ::c_void, sz: ::c_int) -> ::c_int;
@@ -4189,6 +4417,21 @@ extern "C" {
     pub fn CCRandomGenerateBytes(bytes: *mut ::c_void, size: ::size_t) -> ::CCRNGStatus;
 
     pub fn _NSGetExecutablePath(buf: *mut ::c_char, bufsize: *mut u32) -> ::c_int;
+    pub fn _NSGetEnviron() -> *mut *mut *mut ::c_char;
+
+    pub fn mach_vm_map(
+        target_task: ::vm_map_t,
+        address: *mut ::mach_vm_address_t,
+        size: ::mach_vm_size_t,
+        mask: ::mach_vm_offset_t,
+        flags: ::c_int,
+        object: ::mem_entry_name_port_t,
+        offset: ::memory_object_offset_t,
+        copy: ::boolean_t,
+        cur_protection: ::vm_prot_t,
+        max_protection: ::vm_prot_t,
+        inheritance: ::vm_inherit_t,
+    ) -> ::kern_return_t;
 }
 
 cfg_if! {

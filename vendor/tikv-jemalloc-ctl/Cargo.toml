@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "tikv-jemalloc-ctl"
-version = "0.4.1"
+version = "0.4.2"
 authors = ["Steven Fackler <sfackler@gmail.com>", "Gonzalo Brito Gadeschi <gonzalobg88@gmail.com>", "The TiKV Project Developers"]
 description = "A safe wrapper over jemalloc's control and introspection APIs\n"
 homepage = "https://github.com/tikv/jemallocator"
@@ -30,7 +30,7 @@ version = "0.2"
 default-features = false
 
 [dependencies.paste]
-version = "0.1"
+version = "1"
 
 [dependencies.tikv-jemalloc-sys]
 version = "0.4.0"

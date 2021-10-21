@@ -16,13 +16,16 @@ use core::str::FromStr;
 #[cfg(feature = "enable-serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::ir::{self, trapcode::TrapCode, types, Block, FuncRef, JumpTable, SigRef, Type, Value};
-use crate::isa;
-
 use crate::bitset::BitSet;
 use crate::data_value::DataValue;
 use crate::entity;
-use ir::condcodes::{FloatCC, IntCC};
+use crate::ir::{
+    self,
+    condcodes::{FloatCC, IntCC},
+    trapcode::TrapCode,
+    types, Block, FuncRef, JumpTable, MemFlags, SigRef, Type, Value,
+};
+use crate::isa;
 
 /// Some instructions use an external list of argument values because there is not enough space in
 /// the 16-byte `InstructionData` struct. These value lists are stored in a memory pool in
@@ -391,6 +394,19 @@ impl InstructionData {
             | &InstructionData::Store { offset, .. }
             | &InstructionData::StackStore { offset, .. }
             | &InstructionData::StoreComplex { offset, .. } => Some(offset.into()),
+            _ => None,
+        }
+    }
+
+    /// If this is a load/store instruction, return its memory flags.
+    pub fn memflags(&self) -> Option<MemFlags> {
+        match self {
+            &InstructionData::Load { flags, .. }
+            | &InstructionData::LoadComplex { flags, .. }
+            | &InstructionData::LoadNoOffset { flags, .. }
+            | &InstructionData::Store { flags, .. }
+            | &InstructionData::StoreComplex { flags, .. }
+            | &InstructionData::StoreNoOffset { flags, .. } => Some(flags),
             _ => None,
         }
     }

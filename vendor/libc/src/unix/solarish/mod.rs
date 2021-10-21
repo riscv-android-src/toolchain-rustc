@@ -2171,7 +2171,7 @@ f! {
         return
     }
 
-    pub fn FD_ISSET(fd: ::c_int, set: *mut fd_set) -> bool {
+    pub fn FD_ISSET(fd: ::c_int, set: *const fd_set) -> bool {
         let bits = ::mem::size_of_val(&(*set).fds_bits[0]) * 8;
         let fd = fd as usize;
         return ((*set).fds_bits[fd / bits] & (1 << (fd % bits))) != 0
@@ -2250,6 +2250,12 @@ extern "C" {
     pub fn freeifaddrs(ifa: *mut ::ifaddrs);
 
     pub fn stack_getbounds(sp: *mut ::stack_t) -> ::c_int;
+    pub fn getgrouplist(
+        name: *const ::c_char,
+        basegid: ::gid_t,
+        groups: *mut ::gid_t,
+        ngroups: *mut ::c_int,
+    ) -> ::c_int;
     pub fn initgroups(name: *const ::c_char, basegid: ::gid_t) -> ::c_int;
     pub fn setgroups(ngroups: ::c_int, ptr: *const ::gid_t) -> ::c_int;
     pub fn ioctl(fildes: ::c_int, request: ::c_int, ...) -> ::c_int;
@@ -2649,6 +2655,8 @@ extern "C" {
         old_binding: *mut processorid_t,
     ) -> ::c_int;
     pub fn p_online(processorid: ::processorid_t, flag: ::c_int) -> ::c_int;
+
+    pub fn getexecname() -> *const ::c_char;
 }
 
 mod compat;

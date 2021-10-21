@@ -1,6 +1,7 @@
 //! See `CompletionContext` structure.
 
-use hir::{Local, ScopeDef, Semantics, SemanticsScope, Type};
+use base_db::SourceDatabaseExt;
+use hir::{Local, Name, ScopeDef, Semantics, SemanticsScope, Type, TypeInfo};
 use ide_db::{
     base_db::{FilePosition, SourceDatabase},
     call_info::ActiveParameter,
@@ -53,11 +54,23 @@ pub(crate) struct PathCompletionContext {
     pub(super) in_loop_body: bool,
 }
 
+#[derive(Debug)]
+pub(super) struct PatternContext {
+    pub(super) refutability: PatternRefutability,
+    pub(super) is_param: Option<ParamKind>,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CallKind {
     Pat,
     Mac,
     Expr,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ParamKind {
+    Function,
+    Closure,
 }
 /// `CompletionContext` is created early during completion to figure out, where
 /// exactly is the cursor, syntax-wise.
@@ -88,15 +101,12 @@ pub(crate) struct CompletionContext<'a> {
     pub(super) lifetime_allowed: bool,
     pub(super) is_label_ref: bool,
 
-    // potentially set if we are completing a name
-    pub(super) is_pat_or_const: Option<PatternRefutability>,
-    pub(super) is_param: bool,
-
     pub(super) completion_location: Option<ImmediateLocation>,
     pub(super) prev_sibling: Option<ImmediatePrevSibling>,
     pub(super) attribute_under_caret: Option<ast::Attr>,
     pub(super) previous_token: Option<SyntaxToken>,
 
+    pub(super) pattern_ctx: Option<PatternContext>,
     pub(super) path_context: Option<PathCompletionContext>,
     pub(super) active_parameter: Option<ActiveParameter>,
     pub(super) locals: Vec<(String, Local)>,
@@ -156,8 +166,7 @@ impl<'a> CompletionContext<'a> {
             lifetime_param_syntax: None,
             lifetime_allowed: false,
             is_label_ref: false,
-            is_pat_or_const: None,
-            is_param: false,
+            pattern_ctx: None,
             completion_location: None,
             prev_sibling: None,
             attribute_under_caret: None,
@@ -353,8 +362,82 @@ impl<'a> CompletionContext<'a> {
         matches!(self.path_context, Some(PathCompletionContext { is_trivial_path: true, .. }))
     }
 
+    pub(crate) fn is_non_trivial_path(&self) -> bool {
+        matches!(self.path_context, Some(PathCompletionContext { is_trivial_path: false, .. }))
+    }
+
     pub(crate) fn path_qual(&self) -> Option<&ast::Path> {
         self.path_context.as_ref().and_then(|it| it.qualifier.as_ref())
+    }
+
+    /// Checks if an item is visible and not `doc(hidden)` at the completion site.
+    pub(crate) fn is_visible<I>(&self, item: &I) -> bool
+    where
+        I: hir::HasVisibility + hir::HasAttrs + hir::HasCrate + Copy,
+    {
+        self.is_visible_impl(&item.visibility(self.db), &item.attrs(self.db), item.krate(self.db))
+    }
+
+    pub(crate) fn is_scope_def_hidden(&self, scope_def: &ScopeDef) -> bool {
+        if let (Some(attrs), Some(krate)) = (scope_def.attrs(self.db), scope_def.krate(self.db)) {
+            return self.is_doc_hidden(&attrs, krate);
+        }
+
+        false
+    }
+
+    pub(crate) fn is_item_hidden(&self, item: &hir::ItemInNs) -> bool {
+        let attrs = item.attrs(self.db);
+        let krate = item.krate(self.db);
+        match (attrs, krate) {
+            (Some(attrs), Some(krate)) => self.is_doc_hidden(&attrs, krate),
+            _ => false,
+        }
+    }
+
+    /// A version of [`SemanticsScope::process_all_names`] that filters out `#[doc(hidden)]` items.
+    pub(crate) fn process_all_names(&self, f: &mut dyn FnMut(Name, ScopeDef)) {
+        self.scope.process_all_names(&mut |name, def| {
+            if self.is_scope_def_hidden(&def) {
+                return;
+            }
+
+            f(name, def);
+        })
+    }
+
+    fn is_visible_impl(
+        &self,
+        vis: &hir::Visibility,
+        attrs: &hir::Attrs,
+        defining_crate: hir::Crate,
+    ) -> bool {
+        let module = match self.scope.module() {
+            Some(it) => it,
+            None => return false,
+        };
+        if !vis.is_visible_from(self.db, module.into()) {
+            // If the definition location is editable, also show private items
+            let root_file = defining_crate.root_file(self.db);
+            let source_root_id = self.db.file_source_root(root_file);
+            let is_editable = !self.db.source_root(source_root_id).is_library;
+            return is_editable;
+        }
+
+        !self.is_doc_hidden(attrs, defining_crate)
+    }
+
+    fn is_doc_hidden(&self, attrs: &hir::Attrs, defining_crate: hir::Crate) -> bool {
+        let module = match self.scope.module() {
+            Some(it) => it,
+            None => return true,
+        };
+        if module.krate() != defining_crate && attrs.has_doc_hidden() {
+            // `doc(hidden)` items are only completed within the defining crate.
+            return true;
+        }
+
+        false
     }
 
     fn fill_impl_def(&mut self) {
@@ -378,7 +461,8 @@ impl<'a> CompletionContext<'a> {
                         cov_mark::hit!(expected_type_let_without_leading_char);
                         let ty = it.pat()
                             .and_then(|pat| self.sema.type_of_pat(&pat))
-                            .or_else(|| it.initializer().and_then(|it| self.sema.type_of_expr(&it)));
+                            .or_else(|| it.initializer().and_then(|it| self.sema.type_of_expr(&it)))
+                            .map(TypeInfo::original);
                         let name = if let Some(ast::Pat::IdentPat(ident)) = it.pat() {
                             ident.name().map(NameOrNameRef::Name)
                         } else {
@@ -404,44 +488,56 @@ impl<'a> CompletionContext<'a> {
                         })
                         .unwrap_or((None, None))
                     },
-                    ast::RecordExprFieldList(_it) => {
-                        cov_mark::hit!(expected_type_struct_field_without_leading_char);
+                    ast::RecordExprFieldList(it) => {
                         // wouldn't try {} be nice...
                         (|| {
-                            let expr_field = self.token.prev_sibling_or_token()?
-                                      .into_node()
-                                      .and_then(ast::RecordExprField::cast)?;
-                            let (_, _, ty) = self.sema.resolve_record_field(&expr_field)?;
-                            Some((
-                                Some(ty),
-                                expr_field.field_name().map(NameOrNameRef::NameRef),
-                            ))
+                            if self.token.kind() == T![..]
+                                || self.token.prev_token().map(|t| t.kind()) == Some(T![..])
+                            {
+                                cov_mark::hit!(expected_type_struct_func_update);
+                                let record_expr = it.syntax().parent().and_then(ast::RecordExpr::cast)?;
+                                let ty = self.sema.type_of_expr(&record_expr.into())?;
+                                Some((
+                                    Some(ty.original),
+                                    None
+                                ))
+                            } else {
+                                cov_mark::hit!(expected_type_struct_field_without_leading_char);
+                                let expr_field = self.token.prev_sibling_or_token()?
+                                    .into_node()
+                                    .and_then(ast::RecordExprField::cast)?;
+                                let (_, _, ty) = self.sema.resolve_record_field(&expr_field)?;
+                                Some((
+                                    Some(ty),
+                                    expr_field.field_name().map(NameOrNameRef::NameRef),
+                                ))
+                            }
                         })().unwrap_or((None, None))
                     },
                     ast::RecordExprField(it) => {
                         cov_mark::hit!(expected_type_struct_field_with_leading_char);
                         (
-                            it.expr().as_ref().and_then(|e| self.sema.type_of_expr(e)),
+                            it.expr().as_ref().and_then(|e| self.sema.type_of_expr(e)).map(TypeInfo::original),
                             it.field_name().map(NameOrNameRef::NameRef),
                         )
                     },
                     ast::MatchExpr(it) => {
                         cov_mark::hit!(expected_type_match_arm_without_leading_char);
-                        let ty = it.expr()
-                            .and_then(|e| self.sema.type_of_expr(&e));
+                        let ty = it.expr().and_then(|e| self.sema.type_of_expr(&e)).map(TypeInfo::original);
                         (ty, None)
                     },
                     ast::IfExpr(it) => {
                         cov_mark::hit!(expected_type_if_let_without_leading_char);
                         let ty = it.condition()
                             .and_then(|cond| cond.expr())
-                            .and_then(|e| self.sema.type_of_expr(&e));
+                            .and_then(|e| self.sema.type_of_expr(&e))
+                            .map(TypeInfo::original);
                         (ty, None)
                     },
                     ast::IdentPat(it) => {
                         cov_mark::hit!(expected_type_if_let_with_leading_char);
                         cov_mark::hit!(expected_type_match_arm_with_leading_char);
-                        let ty = self.sema.type_of_pat(&ast::Pat::from(it));
+                        let ty = self.sema.type_of_pat(&ast::Pat::from(it)).map(TypeInfo::original);
                         (ty, None)
                     },
                     ast::Fn(it) => {
@@ -452,11 +548,12 @@ impl<'a> CompletionContext<'a> {
                     },
                     ast::ClosureExpr(it) => {
                         let ty = self.sema.type_of_expr(&it.into());
-                        ty.and_then(|ty| ty.as_callable(self.db))
+                        ty.and_then(|ty| ty.original.as_callable(self.db))
                             .map(|c| (Some(c.return_type()), None))
                             .unwrap_or((None, None))
                     },
                     ast::Stmt(_it) => (None, None),
+                    ast::Item(__) => (None, None),
                     _ => {
                         match node.parent() {
                             Some(n) => {
@@ -547,45 +644,52 @@ impl<'a> CompletionContext<'a> {
     }
 
     fn classify_name(&mut self, name: ast::Name) {
+        self.fill_impl_def();
+
         if let Some(bind_pat) = name.syntax().parent().and_then(ast::IdentPat::cast) {
-            self.is_pat_or_const = Some(PatternRefutability::Refutable);
-            // if any of these is here our bind pat can't be a const pat anymore
-            let complex_ident_pat = bind_pat.at_token().is_some()
-                || bind_pat.ref_token().is_some()
-                || bind_pat.mut_token().is_some();
-            if complex_ident_pat {
-                self.is_pat_or_const = None;
-            } else {
-                let irrefutable_pat = bind_pat.syntax().ancestors().find_map(|node| {
-                    match_ast! {
-                        match node {
-                            ast::LetStmt(it) => Some(it.pat()),
-                            ast::Param(it) => Some(it.pat()),
-                            _ => None,
-                        }
-                    }
-                });
-                if let Some(Some(pat)) = irrefutable_pat {
-                    // This check is here since we could be inside a pattern in the initializer expression of the let statement.
-                    if pat.syntax().text_range().contains_range(bind_pat.syntax().text_range()) {
-                        self.is_pat_or_const = Some(PatternRefutability::Irrefutable);
-                    }
-                }
-
-                let is_name_in_field_pat = bind_pat
-                    .syntax()
-                    .parent()
-                    .and_then(ast::RecordPatField::cast)
-                    .map_or(false, |pat_field| pat_field.name_ref().is_none());
-                if is_name_in_field_pat {
-                    self.is_pat_or_const = None;
-                }
+            let is_name_in_field_pat = bind_pat
+                .syntax()
+                .parent()
+                .and_then(ast::RecordPatField::cast)
+                .map_or(false, |pat_field| pat_field.name_ref().is_none());
+            if is_name_in_field_pat {
+                return;
             }
-
-            self.fill_impl_def();
+            if bind_pat.is_simple_ident() {
+                let mut is_param = None;
+                let refutability = bind_pat
+                    .syntax()
+                    .ancestors()
+                    .skip_while(|it| ast::Pat::can_cast(it.kind()))
+                    .next()
+                    .map_or(PatternRefutability::Irrefutable, |node| {
+                        match_ast! {
+                            match node {
+                                ast::LetStmt(__) => PatternRefutability::Irrefutable,
+                                ast::Param(param) => {
+                                    let is_closure_param = param
+                                        .syntax()
+                                        .ancestors()
+                                        .nth(2)
+                                        .and_then(ast::ClosureExpr::cast)
+                                        .is_some();
+                                    is_param = Some(if is_closure_param {
+                                        ParamKind::Closure
+                                    } else {
+                                        ParamKind::Function
+                                    });
+                                    PatternRefutability::Irrefutable
+                                },
+                                ast::MatchArm(__) => PatternRefutability::Refutable,
+                                ast::Condition(__) => PatternRefutability::Refutable,
+                                ast::ForExpr(__) => PatternRefutability::Irrefutable,
+                                _ => PatternRefutability::Irrefutable,
+                            }
+                        }
+                    });
+                self.pattern_ctx = Some(PatternContext { refutability, is_param });
+            }
         }
-
-        self.is_param |= is_node::<ast::Param>(name.syntax());
     }
 
     fn classify_name_ref(&mut self, original_file: &SyntaxNode, name_ref: ast::NameRef) {
@@ -687,13 +791,6 @@ impl<'a> CompletionContext<'a> {
 
 fn find_node_with_range<N: AstNode>(syntax: &SyntaxNode, range: TextRange) -> Option<N> {
     syntax.covering_element(range).ancestors().find_map(N::cast)
-}
-
-fn is_node<N: AstNode>(node: &SyntaxNode) -> bool {
-    match node.ancestors().find_map(N::cast) {
-        None => false,
-        Some(n) => n.syntax().text_range() == node.text_range(),
-    }
 }
 
 fn path_or_use_tree_qualifier(path: &ast::Path) -> Option<(ast::Path, bool)> {
@@ -1017,6 +1114,22 @@ impl<T> S<T> {
 }
 "#,
             expect![[r#"ty: u32, name: t"#]],
+        );
+    }
+
+    #[test]
+    fn expected_type_functional_update() {
+        cov_mark::check!(expected_type_struct_func_update);
+        check_expected_type_and_name(
+            r#"
+struct Foo { field: u32 }
+fn foo() {
+    Foo {
+        ..$0
+    }
+}
+"#,
+            expect![[r#"ty: Foo, name: ?"#]],
         );
     }
 }

@@ -1,11 +1,11 @@
 use either::Either;
-use hir::{AsAssocItem, HasAttrs, HasSource, HirDisplay, Semantics};
+use hir::{AsAssocItem, HasAttrs, HasSource, HirDisplay, Semantics, TypeInfo};
 use ide_db::{
-    base_db::SourceDatabase,
+    base_db::{FileRange, SourceDatabase},
     defs::{Definition, NameClass, NameRefClass},
     helpers::{
         generated_lints::{CLIPPY_LINTS, DEFAULT_LINTS, FEATURES},
-        pick_best_token, FamousDefs,
+        pick_best_token, try_resolve_derive_input_at, FamousDefs,
     },
     RootDatabase,
 };
@@ -13,13 +13,13 @@ use itertools::Itertools;
 use stdx::format_to;
 use syntax::{
     algo, ast, display::fn_as_proc_macro_label, match_ast, AstNode, AstToken, Direction,
-    SyntaxKind::*, SyntaxToken, T,
+    SyntaxKind::*, SyntaxNode, SyntaxToken, T,
 };
 
 use crate::{
     display::{macro_label, TryToNav},
     doc_links::{
-        doc_attributes, extract_definitions_from_markdown, remove_links, resolve_doc_path_for_def,
+        doc_attributes, extract_definitions_from_docs, remove_links, resolve_doc_path_for_def,
         rewrite_links,
     },
     markdown_remove::remove_markdown,
@@ -54,6 +54,25 @@ pub enum HoverAction {
     GoToType(Vec<HoverGotoTypeData>),
 }
 
+impl HoverAction {
+    fn goto_type_from_targets(db: &RootDatabase, targets: Vec<hir::ModuleDef>) -> Self {
+        let targets = targets
+            .into_iter()
+            .filter_map(|it| {
+                Some(HoverGotoTypeData {
+                    mod_path: render_path(
+                        db,
+                        it.module(db)?,
+                        it.name(db).map(|name| name.to_string()),
+                    ),
+                    nav: it.try_to_nav(db)?,
+                })
+            })
+            .collect();
+        HoverAction::GoToType(targets)
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct HoverGotoTypeData {
     pub mod_path: String,
@@ -69,18 +88,24 @@ pub struct HoverResult {
 
 // Feature: Hover
 //
-// Shows additional information, like type of an expression or documentation for definition when "focusing" code.
+// Shows additional information, like the type of an expression or the documentation for a definition when "focusing" code.
 // Focusing is usually hovering with a mouse, but can also be triggered with a shortcut.
 //
 // image::https://user-images.githubusercontent.com/48062697/113020658-b5f98b80-917a-11eb-9f88-3dbc27320c95.gif[]
 pub(crate) fn hover(
     db: &RootDatabase,
-    position: FilePosition,
+    FileRange { file_id, range }: FileRange,
     config: &HoverConfig,
 ) -> Option<RangeInfo<HoverResult>> {
     let sema = hir::Semantics::new(db);
-    let file = sema.parse(position.file_id).syntax().clone();
-    let token = pick_best_token(file.token_at_offset(position.offset), |kind| match kind {
+    let file = sema.parse(file_id).syntax().clone();
+
+    if !range.is_empty() {
+        return hover_ranged(&file, range, &sema, config);
+    }
+    let offset = range.start();
+
+    let token = pick_best_token(file.token_at_offset(offset), |kind| match kind {
         IDENT | INT_NUMBER | LIFETIME_IDENT | T![self] | T![super] | T![crate] => 3,
         T!['('] | T![')'] => 2,
         kind if kind.is_trivia() => 0,
@@ -88,14 +113,10 @@ pub(crate) fn hover(
     })?;
     let token = sema.descend_into_macros(token);
 
-    let mut res = HoverResult::default();
-
+    let mut range_override = None;
     let node = token.parent()?;
-    let mut range = None;
     let definition = match_ast! {
         match node {
-            // we don't use NameClass::referenced_or_defined here as we do not want to resolve
-            // field pattern shorthands to their definition
             ast::Name(name) => NameClass::classify(&sema, &name).map(|class| match class {
                 NameClass::Definition(it) | NameClass::ConstReference(it) => it,
                 NameClass::PatFieldShorthand { local_def, field_ref: _ } => Definition::Local(local_def),
@@ -107,30 +128,40 @@ pub(crate) fn hover(
                 }
             }),
             ast::Lifetime(lifetime) => NameClass::classify_lifetime(&sema, &lifetime).map_or_else(
-                || NameRefClass::classify_lifetime(&sema, &lifetime).and_then(|class| match class {
-                    NameRefClass::Definition(it) => Some(it),
-                    _ => None,
-                }),
-                |d| d.defined(),
+                || {
+                    NameRefClass::classify_lifetime(&sema, &lifetime).and_then(|class| match class {
+                        NameRefClass::Definition(it) => Some(it),
+                        _ => None,
+                    })
+                },
+                NameClass::defined,
             ),
             _ => {
+                // intra-doc links
                 if ast::Comment::cast(token.clone()).is_some() {
                     cov_mark::hit!(no_highlight_on_comment_hover);
                     let (attributes, def) = doc_attributes(&sema, &node)?;
                     let (docs, doc_mapping) = attributes.docs_with_rangemap(db)?;
                     let (idl_range, link, ns) =
-                        extract_definitions_from_markdown(docs.as_str()).into_iter().find_map(|(range, link, ns)| {
-                            let hir::InFile { file_id, value: range } = doc_mapping.map(range)?;
-                            if file_id == position.file_id.into() && range.contains(position.offset) {
-                                Some((range, link, ns))
-                            } else {
-                                None
-                            }
+                        extract_definitions_from_docs(&docs).into_iter().find_map(|(range, link, ns)| {
+                            let mapped = doc_mapping.map(range)?;
+                            (mapped.file_id == file_id.into() && mapped.value.contains(offset)).then(||(mapped.value, link, ns))
                         })?;
-                    range = Some(idl_range);
-                    resolve_doc_path_for_def(db, def, &link, ns).map(Definition::ModuleDef)
-                } else if let res@Some(_) = try_hover_for_attribute(&token) {
-                    return res;
+                    range_override = Some(idl_range);
+                    Some(match resolve_doc_path_for_def(db,def, &link,ns)? {
+                        Either::Left(it) => Definition::ModuleDef(it),
+                        Either::Right(it) => Definition::Macro(it),
+                    })
+                // attributes, require special machinery as they are mere ident tokens
+                } else if let Some(attr) = token.ancestors().find_map(ast::Attr::cast) {
+                    // lints
+                    if let res@Some(_) = try_hover_for_lint(&attr, &token) {
+                        return res;
+                    // derives
+                    } else {
+                        range_override = Some(token.text_range());
+                        try_resolve_derive_input_at(&sema, &attr, &token).map(Definition::Macro)
+                    }
                 } else {
                     None
                 }
@@ -146,6 +177,7 @@ pub(crate) fn hover(
             _ => None,
         };
         if let Some(markup) = hover_for_definition(db, definition, famous_defs.as_ref(), config) {
+            let mut res = HoverResult::default();
             res.markup = process_markup(sema.db, definition, &markup, config);
             if let Some(action) = show_implementations_action(db, definition) {
                 res.actions.push(action);
@@ -155,15 +187,15 @@ pub(crate) fn hover(
                 res.actions.push(action);
             }
 
-            if let Some(action) = runnable_action(&sema, definition, position.file_id) {
+            if let Some(action) = runnable_action(&sema, definition, file_id) {
                 res.actions.push(action);
             }
 
-            if let Some(action) = goto_type_action(db, definition) {
+            if let Some(action) = goto_type_action_for_def(db, definition) {
                 res.actions.push(action);
             }
 
-            let range = range.unwrap_or_else(|| sema.original_range(&node).range);
+            let range = range_override.unwrap_or_else(|| sema.original_range(&node).range);
             return Some(RangeInfo::new(range, res));
         }
     }
@@ -172,15 +204,17 @@ pub(crate) fn hover(
         return res;
     }
 
+    // No definition below cursor, fall back to showing type hovers.
+
     let node = token
         .ancestors()
         .take_while(|it| !ast::Item::can_cast(it.kind()))
         .find(|n| ast::Expr::can_cast(n.kind()) || ast::Pat::can_cast(n.kind()))?;
 
-    let ty = match_ast! {
+    let expr_or_pat = match_ast! {
         match node {
-            ast::Expr(it) => sema.type_of_expr(&it)?,
-            ast::Pat(it) => sema.type_of_pat(&it)?,
+            ast::Expr(it) => Either::Left(it),
+            ast::Pat(it) => Either::Right(it),
             // If this node is a MACRO_CALL, it means that `descend_into_macros` failed to resolve.
             // (e.g expanding a builtin macro). So we give up here.
             ast::MacroCall(_it) => return None,
@@ -188,17 +222,79 @@ pub(crate) fn hover(
         }
     };
 
-    res.markup = if config.markdown() {
-        Markup::fenced_block(&ty.display(db))
-    } else {
-        ty.display(db).to_string().into()
-    };
+    let res = hover_type_info(&sema, config, &expr_or_pat)?;
     let range = sema.original_range(&node).range;
     Some(RangeInfo::new(range, res))
 }
 
-fn try_hover_for_attribute(token: &SyntaxToken) -> Option<RangeInfo<HoverResult>> {
-    let attr = token.ancestors().find_map(ast::Attr::cast)?;
+fn hover_ranged(
+    file: &SyntaxNode,
+    range: syntax::TextRange,
+    sema: &Semantics<RootDatabase>,
+    config: &HoverConfig,
+) -> Option<RangeInfo<HoverResult>> {
+    let expr = file.covering_element(range).ancestors().find_map(|it| {
+        match_ast! {
+            match it {
+                ast::Expr(expr) => Some(Either::Left(expr)),
+                ast::Pat(pat) => Some(Either::Right(pat)),
+                _ => None,
+            }
+        }
+    })?;
+    hover_type_info(sema, config, &expr).map(|it| {
+        let range = match expr {
+            Either::Left(it) => it.syntax().text_range(),
+            Either::Right(it) => it.syntax().text_range(),
+        };
+        RangeInfo::new(range, it)
+    })
+}
+
+fn hover_type_info(
+    sema: &Semantics<RootDatabase>,
+    config: &HoverConfig,
+    expr_or_pat: &Either<ast::Expr, ast::Pat>,
+) -> Option<HoverResult> {
+    let TypeInfo { original, adjusted } = match expr_or_pat {
+        Either::Left(expr) => sema.type_of_expr(expr)?,
+        Either::Right(pat) => sema.type_of_pat(pat)?,
+    };
+
+    let mut res = HoverResult::default();
+    let mut targets: Vec<hir::ModuleDef> = Vec::new();
+    let mut push_new_def = |item: hir::ModuleDef| {
+        if !targets.contains(&item) {
+            targets.push(item);
+        }
+    };
+    walk_and_push_ty(sema.db, &original, &mut push_new_def);
+
+    res.markup = if let Some(adjusted_ty) = adjusted {
+        walk_and_push_ty(sema.db, &adjusted_ty, &mut push_new_def);
+        let original = original.display(sema.db).to_string();
+        let adjusted = adjusted_ty.display(sema.db).to_string();
+        format!(
+            "```text\nType: {:>apad$}\nCoerced to: {:>opad$}\n```\n",
+            uncoerced = original,
+            coerced = adjusted,
+            // 6 base padding for difference of length of the two text prefixes
+            apad = 6 + adjusted.len().max(original.len()),
+            opad = original.len(),
+        )
+        .into()
+    } else {
+        if config.markdown() {
+            Markup::fenced_block(&original.display(sema.db))
+        } else {
+            original.display(sema.db).to_string().into()
+        }
+    };
+    res.actions.push(HoverAction::goto_type_from_targets(sema.db, targets));
+    Some(res)
+}
+
+fn try_hover_for_lint(attr: &ast::Attr, token: &SyntaxToken) -> Option<RangeInfo<HoverResult>> {
     let (path, tt) = attr.as_simple_call()?;
     if !tt.syntax().text_range().contains(token.text_range().start()) {
         return None;
@@ -299,7 +395,7 @@ fn runnable_action(
     }
 }
 
-fn goto_type_action(db: &RootDatabase, def: Definition) -> Option<HoverAction> {
+fn goto_type_action_for_def(db: &RootDatabase, def: Definition) -> Option<HoverAction> {
     let mut targets: Vec<hir::ModuleDef> = Vec::new();
     let mut push_new_def = |item: hir::ModuleDef| {
         if !targets.contains(&item) {
@@ -317,30 +413,28 @@ fn goto_type_action(db: &RootDatabase, def: Definition) -> Option<HoverAction> {
             _ => return None,
         };
 
-        ty.walk(db, |t| {
-            if let Some(adt) = t.as_adt() {
-                push_new_def(adt.into());
-            } else if let Some(trait_) = t.as_dyn_trait() {
-                push_new_def(trait_.into());
-            } else if let Some(traits) = t.as_impl_traits(db) {
-                traits.into_iter().for_each(|it| push_new_def(it.into()));
-            } else if let Some(trait_) = t.as_associated_type_parent_trait(db) {
-                push_new_def(trait_.into());
-            }
-        });
+        walk_and_push_ty(db, &ty, &mut push_new_def);
     }
 
-    let targets = targets
-        .into_iter()
-        .filter_map(|it| {
-            Some(HoverGotoTypeData {
-                mod_path: render_path(db, it.module(db)?, it.name(db).map(|name| name.to_string())),
-                nav: it.try_to_nav(db)?,
-            })
-        })
-        .collect();
+    Some(HoverAction::goto_type_from_targets(db, targets))
+}
 
-    Some(HoverAction::GoToType(targets))
+fn walk_and_push_ty(
+    db: &RootDatabase,
+    ty: &hir::Type,
+    push_new_def: &mut dyn FnMut(hir::ModuleDef),
+) {
+    ty.walk(db, |t| {
+        if let Some(adt) = t.as_adt() {
+            push_new_def(adt.into());
+        } else if let Some(trait_) = t.as_dyn_trait() {
+            push_new_def(trait_.into());
+        } else if let Some(traits) = t.as_impl_traits(db) {
+            traits.into_iter().for_each(|it| push_new_def(it.into()));
+        } else if let Some(trait_) = t.as_associated_type_parent_trait(db) {
+            push_new_def(trait_.into());
+        }
+    });
 }
 
 fn hover_markup(docs: Option<String>, desc: String, mod_path: Option<String>) -> Option<Markup> {
@@ -369,7 +463,7 @@ fn process_markup(
     let markup = if !config.markdown() {
         remove_markdown(markup)
     } else if config.links_in_hover {
-        rewrite_links(db, markup, &def)
+        rewrite_links(db, markup, def)
     } else {
         remove_links(markup)
     };
@@ -531,7 +625,8 @@ fn find_std_module(famous_defs: &FamousDefs, name: &str) -> Option<hir::Module> 
 #[cfg(test)]
 mod tests {
     use expect_test::{expect, Expect};
-    use ide_db::base_db::FileLoader;
+    use ide_db::base_db::{FileLoader, FileRange};
+    use syntax::TextRange;
 
     use crate::{fixture, hover::HoverDocFormat, HoverConfig};
 
@@ -543,7 +638,7 @@ mod tests {
                     links_in_hover: true,
                     documentation: Some(HoverDocFormat::Markdown),
                 },
-                position,
+                FileRange { file_id: position.file_id, range: TextRange::empty(position.offset) },
             )
             .unwrap();
         assert!(hover.is_none());
@@ -557,7 +652,7 @@ mod tests {
                     links_in_hover: true,
                     documentation: Some(HoverDocFormat::Markdown),
                 },
-                position,
+                FileRange { file_id: position.file_id, range: TextRange::empty(position.offset) },
             )
             .unwrap()
             .unwrap();
@@ -577,7 +672,7 @@ mod tests {
                     links_in_hover: false,
                     documentation: Some(HoverDocFormat::Markdown),
                 },
-                position,
+                FileRange { file_id: position.file_id, range: TextRange::empty(position.offset) },
             )
             .unwrap()
             .unwrap();
@@ -597,7 +692,7 @@ mod tests {
                     links_in_hover: true,
                     documentation: Some(HoverDocFormat::PlainText),
                 },
-                position,
+                FileRange { file_id: position.file_id, range: TextRange::empty(position.offset) },
             )
             .unwrap()
             .unwrap();
@@ -610,18 +705,47 @@ mod tests {
     }
 
     fn check_actions(ra_fixture: &str, expect: Expect) {
-        let (analysis, position) = fixture::position(ra_fixture);
+        let (analysis, file_id, position) = fixture::range_or_position(ra_fixture);
         let hover = analysis
             .hover(
                 &HoverConfig {
                     links_in_hover: true,
                     documentation: Some(HoverDocFormat::Markdown),
                 },
-                position,
+                FileRange { file_id, range: position.range_or_empty() },
             )
             .unwrap()
             .unwrap();
         expect.assert_debug_eq(&hover.info.actions)
+    }
+
+    fn check_hover_range(ra_fixture: &str, expect: Expect) {
+        let (analysis, range) = fixture::range(ra_fixture);
+        let hover = analysis
+            .hover(
+                &HoverConfig {
+                    links_in_hover: false,
+                    documentation: Some(HoverDocFormat::Markdown),
+                },
+                range,
+            )
+            .unwrap()
+            .unwrap();
+        expect.assert_eq(hover.info.markup.as_str())
+    }
+
+    fn check_hover_range_no_results(ra_fixture: &str) {
+        let (analysis, range) = fixture::range(ra_fixture);
+        let hover = analysis
+            .hover(
+                &HoverConfig {
+                    links_in_hover: false,
+                    documentation: Some(HoverDocFormat::Markdown),
+                },
+                range,
+            )
+            .unwrap();
+        assert!(hover.is_none());
     }
 
     #[test]
@@ -1104,7 +1228,9 @@ fn main() {
     #[test]
     fn hover_for_param_with_multiple_traits() {
         check(
-            r#"trait Deref {
+            r#"
+            //- minicore: sized
+            trait Deref {
                 type Target: ?Sized;
             }
             trait DerefMut {
@@ -1132,7 +1258,7 @@ impl Thing {
 }
 
 fn main() { let foo_$0test = Thing::new(); }
-            "#,
+"#,
             expect![[r#"
                 *foo_test*
 
@@ -1502,7 +1628,7 @@ fn foo() {
             fn foo() {
                 format!("hel$0lo {}", 0);
             }
-            "#,
+"#,
         );
     }
 
@@ -1610,7 +1736,7 @@ extern crate st$0d;
 //!
 //! Printed?
 //! abc123
-            "#,
+"#,
             expect![[r#"
                 *std*
 
@@ -1635,7 +1761,7 @@ extern crate std as ab$0c;
 //!
 //! Printed?
 //! abc123
-            "#,
+"#,
             expect![[r#"
                 *abc*
 
@@ -1780,334 +1906,6 @@ fn foo() { let bar = Ba$0r; }
     }
 
     #[test]
-    fn test_hover_path_link() {
-        check(
-            r#"
-pub struct Foo;
-/// [Foo](struct.Foo.html)
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [Foo](https://docs.rs/test/*/test/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_path_link_no_strip() {
-        check(
-            r#"
-pub struct Foo;
-/// [struct Foo](struct.Foo.html)
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [struct Foo](https://docs.rs/test/*/test/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_path_link_field() {
-        // FIXME: Should be
-        //  [Foo](https://docs.rs/test/*/test/struct.Foo.html)
-        check(
-            r#"
-pub struct Foo;
-pub struct Bar {
-    /// [Foo](struct.Foo.html)
-    fie$0ld: ()
-}
-"#,
-            expect![[r#"
-                *field*
-
-                ```rust
-                test::Bar
-                ```
-
-                ```rust
-                field: ()
-                ```
-
-                ---
-
-                [Foo](struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_intra_link() {
-        check(
-            r#"
-pub mod foo {
-    pub struct Foo;
-}
-/// [Foo](foo::Foo)
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [Foo](https://docs.rs/test/*/test/foo/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_intra_link_html_root_url() {
-        check(
-            r#"
-#![doc(arbitrary_attribute = "test", html_root_url = "https:/example.com", arbitrary_attribute2)]
-
-pub mod foo {
-    pub struct Foo;
-}
-/// [Foo](foo::Foo)
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [Foo](https://example.com/test/foo/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_intra_link_shortlink() {
-        check(
-            r#"
-pub struct Foo;
-/// [Foo]
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [Foo](https://docs.rs/test/*/test/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_intra_link_shortlink_code() {
-        check(
-            r#"
-pub struct Foo;
-/// [`Foo`]
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [`Foo`](https://docs.rs/test/*/test/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_intra_link_namespaced() {
-        check(
-            r#"
-pub struct Foo;
-fn Foo() {}
-/// [Foo()]
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [Foo](https://docs.rs/test/*/test/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_intra_link_shortlink_namspaced_code() {
-        check(
-            r#"
-pub struct Foo;
-/// [`struct Foo`]
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [`Foo`](https://docs.rs/test/*/test/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_intra_link_shortlink_namspaced_code_with_at() {
-        check(
-            r#"
-pub struct Foo;
-/// [`struct@Foo`]
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [`Foo`](https://docs.rs/test/*/test/struct.Foo.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_hover_intra_link_reference() {
-        check(
-            r#"
-pub struct Foo;
-/// [my Foo][foo]
-///
-/// [foo]: Foo
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [my Foo](https://docs.rs/test/*/test/struct.Foo.html)
-            "#]],
-        );
-    }
-    #[test]
-    fn test_hover_intra_link_reference_to_trait_method() {
-        check(
-            r#"
-pub trait Foo {
-    fn buzz() -> usize;
-}
-/// [Foo][buzz]
-///
-/// [buzz]: Foo::buzz
-pub struct B$0ar
-"#,
-            expect![[r#"
-                *Bar*
-
-                ```rust
-                test
-                ```
-
-                ```rust
-                pub struct Bar
-                ```
-
-                ---
-
-                [Foo](https://docs.rs/test/*/test/trait.Foo.html#tymethod.buzz)
-            "#]],
-        );
-    }
-
-    #[test]
     fn test_hover_external_url() {
         check(
             r#"
@@ -2156,60 +1954,6 @@ pub struct B$0ar
                 ---
 
                 [baz](Baz)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_doc_links_enum_variant() {
-        check(
-            r#"
-enum E {
-    /// [E]
-    V$0 { field: i32 }
-}
-"#,
-            expect![[r#"
-                *V*
-
-                ```rust
-                test::E
-                ```
-
-                ```rust
-                V { field: i32 }
-                ```
-
-                ---
-
-                [E](https://docs.rs/test/*/test/enum.E.html)
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_doc_links_field() {
-        check(
-            r#"
-struct S {
-    /// [`S`]
-    field$0: i32
-}
-"#,
-            expect![[r#"
-                *field*
-
-                ```rust
-                test::S
-                ```
-
-                ```rust
-                field: i32
-                ```
-
-                ---
-
-                [`S`](https://docs.rs/test/*/test/struct.S.html)
             "#]],
         );
     }
@@ -2536,7 +2280,7 @@ mod tests$0 {
 struct S{ f1: u32 }
 
 fn main() { let s$0t = S{ f1:0 }; }
-            "#,
+"#,
             expect![[r#"
                 [
                     GoToType(
@@ -2615,7 +2359,7 @@ struct Arg(u32);
 struct S<T>{ f1: T }
 
 fn main() { let s$0t = S{ f1: S{ f1: Arg(0) } }; }
-            "#,
+"#,
             expect![[r#"
                 [
                     GoToType(
@@ -2804,7 +2548,7 @@ trait Bar {}
 fn foo() -> impl Foo + Bar {}
 
 fn main() { let s$0t = foo(); }
-            "#,
+"#,
             expect![[r#"
                 [
                     GoToType(
@@ -3029,8 +2773,8 @@ fn foo() {
                                     file_id: FileId(
                                         1,
                                     ),
-                                    full_range: 251..433,
-                                    focus_range: 290..296,
+                                    full_range: 254..436,
+                                    focus_range: 293..299,
                                     name: "Future",
                                     kind: Trait,
                                     description: "pub trait Future",
@@ -3237,7 +2981,7 @@ struct B<T> {}
 struct S {}
 
 fn foo(a$0rg: &impl ImplTrait<B<dyn DynTrait<B<S>>>>) {}
-            "#,
+"#,
             expect![[r#"
                 [
                     GoToType(
@@ -3677,17 +3421,17 @@ fn foo() {
     fn hover_type_param() {
         check(
             r#"
+//- minicore: sized
 struct Foo<T>(T);
 trait Copy {}
 trait Clone {}
-trait Sized {}
 impl<T: Copy + Clone> Foo<T$0> where T: Sized {}
 "#,
             expect![[r#"
                 *T*
 
                 ```rust
-                T: Copy + Clone + Sized
+                T: Copy + Clone
                 ```
             "#]],
         );
@@ -3717,6 +3461,26 @@ impl<T: 'static> Foo<T$0> {}
                 T
                 ```
                 "#]],
+        );
+    }
+
+    #[test]
+    fn hover_type_param_not_sized() {
+        check(
+            r#"
+//- minicore: sized
+struct Foo<T>(T);
+trait Copy {}
+trait Clone {}
+impl<T: Copy + Clone> Foo<T$0> where T: ?Sized {}
+"#,
+            expect![[r#"
+                *T*
+
+                ```rust
+                T: Copy + Clone + ?Sized
+                ```
+            "#]],
         );
     }
 
@@ -4033,7 +3797,7 @@ mod string {
     /// This is `alloc::String`.
     pub struct String;
 }
-            "#,
+"#,
             expect![[r#"
                 *String*
 
@@ -4152,7 +3916,7 @@ pub fn foo() {}
 //- /lib.rs crate:main.rs deps:foo
 #[fo$0o::bar()]
 struct Foo;
-            "#,
+"#,
             expect![[r#"
                 *foo*
 
@@ -4161,5 +3925,336 @@ struct Foo;
                 ```
             "#]],
         )
+    }
+
+    #[test]
+    fn hover_rename() {
+        check(
+            r#"
+use self as foo$0;
+"#,
+            expect![[r#"
+                *foo*
+
+                ```rust
+                extern crate test
+                ```
+            "#]],
+        );
+        check(
+            r#"
+mod bar {}
+use bar::{self as foo$0};
+"#,
+            expect![[r#"
+                *foo*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                mod bar
+                ```
+            "#]],
+        );
+        check(
+            r#"
+mod bar {
+    use super as foo$0;
+}
+"#,
+            expect![[r#"
+                *foo*
+
+                ```rust
+                extern crate test
+                ```
+            "#]],
+        );
+        check(
+            r#"
+use crate as foo$0;
+"#,
+            expect![[r#"
+                *foo*
+
+                ```rust
+                extern crate test
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_derive_input() {
+        check(
+            r#"
+#[rustc_builtin_macro]
+pub macro Copy {}
+#[derive(Copy$0)]
+struct Foo;
+"#,
+            expect![[r#"
+                *Copy*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                pub macro Copy
+                ```
+            "#]],
+        );
+        check(
+            r#"
+mod foo {
+    #[rustc_builtin_macro]
+    pub macro Copy {}
+}
+#[derive(foo::Copy$0)]
+struct Foo;
+"#,
+            expect![[r#"
+                *Copy*
+
+                ```rust
+                test
+                ```
+
+                ```rust
+                pub macro Copy
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_range_math() {
+        check_hover_range(
+            r#"
+fn f() { let expr = $01 + 2 * 3$0 }
+"#,
+            expect![[r#"
+            ```rust
+            i32
+            ```"#]],
+        );
+
+        check_hover_range(
+            r#"
+fn f() { let expr = 1 $0+ 2 * $03 }
+"#,
+            expect![[r#"
+            ```rust
+            i32
+            ```"#]],
+        );
+
+        check_hover_range(
+            r#"
+fn f() { let expr = 1 + $02 * 3$0 }
+"#,
+            expect![[r#"
+            ```rust
+            i32
+            ```"#]],
+        );
+    }
+
+    #[test]
+    fn hover_range_arrays() {
+        check_hover_range(
+            r#"
+fn f() { let expr = $0[1, 2, 3, 4]$0 }
+"#,
+            expect![[r#"
+            ```rust
+            [i32; 4]
+            ```"#]],
+        );
+
+        check_hover_range(
+            r#"
+fn f() { let expr = [1, 2, $03, 4]$0 }
+"#,
+            expect![[r#"
+            ```rust
+            [i32; 4]
+            ```"#]],
+        );
+
+        check_hover_range(
+            r#"
+fn f() { let expr = [1, 2, $03$0, 4] }
+"#,
+            expect![[r#"
+            ```rust
+            i32
+            ```"#]],
+        );
+    }
+
+    #[test]
+    fn hover_range_functions() {
+        check_hover_range(
+            r#"
+fn f<T>(a: &[T]) { }
+fn b() { $0f$0(&[1, 2, 3, 4, 5]); }
+"#,
+            expect![[r#"
+            ```rust
+            fn f<i32>(&[i32])
+            ```"#]],
+        );
+
+        check_hover_range(
+            r#"
+fn f<T>(a: &[T]) { }
+fn b() { f($0&[1, 2, 3, 4, 5]$0); }
+"#,
+            expect![[r#"
+            ```rust
+            &[i32; 5]
+            ```"#]],
+        );
+    }
+
+    #[test]
+    fn hover_range_shows_nothing_when_invalid() {
+        check_hover_range_no_results(
+            r#"
+fn f<T>(a: &[T]) { }
+fn b()$0 { f(&[1, 2, 3, 4, 5]); }$0
+"#,
+        );
+
+        check_hover_range_no_results(
+            r#"
+fn f<T>$0(a: &[T]) { }
+fn b() { f(&[1, 2, 3,$0 4, 5]); }
+"#,
+        );
+
+        check_hover_range_no_results(
+            r#"
+fn $0f() { let expr = [1, 2, 3, 4]$0 }
+"#,
+        );
+    }
+
+    #[test]
+    fn hover_range_shows_unit_for_statements() {
+        check_hover_range(
+            r#"
+fn f<T>(a: &[T]) { }
+fn b() { $0f(&[1, 2, 3, 4, 5]); }$0
+"#,
+            expect![[r#"
+            ```rust
+            ()
+            ```"#]],
+        );
+
+        check_hover_range(
+            r#"
+fn f() { let expr$0 = $0[1, 2, 3, 4] }
+"#,
+            expect![[r#"
+            ```rust
+            ()
+            ```"#]],
+        );
+    }
+
+    #[test]
+    fn hover_range_for_pat() {
+        check_hover_range(
+            r#"
+fn foo() {
+    let $0x$0 = 0;
+}
+"#,
+            expect![[r#"
+                ```rust
+                i32
+                ```"#]],
+        );
+
+        check_hover_range(
+            r#"
+fn foo() {
+    let $0x$0 = "";
+}
+"#,
+            expect![[r#"
+                ```rust
+                &str
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn hover_range_shows_coercions_if_applicable_expr() {
+        check_hover_range(
+            r#"
+fn foo() {
+    let x: &u32 = $0&&&&&0$0;
+}
+"#,
+            expect![[r#"
+                ```text
+                Type:       &&&&&u32
+                Coerced to:     &u32
+                ```
+            "#]],
+        );
+        check_hover_range(
+            r#"
+fn foo() {
+    let x: *const u32 = $0&0$0;
+}
+"#,
+            expect![[r#"
+                ```text
+                Type:             &u32
+                Coerced to: *const u32
+                ```
+            "#]],
+        );
+    }
+
+    #[test]
+    fn hover_range_shows_type_actions() {
+        check_actions(
+            r#"
+struct Foo;
+fn foo() {
+    let x: &Foo = $0&&&&&Foo$0;
+}
+"#,
+            expect![[r#"
+                [
+                    GoToType(
+                        [
+                            HoverGotoTypeData {
+                                mod_path: "test::Foo",
+                                nav: NavigationTarget {
+                                    file_id: FileId(
+                                        0,
+                                    ),
+                                    full_range: 0..11,
+                                    focus_range: 7..10,
+                                    name: "Foo",
+                                    kind: Struct,
+                                    description: "struct Foo",
+                                },
+                            },
+                        ],
+                    ),
+                ]
+            "#]],
+        );
     }
 }

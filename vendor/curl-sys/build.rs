@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-changed=curl");
     let host = env::var("HOST").unwrap();
     let target = env::var("TARGET").unwrap();
     let windows = target.contains("windows");
@@ -63,6 +64,7 @@ fn main() {
     println!("cargo:root={}", dst.display());
     println!("cargo:include={}", include.display());
     println!("cargo:static=1");
+    println!("cargo:rustc-cfg=libcurl_vendored");
     fs::create_dir_all(include.join("curl")).unwrap();
 
     for header in [
@@ -109,7 +111,6 @@ fn main() {
         .include("curl/lib")
         .include("curl/include")
         .define("BUILDING_LIBCURL", None)
-        .define("CURL_DISABLE_CRYPTO_AUTH", None)
         .define("CURL_DISABLE_DICT", None)
         .define("CURL_DISABLE_GOPHER", None)
         .define("CURL_DISABLE_IMAP", None)
@@ -127,12 +128,14 @@ fn main() {
         .define("HAVE_ASSERT_H", None)
         .define("OS", "\"unknown\"") // TODO
         .define("HAVE_ZLIB_H", None)
+        .define("HAVE_LONGLONG", None)
         .define("HAVE_LIBZ", None)
         .define("HAVE_BOOL_T", None)
         .define("HAVE_STDBOOL_H", None)
         .file("curl/lib/asyn-thread.c")
         .file("curl/lib/altsvc.c")
         .file("curl/lib/base64.c")
+        .file("curl/lib/bufref.c")
         .file("curl/lib/conncache.c")
         .file("curl/lib/connect.c")
         .file("curl/lib/content_encoding.c")
@@ -154,6 +157,7 @@ fn main() {
         .file("curl/lib/getenv.c")
         .file("curl/lib/getinfo.c")
         .file("curl/lib/hash.c")
+        .file("curl/lib/hmac.c")
         .file("curl/lib/hostasyn.c")
         .file("curl/lib/hostcheck.c")
         .file("curl/lib/hostip.c")
@@ -161,12 +165,15 @@ fn main() {
         .file("curl/lib/hsts.c")
         .file("curl/lib/http.c")
         .file("curl/lib/http2.c")
+        .file("curl/lib/http_aws_sigv4.c")
         .file("curl/lib/http_chunks.c")
+        .file("curl/lib/http_digest.c")
         .file("curl/lib/http_proxy.c")
         .file("curl/lib/if2ip.c")
         .file("curl/lib/inet_ntop.c")
         .file("curl/lib/inet_pton.c")
         .file("curl/lib/llist.c")
+        .file("curl/lib/md5.c")
         .file("curl/lib/mime.c")
         .file("curl/lib/mprintf.c")
         .file("curl/lib/mqtt.c")
@@ -180,6 +187,7 @@ fn main() {
         .file("curl/lib/select.c")
         .file("curl/lib/sendf.c")
         .file("curl/lib/setopt.c")
+        .file("curl/lib/sha256.c")
         .file("curl/lib/share.c")
         .file("curl/lib/slist.c")
         .file("curl/lib/socks.c")
@@ -196,6 +204,8 @@ fn main() {
         .file("curl/lib/url.c")
         .file("curl/lib/urlapi.c")
         .file("curl/lib/version.c")
+        .file("curl/lib/vauth/digest.c")
+        .file("curl/lib/vauth/vauth.c")
         .file("curl/lib/vtls/keylog.c")
         .file("curl/lib/vtls/vtls.c")
         .file("curl/lib/warnless.c")
@@ -253,15 +263,21 @@ fn main() {
         }
     } else if cfg!(feature = "ssl") {
         if windows {
+            // For windows, spnego feature is auto on in case ssl feature is on.
+            // Please see definition of USE_SPNEGO in curl_setup.h for more info.
             cfg.define("USE_WINDOWS_SSPI", None)
                 .define("USE_SCHANNEL", None)
+                .file("curl/lib/http_negotiate.c")
                 .file("curl/lib/x509asn1.c")
                 .file("curl/lib/curl_sspi.c")
                 .file("curl/lib/socks_sspi.c")
+                .file("curl/lib/vauth/spnego_sspi.c")
+                .file("curl/lib/vauth/vauth.c")
                 .file("curl/lib/vtls/schannel.c")
                 .file("curl/lib/vtls/schannel_verify.c");
         } else if target.contains("-apple-") {
             cfg.define("USE_SECTRANSP", None)
+                .file("curl/lib/x509asn1.c")
                 .file("curl/lib/vtls/sectransp.c");
             if xcode_major_version().map_or(true, |v| v >= 9) {
                 // On earlier Xcode versions (<9), defining HAVE_BUILTIN_AVAILABLE
@@ -287,8 +303,10 @@ fn main() {
             .define("USE_THREADS_WIN32", None)
             .define("HAVE_IOCTLSOCKET_FIONBIO", None)
             .define("USE_WINSOCK", None)
+            .file("curl/lib/bufref.c")
             .file("curl/lib/system_win32.c")
             .file("curl/lib/version_win32.c")
+            .file("curl/lib/vauth/digest_sspi.c")
             .file("curl/lib/curl_multibyte.c");
 
         if cfg!(feature = "spnego") {

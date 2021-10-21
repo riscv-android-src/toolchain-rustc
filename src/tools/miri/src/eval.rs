@@ -138,6 +138,12 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     EnvVars::init(&mut ecx, config.excluded_env_vars)?;
     MemoryExtra::init_extern_statics(&mut ecx)?;
 
+    // Make sure we have MIR. We check MIR for some stable monomorphic function in libcore.
+    let sentinel = ecx.resolve_path(&["core", "ascii", "escape_default"]);
+    if !tcx.is_mir_available(sentinel.def.def_id()) {
+        tcx.sess.fatal("the current sysroot was built without `-Zalways-encode-mir`. Use `cargo miri setup` to prepare a sysroot that is suitable for Miri.");
+    }
+
     // Setup first stack-frame
     let main_instance = ty::Instance::mono(tcx, main_id);
     let main_mir = ecx.load_mir(main_instance.def, None)?;
@@ -300,10 +306,20 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
     match res {
         Ok(return_code) => {
             if !ignore_leaks {
+                // Check for thread leaks.
+                if !ecx.have_all_terminated() {
+                    tcx.sess.err(
+                        "the main thread terminated without waiting for all remaining threads",
+                    );
+                    tcx.sess.note_without_error("pass `-Zmiri-ignore-leaks` to disable this check");
+                    return None;
+                }
+                // Check for memory leaks.
                 info!("Additonal static roots: {:?}", ecx.machine.static_roots);
                 let leaks = ecx.memory.leak_report(&ecx.machine.static_roots);
                 if leaks != 0 {
                     tcx.sess.err("the evaluated program leaked memory");
+                    tcx.sess.note_without_error("pass `-Zmiri-ignore-leaks` to disable this check");
                     // Ignore the provided return code - let the reported error
                     // determine the return code.
                     return None;

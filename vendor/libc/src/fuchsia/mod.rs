@@ -89,6 +89,8 @@ pub type rlim_t = ::c_ulonglong;
 pub type c_long = i64;
 pub type c_ulong = u64;
 
+pub type zx_status_t = i32;
+
 // FIXME: why are these uninhabited types? that seems... wrong?
 // Presumably these should be `()` or an `extern type` (when that stabilizes).
 #[cfg_attr(feature = "extra_traits", derive(Debug))]
@@ -3158,7 +3160,7 @@ f! {
         return
     }
 
-    pub fn FD_ISSET(fd: ::c_int, set: *mut fd_set) -> bool {
+    pub fn FD_ISSET(fd: ::c_int, set: *const fd_set) -> bool {
         let fd = fd as usize;
         let size = ::mem::size_of_val(&(*set).fds_bits[0]) * 8;
         return ((*set).fds_bits[fd / size] & (1 << (fd % size))) != 0
@@ -4228,6 +4230,9 @@ extern "C" {
         >,
         data: *mut ::c_void,
     ) -> ::c_int;
+
+    pub fn zx_cprng_draw(buffer: *mut ::c_void, buffer_size: ::size_t);
+    pub fn zx_cprng_add_entropy(buffer: *const ::c_void, buffer_size: ::size_t) -> ::zx_status_t;
 }
 
 cfg_if! {

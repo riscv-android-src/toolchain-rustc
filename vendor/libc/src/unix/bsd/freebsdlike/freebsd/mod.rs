@@ -10,7 +10,6 @@ pub type fsblkcnt_t = u64;
 pub type fsfilcnt_t = u64;
 pub type idtype_t = ::c_uint;
 
-pub type key_t = ::c_long;
 pub type msglen_t = ::c_ulong;
 pub type msgqnum_t = ::c_ulong;
 
@@ -179,6 +178,42 @@ s! {
         b_waiters: ::c_int,
         b_refcount: ::c_int,
         b_destroying: ::c_int,
+    }
+
+    pub struct kinfo_vmentry {
+        pub kve_structsize: ::c_int,
+        pub kve_type: ::c_int,
+        pub kve_start: u64,
+        pub kve_end: u64,
+        pub kve_offset: u64,
+        pub kve_vn_fileid: u64,
+        #[cfg(not(freebsd11))]
+        pub kve_vn_fsid_freebsd11: u32,
+        #[cfg(freebsd11)]
+        pub kve_vn_fsid: u32,
+        pub kve_flags: ::c_int,
+        pub kve_resident: ::c_int,
+        pub kve_private_resident: ::c_int,
+        pub kve_protection: ::c_int,
+        pub kve_ref_count: ::c_int,
+        pub kve_shadow_count: ::c_int,
+        pub kve_vn_type: ::c_int,
+        pub kve_vn_size: u64,
+        #[cfg(not(freebsd11))]
+        pub kve_vn_rdev_freebsd11: u32,
+        #[cfg(freebsd11)]
+        pub kve_vn_rdev: u32,
+        pub kve_vn_mode: u16,
+        pub kve_status: u16,
+        #[cfg(not(freebsd11))]
+        pub kve_vn_fsid: u64,
+        #[cfg(not(freebsd11))]
+        pub kve_vn_rdev: u64,
+        #[cfg(not(freebsd11))]
+        _kve_is_spare: [::c_int; 8],
+        #[cfg(freebsd11)]
+        _kve_is_spare: [::c_int; 12],
+        pub kve_path: [[::c_char; 32]; 32],
     }
 }
 
@@ -507,6 +542,7 @@ pub const Q_GETQUOTA: ::c_int = 0x700;
 pub const Q_SETQUOTA: ::c_int = 0x800;
 
 pub const MAP_GUARD: ::c_int = 0x00002000;
+pub const MAP_EXCL: ::c_int = 0x00004000;
 pub const MAP_ALIGNED_SUPER: ::c_int = 1 << 24;
 
 pub const POSIX_FADV_NORMAL: ::c_int = 0;
@@ -1139,22 +1175,8 @@ pub const NET_RT_IFMALIST: ::c_int = 4;
 pub const NET_RT_IFLISTL: ::c_int = 5;
 
 // System V IPC
-pub const IPC_PRIVATE: ::key_t = 0;
-pub const IPC_CREAT: ::c_int = 0o1000;
-pub const IPC_EXCL: ::c_int = 0o2000;
-pub const IPC_NOWAIT: ::c_int = 0o4000;
-pub const IPC_RMID: ::c_int = 0;
-pub const IPC_SET: ::c_int = 1;
-pub const IPC_STAT: ::c_int = 2;
 pub const IPC_INFO: ::c_int = 3;
-pub const IPC_R: ::c_int = 0o400;
-pub const IPC_W: ::c_int = 0o200;
-pub const IPC_M: ::c_int = 0o10000;
 pub const MSG_NOERROR: ::c_int = 0o10000;
-pub const SHM_RDONLY: ::c_int = 0o10000;
-pub const SHM_RND: ::c_int = 0o20000;
-pub const SHM_R: ::c_int = 0o400;
-pub const SHM_W: ::c_int = 0o200;
 pub const SHM_LOCK: ::c_int = 11;
 pub const SHM_UNLOCK: ::c_int = 12;
 pub const SHM_STAT: ::c_int = 13;
@@ -1300,6 +1322,8 @@ pub const RFLINUXTHPN: ::c_int = 65536;
 pub const RFTSIGZMB: ::c_int = 524288;
 pub const RFSPAWN: ::c_int = 2147483648;
 
+pub const MALLOCX_ZERO: ::c_int = 0x40;
+
 const_fn! {
     {const} fn _ALIGN(p: usize) -> usize {
         (p + _ALIGNBYTES) & !_ALIGNBYTES
@@ -1337,6 +1361,18 @@ f! {
     pub {const} fn CMSG_SPACE(length: ::c_uint) -> ::c_uint {
         (_ALIGN(::mem::size_of::<::cmsghdr>()) + _ALIGN(length as usize))
             as ::c_uint
+    }
+
+    pub fn MALLOCX_ALIGN(lg: ::c_uint) -> ::c_int {
+        ffsl(lg as ::c_long - 1)
+    }
+
+    pub {const} fn MALLOCX_TCACHE(tc: ::c_int) -> ::c_int {
+        (tc + 2) << 8 as ::c_int
+    }
+
+    pub {const} fn MALLOCX_ARENA(a: ::c_int) -> ::c_int {
+        (a + 1) << 20 as ::c_int
     }
 
     pub fn SOCKCREDSIZE(ngrps: usize) -> usize {
@@ -1694,6 +1730,47 @@ extern "C" {
     pub fn cap_rights_contains(big: *const cap_rights_t, little: *const cap_rights_t) -> bool;
 
     pub fn reallocarray(ptr: *mut ::c_void, nmemb: ::size_t, size: ::size_t) -> *mut ::c_void;
+
+    pub fn ffs(value: ::c_int) -> ::c_int;
+    pub fn ffsl(value: ::c_long) -> ::c_int;
+    pub fn ffsll(value: ::c_longlong) -> ::c_int;
+    pub fn fls(value: ::c_int) -> ::c_int;
+    pub fn flsl(value: ::c_long) -> ::c_int;
+    pub fn flsll(value: ::c_longlong) -> ::c_int;
+    pub fn malloc_usable_size(ptr: *const ::c_void) -> ::size_t;
+    pub fn malloc_stats_print(
+        write_cb: unsafe extern "C" fn(*mut ::c_void, *const ::c_char),
+        cbopaque: *mut ::c_void,
+        opt: *const ::c_char,
+    );
+    pub fn mallctl(
+        name: *const ::c_char,
+        oldp: *mut ::c_void,
+        oldlenp: *mut ::size_t,
+        newp: *mut ::c_void,
+        newlen: ::size_t,
+    ) -> ::c_int;
+    pub fn mallctlnametomib(
+        name: *const ::c_char,
+        mibp: *mut ::size_t,
+        miplen: *mut ::size_t,
+    ) -> ::c_int;
+    pub fn mallctlbymib(
+        mib: *const ::size_t,
+        mible: ::size_t,
+        oldp: *mut ::c_void,
+        oldlenp: *mut ::size_t,
+        newp: *mut ::c_void,
+        newlen: ::size_t,
+    ) -> ::c_int;
+    pub fn mallocx(size: ::size_t, flags: ::c_int) -> *mut ::c_void;
+    pub fn rallocx(ptr: *mut ::c_void, size: ::size_t, flags: ::c_int) -> *mut ::c_void;
+    pub fn xallocx(ptr: *mut ::c_void, size: ::size_t, extra: ::size_t, flags: ::c_int)
+        -> ::size_t;
+    pub fn sallocx(ptr: *const ::c_void, flags: ::c_int) -> ::size_t;
+    pub fn dallocx(ptr: *mut ::c_void, flags: ::c_int);
+    pub fn sdallocx(ptr: *mut ::c_void, size: ::size_t, flags: ::c_int);
+    pub fn nallocx(size: ::size_t, flags: ::c_int) -> ::size_t;
 }
 
 #[link(name = "util")]
@@ -1713,6 +1790,11 @@ extern "C" {
         addr: *mut ::sockaddr,
         addrlen: ::c_int,
     ) -> ::c_int;
+
+    pub fn kld_isloaded(name: *const ::c_char) -> ::c_int;
+    pub fn kld_load(name: *const ::c_char) -> ::c_int;
+
+    pub fn kinfo_getvmmap(pid: ::pid_t, cntp: *mut ::c_int) -> *mut kinfo_vmentry;
 }
 
 cfg_if! {

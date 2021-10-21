@@ -1277,6 +1277,8 @@ pub const PTRACE_SETOPTIONS: ::c_int = 0x4200;
 pub const PTRACE_GETEVENTMSG: ::c_int = 0x4201;
 pub const PTRACE_GETSIGINFO: ::c_int = 0x4202;
 pub const PTRACE_SETSIGINFO: ::c_int = 0x4203;
+pub const PTRACE_GETREGSET: ::c_int = 0x4204;
+pub const PTRACE_SETREGSET: ::c_int = 0x4205;
 
 pub const PTRACE_EVENT_STOP: ::c_int = 128;
 
@@ -2879,6 +2881,8 @@ extern "C" {
     pub fn arc4random() -> u32;
     pub fn arc4random_uniform(__upper_bound: u32) -> u32;
     pub fn arc4random_buf(__buf: *mut ::c_void, __n: ::size_t);
+
+    pub fn reallocarray(ptr: *mut ::c_void, nmemb: ::size_t, size: ::size_t) -> *mut ::c_void;
 }
 
 cfg_if! {

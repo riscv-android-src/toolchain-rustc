@@ -76,7 +76,7 @@ fn do_read_manifest(
     if let Some(package) = toml.get("package").or_else(|| toml.get("project")) {
         if let Some(feats) = package.get("cargo-features") {
             bail!(
-                "cargo-features = {} was found in the wrong location, it \
+                "cargo-features = {} was found in the wrong location: it \
                  should be set at the top of Cargo.toml before any tables",
                 toml::to_string(feats).unwrap()
             );
@@ -433,6 +433,7 @@ pub enum U32OrBool {
 pub struct TomlProfile {
     pub opt_level: Option<TomlOptLevel>,
     pub lto: Option<StringOrBool>,
+    pub codegen_backend: Option<InternedString>,
     pub codegen_units: Option<u32>,
     pub debug: Option<U32OrBool>,
     pub split_debuginfo: Option<String>,
@@ -441,11 +442,13 @@ pub struct TomlProfile {
     pub panic: Option<String>,
     pub overflow_checks: Option<bool>,
     pub incremental: Option<bool>,
-    pub package: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
-    pub build_override: Option<Box<TomlProfile>>,
     pub dir_name: Option<InternedString>,
     pub inherits: Option<InternedString>,
     pub strip: Option<StringOrBool>,
+    // These two fields must be last because they are sub-tables, and TOML
+    // requires all non-tables to be listed first.
+    pub package: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
+    pub build_override: Option<Box<TomlProfile>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -491,12 +494,12 @@ impl TomlProfile {
     ) -> CargoResult<()> {
         if let Some(ref profile) = self.build_override {
             features.require(Feature::profile_overrides())?;
-            profile.validate_override("build-override")?;
+            profile.validate_override("build-override", features)?;
         }
         if let Some(ref packages) = self.package {
             features.require(Feature::profile_overrides())?;
             for profile in packages.values() {
-                profile.validate_override("package")?;
+                profile.validate_override("package", features)?;
             }
         }
 
@@ -562,6 +565,18 @@ impl TomlProfile {
         if self.strip.is_some() {
             features.require(Feature::strip())?;
         }
+
+        if let Some(codegen_backend) = &self.codegen_backend {
+            features.require(Feature::codegen_backend())?;
+            if codegen_backend.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+                bail!(
+                    "`profile.{}.codegen-backend` setting of `{}` is not a valid backend name.",
+                    name,
+                    codegen_backend,
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -643,7 +658,7 @@ impl TomlProfile {
         Ok(())
     }
 
-    fn validate_override(&self, which: &str) -> CargoResult<()> {
+    fn validate_override(&self, which: &str, features: &Features) -> CargoResult<()> {
         if self.package.is_some() {
             bail!("package-specific profiles cannot be nested");
         }
@@ -659,6 +674,9 @@ impl TomlProfile {
         if self.rpath.is_some() {
             bail!("`rpath` may not be specified in a `{}` profile", which)
         }
+        if self.codegen_backend.is_some() {
+            features.require(Feature::codegen_backend())?;
+        }
         Ok(())
     }
 
@@ -670,6 +688,10 @@ impl TomlProfile {
 
         if let Some(v) = &profile.lto {
             self.lto = Some(v.clone());
+        }
+
+        if let Some(v) = profile.codegen_backend {
+            self.codegen_backend = Some(v);
         }
 
         if let Some(v) = profile.codegen_units {
@@ -741,7 +763,9 @@ impl TomlProfile {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+/// A StringOrVec can be parsed from either a TOML string or array,
+/// but is always stored as a vector.
+#[derive(Clone, Debug, Serialize, Eq, PartialEq, PartialOrd, Ord)]
 pub struct StringOrVec(Vec<String>);
 
 impl<'de> de::Deserialize<'de> for StringOrVec {
@@ -775,6 +799,12 @@ impl<'de> de::Deserialize<'de> for StringOrVec {
         }
 
         deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl StringOrVec {
+    pub fn iter<'a>(&'a self) -> std::slice::Iter<'a, String> {
+        self.0.iter()
     }
 }
 
@@ -1123,46 +1153,25 @@ impl TomlManifest {
         }
 
         let rust_version = if let Some(rust_version) = &project.rust_version {
-            if features.require(Feature::rust_version()).is_err() {
-                let mut msg =
-                    "`rust-version` is not supported on this version of Cargo and will be ignored"
-                        .to_string();
-                if config.nightly_features_allowed {
-                    msg.push_str(
-                        "\n\n\
-                        consider adding `cargo-features = [\"rust-version\"]` to the manifest",
-                    );
-                } else {
-                    msg.push_str(
-                        "\n\n\
-                        this Cargo does not support nightly features, but if you\n\
-                        switch to nightly channel you can add\n\
-                        `cargo-features = [\"rust-version\"]` to enable this feature",
-                    );
+            let req = match semver::VersionReq::parse(rust_version) {
+                // Exclude semver operators like `^` and pre-release identifiers
+                Ok(req) if rust_version.chars().all(|c| c.is_ascii_digit() || c == '.') => req,
+                _ => bail!("`rust-version` must be a value like \"1.32\""),
+            };
+            if let Some(first_version) = edition.first_version() {
+                let unsupported =
+                    semver::Version::new(first_version.major, first_version.minor - 1, 9999);
+                if req.matches(&unsupported) {
+                    bail!(
+                        "rust-version {} is older than first version ({}) required by \
+                            the specified edition ({})",
+                        rust_version,
+                        first_version,
+                        edition,
+                    )
                 }
-                warnings.push(msg);
-                None
-            } else {
-                let req = match semver::VersionReq::parse(rust_version) {
-                    // Exclude semver operators like `^` and pre-release identifiers
-                    Ok(req) if rust_version.chars().all(|c| c.is_ascii_digit() || c == '.') => req,
-                    _ => bail!("`rust-version` must be a value like \"1.32\""),
-                };
-                if let Some(first_version) = edition.first_version() {
-                    let unsupported =
-                        semver::Version::new(first_version.major, first_version.minor - 1, 9999);
-                    if req.matches(&unsupported) {
-                        bail!(
-                            "rust-version {} is older than first version ({}) required by \
-                                the specified edition ({})",
-                            rust_version,
-                            first_version,
-                            edition,
-                        )
-                    }
-                }
-                Some(rust_version.clone())
             }
+            Some(rust_version.clone())
         } else {
             None
         };
@@ -1753,11 +1762,14 @@ impl<P: ResolveToPath> DetailedTomlDependency<P> {
         kind: Option<DepKind>,
     ) -> CargoResult<Dependency> {
         if self.version.is_none() && self.path.is_none() && self.git.is_none() {
-            bail!(
+            let msg = format!(
                 "dependency ({}) specified without \
-                 providing a local path, Git repository, or version to use.",
+                 providing a local path, Git repository, or \
+                 version to use. This will be considered an \
+                 error in future versions",
                 name_in_toml
             );
+            cx.warnings.push(msg);
         }
 
         if let Some(version) = &self.version {
@@ -1962,6 +1974,8 @@ struct TomlTarget {
     crate_type2: Option<Vec<String>>,
 
     path: Option<PathValue>,
+    // Note that `filename` is used for the cargo-feature `different_binary_name`
+    filename: Option<String>,
     test: Option<bool>,
     doctest: Option<bool>,
     bench: Option<bool>,

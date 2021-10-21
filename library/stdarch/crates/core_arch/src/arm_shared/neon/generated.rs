@@ -2086,7 +2086,7 @@ pub unsafe fn vcreate_p16(a: u64) -> poly16x4_t {
 
 /// Insert vector element from another vector element
 #[inline]
-#[target_feature(enable = "neon,crypto")]
+#[target_feature(enable = "neon,aes")]
 #[cfg_attr(target_arch = "arm", target_feature(enable = "crypto,v8"))]
 #[cfg_attr(all(test, target_arch = "arm"), assert_instr(nop))]
 #[cfg_attr(all(test, target_arch = "aarch64"), assert_instr(nop))]
@@ -2407,7 +2407,13 @@ vcvtq_n_u32_f32_(a, N)
 #[cfg_attr(all(test, target_arch = "arm"), assert_instr(vcvt))]
 #[cfg_attr(all(test, target_arch = "aarch64"), assert_instr(fcvtzs))]
 pub unsafe fn vcvt_s32_f32(a: float32x2_t) -> int32x2_t {
-    simd_cast(a)
+    #[allow(improper_ctypes)]
+    extern "C" {
+        #[cfg_attr(target_arch = "arm", link_name = "llvm.fptosi.sat.v2i32.v2f32")]
+        #[cfg_attr(target_arch = "aarch64", link_name = "llvm.fptosi.sat.v2i32.v2f32")]
+        fn vcvt_s32_f32_(a: float32x2_t) -> int32x2_t;
+    }
+vcvt_s32_f32_(a)
 }
 
 /// Floating-point convert to signed fixed-point, rounding toward zero
@@ -2417,7 +2423,13 @@ pub unsafe fn vcvt_s32_f32(a: float32x2_t) -> int32x2_t {
 #[cfg_attr(all(test, target_arch = "arm"), assert_instr(vcvt))]
 #[cfg_attr(all(test, target_arch = "aarch64"), assert_instr(fcvtzs))]
 pub unsafe fn vcvtq_s32_f32(a: float32x4_t) -> int32x4_t {
-    simd_cast(a)
+    #[allow(improper_ctypes)]
+    extern "C" {
+        #[cfg_attr(target_arch = "arm", link_name = "llvm.fptosi.sat.v4i32.v4f32")]
+        #[cfg_attr(target_arch = "aarch64", link_name = "llvm.fptosi.sat.v4i32.v4f32")]
+        fn vcvtq_s32_f32_(a: float32x4_t) -> int32x4_t;
+    }
+vcvtq_s32_f32_(a)
 }
 
 /// Floating-point convert to unsigned fixed-point, rounding toward zero
@@ -2427,7 +2439,13 @@ pub unsafe fn vcvtq_s32_f32(a: float32x4_t) -> int32x4_t {
 #[cfg_attr(all(test, target_arch = "arm"), assert_instr(vcvt))]
 #[cfg_attr(all(test, target_arch = "aarch64"), assert_instr(fcvtzu))]
 pub unsafe fn vcvt_u32_f32(a: float32x2_t) -> uint32x2_t {
-    simd_cast(a)
+    #[allow(improper_ctypes)]
+    extern "C" {
+        #[cfg_attr(target_arch = "arm", link_name = "llvm.fptoui.sat.v2i32.v2f32")]
+        #[cfg_attr(target_arch = "aarch64", link_name = "llvm.fptoui.sat.v2i32.v2f32")]
+        fn vcvt_u32_f32_(a: float32x2_t) -> uint32x2_t;
+    }
+vcvt_u32_f32_(a)
 }
 
 /// Floating-point convert to unsigned fixed-point, rounding toward zero
@@ -2437,7 +2455,13 @@ pub unsafe fn vcvt_u32_f32(a: float32x2_t) -> uint32x2_t {
 #[cfg_attr(all(test, target_arch = "arm"), assert_instr(vcvt))]
 #[cfg_attr(all(test, target_arch = "aarch64"), assert_instr(fcvtzu))]
 pub unsafe fn vcvtq_u32_f32(a: float32x4_t) -> uint32x4_t {
-    simd_cast(a)
+    #[allow(improper_ctypes)]
+    extern "C" {
+        #[cfg_attr(target_arch = "arm", link_name = "llvm.fptoui.sat.v4i32.v4f32")]
+        #[cfg_attr(target_arch = "aarch64", link_name = "llvm.fptoui.sat.v4i32.v4f32")]
+        fn vcvtq_u32_f32_(a: float32x4_t) -> uint32x4_t;
+    }
+vcvtq_u32_f32_(a)
 }
 
 /// Set all vector lanes to the same value
@@ -13212,7 +13236,7 @@ pub unsafe fn vset_lane_p16<const LANE: i32>(a: p16, b: poly16x4_t) -> poly16x4_
 
 /// Insert vector element from another vector element
 #[inline]
-#[target_feature(enable = "neon,crypto")]
+#[target_feature(enable = "neon,aes")]
 #[cfg_attr(target_arch = "arm", target_feature(enable = "crypto,v8"))]
 #[cfg_attr(all(test, target_arch = "arm"), assert_instr(nop, LANE = 0))]
 #[cfg_attr(all(test, target_arch = "aarch64"), assert_instr(nop, LANE = 0))]
@@ -13344,7 +13368,7 @@ pub unsafe fn vsetq_lane_p16<const LANE: i32>(a: p16, b: poly16x8_t) -> poly16x8
 
 /// Insert vector element from another vector element
 #[inline]
-#[target_feature(enable = "neon,crypto")]
+#[target_feature(enable = "neon,aes")]
 #[cfg_attr(target_arch = "arm", target_feature(enable = "crypto,v8"))]
 #[cfg_attr(all(test, target_arch = "arm"), assert_instr(nop, LANE = 0))]
 #[cfg_attr(all(test, target_arch = "aarch64"), assert_instr(nop, LANE = 0))]

@@ -199,53 +199,34 @@
 //! See [this page](implementation/index.html) for details on this crate's design
 //! and implementation.
 //!
-#![doc(html_root_url = "https://docs.rs/sharded-slab/0.1.1")]
+#![doc(html_root_url = "https://docs.rs/sharded-slab/0.1.3")]
 #![warn(missing_debug_implementations, missing_docs, missing_doc_code_examples)]
 
-macro_rules! test_println {
-    ($($arg:tt)*) => {
-        if cfg!(test) && cfg!(slab_print) {
-            if std::thread::panicking() {
-                // getting the thread ID while panicking doesn't seem to play super nicely with loom's
-                // mock lazy_static...
-                println!("[PANIC {:>17}:{:<3}] {}", file!(), line!(), format_args!($($arg)*))
-            } else {
-                println!("[{:?} {:>17}:{:<3}] {}", crate::Tid::<crate::DefaultConfig>::current(), file!(), line!(), format_args!($($arg)*))
-            }
-        }
-    }
-}
+#[macro_use]
+mod macros;
 
-#[cfg(all(test, loom))]
-macro_rules! test_dbg {
-    ($e:expr) => {
-        match $e {
-            e => {
-                test_println!("{} = {:?}", stringify!($e), &e);
-                e
-            }
-        }
-    };
-}
+pub mod implementation;
+pub mod pool;
+
+pub(crate) mod cfg;
+pub(crate) mod sync;
 
 mod clear;
-pub mod implementation;
-mod page;
-pub mod pool;
-pub(crate) mod sync;
-mod tid;
-pub(crate) use tid::Tid;
-pub(crate) mod cfg;
 mod iter;
+mod page;
 mod shard;
-use cfg::CfgPrivate;
+mod tid;
+
 pub use cfg::{Config, DefaultConfig};
 pub use clear::Clear;
 #[doc(inline)]
 pub use pool::Pool;
+
+pub(crate) use tid::Tid;
+
+use cfg::CfgPrivate;
 use shard::Shard;
-use std::ptr;
-use std::{fmt, marker::PhantomData, sync::Arc};
+use std::{fmt, marker::PhantomData, ptr, sync::Arc};
 
 /// A sharded slab.
 ///

@@ -234,6 +234,16 @@ ArrayRef<Builtin::Info> WebAssemblyTargetInfo::getTargetBuiltins() const {
                                              Builtin::FirstTSBuiltin);
 }
 
+void WebAssemblyTargetInfo::adjust(DiagnosticsEngine &Diags,
+                                   LangOptions &Opts) {
+  // If the Atomics feature isn't available, turn off POSIXThreads and
+  // ThreadModel, so that we don't predefine _REENTRANT or __STDCPP_THREADS__.
+  if (!HasAtomics) {
+    Opts.POSIXThreads = false;
+    Opts.setThreadModel(LangOptions::ThreadModelKind::Single);
+  }
+}
+
 void WebAssembly32TargetInfo::getTargetDefines(const LangOptions &Opts,
                                                MacroBuilder &Builder) const {
   WebAssemblyTargetInfo::getTargetDefines(Opts, Builder);

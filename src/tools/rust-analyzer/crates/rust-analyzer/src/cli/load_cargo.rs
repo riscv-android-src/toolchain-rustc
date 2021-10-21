@@ -7,38 +7,44 @@ use crossbeam_channel::{unbounded, Receiver};
 use hir::db::DefDatabase;
 use ide::{AnalysisHost, Change};
 use ide_db::base_db::CrateGraph;
-use project_model::{
-    BuildDataCollector, CargoConfig, ProcMacroClient, ProjectManifest, ProjectWorkspace,
-};
+use proc_macro_api::ProcMacroClient;
+use project_model::{CargoConfig, ProjectManifest, ProjectWorkspace, WorkspaceBuildScripts};
 use vfs::{loader::Handle, AbsPath, AbsPathBuf};
 
-use crate::reload::{ProjectFolders, SourceRootConfig};
+use crate::reload::{load_proc_macro, ProjectFolders, SourceRootConfig};
 
-pub(crate) struct LoadCargoConfig {
-    pub(crate) load_out_dirs_from_check: bool,
-    pub(crate) wrap_rustc: bool,
-    pub(crate) with_proc_macro: bool,
-    pub(crate) prefill_caches: bool,
+// Note: Since this type is used by external tools that use rust-analyzer as a library
+// what otherwise would be `pub(crate)` has to be `pub` here instead.
+pub struct LoadCargoConfig {
+    pub load_out_dirs_from_check: bool,
+    pub with_proc_macro: bool,
+    pub prefill_caches: bool,
 }
 
-pub(crate) fn load_workspace_at(
+// Note: Since this function is used by external tools that use rust-analyzer as a library
+// what otherwise would be `pub(crate)` has to be `pub` here instead.
+pub fn load_workspace_at(
     root: &Path,
     cargo_config: &CargoConfig,
     load_config: &LoadCargoConfig,
     progress: &dyn Fn(String),
 ) -> Result<(AnalysisHost, vfs::Vfs, Option<ProcMacroClient>)> {
     let root = AbsPathBuf::assert(std::env::current_dir()?.join(root));
-    eprintln!("root = {:?}", root);
     let root = ProjectManifest::discover_single(&root)?;
-    eprintln!("root = {:?}", root);
     let workspace = ProjectWorkspace::load(root, cargo_config, progress)?;
 
-    load_workspace(workspace, load_config, progress)
+    load_workspace(workspace, cargo_config, load_config, progress)
 }
 
-fn load_workspace(
-    ws: ProjectWorkspace,
-    config: &LoadCargoConfig,
+// Note: Since this function is used by external tools that use rust-analyzer as a library
+// what otherwise would be `pub(crate)` has to be `pub` here instead.
+//
+// The reason both, `load_workspace_at` and `load_workspace` are `pub` is that some of
+// these tools need access to `ProjectWorkspace`, too, which `load_workspace_at` hides.
+pub fn load_workspace(
+    mut ws: ProjectWorkspace,
+    cargo_config: &CargoConfig,
+    load_config: &LoadCargoConfig,
     progress: &dyn Fn(String),
 ) -> Result<(AnalysisHost, vfs::Vfs, Option<ProcMacroClient>)> {
     let (sender, receiver) = unbounded();
@@ -49,24 +55,21 @@ fn load_workspace(
         Box::new(loader)
     };
 
-    let proc_macro_client = if config.with_proc_macro {
+    let proc_macro_client = if load_config.with_proc_macro {
         let path = AbsPathBuf::assert(std::env::current_exe()?);
         Some(ProcMacroClient::extern_process(path, &["proc-macro"]).unwrap())
     } else {
         None
     };
 
-    let build_data = if config.load_out_dirs_from_check {
-        let mut collector = BuildDataCollector::new(config.wrap_rustc);
-        ws.collect_build_data_configs(&mut collector);
-        Some(collector.collect(progress)?)
+    ws.set_build_scripts(if load_config.load_out_dirs_from_check {
+        ws.run_build_scripts(cargo_config, progress)?
     } else {
-        None
-    };
+        WorkspaceBuildScripts::default()
+    });
 
     let crate_graph = ws.to_crate_graph(
-        build_data.as_ref(),
-        proc_macro_client.as_ref(),
+        &mut |path: &AbsPath| load_proc_macro(proc_macro_client.as_ref(), path),
         &mut |path: &AbsPath| {
             let contents = loader.load_sync(path);
             let path = vfs::VfsPath::from(path.to_path_buf());
@@ -75,7 +78,7 @@ fn load_workspace(
         },
     );
 
-    let project_folders = ProjectFolders::new(&[ws], &[], build_data.as_ref());
+    let project_folders = ProjectFolders::new(&[ws], &[]);
     loader.set_config(vfs::loader::Config {
         load: project_folders.load,
         watch: vec![],
@@ -86,7 +89,7 @@ fn load_workspace(
     let host =
         load_crate_graph(crate_graph, project_folders.source_root_config, &mut vfs, &receiver);
 
-    if config.prefill_caches {
+    if load_config.prefill_caches {
         host.analysis().prime_caches(|_| {})?;
     }
     Ok((host, vfs, proc_macro_client))
@@ -146,10 +149,9 @@ mod tests {
     #[test]
     fn test_loading_rust_analyzer() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
-        let cargo_config = Default::default();
+        let cargo_config = CargoConfig::default();
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: false,
-            wrap_rustc: false,
             with_proc_macro: false,
             prefill_caches: false,
         };

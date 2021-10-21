@@ -3,8 +3,8 @@
 //! `ide` crate.
 
 use std::{
-    io::{Read, Write as _},
-    process::{self, Command, Stdio},
+    io::Write as _,
+    process::{self, Stdio},
 };
 
 use ide::{
@@ -36,7 +36,10 @@ use crate::{
     from_proto,
     global_state::{GlobalState, GlobalStateSnapshot},
     line_index::LineEndings,
-    lsp_ext::{self, InlayHint, InlayHintsParams, ViewCrateGraphParams, WorkspaceSymbolParams},
+    lsp_ext::{
+        self, InlayHint, InlayHintsParams, PositionOrRange, ViewCrateGraphParams,
+        WorkspaceSymbolParams,
+    },
     lsp_utils::all_edits_are_disjoint,
     to_proto, LspError, Result,
 };
@@ -76,12 +79,6 @@ pub(crate) fn handle_analyzer_status(
             .status(file_id)
             .unwrap_or_else(|_| "Analysis retrieval was cancelled".to_owned()),
     );
-    format_to!(buf, "\n\nRequests:\n");
-    let requests = snap.latest_requests.read();
-    for (is_last, r) in requests.iter() {
-        let mark = if is_last { "*" } else { " " };
-        format_to!(buf, "{}{:4} {:<36}{}ms\n", mark, r.id, r.method, r.duration.as_millis());
-    }
     Ok(buf)
 }
 
@@ -135,19 +132,7 @@ pub(crate) fn handle_view_crate_graph(
 ) -> Result<String> {
     let _p = profile::span("handle_view_crate_graph");
     let dot = snap.analysis.view_crate_graph(params.full)??;
-
-    // We shell out to `dot` to render to SVG, as there does not seem to be a pure-Rust renderer.
-    let child = Command::new("dot")
-        .arg("-Tsvg")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("failed to spawn `dot`: {}", err))?;
-    child.stdin.unwrap().write_all(dot.as_bytes())?;
-
-    let mut svg = String::new();
-    child.stdout.unwrap().read_to_string(&mut svg)?;
-    Ok(svg)
+    Ok(dot)
 }
 
 pub(crate) fn handle_expand_macro(
@@ -765,13 +750,8 @@ pub(crate) fn handle_completion(
     };
     let line_index = snap.file_line_index(position.file_id)?;
 
-    let items = to_proto::completion_items(
-        snap.config.insert_replace_support(),
-        completion_config.enable_imports_on_the_fly,
-        &line_index,
-        text_document_position.clone(),
-        items.clone(),
-    );
+    let items =
+        to_proto::completion_items(&snap.config, &line_index, text_document_position, items);
 
     let completion_list = lsp_types::CompletionList { is_incomplete: true, items };
     Ok(Some(completion_list.into()))
@@ -867,22 +847,32 @@ pub(crate) fn handle_signature_help(
 
 pub(crate) fn handle_hover(
     snap: GlobalStateSnapshot,
-    params: lsp_types::HoverParams,
+    params: lsp_ext::HoverParams,
 ) -> Result<Option<lsp_ext::Hover>> {
     let _p = profile::span("handle_hover");
-    let position = from_proto::file_position(&snap, params.text_document_position_params)?;
-    let info = match snap.analysis.hover(&snap.config.hover(), position)? {
+    let range = match params.position {
+        PositionOrRange::Position(position) => Range::new(position, position),
+        PositionOrRange::Range(range) => range,
+    };
+
+    let file_range = from_proto::file_range(&snap, params.text_document, range)?;
+    let info = match snap.analysis.hover(&snap.config.hover(), file_range)? {
         None => return Ok(None),
         Some(info) => info,
     };
-    let line_index = snap.file_line_index(position.file_id)?;
+
+    let line_index = snap.file_line_index(file_range.file_id)?;
     let range = to_proto::range(&line_index, info.range);
     let hover = lsp_ext::Hover {
         hover: lsp_types::Hover {
             contents: HoverContents::Markup(to_proto::markup_content(info.info.markup)),
             range: Some(range),
         },
-        actions: prepare_hover_actions(&snap, &info.info.actions),
+        actions: if snap.config.hover_actions().none() {
+            Vec::new()
+        } else {
+            prepare_hover_actions(&snap, &info.info.actions)
+        },
     };
 
     Ok(Some(hover))
@@ -1188,7 +1178,7 @@ pub(crate) fn handle_document_highlight(
     let position = from_proto::file_position(&snap, params.text_document_position_params)?;
     let line_index = snap.file_line_index(position.file_id)?;
 
-    let refs = match snap.analysis.highlight_related(position)? {
+    let refs = match snap.analysis.highlight_related(snap.config.highlight_related(), position)? {
         None => return Ok(None),
         Some(refs) => refs,
     };
@@ -1490,7 +1480,7 @@ fn show_impl_command_link(
     snap: &GlobalStateSnapshot,
     position: &FilePosition,
 ) -> Option<lsp_ext::CommandLinkGroup> {
-    if snap.config.hover_actions().implementations {
+    if snap.config.hover_actions().implementations && snap.config.client_commands().show_reference {
         if let Some(nav_data) = snap.analysis.goto_implementation(*position).unwrap_or(None) {
             let uri = to_proto::url(snap, position.file_id);
             let line_index = snap.file_line_index(position.file_id).ok()?;
@@ -1516,7 +1506,7 @@ fn show_ref_command_link(
     snap: &GlobalStateSnapshot,
     position: &FilePosition,
 ) -> Option<lsp_ext::CommandLinkGroup> {
-    if snap.config.hover_actions().references {
+    if snap.config.hover_actions().references && snap.config.client_commands().show_reference {
         if let Some(ref_search_res) = snap.analysis.find_all_refs(*position, None).unwrap_or(None) {
             let uri = to_proto::url(snap, position.file_id);
             let line_index = snap.file_line_index(position.file_id).ok()?;
@@ -1546,35 +1536,47 @@ fn runnable_action_links(
     snap: &GlobalStateSnapshot,
     runnable: Runnable,
 ) -> Option<lsp_ext::CommandLinkGroup> {
-    let cargo_spec = CargoTargetSpec::for_file(snap, runnable.nav.file_id).ok()?;
     let hover_actions_config = snap.config.hover_actions();
-    if !hover_actions_config.runnable() || should_skip_target(&runnable, cargo_spec.as_ref()) {
+    if !hover_actions_config.runnable() {
+        return None;
+    }
+
+    let cargo_spec = CargoTargetSpec::for_file(snap, runnable.nav.file_id).ok()?;
+    if should_skip_target(&runnable, cargo_spec.as_ref()) {
+        return None;
+    }
+
+    let client_commands_config = snap.config.client_commands();
+    if !(client_commands_config.run_single || client_commands_config.debug_single) {
         return None;
     }
 
     let title = runnable.title();
-    to_proto::runnable(snap, runnable).ok().map(|r| {
-        let mut group = lsp_ext::CommandLinkGroup::default();
+    let r = to_proto::runnable(snap, runnable).ok()?;
 
-        if hover_actions_config.run {
-            let run_command = to_proto::command::run_single(&r, &title);
-            group.commands.push(to_command_link(run_command, r.label.clone()));
-        }
+    let mut group = lsp_ext::CommandLinkGroup::default();
 
-        if hover_actions_config.debug {
-            let dbg_command = to_proto::command::debug_single(&r);
-            group.commands.push(to_command_link(dbg_command, r.label));
-        }
+    if hover_actions_config.run && client_commands_config.run_single {
+        let run_command = to_proto::command::run_single(&r, &title);
+        group.commands.push(to_command_link(run_command, r.label.clone()));
+    }
 
-        group
-    })
+    if hover_actions_config.debug && client_commands_config.debug_single {
+        let dbg_command = to_proto::command::debug_single(&r);
+        group.commands.push(to_command_link(dbg_command, r.label));
+    }
+
+    Some(group)
 }
 
 fn goto_type_action_links(
     snap: &GlobalStateSnapshot,
     nav_targets: &[HoverGotoTypeData],
 ) -> Option<lsp_ext::CommandLinkGroup> {
-    if !snap.config.hover_actions().goto_type_def || nav_targets.is_empty() {
+    if !snap.config.hover_actions().goto_type_def
+        || nav_targets.is_empty()
+        || !snap.config.client_commands().goto_location
+    {
         return None;
     }
 
@@ -1594,10 +1596,6 @@ fn prepare_hover_actions(
     snap: &GlobalStateSnapshot,
     actions: &[HoverAction],
 ) -> Vec<lsp_ext::CommandLinkGroup> {
-    if snap.config.hover_actions().none() || !snap.config.experimental_hover_actions() {
-        return Vec::new();
-    }
-
     actions
         .iter()
         .filter_map(|it| match it {

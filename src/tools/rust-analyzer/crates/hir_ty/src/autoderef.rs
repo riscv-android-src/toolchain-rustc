@@ -9,13 +9,16 @@ use base_db::CrateId;
 use chalk_ir::{cast::Cast, fold::Fold, interner::HasInterner, VariableKind};
 use hir_def::lang_item::LangItemTarget;
 use hir_expand::name::name;
+use limit::Limit;
 use log::{info, warn};
 
 use crate::{
     db::HirDatabase, static_lifetime, AliasEq, AliasTy, BoundVar, Canonical, CanonicalVarKinds,
-    DebruijnIndex, Environment, InEnvironment, Interner, ProjectionTyExt, Solution, Substitution,
-    Ty, TyBuilder, TyKind,
+    ConstrainedSubst, DebruijnIndex, Environment, Guidance, InEnvironment, Interner,
+    ProjectionTyExt, Solution, Substitution, Ty, TyBuilder, TyKind,
 };
+
+const AUTODEREF_RECURSION_LIMIT: Limit = Limit::new(10);
 
 pub(crate) enum AutoderefKind {
     Builtin,
@@ -63,7 +66,7 @@ impl Iterator for Autoderef<'_> {
             return Some((self.ty.clone(), 0));
         }
 
-        if self.steps.len() >= AUTODEREF_RECURSION_LIMIT {
+        if AUTODEREF_RECURSION_LIMIT.check(self.steps.len() + 1).is_err() {
             return None;
         }
 
@@ -87,8 +90,6 @@ impl Iterator for Autoderef<'_> {
     }
 }
 
-const AUTODEREF_RECURSION_LIMIT: usize = 10;
-
 // FIXME: replace uses of this with Autoderef above
 pub fn autoderef<'a>(
     db: &'a dyn HirDatabase,
@@ -99,7 +100,7 @@ pub fn autoderef<'a>(
     successors(Some(ty), move |ty| {
         deref(db, krate?, InEnvironment { goal: ty, environment: environment.clone() })
     })
-    .take(AUTODEREF_RECURSION_LIMIT)
+    .take(AUTODEREF_RECURSION_LIMIT.inner())
 }
 
 pub(crate) fn deref(
@@ -186,7 +187,8 @@ fn deref_by_trait(
     let solution = db.trait_solve(krate, canonical)?;
 
     match &solution {
-        Solution::Unique(vars) => {
+        Solution::Unique(Canonical { value: ConstrainedSubst { subst, .. }, binders })
+        | Solution::Ambig(Guidance::Definite(Canonical { value: subst, binders })) => {
             // FIXME: vars may contain solutions for any inference variables
             // that happened to be inside ty. To correctly handle these, we
             // would have to pass the solution up to the inference context, but
@@ -202,8 +204,8 @@ fn deref_by_trait(
             // assumptions will be broken. We would need to properly introduce
             // new variables in that case
 
-            for i in 1..vars.binders.len(&Interner) {
-                if vars.value.subst.at(&Interner, i - 1).assert_ty_ref(&Interner).kind(&Interner)
+            for i in 1..binders.len(&Interner) {
+                if subst.at(&Interner, i - 1).assert_ty_ref(&Interner).kind(&Interner)
                     != &TyKind::BoundVar(BoundVar::new(DebruijnIndex::INNERMOST, i - 1))
                 {
                     warn!("complex solution for derefing {:?}: {:?}, ignoring", ty.goal, solution);
@@ -213,13 +215,11 @@ fn deref_by_trait(
             // FIXME: we remove lifetime variables here since they can confuse
             // the method resolution code later
             Some(fixup_lifetime_variables(Canonical {
-                value: vars
-                    .value
-                    .subst
-                    .at(&Interner, vars.value.subst.len(&Interner) - 1)
+                value: subst
+                    .at(&Interner, subst.len(&Interner) - 1)
                     .assert_ty_ref(&Interner)
                     .clone(),
-                binders: vars.binders.clone(),
+                binders: binders.clone(),
             }))
         }
         Solution::Ambig(_) => {

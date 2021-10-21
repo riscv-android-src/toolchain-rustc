@@ -171,8 +171,8 @@ fn compute_move_errors<T: FactTypes>(
 
         // path_maybe_uninitialized_on_exit(path, point2) :-
         //     path_maybe_uninitialized_on_exit(path, point1),
-        //     cfg_edge_(point1, point2)
-        //     !path_assigned_at(point1, point2).
+        //     cfg_edge(point1, point2)
+        //     !path_assigned_at(path, point2).
         path_maybe_uninitialized_on_exit.from_leapjoin(
             &path_maybe_uninitialized_on_exit,
             (
@@ -184,7 +184,7 @@ fn compute_move_errors<T: FactTypes>(
 
         // var_maybe_partly_initialized_on_exit(var, point) :-
         //     path_maybe_initialized_on_exit(path, point).
-        //     path_begins_with(path, var).
+        //     path_begins_with_var(path, var).
         var_maybe_partly_initialized_on_exit.from_leapjoin(
             &path_maybe_initialized_on_exit,
             ctx.path_begins_with_var.extend_with(|&(path, _point)| path),
@@ -210,6 +210,14 @@ fn compute_move_errors<T: FactTypes>(
         for &(path, location) in path_maybe_initialized_on_exit.complete().iter() {
             output
                 .path_maybe_initialized_on_exit
+                .entry(location)
+                .or_default()
+                .push(path);
+        }
+
+        for &(path, location) in path_maybe_uninitialized_on_exit.complete().iter() {
+            output
+                .path_maybe_uninitialized_on_exit
                 .entry(location)
                 .or_default()
                 .push(path);

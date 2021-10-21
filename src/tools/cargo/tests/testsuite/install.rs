@@ -95,19 +95,19 @@ fn multiple_pkgs() {
 [UPDATING] `[..]` index
 [DOWNLOADING] crates ...
 [DOWNLOADED] foo v0.0.1 (registry `dummy-registry`)
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.0.2 (registry `dummy-registry`)
+[ERROR] could not find `baz` in registry `[..]` with version `*`
 [INSTALLING] foo v0.0.1
 [COMPILING] foo v0.0.1
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/foo[EXE]
 [INSTALLED] package `foo v0.0.1` (executable `foo[EXE]`)
-[DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.0.2 (registry `dummy-registry`)
 [INSTALLING] bar v0.0.2
 [COMPILING] bar v0.0.2
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/bar[EXE]
 [INSTALLED] package `bar v0.0.2` (executable `bar[EXE]`)
-[ERROR] could not find `baz` in registry `[..]` with version `*`
 [SUMMARY] Successfully installed foo, bar! Failed to install baz (see error(s) above).
 [WARNING] be sure to add `[..]` to your PATH to be able to run the installed binaries
 [ERROR] some crates failed to install
@@ -155,19 +155,19 @@ fn multiple_pkgs_path_set() {
 [UPDATING] `[..]` index
 [DOWNLOADING] crates ...
 [DOWNLOADED] foo v0.0.1 (registry `dummy-registry`)
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.0.2 (registry `dummy-registry`)
+[ERROR] could not find `baz` in registry `[..]` with version `*`
 [INSTALLING] foo v0.0.1
 [COMPILING] foo v0.0.1
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/foo[EXE]
 [INSTALLED] package `foo v0.0.1` (executable `foo[EXE]`)
-[DOWNLOADING] crates ...
-[DOWNLOADED] bar v0.0.2 (registry `dummy-registry`)
 [INSTALLING] bar v0.0.2
 [COMPILING] bar v0.0.2
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/bar[EXE]
 [INSTALLED] package `bar v0.0.2` (executable `bar[EXE]`)
-[ERROR] could not find `baz` in registry `[..]` with version `*`
 [SUMMARY] Successfully installed foo, bar! Failed to install baz (see error(s) above).
 [ERROR] some crates failed to install
 ",
@@ -1265,10 +1265,12 @@ but cannot be used multiple times
 
 #[cargo_test]
 fn test_install_git_cannot_be_a_base_url() {
-    cargo_process("install --git github.com:rust-lang-nursery/rustfmt.git")
+    cargo_process("install --git github.com:rust-lang/rustfmt.git")
         .with_status(101)
-        .with_stderr("\
-[ERROR] invalid url `github.com:rust-lang-nursery/rustfmt.git`: cannot-be-a-base-URLs are not supported")
+        .with_stderr(
+            "\
+[ERROR] invalid url `github.com:rust-lang/rustfmt.git`: cannot-be-a-base-URLs are not supported",
+        )
         .run();
 }
 

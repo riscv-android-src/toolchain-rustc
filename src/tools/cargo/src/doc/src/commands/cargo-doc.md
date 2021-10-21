@@ -107,6 +107,16 @@ and supports common Unix glob patterns.</dd>
 <dd class="option-desc">Document all binary targets.</dd>
 
 
+
+<dt class="option-term" id="option-cargo-doc---example"><a class="option-anchor" href="#option-cargo-doc---example"></a><code>--example</code> <em>name</em>...</dt>
+<dd class="option-desc">Document the specified example. This flag may be specified multiple times
+and supports common Unix glob patterns.</dd>
+
+
+<dt class="option-term" id="option-cargo-doc---examples"><a class="option-anchor" href="#option-cargo-doc---examples"></a><code>--examples</code></dt>
+<dd class="option-desc">Document all example targets.</dd>
+
+
 </dl>
 
 ### Feature Selection
@@ -158,6 +168,12 @@ target artifacts are placed in a separate directory. See the
 <dd class="option-desc">Document optimized artifacts with the <code>release</code> profile. See the
 <a href="#profiles">PROFILES</a> section for details on how this affects profile
 selection.</dd>
+
+
+
+<dt class="option-term" id="option-cargo-doc---ignore-rust-version"><a class="option-anchor" href="#option-cargo-doc---ignore-rust-version"></a><code>--ignore-rust-version</code></dt>
+<dd class="option-desc">Document the target even if the selected Rust compiler is older than the
+required Rust version as configured in the project's <code>rust-version</code> field.</dd>
 
 
 

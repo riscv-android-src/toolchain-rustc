@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "camino"
-version = "1.0.4"
+version = "1.0.5"
 authors = ["Without Boats <saoirse@without.boats>", "Ashley Williams <ashley666ashley@gmail.com>", "Steve Klabnik <steve@steveklabnik.com>", "Rain <rain@sunshowers.io>"]
 exclude = [".cargo/**/*", ".github/**/*"]
 description = "UTF-8 paths"

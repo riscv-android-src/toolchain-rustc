@@ -51,10 +51,10 @@ second element is a reference to the element. This is a bit more convenient
 than calculating the index ourselves.
 
 Because the `enumerate` method returns a tuple, we can use patterns to
-destructure that tuple, just like everywhere else in Rust. So in the `for`
-loop, we specify a pattern that has `i` for the index in the tuple and `&item`
-for the single byte in the tuple. Because we get a reference to the element
-from `.iter().enumerate()`, we use `&` in the pattern.
+destructure that tuple. We'll be discussing patterns more in Chapter 6. So in
+the `for` loop, we specify a pattern that has `i` for the index in the tuple
+and `&item` for the single byte in the tuple. Because we get a reference to the
+element from `.iter().enumerate()`, we use `&` in the pattern.
 
 Inside the `for` loop, we search for the byte that represents the space by
 using the byte literal syntax. If we find a space, we return the position.
@@ -218,9 +218,12 @@ Here’s the compiler error:
 
 Recall from the borrowing rules that if we have an immutable reference to
 something, we cannot also take a mutable reference. Because `clear` needs to
-truncate the `String`, it needs to get a mutable reference. Rust disallows
-this, and compilation fails. Not only has Rust made our API easier to use, but
-it has also eliminated an entire class of errors at compile time!
+truncate the `String`, it needs to get a mutable reference. The `println!`
+after the call to `clear` uses the reference in `word`, so the immutable
+reference must still be active at that point. Rust disallows the mutable
+reference in `clear` and the immutable reference in `word` from existing at the
+same time, and compilation fails. Not only has Rust made our API easier to use,
+but it has also eliminated an entire class of errors at compile time!
 
 #### String Literals Are Slices
 

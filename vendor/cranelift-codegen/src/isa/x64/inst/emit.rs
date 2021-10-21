@@ -12,7 +12,6 @@ use crate::isa::x64::inst::args::*;
 use crate::isa::x64::inst::*;
 use crate::machinst::{inst_common, MachBuffer, MachInstEmit, MachLabel};
 use core::convert::TryInto;
-use log::debug;
 use regalloc::{Reg, Writable};
 
 /// A small helper to generate a signed conversion instruction.
@@ -1509,6 +1508,10 @@ pub(crate) fn emit(
                 SseOpcode::Pminub => (LegacyPrefixes::_66, 0x0FDA, 2),
                 SseOpcode::Pminuw => (LegacyPrefixes::_66, 0x0F383A, 3),
                 SseOpcode::Pminud => (LegacyPrefixes::_66, 0x0F383B, 3),
+                SseOpcode::Pmuldq => (LegacyPrefixes::_66, 0x0F3828, 3),
+                SseOpcode::Pmulhw => (LegacyPrefixes::_66, 0x0FE5, 2),
+                SseOpcode::Pmulhrsw => (LegacyPrefixes::_66, 0x0F380B, 3),
+                SseOpcode::Pmulhuw => (LegacyPrefixes::_66, 0x0FE4, 2),
                 SseOpcode::Pmulld => (LegacyPrefixes::_66, 0x0F3840, 3),
                 SseOpcode::Pmullw => (LegacyPrefixes::_66, 0x0FD5, 2),
                 SseOpcode::Pmuludq => (LegacyPrefixes::_66, 0x0FF4, 2),
@@ -1523,12 +1526,15 @@ pub(crate) fn emit(
                 SseOpcode::Psubusb => (LegacyPrefixes::_66, 0x0FD8, 2),
                 SseOpcode::Psubusw => (LegacyPrefixes::_66, 0x0FD9, 2),
                 SseOpcode::Punpckhbw => (LegacyPrefixes::_66, 0x0F68, 2),
+                SseOpcode::Punpckhwd => (LegacyPrefixes::_66, 0x0F69, 2),
                 SseOpcode::Punpcklbw => (LegacyPrefixes::_66, 0x0F60, 2),
+                SseOpcode::Punpcklwd => (LegacyPrefixes::_66, 0x0F61, 2),
                 SseOpcode::Pxor => (LegacyPrefixes::_66, 0x0FEF, 2),
                 SseOpcode::Subps => (LegacyPrefixes::None, 0x0F5C, 2),
                 SseOpcode::Subpd => (LegacyPrefixes::_66, 0x0F5C, 2),
                 SseOpcode::Subss => (LegacyPrefixes::_F3, 0x0F5C, 2),
                 SseOpcode::Subsd => (LegacyPrefixes::_F2, 0x0F5C, 2),
+                SseOpcode::Unpcklps => (LegacyPrefixes::None, 0x0F14, 2),
                 SseOpcode::Xorps => (LegacyPrefixes::None, 0x0F57, 2),
                 SseOpcode::Xorpd => (LegacyPrefixes::_66, 0x0F57, 2),
                 _ => unimplemented!("Opcode {:?} not implemented", op),
@@ -1749,7 +1755,6 @@ pub(crate) fn emit(
             let (prefix, opcode) = match op {
                 SseOpcode::Movaps => (LegacyPrefixes::None, 0x0F29),
                 SseOpcode::Movapd => (LegacyPrefixes::_66, 0x0F29),
-                SseOpcode::Movdqa => (LegacyPrefixes::_66, 0x0F7F),
                 SseOpcode::Movdqu => (LegacyPrefixes::_F3, 0x0F7F),
                 SseOpcode::Movss => (LegacyPrefixes::_F3, 0x0F11),
                 SseOpcode::Movsd => (LegacyPrefixes::_F2, 0x0F11),
@@ -2542,7 +2547,7 @@ pub(crate) fn emit(
         }
 
         Inst::VirtualSPOffsetAdj { offset } => {
-            debug!(
+            log::trace!(
                 "virtual sp offset adjusted by {} -> {}",
                 offset,
                 state.virtual_sp_offset + offset

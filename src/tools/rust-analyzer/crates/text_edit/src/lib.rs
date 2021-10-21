@@ -17,6 +17,7 @@ pub struct Indel {
 
 #[derive(Default, Debug, Clone)]
 pub struct TextEdit {
+    /// Invariant: disjoint and sorted by `delete`.
     indels: Vec<Indel>,
 }
 
@@ -158,6 +159,9 @@ impl<'a> IntoIterator for &'a TextEdit {
 }
 
 impl TextEditBuilder {
+    pub fn is_empty(&self) -> bool {
+        self.indels.is_empty()
+    }
     pub fn replace(&mut self, range: TextRange, replace_with: String) {
         self.indel(Indel::replace(range, replace_with))
     }

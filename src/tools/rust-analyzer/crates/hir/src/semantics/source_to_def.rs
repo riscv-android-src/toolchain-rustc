@@ -51,7 +51,7 @@
 //! The `GetDeclaredType` takes `Syntax` as input, and returns `Symbol` as
 //! output. First, it retrieves a `Symbol` for parent `Syntax`:
 //!
-//! * https://sourceroslyn.io/#Microsoft.CodeAnalysis.CSharp/Compilation/SyntaxTreeSemanticModel.cs,1423
+//! * <https://sourceroslyn.io/#Microsoft.CodeAnalysis.CSharp/Compilation/SyntaxTreeSemanticModel.cs,1423>
 //!
 //! Then, it iterates parent symbol's children, looking for one which has the
 //! same text span as the original node:
@@ -91,11 +91,11 @@ use hir_def::{
     dyn_map::DynMap,
     expr::{LabelId, PatId},
     keys::{self, Key},
-    ConstId, ConstParamId, DefWithBodyId, EnumId, EnumVariantId, FieldId, FunctionId, GenericDefId,
-    ImplId, LifetimeParamId, ModuleId, StaticId, StructId, TraitId, TypeAliasId, TypeParamId,
-    UnionId, VariantId,
+    AdtId, ConstId, ConstParamId, DefWithBodyId, EnumId, EnumVariantId, FieldId, FunctionId,
+    GenericDefId, ImplId, LifetimeParamId, ModuleId, StaticId, StructId, TraitId, TypeAliasId,
+    TypeParamId, UnionId, VariantId,
 };
-use hir_expand::{name::AsName, AstId, MacroCallId, MacroDefId, MacroDefKind};
+use hir_expand::{name::AsName, AstId, HirFileId, MacroCallId, MacroDefId, MacroDefKind};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use stdx::impl_from;
@@ -106,7 +106,7 @@ use syntax::{
 
 use crate::{db::HirDatabase, InFile};
 
-pub(super) type SourceToDefCache = FxHashMap<ChildContainer, DynMap>;
+pub(super) type SourceToDefCache = FxHashMap<(ChildContainer, HirFileId), DynMap>;
 
 pub(super) struct SourceToDefCtx<'a, 'b> {
     pub(super) db: &'b dyn HirDatabase,
@@ -131,13 +131,8 @@ impl SourceToDefCtx<'_, '_> {
 
     pub(super) fn module_to_def(&mut self, src: InFile<ast::Module>) -> Option<ModuleId> {
         let _p = profile::span("module_to_def");
-        let parent_declaration = src
-            .as_ref()
-            .map(|it| it.syntax())
-            .cloned()
-            .ancestors_with_macros(self.db.upcast())
-            .skip(1)
-            .find_map(|it| {
+        let parent_declaration =
+            src.syntax().cloned().ancestors_with_macros(self.db.upcast()).skip(1).find_map(|it| {
                 let m = ast::Module::cast(it.value.clone())?;
                 Some(it.with_value(m))
             });
@@ -201,11 +196,23 @@ impl SourceToDefCtx<'_, '_> {
     ) -> Option<EnumVariantId> {
         self.to_def(src, keys::VARIANT)
     }
+    pub(super) fn adt_to_def(
+        &mut self,
+        InFile { file_id, value }: InFile<ast::Adt>,
+    ) -> Option<AdtId> {
+        match value {
+            ast::Adt::Enum(it) => self.enum_to_def(InFile::new(file_id, it)).map(AdtId::EnumId),
+            ast::Adt::Struct(it) => {
+                self.struct_to_def(InFile::new(file_id, it)).map(AdtId::StructId)
+            }
+            ast::Adt::Union(it) => self.union_to_def(InFile::new(file_id, it)).map(AdtId::UnionId),
+        }
+    }
     pub(super) fn bind_pat_to_def(
         &mut self,
         src: InFile<ast::IdentPat>,
     ) -> Option<(DefWithBodyId, PatId)> {
-        let container = self.find_pat_or_label_container(src.as_ref().map(|it| it.syntax()))?;
+        let container = self.find_pat_or_label_container(src.syntax())?;
         let (_body, source_map) = self.db.body_with_source_map(container);
         let src = src.map(ast::Pat::from);
         let pat_id = source_map.node_pat(src.as_ref())?;
@@ -215,7 +222,7 @@ impl SourceToDefCtx<'_, '_> {
         &mut self,
         src: InFile<ast::SelfParam>,
     ) -> Option<(DefWithBodyId, PatId)> {
-        let container = self.find_pat_or_label_container(src.as_ref().map(|it| it.syntax()))?;
+        let container = self.find_pat_or_label_container(src.syntax())?;
         let (_body, source_map) = self.db.body_with_source_map(container);
         let pat_id = source_map.node_self_param(src.as_ref())?;
         Some((container, pat_id))
@@ -224,7 +231,7 @@ impl SourceToDefCtx<'_, '_> {
         &mut self,
         src: InFile<ast::Label>,
     ) -> Option<(DefWithBodyId, LabelId)> {
-        let container = self.find_pat_or_label_container(src.as_ref().map(|it| it.syntax()))?;
+        let container = self.find_pat_or_label_container(src.syntax())?;
         let (_body, source_map) = self.db.body_with_source_map(container);
         let label_id = source_map.node_label(src.as_ref())?;
         Some((container, label_id))
@@ -245,18 +252,19 @@ impl SourceToDefCtx<'_, '_> {
 
     fn dyn_map<Ast: AstNode + 'static>(&mut self, src: InFile<&Ast>) -> Option<&DynMap> {
         let container = self.find_container(src.map(|it| it.syntax()))?;
+        Some(self.cache_for(container, src.file_id))
+    }
+
+    fn cache_for(&mut self, container: ChildContainer, file_id: HirFileId) -> &DynMap {
         let db = self.db;
-        let dyn_map =
-            &*self.cache.entry(container).or_insert_with(|| container.child_by_source(db));
-        Some(dyn_map)
+        self.cache
+            .entry((container, file_id))
+            .or_insert_with(|| container.child_by_source(db, file_id))
     }
 
     pub(super) fn type_param_to_def(&mut self, src: InFile<ast::TypeParam>) -> Option<TypeParamId> {
-        let container: ChildContainer =
-            self.find_generic_param_container(src.as_ref().map(|it| it.syntax()))?.into();
-        let db = self.db;
-        let dyn_map =
-            &*self.cache.entry(container).or_insert_with(|| container.child_by_source(db));
+        let container: ChildContainer = self.find_generic_param_container(src.syntax())?.into();
+        let dyn_map = self.cache_for(container, src.file_id);
         dyn_map[keys::TYPE_PARAM].get(&src).copied()
     }
 
@@ -264,11 +272,8 @@ impl SourceToDefCtx<'_, '_> {
         &mut self,
         src: InFile<ast::LifetimeParam>,
     ) -> Option<LifetimeParamId> {
-        let container: ChildContainer =
-            self.find_generic_param_container(src.as_ref().map(|it| it.syntax()))?.into();
-        let db = self.db;
-        let dyn_map =
-            &*self.cache.entry(container).or_insert_with(|| container.child_by_source(db));
+        let container: ChildContainer = self.find_generic_param_container(src.syntax())?.into();
+        let dyn_map = self.cache_for(container, src.file_id);
         dyn_map[keys::LIFETIME_PARAM].get(&src).copied()
     }
 
@@ -276,11 +281,8 @@ impl SourceToDefCtx<'_, '_> {
         &mut self,
         src: InFile<ast::ConstParam>,
     ) -> Option<ConstParamId> {
-        let container: ChildContainer =
-            self.find_generic_param_container(src.as_ref().map(|it| it.syntax()))?.into();
-        let db = self.db;
-        let dyn_map =
-            &*self.cache.entry(container).or_insert_with(|| container.child_by_source(db));
+        let container: ChildContainer = self.find_generic_param_container(src.syntax())?.into();
+        let dyn_map = self.cache_for(container, src.file_id);
         dyn_map[keys::CONST_PARAM].get(&src).copied()
     }
 
@@ -418,17 +420,17 @@ impl_from! {
 }
 
 impl ChildContainer {
-    fn child_by_source(self, db: &dyn HirDatabase) -> DynMap {
+    fn child_by_source(self, db: &dyn HirDatabase, file_id: HirFileId) -> DynMap {
         let db = db.upcast();
         match self {
-            ChildContainer::DefWithBodyId(it) => it.child_by_source(db),
-            ChildContainer::ModuleId(it) => it.child_by_source(db),
-            ChildContainer::TraitId(it) => it.child_by_source(db),
-            ChildContainer::ImplId(it) => it.child_by_source(db),
-            ChildContainer::EnumId(it) => it.child_by_source(db),
-            ChildContainer::VariantId(it) => it.child_by_source(db),
+            ChildContainer::DefWithBodyId(it) => it.child_by_source(db, file_id),
+            ChildContainer::ModuleId(it) => it.child_by_source(db, file_id),
+            ChildContainer::TraitId(it) => it.child_by_source(db, file_id),
+            ChildContainer::ImplId(it) => it.child_by_source(db, file_id),
+            ChildContainer::EnumId(it) => it.child_by_source(db, file_id),
+            ChildContainer::VariantId(it) => it.child_by_source(db, file_id),
             ChildContainer::TypeAliasId(_) => DynMap::default(),
-            ChildContainer::GenericDefId(it) => it.child_by_source(db),
+            ChildContainer::GenericDefId(it) => it.child_by_source(db, file_id),
         }
     }
 }

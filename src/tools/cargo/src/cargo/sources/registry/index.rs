@@ -602,15 +602,13 @@ impl Summaries {
         // present and considered fresh this is where the debug assertions
         // actually happens to verify that our cache is indeed fresh and
         // computes exactly the same value as before.
-        if cfg!(debug_assertions) && cache_contents.is_some() {
-            if cache_bytes != cache_contents {
-                panic!(
-                    "original cache contents:\n{:?}\n\
-                     does not equal new cache contents:\n{:?}\n",
-                    cache_contents.as_ref().map(|s| String::from_utf8_lossy(s)),
-                    cache_bytes.as_ref().map(|s| String::from_utf8_lossy(s)),
-                );
-            }
+        if cfg!(debug_assertions) && cache_contents.is_some() && cache_bytes != cache_contents {
+            panic!(
+                "original cache contents:\n{:?}\n\
+                 does not equal new cache contents:\n{:?}\n",
+                cache_contents.as_ref().map(|s| String::from_utf8_lossy(s)),
+                cache_bytes.as_ref().map(|s| String::from_utf8_lossy(s)),
+            );
         }
 
         // Once we have our `cache_bytes` which represents the `Summaries` we're
@@ -687,7 +685,7 @@ impl Summaries {
 // * `2`: Added the "index format version" field so that if the index format
 //   changes, different versions of cargo won't get confused reading each
 //   other's caches.
-// * `3`: Bumped the version to work around a issue where multiple versions of
+// * `3`: Bumped the version to work around an issue where multiple versions of
 //   a package were published that differ only by semver metadata. For
 //   example, openssl-src 110.0.0 and 110.0.0+1.1.0f. Previously, the cache
 //   would be incorrectly populated with two entries, both 110.0.0. After

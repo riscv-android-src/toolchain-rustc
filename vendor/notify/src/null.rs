@@ -2,7 +2,7 @@
 
 #![allow(unused_variables)]
 
-use super::{EventFn, RecursiveMode, Result, Watcher};
+use super::{RecursiveMode, Result, Watcher};
 use std::path::Path;
 
 /// Stub `Watcher` implementation
@@ -11,15 +11,15 @@ use std::path::Path;
 pub struct NullWatcher;
 
 impl Watcher for NullWatcher {
-    fn new_immediate<F: EventFn>(_event_fn: F) -> Result<NullWatcher> {
+    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
+        Ok(())
+    }
+
+    fn unwatch(&mut self, path: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    fn new<F: crate::EventHandler>(event_handler: F) -> Result<Self> where Self: Sized {
         Ok(NullWatcher)
-    }
-
-    fn watch<P: AsRef<Path>>(&mut self, path: P, recursive_mode: RecursiveMode) -> Result<()> {
-        Ok(())
-    }
-
-    fn unwatch<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        Ok(())
     }
 }

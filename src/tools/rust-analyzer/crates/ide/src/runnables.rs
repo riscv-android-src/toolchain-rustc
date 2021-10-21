@@ -3,7 +3,7 @@ use std::fmt;
 use ast::NameOwner;
 use cfg::CfgExpr;
 use either::Either;
-use hir::{AsAssocItem, HasAttrs, HasSource, HirDisplay, Semantics};
+use hir::{AsAssocItem, HasAttrs, HasSource, HirDisplay, InFile, Semantics};
 use ide_assists::utils::test_related_attribute;
 use ide_db::{
     base_db::{FilePosition, FileRange},
@@ -157,7 +157,7 @@ pub(crate) fn runnables(db: &RootDatabase, file_id: FileId) -> Vec<Runnable> {
                 hir::ModuleDef::Function(it) => runnable_fn(&sema, it),
                 _ => None,
             };
-            add_opt(runnable.or_else(|| module_def_doctest(&sema, def)), Some(def));
+            add_opt(runnable.or_else(|| module_def_doctest(sema.db, def)), Some(def));
         }
         Either::Right(impl_) => {
             add_opt(runnable_impl(&sema, &impl_), None);
@@ -168,9 +168,9 @@ pub(crate) fn runnables(db: &RootDatabase, file_id: FileId) -> Vec<Runnable> {
                     (
                         match assoc {
                             hir::AssocItem::Function(it) => runnable_fn(&sema, it)
-                                .or_else(|| module_def_doctest(&sema, it.into())),
-                            hir::AssocItem::Const(it) => module_def_doctest(&sema, it.into()),
-                            hir::AssocItem::TypeAlias(it) => module_def_doctest(&sema, it.into()),
+                                .or_else(|| module_def_doctest(sema.db, it.into())),
+                            hir::AssocItem::Const(it) => module_def_doctest(sema.db, it.into()),
+                            hir::AssocItem::TypeAlias(it) => module_def_doctest(sema.db, it.into()),
                         },
                         assoc,
                     )
@@ -232,22 +232,26 @@ fn find_related_tests(
             let functions = refs.iter().filter_map(|(range, _)| {
                 let token = file.token_at_offset(range.start()).next()?;
                 let token = sema.descend_into_macros(token);
-                token.ancestors().find_map(ast::Fn::cast)
+                token
+                    .ancestors()
+                    .find_map(ast::Fn::cast)
+                    .map(|f| hir::InFile::new(sema.hir_file_for(f.syntax()), f))
             });
 
             for fn_def in functions {
-                if let Some(runnable) = as_test_runnable(sema, &fn_def) {
+                // #[test/bench] expands to just the item causing us to lose the attribute, so recover them by going out of the attribute
+                let InFile { value: fn_def, .. } = &fn_def.node_with_attributes(sema.db);
+                if let Some(runnable) = as_test_runnable(sema, fn_def) {
                     // direct test
                     tests.insert(runnable);
-                } else if let Some(module) = parent_test_module(sema, &fn_def) {
+                } else if let Some(module) = parent_test_module(sema, fn_def) {
                     // indirect test
-                    find_related_tests_in_module(sema, &fn_def, &module, tests);
+                    find_related_tests_in_module(sema, fn_def, &module, tests);
                 }
             }
         }
     }
 }
-
 fn find_related_tests_in_module(
     sema: &Semantics<RootDatabase>,
     fn_def: &ast::Fn,
@@ -292,7 +296,8 @@ fn parent_test_module(sema: &Semantics<RootDatabase>, fn_def: &ast::Fn) -> Optio
 }
 
 pub(crate) fn runnable_fn(sema: &Semantics<RootDatabase>, def: hir::Function) -> Option<Runnable> {
-    let func = def.source(sema.db)?;
+    // #[test/bench] expands to just the item causing us to lose the attribute, so recover them by going out of the attribute
+    let func = def.source(sema.db)?.node_with_attributes(sema.db);
     let name_string = def.name(sema.db).to_string();
 
     let root = def.module(sema.db).krate().root_module(sema.db);
@@ -382,61 +387,56 @@ fn runnable_mod_outline_definition(
     }
 }
 
-fn module_def_doctest(sema: &Semantics<RootDatabase>, def: hir::ModuleDef) -> Option<Runnable> {
+fn module_def_doctest(db: &RootDatabase, def: hir::ModuleDef) -> Option<Runnable> {
     let attrs = match def {
-        hir::ModuleDef::Module(it) => it.attrs(sema.db),
-        hir::ModuleDef::Function(it) => it.attrs(sema.db),
-        hir::ModuleDef::Adt(it) => it.attrs(sema.db),
-        hir::ModuleDef::Variant(it) => it.attrs(sema.db),
-        hir::ModuleDef::Const(it) => it.attrs(sema.db),
-        hir::ModuleDef::Static(it) => it.attrs(sema.db),
-        hir::ModuleDef::Trait(it) => it.attrs(sema.db),
-        hir::ModuleDef::TypeAlias(it) => it.attrs(sema.db),
+        hir::ModuleDef::Module(it) => it.attrs(db),
+        hir::ModuleDef::Function(it) => it.attrs(db),
+        hir::ModuleDef::Adt(it) => it.attrs(db),
+        hir::ModuleDef::Variant(it) => it.attrs(db),
+        hir::ModuleDef::Const(it) => it.attrs(db),
+        hir::ModuleDef::Static(it) => it.attrs(db),
+        hir::ModuleDef::Trait(it) => it.attrs(db),
+        hir::ModuleDef::TypeAlias(it) => it.attrs(db),
         hir::ModuleDef::BuiltinType(_) => return None,
     };
     if !has_runnable_doc_test(&attrs) {
         return None;
     }
-    let def_name = def.name(sema.db).map(|it| it.to_string());
-    let test_id = def
-        .canonical_path(sema.db)
-        // This probably belongs to canonical path?
-        .map(|path| {
-            let assoc_def = match def {
-                hir::ModuleDef::Function(it) => it.as_assoc_item(sema.db),
-                hir::ModuleDef::Const(it) => it.as_assoc_item(sema.db),
-                hir::ModuleDef::TypeAlias(it) => it.as_assoc_item(sema.db),
-                _ => None,
-            };
-            // FIXME: this also looks very wrong
-            if let Some(assoc_def) = assoc_def {
-                if let hir::AssocItemContainer::Impl(imp) = assoc_def.container(sema.db) {
-                    let ty = imp.self_ty(sema.db);
-                    if let Some(adt) = ty.as_adt() {
-                        let name = adt.name(sema.db);
-                        let idx = path.rfind(':').map_or(0, |idx| idx + 1);
-                        let (prefix, suffix) = path.split_at(idx);
-                        let mut ty_args = ty.type_arguments().peekable();
-                        let params = if ty_args.peek().is_some() {
-                            format!(
-                                "<{}>",
-                                ty_args.format_with(", ", |ty, cb| cb(&ty.display(sema.db)))
-                            )
-                        } else {
-                            String::new()
-                        };
-                        return format!("{}{}{}::{}", prefix, name, params, suffix);
+    let def_name = def.name(db)?;
+    let path = (|| {
+        let mut path = String::new();
+        def.canonical_module_path(db)?
+            .flat_map(|it| it.name(db))
+            .for_each(|name| format_to!(path, "{}::", name));
+        // This probably belongs to canonical_path?
+        if let Some(assoc_item) = def.as_assoc_item(db) {
+            if let hir::AssocItemContainer::Impl(imp) = assoc_item.container(db) {
+                let ty = imp.self_ty(db);
+                if let Some(adt) = ty.as_adt() {
+                    let name = adt.name(db);
+                    let mut ty_args = ty.type_arguments().peekable();
+                    format_to!(path, "{}", name);
+                    if ty_args.peek().is_some() {
+                        format_to!(
+                            path,
+                            "<{}>",
+                            ty_args.format_with(", ", |ty, cb| cb(&ty.display(db)))
+                        );
                     }
+                    format_to!(path, "::{}", def_name);
+                    return Some(path);
                 }
             }
-            path
-        })
-        .map(TestId::Path)
-        .or_else(|| def_name.clone().map(TestId::Name))?;
+        }
+        format_to!(path, "{}", def_name);
+        Some(path)
+    })();
+
+    let test_id = path.map_or_else(|| TestId::Name(def_name.to_string()), TestId::Path);
 
     let mut nav = match def {
-        hir::ModuleDef::Module(def) => NavigationTarget::from_module_to_decl(sema.db, def),
-        def => def.try_to_nav(sema.db)?,
+        hir::ModuleDef::Module(def) => NavigationTarget::from_module_to_decl(db, def),
+        def => def.try_to_nav(db)?,
     };
     nav.focus_range = None;
     nav.description = None;
@@ -504,6 +504,8 @@ fn has_test_function_or_multiple_test_submodules(
         match item {
             hir::ModuleDef::Function(f) => {
                 if let Some(it) = f.source(sema.db) {
+                    // #[test/bench] expands to just the item causing us to lose the attribute, so recover them by going out of the attribute
+                    let it = it.node_with_attributes(sema.db);
                     if test_related_attribute(&it.value).is_some() {
                         return true;
                     }
@@ -1451,7 +1453,6 @@ gen2!();
                                 0,
                             ),
                             full_range: 228..236,
-                            focus_range: 228..236,
                             name: "foo_test2",
                             kind: Function,
                         },
@@ -1472,7 +1473,6 @@ gen2!();
                                 0,
                             ),
                             full_range: 218..225,
-                            focus_range: 218..225,
                             name: "foo_test",
                             kind: Function,
                         },
@@ -1538,7 +1538,6 @@ foo!();
                                 0,
                             ),
                             full_range: 210..217,
-                            focus_range: 210..217,
                             name: "foo0",
                             kind: Function,
                         },
@@ -1559,7 +1558,6 @@ foo!();
                                 0,
                             ),
                             full_range: 210..217,
-                            focus_range: 210..217,
                             name: "foo1",
                             kind: Function,
                         },
@@ -1580,7 +1578,6 @@ foo!();
                                 0,
                             ),
                             full_range: 210..217,
-                            focus_range: 210..217,
                             name: "foo2",
                             kind: Function,
                         },

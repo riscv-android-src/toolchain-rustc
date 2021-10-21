@@ -1,5 +1,5 @@
 use either::Either;
-use hir::{known, Callable, HirDisplay, Semantics};
+use hir::{known, Callable, HasVisibility, HirDisplay, Semantics, TypeInfo};
 use ide_db::helpers::FamousDefs;
 use ide_db::RootDatabase;
 use stdx::to_lower_snake_case;
@@ -117,7 +117,7 @@ fn get_chaining_hints(
             next_next = tokens.next()?.kind();
         }
         if next_next == T![.] {
-            let ty = sema.type_of_expr(&expr)?;
+            let ty = sema.type_of_expr(&expr)?.original;
             if ty.is_unknown() {
                 return None;
             }
@@ -189,13 +189,17 @@ fn get_bind_pat_hints(
     let krate = sema.scope(pat.syntax()).module().map(|it| it.krate());
     let famous_defs = FamousDefs(sema, krate);
 
-    let ty = sema.type_of_pat(&pat.clone().into())?;
+    let ty = sema.type_of_pat(&pat.clone().into())?.original;
 
     if should_not_display_type_hint(sema, &pat, &ty) {
         return None;
     }
+
     acc.push(InlayHint {
-        range: pat.syntax().text_range(),
+        range: match pat.name() {
+            Some(name) => name.syntax().text_range(),
+            None => pat.syntax().text_range(),
+        },
         kind: InlayKind::TypeHint,
         label: hint_iterator(sema, &famous_defs, config, &ty)
             .unwrap_or_else(|| ty.display_truncated(sema.db, config.max_length).to_string().into()),
@@ -221,7 +225,11 @@ fn hint_iterator(
     let iter_mod = famous_defs.core_iter()?;
 
     // Assert that this struct comes from `core::iter`.
-    iter_mod.visibility_of(db, &strukt.into()).filter(|&vis| vis == hir::Visibility::Public)?;
+    if !(strukt.visibility(db) == hir::Visibility::Public
+        && strukt.module(db).path_to_root(db).contains(&iter_mod))
+    {
+        return None;
+    }
 
     if ty.impls_trait(db, iter_trait, &[]) {
         let assoc_type_item = iter_trait.items(db).into_iter().find_map(|item| match item {
@@ -300,6 +308,7 @@ fn should_not_display_type_hint(
                     return it.in_token().is_none() ||
                         it.iterable()
                             .and_then(|iterable_expr| sema.type_of_expr(&iterable_expr))
+                            .map(TypeInfo::original)
                             .map_or(true, |iterable_ty| iterable_ty.is_unknown() || iterable_ty.is_unit())
                 },
                 _ => (),
@@ -322,7 +331,7 @@ fn should_hide_param_name_hint(
     // - exact argument<->parameter match(ignoring leading underscore) or parameter is a prefix/suffix
     //   of argument with _ splitting it off
     // - param starts with `ra_fixture`
-    // - param is a well known name in an unary function
+    // - param is a well known name in a unary function
 
     let param_name = param_name.trim_start_matches('_');
     if param_name.is_empty() {
@@ -360,7 +369,7 @@ fn is_argument_similar_to_param_name(argument: &ast::Expr, param_name: &str) -> 
     argument == param_name
 }
 
-/// Hide the parameter name of an unary function if it is a `_` - prefixed suffix of the function's name, or equal.
+/// Hide the parameter name of a unary function if it is a `_` - prefixed suffix of the function's name, or equal.
 ///
 /// `fn strip_suffix(suffix)` will be hidden.
 /// `fn stripsuffix(suffix)` will not be hidden.
@@ -385,7 +394,7 @@ fn is_enum_name_similar_to_param_name(
     argument: &ast::Expr,
     param_name: &str,
 ) -> bool {
-    match sema.type_of_expr(argument).and_then(|t| t.as_adt()) {
+    match sema.type_of_expr(argument).and_then(|t| t.original.as_adt()) {
         Some(hir::Adt::Enum(e)) => to_lower_snake_case(&e.name(sema.db).to_string()) == param_name,
         _ => false,
     }
@@ -422,7 +431,7 @@ fn get_callable(
 ) -> Option<(hir::Callable, ast::ArgList)> {
     match expr {
         ast::Expr::CallExpr(expr) => {
-            sema.type_of_expr(&expr.expr()?)?.as_callable(sema.db).zip(expr.arg_list())
+            sema.type_of_expr(&expr.expr()?)?.original.as_callable(sema.db).zip(expr.arg_list())
         }
         ast::Expr::MethodCallExpr(expr) => {
             sema.resolve_method_call_as_callable(expr).zip(expr.arg_list())
@@ -796,6 +805,28 @@ fn main() {
     }
 
     #[test]
+    fn type_hints_bindings_after_at() {
+        check_types(
+            r#"
+//- minicore: option
+fn main() {
+    let ref foo @ bar @ ref mut baz = 0;
+          //^^^ &i32
+                //^^^ i32
+                              //^^^ &mut i32
+    let [x @ ..] = [0];
+       //^ [i32; 1]
+    if let x @ Some(_) = Some(0) {}
+         //^ Option<i32>
+    let foo @ (bar, baz) = (3, 3);
+      //^^^ (i32, i32)
+             //^^^ i32
+                  //^^^ i32
+}"#,
+        );
+    }
+
+    #[test]
     fn default_generic_types_should_not_be_displayed() {
         check(
             r#"
@@ -835,7 +866,7 @@ impl<T> Iterator for SomeIter<T> {
 
 fn main() {
     let mut some_iter = SomeIter::new();
-      //^^^^^^^^^^^^^ SomeIter<Take<Repeat<i32>>>
+          //^^^^^^^^^ SomeIter<Take<Repeat<i32>>>
       some_iter.push(iter::repeat(2).take(2));
     let iter_of_iters = some_iter.take(2);
       //^^^^^^^^^^^^^ impl Iterator<Item = impl Iterator<Item = i32>>
@@ -893,9 +924,53 @@ fn main() {
     let foo = foo5();
      // ^^^ &dyn Fn(&dyn Fn(f64, f64) -> u32, f64) -> u32
     let foo = foo6();
-     // ^^^ impl Fn(f64, f64) -> u32 + Sized
+     // ^^^ impl Fn(f64, f64) -> u32
     let foo = foo7();
-     // ^^^ *const (impl Fn(f64, f64) -> u32 + Sized)
+     // ^^^ *const impl Fn(f64, f64) -> u32
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn fn_hints_ptr_rpit_fn_parentheses() {
+        check_types(
+            r#"
+//- minicore: fn, sized
+trait Trait {}
+
+fn foo1() -> *const impl Fn() { loop {} }
+fn foo2() -> *const (impl Fn() + Sized) { loop {} }
+fn foo3() -> *const (impl Fn() + ?Sized) { loop {} }
+fn foo4() -> *const (impl Sized + Fn()) { loop {} }
+fn foo5() -> *const (impl ?Sized + Fn()) { loop {} }
+fn foo6() -> *const (impl Fn() + Trait) { loop {} }
+fn foo7() -> *const (impl Fn() + Sized + Trait) { loop {} }
+fn foo8() -> *const (impl Fn() + ?Sized + Trait) { loop {} }
+fn foo9() -> *const (impl Fn() -> u8 + ?Sized) { loop {} }
+fn foo10() -> *const (impl Fn() + Sized + ?Sized) { loop {} }
+
+fn main() {
+    let foo = foo1();
+    //  ^^^ *const impl Fn()
+    let foo = foo2();
+    //  ^^^ *const impl Fn()
+    let foo = foo3();
+    //  ^^^ *const (impl Fn() + ?Sized)
+    let foo = foo4();
+    //  ^^^ *const impl Fn()
+    let foo = foo5();
+    //  ^^^ *const (impl Fn() + ?Sized)
+    let foo = foo6();
+    //  ^^^ *const (impl Fn() + Trait)
+    let foo = foo7();
+    //  ^^^ *const (impl Fn() + Trait)
+    let foo = foo8();
+    //  ^^^ *const (impl Fn() + Trait + ?Sized)
+    let foo = foo9();
+    //  ^^^ *const (impl Fn() -> u8 + ?Sized)
+    let foo = foo10();
+    //  ^^^ *const impl Fn()
 }
 "#,
         )
@@ -934,7 +1009,7 @@ fn main() {
       //^^^^ i32
     let test: i32 = 33;
     let mut test = 33;
-      //^^^^^^^^ i32
+          //^^^^ i32
     let _ = 22;
     let test = "test";
       //^^^^ &str
@@ -1044,7 +1119,7 @@ impl<T> IntoIterator for Vec<T> {
 
 fn main() {
     let mut data = Vec::new();
-      //^^^^^^^^ Vec<&str>
+          //^^^^ Vec<&str>
     data.push("foo");
     for i in
 
@@ -1072,7 +1147,7 @@ impl<T> IntoIterator for Vec<T> {
 
 fn main() {
     let mut data = Vec::new();
-      //^^^^^^^^ Vec<&str>
+          //^^^^ Vec<&str>
     data.push("foo");
     for i in data {
       //^ &str
@@ -1149,7 +1224,7 @@ fn main() {
             r#"
 fn main() {
     let mut start = 0;
-      //^^^^^^^^^ i32
+          //^^^^^ i32
     (0..2).for_each(|increment| { start += increment; });
                    //^^^^^^^^^ i32
 

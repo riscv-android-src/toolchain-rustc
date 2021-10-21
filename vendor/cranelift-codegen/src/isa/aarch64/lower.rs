@@ -21,7 +21,6 @@ use crate::isa::aarch64::AArch64Backend;
 use super::lower_inst;
 
 use crate::data_value::DataValue;
-use log::{debug, trace};
 use regalloc::{Reg, Writable};
 use smallvec::SmallVec;
 use std::cmp;
@@ -105,6 +104,15 @@ impl ResultRSImmLogic {
 pub(crate) enum ResultRegImmShift {
     Reg(Reg),
     ImmShift(ImmShift),
+}
+
+impl ResultRegImmShift {
+    pub fn unwrap_reg(self) -> Reg {
+        match self {
+            ResultRegImmShift::Reg(r) => r,
+            _ => panic!("Unwrapped ResultRegImmShift, expected reg, got: {:?}", self),
+        }
+    }
 }
 
 //============================================================================
@@ -266,7 +274,7 @@ fn lower_input_to_regs<C: LowerCtx<I = Inst>>(
     ctx: &mut C,
     input: InsnInput,
 ) -> (ValueRegs<Reg>, Type, bool) {
-    debug!("lower_input_to_regs: input {:?}", input);
+    log::trace!("lower_input_to_regs: input {:?}", input);
     let ty = ctx.input_ty(input.insn, input.input);
     let inputs = ctx.get_input_as_source_or_const(input.insn, input.input);
     let is_const = inputs.constant.is_some();
@@ -721,7 +729,7 @@ pub(crate) fn lower_pair_address<C: LowerCtx<I = Inst>>(
     let (mut addends64, mut addends32, args_offset) = collect_address_addends(ctx, roots);
     let offset = args_offset + (offset as i64);
 
-    trace!(
+    log::trace!(
         "lower_pair_address: addends64 {:?}, addends32 {:?}, offset {}",
         addends64,
         addends32,
@@ -782,7 +790,7 @@ pub(crate) fn lower_address<C: LowerCtx<I = Inst>>(
     let (mut addends64, mut addends32, args_offset) = collect_address_addends(ctx, roots);
     let mut offset = args_offset + (offset as i64);
 
-    trace!(
+    log::trace!(
         "lower_address: addends64 {:?}, addends32 {:?}, offset {}",
         addends64,
         addends32,
@@ -1185,13 +1193,15 @@ pub(crate) fn maybe_input_insn<C: LowerCtx<I = Inst>>(
     op: Opcode,
 ) -> Option<IRInst> {
     let inputs = c.get_input_as_source_or_const(input.insn, input.input);
-    debug!(
+    log::trace!(
         "maybe_input_insn: input {:?} has options {:?}; looking for op {:?}",
-        input, inputs, op
+        input,
+        inputs,
+        op
     );
     if let Some((src_inst, _)) = inputs.inst {
         let data = c.data(src_inst);
-        debug!(" -> input inst {:?}", data);
+        log::trace!(" -> input inst {:?}", data);
         if data.opcode() == op {
             return Some(src_inst);
         }
@@ -1246,17 +1256,37 @@ pub(crate) fn maybe_input_insn_via_conv<C: LowerCtx<I = Inst>>(
 /// Specifies what [lower_icmp] should do when lowering
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum IcmpOutput {
-    /// Only sets flags, discarding the results
-    Flags,
-    /// Materializes the results into a register. The flags set may be incorrect
+    /// Lowers the comparison into a cond code, discarding the results. The cond code emitted can
+    /// be checked in the resulting [IcmpResult].
+    CondCode,
+    /// Materializes the results into a register. This may overwrite any flags previously set.
     Register(Writable<Reg>),
 }
 
 impl IcmpOutput {
     pub fn reg(&self) -> Option<Writable<Reg>> {
         match self {
-            IcmpOutput::Flags => None,
+            IcmpOutput::CondCode => None,
             IcmpOutput::Register(reg) => Some(*reg),
+        }
+    }
+}
+
+/// The output of an Icmp lowering.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum IcmpResult {
+    /// The result was output into the given [Cond]. Callers may perform operations using this [Cond]
+    /// and its inverse, other [Cond]'s are not guaranteed to be correct.
+    CondCode(Cond),
+    /// The result was materialized into the output register.
+    Register,
+}
+
+impl IcmpResult {
+    pub fn unwrap_cond(&self) -> Cond {
+        match self {
+            IcmpResult::CondCode(c) => *c,
+            _ => panic!("Unwrapped cond, but IcmpResult was {:?}", self),
         }
     }
 }
@@ -1270,10 +1300,12 @@ pub(crate) fn lower_icmp<C: LowerCtx<I = Inst>>(
     insn: IRInst,
     condcode: IntCC,
     output: IcmpOutput,
-) -> CodegenResult<()> {
-    debug!(
+) -> CodegenResult<IcmpResult> {
+    log::trace!(
         "lower_icmp: insn {}, condcode: {}, output: {:?}",
-        insn, condcode, output
+        insn,
+        condcode,
+        output
     );
 
     let rd = output.reg().unwrap_or(writable_zero_reg());
@@ -1288,8 +1320,9 @@ pub(crate) fn lower_icmp<C: LowerCtx<I = Inst>>(
         (false, true) => NarrowValueMode::SignExtend64,
         (false, false) => NarrowValueMode::ZeroExtend64,
     };
+    let mut should_materialize = output.reg().is_some();
 
-    if ty == I128 {
+    let out_condcode = if ty == I128 {
         let lhs = put_input_in_regs(ctx, inputs[0]);
         let rhs = put_input_in_regs(ctx, inputs[1]);
 
@@ -1321,10 +1354,6 @@ pub(crate) fn lower_icmp<C: LowerCtx<I = Inst>>(
                     rn: tmp1.to_reg(),
                     rm: tmp2.to_reg(),
                 });
-
-                if let IcmpOutput::Register(rd) = output {
-                    materialize_bool_result(ctx, insn, rd, cond);
-                }
             }
             IntCC::Overflow | IntCC::NotOverflow => {
                 // We can do an 128bit add while throwing away the results
@@ -1346,10 +1375,6 @@ pub(crate) fn lower_icmp<C: LowerCtx<I = Inst>>(
                     rn: lhs.regs()[1],
                     rm: rhs.regs()[1],
                 });
-
-                if let IcmpOutput::Register(rd) = output {
-                    materialize_bool_result(ctx, insn, rd, cond);
-                }
             }
             _ => {
                 // cmp     lhs_lo, rhs_lo
@@ -1382,7 +1407,7 @@ pub(crate) fn lower_icmp<C: LowerCtx<I = Inst>>(
                     rm: tmp2.to_reg(),
                 });
 
-                if output == IcmpOutput::Flags {
+                if output == IcmpOutput::CondCode {
                     // We only need to guarantee that the flags for `cond` are correct, so we can
                     // compare rd with 0 or 1
 
@@ -1413,24 +1438,79 @@ pub(crate) fn lower_icmp<C: LowerCtx<I = Inst>>(
                         rm,
                     });
                 }
+
+                // Prevent a second materialize_bool_result to be emitted at the end of the function
+                should_materialize = false;
             }
         }
-    } else if !ty.is_vector() {
-        let alu_op = choose_32_64(ty, ALUOp::SubS32, ALUOp::SubS64);
-        let rn = put_input_in_reg(ctx, inputs[0], narrow_mode);
-        let rm = put_input_in_rse_imm12(ctx, inputs[1], narrow_mode);
-        ctx.emit(alu_inst_imm12(alu_op, writable_zero_reg(), rn, rm));
+        cond
+    } else if ty.is_vector() {
+        assert_ne!(output, IcmpOutput::CondCode);
+        should_materialize = false;
 
-        if let IcmpOutput::Register(rd) = output {
-            materialize_bool_result(ctx, insn, rd, cond);
-        }
-    } else {
         let rn = put_input_in_reg(ctx, inputs[0], narrow_mode);
         let rm = put_input_in_reg(ctx, inputs[1], narrow_mode);
         lower_vector_compare(ctx, rd, rn, rm, ty, cond)?;
+        cond
+    } else {
+        let rn = put_input_in_reg(ctx, inputs[0], narrow_mode);
+        let rm = put_input_in_rse_imm12(ctx, inputs[1], narrow_mode);
+
+        let is_overflow = condcode == IntCC::Overflow || condcode == IntCC::NotOverflow;
+        let is_small_type = ty == I8 || ty == I16;
+        let (cond, rn, rm) = if is_overflow && is_small_type {
+            // Overflow checks for non native types require additional instructions, other than
+            // just the extend op.
+            //
+            // TODO: Codegen improvements: Merge the second sxt{h,b} into the following sub instruction.
+            //
+            // sxt{h,b}  w0, w0
+            // sxt{h,b}  w1, w1
+            // sub       w0, w0, w1
+            // cmp       w0, w0, sxt{h,b}
+            //
+            // The result of this comparison is either the EQ or NE condition code, so we need to
+            // signal that to the caller
+
+            let extend_op = if ty == I8 {
+                ExtendOp::SXTB
+            } else {
+                ExtendOp::SXTH
+            };
+            let tmp1 = ctx.alloc_tmp(I32).only_reg().unwrap();
+            ctx.emit(alu_inst_imm12(ALUOp::Sub32, tmp1, rn, rm));
+
+            let out_cond = match condcode {
+                IntCC::Overflow => Cond::Ne,
+                IntCC::NotOverflow => Cond::Eq,
+                _ => unreachable!(),
+            };
+            (
+                out_cond,
+                tmp1.to_reg(),
+                ResultRSEImm12::RegExtend(tmp1.to_reg(), extend_op),
+            )
+        } else {
+            (cond, rn, rm)
+        };
+
+        let alu_op = choose_32_64(ty, ALUOp::SubS32, ALUOp::SubS64);
+        ctx.emit(alu_inst_imm12(alu_op, writable_zero_reg(), rn, rm));
+        cond
+    };
+
+    // Most of the comparisons above produce flags by default, if the caller requested the result
+    // in a register we materialize those flags into a register. Some branches do end up producing
+    // the result as a register by default, so we ignore those.
+    if should_materialize {
+        materialize_bool_result(ctx, insn, rd, cond);
     }
 
-    Ok(())
+    Ok(match output {
+        // We currently never emit a different register than what was asked for
+        IcmpOutput::Register(_) => IcmpResult::Register,
+        IcmpOutput::CondCode => IcmpResult::CondCode(out_condcode),
+    })
 }
 
 pub(crate) fn lower_fcmp_or_ffcmp_to_flags<C: LowerCtx<I = Inst>>(ctx: &mut C, insn: IRInst) {
@@ -1465,6 +1545,43 @@ pub(crate) fn materialize_bool_result<C: LowerCtx<I = Inst>>(
         ctx.emit(Inst::CSetm { rd, cond });
     } else {
         ctx.emit(Inst::CSet { rd, cond });
+    }
+}
+
+pub(crate) fn lower_shift_amt<C: LowerCtx<I = Inst>>(
+    ctx: &mut C,
+    amt_input: InsnInput,
+    dst_ty: Type,
+    tmp_reg: Writable<Reg>,
+) -> ResultRegImmShift {
+    let amt_ty = ctx.input_ty(amt_input.insn, amt_input.input);
+
+    match (dst_ty, amt_ty) {
+        // When shifting for amounts larger than the size of the type, the CLIF shift
+        // instructions implement a "wrapping" behaviour, such that an i8 << 8 is
+        // equivalent to i8 << 0
+        //
+        // On i32 and i64 types this matches what the aarch64 spec does, but on smaller
+        // types (i16, i8) we need to do this manually, so we wrap the shift amount
+        // with an AND instruction
+        (I16 | I8, _) => {
+            // We can ignore the top half of the shift amount register if the type is I128
+            let amt_reg = put_input_in_regs(ctx, amt_input).regs()[0];
+            let mask = (ty_bits(dst_ty) - 1) as u64;
+            ctx.emit(Inst::AluRRImmLogic {
+                alu_op: ALUOp::And32,
+                rd: tmp_reg,
+                rn: amt_reg,
+                imml: ImmLogic::maybe_from_u64(mask, I32).unwrap(),
+            });
+            ResultRegImmShift::Reg(tmp_reg.to_reg())
+        }
+        // TODO: We can use immlogic for i128 types here
+        (I128, _) | (_, I128) => {
+            // For I128 shifts, we need a register without immlogic
+            ResultRegImmShift::Reg(put_input_in_regs(ctx, amt_input).regs()[0])
+        }
+        _ => put_input_in_reg_immshift(ctx, amt_input, ty_bits(dst_ty)),
     }
 }
 

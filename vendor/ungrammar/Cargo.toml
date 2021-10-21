@@ -13,8 +13,7 @@
 [package]
 edition = "2018"
 name = "ungrammar"
-version = "1.14.2"
-authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
+version = "1.14.4"
 exclude = ["/bors.toml", "/.github"]
 description = "A DSL for describing concrete syntax trees"
 license = "MIT OR Apache-2.0"

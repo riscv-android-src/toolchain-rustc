@@ -41,7 +41,7 @@ Let’s take a closer look at the function call here:
 
 The `&s1` syntax lets us create a reference that *refers* to the value of `s1`
 but does not own it. Because it does not own it, the value it points to will
-not be dropped when the reference goes out of scope.
+not be dropped when the reference stops being used.
 
 Likewise, the signature of the function uses `&` to indicate that the type of
 the parameter `s` is a reference. Let’s add some explanatory annotations:
@@ -51,14 +51,14 @@ the parameter `s` is a reference. Let’s add some explanatory annotations:
 ```
 
 The scope in which the variable `s` is valid is the same as any function
-parameter’s scope, but we don’t drop what the reference points to when it goes
-out of scope because we don’t have ownership. When functions have references as
-parameters instead of the actual values, we won’t need to return the values in
-order to give back ownership, because we never had ownership.
+parameter’s scope, but we don’t drop what the reference points to when `s`
+stops being used because we don’t have ownership. When functions have
+references as parameters instead of the actual values, we won’t need to return
+the values in order to give back ownership, because we never had ownership.
 
-We call having references as function parameters *borrowing*. As in real life,
-if a person owns something, you can borrow it from them. When you’re done, you
-have to give it back.
+We call the action of creating a reference *borrowing*. As in real life, if a
+person owns something, you can borrow it from them. When you’re done, you have
+to give it back.
 
 So what happens if we try to modify something we’re borrowing? Try the code in
 Listing 4-6. Spoiler alert: it doesn’t work!
@@ -82,7 +82,7 @@ allowed to modify something we have a reference to.
 
 ### Mutable References
 
-We can fix the error in the code from Listing 4-6 with just a small tweak:
+We can fix the error in the code from Listing 4-6 with just a few small tweaks:
 
 <span class="filename">Filename: src/main.rs</span>
 
@@ -91,12 +91,13 @@ We can fix the error in the code from Listing 4-6 with just a small tweak:
 ```
 
 First, we had to change `s` to be `mut`. Then we had to create a mutable
-reference with `&mut s` and accept a mutable reference with `some_string: &mut
-String`.
+reference with `&mut s` where we call the `change` function, and update the
+function signature to accept a mutable reference with `some_string: &mut
+String`. This makes it very clear that the `change` function will mutate the
+value it borrows.
 
 But mutable references have one big restriction: you can have only one mutable
-reference to a particular piece of data in a particular scope. This code will
-fail:
+reference to a particular piece of data at a time. This code will fail:
 
 <span class="filename">Filename: src/main.rs</span>
 
@@ -110,9 +111,16 @@ Here’s the error:
 {{#include ../listings/ch04-understanding-ownership/no-listing-10-multiple-mut-not-allowed/output.txt}}
 ```
 
-This restriction allows for mutation but in a very controlled fashion. It’s
-something that new Rustaceans struggle with, because most languages let you
-mutate whenever you’d like.
+This error says that this code is invalid because we cannot borrow `s` as
+mutable more than once at a time. The first mutable borrow is in `r1` and must
+last until it’s used in the `println!`, but between the creation of that
+mutable reference and its usage, we tried to create another mutable reference
+in `r2` that borrows the same data as `r1`.
+
+The restriction preventing multiple mutable references to the same data at the
+same time allows for mutation but in a very controlled fashion. It’s something
+that new Rustaceans struggle with, because most languages let you mutate
+whenever you’d like.
 
 The benefit of having this restriction is that Rust can prevent data races at
 compile time. A *data race* is similar to a race condition and happens when
@@ -154,8 +162,8 @@ the data.
 
 Note that a reference’s scope starts from where it is introduced and continues
 through the last time that reference is used. For instance, this code will
-compile because the last usage of the immutable references occurs before the
-mutable reference is introduced:
+compile because the last usage of the immutable references, the `println!`,
+occurs before the mutable reference is introduced:
 
 ```rust,edition2018
 {{#rustdoc_include ../listings/ch04-understanding-ownership/no-listing-13-reference-scope-ends/src/main.rs:here}}
@@ -163,7 +171,10 @@ mutable reference is introduced:
 
 The scopes of the immutable references `r1` and `r2` end after the `println!`
 where they are last used, which is before the mutable reference `r3` is
-created. These scopes don’t overlap, so this code is allowed.
+created. These scopes don’t overlap, so this code is allowed. The ability of
+the compiler to tell that a reference is no longer being used at a point before
+the end of the scope is called Non-Lexical Lifetimes (NLL for short), and you
+can read more about it in [The Edition Guide][nll].
 
 Even though borrowing errors may be frustrating at times, remember that it’s
 the Rust compiler pointing out a potential bug early (at compile time rather
@@ -236,3 +247,5 @@ Let’s recap what we’ve discussed about references:
 * References must always be valid.
 
 Next, we’ll look at a different kind of reference: slices.
+
+[nll]: https://doc.rust-lang.org/edition-guide/rust-2018/ownership-and-lifetimes/non-lexical-lifetimes.html

@@ -274,6 +274,7 @@ mod tests {
 
     use super::{RangeInfo, RenameError};
 
+    #[track_caller]
     fn check(new_name: &str, ra_fixture_before: &str, ra_fixture_after: &str) {
         let ra_fixture_after = &trim_indent(ra_fixture_after);
         let (analysis, position) = fixture::position(ra_fixture_before);
@@ -617,22 +618,22 @@ fn main() {
     #[test]
     fn test_rename_struct_field() {
         check(
-            "j",
+            "foo",
             r#"
-struct Foo { i$0: i32 }
+struct Foo { field$0: i32 }
 
 impl Foo {
     fn new(i: i32) -> Self {
-        Self { i: i }
+        Self { field: i }
     }
 }
 "#,
             r#"
-struct Foo { j: i32 }
+struct Foo { foo: i32 }
 
 impl Foo {
     fn new(i: i32) -> Self {
-        Self { j: i }
+        Self { foo: i }
     }
 }
 "#,
@@ -643,22 +644,22 @@ impl Foo {
     fn test_rename_field_in_field_shorthand() {
         cov_mark::check!(test_rename_field_in_field_shorthand);
         check(
-            "j",
+            "field",
             r#"
-struct Foo { i$0: i32 }
+struct Foo { foo$0: i32 }
 
 impl Foo {
-    fn new(i: i32) -> Self {
-        Self { i }
+    fn new(foo: i32) -> Self {
+        Self { foo }
     }
 }
 "#,
             r#"
-struct Foo { j: i32 }
+struct Foo { field: i32 }
 
 impl Foo {
-    fn new(i: i32) -> Self {
-        Self { j: i }
+    fn new(foo: i32) -> Self {
+        Self { field: foo }
     }
 }
 "#,
@@ -1332,8 +1333,70 @@ fn foo(foo: Foo) {
 struct Foo { baz: i32 }
 
 fn foo(foo: Foo) {
-    let Foo { ref baz @ qux } = foo;
+    let Foo { baz: ref baz @ qux } = foo;
     let _ = qux;
+}
+"#,
+        );
+        check(
+            "baz",
+            r#"
+struct Foo { i$0: i32 }
+
+fn foo(foo: Foo) {
+    let Foo { i: ref baz } = foo;
+    let _ = qux;
+}
+"#,
+            r#"
+struct Foo { baz: i32 }
+
+fn foo(foo: Foo) {
+    let Foo { ref baz } = foo;
+    let _ = qux;
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn test_struct_local_pat_into_shorthand() {
+        cov_mark::check!(test_rename_local_put_init_shorthand_pat);
+        check(
+            "field",
+            r#"
+struct Foo { field: i32 }
+
+fn foo(foo: Foo) {
+    let Foo { field: qux$0 } = foo;
+    let _ = qux;
+}
+"#,
+            r#"
+struct Foo { field: i32 }
+
+fn foo(foo: Foo) {
+    let Foo { field } = foo;
+    let _ = field;
+}
+"#,
+        );
+        check(
+            "field",
+            r#"
+struct Foo { field: i32 }
+
+fn foo(foo: Foo) {
+    let Foo { field: x @ qux$0 } = foo;
+    let _ = qux;
+}
+"#,
+            r#"
+struct Foo { field: i32 }
+
+fn foo(foo: Foo) {
+    let Foo { field: x @ field } = foo;
+    let _ = field;
 }
 "#,
         );
@@ -1390,7 +1453,7 @@ struct Foo {
     i: i32
 }
 
-fn foo(Foo { i }: foo) -> i32 {
+fn foo(Foo { i }: Foo) -> i32 {
     i$0
 }
 "#,
@@ -1399,7 +1462,7 @@ struct Foo {
     i: i32
 }
 
-fn foo(Foo { i: bar }: foo) -> i32 {
+fn foo(Foo { i: bar }: Foo) -> i32 {
     bar
 }
 "#,
@@ -1408,6 +1471,7 @@ fn foo(Foo { i: bar }: foo) -> i32 {
 
     #[test]
     fn test_struct_field_complex_ident_pat() {
+        cov_mark::check!(rename_record_pat_field_name_split);
         check(
             "baz",
             r#"
@@ -1805,8 +1869,7 @@ fn f() { <()>::BAR$0; }"#,
     }
 
     #[test]
-    fn macros_are_broken_lol() {
-        cov_mark::check!(macros_are_broken_lol);
+    fn defs_from_macros_arent_renamed() {
         check(
             "lol",
             r#"
@@ -1814,11 +1877,7 @@ macro_rules! m { () => { fn f() {} } }
 m!();
 fn main() { f$0()  }
 "#,
-            r#"
-macro_rules! m { () => { fn f() {} } }
-lol
-fn main() { lol()  }
-"#,
+            "error: No identifier available to rename",
         )
     }
 }

@@ -296,12 +296,16 @@ pub enum BuiltinLintDiagnostics {
     DeprecatedMacro(Option<Symbol>, Span),
     MissingAbi(Span, Abi),
     UnusedDocComment(Span),
+    UnusedBuiltinAttribute { attr_name: Symbol, macro_name: String, invoc_span: Span },
     PatternsInFnsWithoutBody(Span, Ident),
     LegacyDeriveHelpers(Span),
     ExternDepSpec(String, ExternDepSpec),
     ProcMacroBackCompat(String),
     OrPatternsBackCompat(Span, String),
     ReservedPrefix(Span),
+    TrailingMacro(bool, Ident),
+    BreakWithLabelAndLoop(Span),
+    NamedAsmLabel(String),
 }
 
 /// Lints that are buffered up early on in the `Session` before the

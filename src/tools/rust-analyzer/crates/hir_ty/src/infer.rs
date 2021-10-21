@@ -16,14 +16,14 @@
 use std::ops::Index;
 use std::sync::Arc;
 
-use chalk_ir::{cast::Cast, DebruijnIndex, Mutability, Safety};
+use chalk_ir::{cast::Cast, DebruijnIndex, Mutability, Safety, Scalar};
 use hir_def::{
     body::Body,
     data::{ConstData, FunctionData, StaticData},
-    expr::{ArithOp, BinaryOp, BindingAnnotation, ExprId, PatId},
+    expr::{BindingAnnotation, ExprId, PatId},
     lang_item::LangItemTarget,
     path::{path, Path},
-    resolver::{HasResolver, Resolver, TypeNs},
+    resolver::{HasResolver, ResolveValueResult, Resolver, TypeNs, ValueNs},
     type_ref::TypeRef,
     AdtId, AssocItemId, DefWithBodyId, EnumVariantId, FieldId, FunctionId, HasModule, Lookup,
     TraitId, TypeAliasId, VariantId,
@@ -134,11 +134,17 @@ pub struct TypeMismatch {
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct InternedStandardTypes {
     unknown: Ty,
+    bool_: Ty,
+    unit: Ty,
 }
 
 impl Default for InternedStandardTypes {
     fn default() -> Self {
-        InternedStandardTypes { unknown: TyKind::Error.intern(&Interner) }
+        InternedStandardTypes {
+            unknown: TyKind::Error.intern(&Interner),
+            bool_: TyKind::Scalar(Scalar::Bool).intern(&Interner),
+            unit: TyKind::Tuple(0, Substitution::empty(&Interner)).intern(&Interner),
+        }
     }
 }
 /// Represents coercing a value to a different type of value.
@@ -548,7 +554,7 @@ impl<'a> InferenceContext<'a> {
         self.table.normalize_associated_types_in(ty)
     }
 
-    fn resolve_variant(&mut self, path: Option<&Path>) -> (Ty, Option<VariantId>) {
+    fn resolve_variant(&mut self, path: Option<&Path>, value_ns: bool) -> (Ty, Option<VariantId>) {
         let path = match path {
             Some(path) => path,
             None => return (self.err_ty(), None),
@@ -557,11 +563,32 @@ impl<'a> InferenceContext<'a> {
         let ctx = crate::lower::TyLoweringContext::new(self.db, &self.resolver);
         // FIXME: this should resolve assoc items as well, see this example:
         // https://play.rust-lang.org/?gist=087992e9e22495446c01c0d4e2d69521
-        let (resolution, unresolved) =
+        let (resolution, unresolved) = if value_ns {
+            match resolver.resolve_path_in_value_ns(self.db.upcast(), path.mod_path()) {
+                Some(ResolveValueResult::ValueNs(value)) => match value {
+                    ValueNs::EnumVariantId(var) => {
+                        let substs = ctx.substs_from_path(path, var.into(), true);
+                        let ty = self.db.ty(var.parent.into());
+                        let ty = self.insert_type_vars(ty.substitute(&Interner, &substs));
+                        return (ty, Some(var.into()));
+                    }
+                    ValueNs::StructId(strukt) => {
+                        let substs = ctx.substs_from_path(path, strukt.into(), true);
+                        let ty = self.db.ty(strukt.into());
+                        let ty = self.insert_type_vars(ty.substitute(&Interner, &substs));
+                        return (ty, Some(strukt.into()));
+                    }
+                    _ => return (self.err_ty(), None),
+                },
+                Some(ResolveValueResult::Partial(typens, unresolved)) => (typens, Some(unresolved)),
+                None => return (self.err_ty(), None),
+            }
+        } else {
             match resolver.resolve_path_in_type_ns(self.db.upcast(), path.mod_path()) {
                 Some(it) => it,
                 None => return (self.err_ty(), None),
-            };
+            }
+        };
         return match resolution {
             TypeNs::AdtId(AdtId::StructId(strukt)) => {
                 let substs = ctx.substs_from_path(path, strukt.into(), true);
@@ -730,28 +757,6 @@ impl<'a> InferenceContext<'a> {
         self.db.trait_data(trait_).associated_type_by_name(&name![Output])
     }
 
-    fn resolve_binary_op_output(&self, bop: &BinaryOp) -> Option<TypeAliasId> {
-        let lang_item = match bop {
-            BinaryOp::ArithOp(aop) => match aop {
-                ArithOp::Add => "add",
-                ArithOp::Sub => "sub",
-                ArithOp::Mul => "mul",
-                ArithOp::Div => "div",
-                ArithOp::Shl => "shl",
-                ArithOp::Shr => "shr",
-                ArithOp::Rem => "rem",
-                ArithOp::BitXor => "bitxor",
-                ArithOp::BitOr => "bitor",
-                ArithOp::BitAnd => "bitand",
-            },
-            _ => return None,
-        };
-
-        let trait_ = self.resolve_lang_item(lang_item)?.as_trait();
-
-        self.db.trait_data(trait_?).associated_type_by_name(&name![Output])
-    }
-
     fn resolve_boxed_box(&self) -> Option<AdtId> {
         let struct_ = self.resolve_lang_item("owned_box")?.as_struct()?;
         Some(struct_.into())
@@ -825,6 +830,10 @@ impl Expectation {
         }
     }
 
+    fn from_option(ty: Option<Ty>) -> Self {
+        ty.map_or(Expectation::None, Expectation::HasType)
+    }
+
     /// The following explanation is copied straight from rustc:
     /// Provides an expectation for an rvalue expression given an *optional*
     /// hint, which is not required for type safety (the resulting type might
@@ -845,8 +854,9 @@ impl Expectation {
     /// which still is useful, because it informs integer literals and the like.
     /// See the test case `test/ui/coerce-expect-unsized.rs` and #20169
     /// for examples of where this comes up,.
-    fn rvalue_hint(ty: Ty) -> Self {
-        match ty.strip_references().kind(&Interner) {
+    fn rvalue_hint(table: &mut unify::InferenceTable, ty: Ty) -> Self {
+        // FIXME: do struct_tail_without_normalization
+        match table.resolve_ty_shallow(&ty).kind(&Interner) {
             TyKind::Slice(_) | TyKind::Str | TyKind::Dyn(_) => Expectation::RValueLikeUnsized(ty),
             _ => Expectation::has_type(ty),
         }

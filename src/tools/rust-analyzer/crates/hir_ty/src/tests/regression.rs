@@ -944,7 +944,7 @@ fn lifetime_from_chalk_during_deref() {
         r#"
 //- minicore: deref
 struct Box<T: ?Sized> {}
-impl<T> core::ops::Deref for Box<T> {
+impl<T: ?Sized> core::ops::Deref for Box<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -1063,6 +1063,7 @@ fn cfg_tail() {
 fn impl_trait_in_option_9530() {
     check_types(
         r#"
+//- minicore: sized
 struct Option<T>;
 impl<T> Option<T> {
     fn unwrap(self) -> T { loop {} }
@@ -1076,4 +1077,71 @@ fn test() {
 }
         "#,
     )
+}
+
+#[test]
+fn bare_dyn_trait_binders_9639() {
+    check_no_mismatches(
+        r#"
+//- minicore: fn, coerce_unsized
+fn infix_parse<T, S>(_state: S, _level_code: &Fn(S)) -> T {
+    loop {}
+}
+
+fn parse_arule() {
+    infix_parse((), &(|_recurse| ()))
+}
+        "#,
+    )
+}
+
+#[test]
+fn call_expected_type_closure() {
+    check_types(
+        r#"
+//- minicore: fn, option
+
+fn map<T, U>(o: Option<T>, f: impl FnOnce(T) -> U) -> Option<U> { loop {} }
+struct S {
+    field: u32
+}
+
+fn test() {
+    let o = Some(S { field: 2 });
+    let _: Option<()> = map(o, |s| { s.field; });
+                                  // ^^^^^^^ u32
+}
+        "#,
+    );
+}
+
+#[test]
+fn coerce_diesel_panic() {
+    check_no_mismatches(
+        r#"
+//- minicore: option
+
+trait TypeMetadata {
+    type MetadataLookup;
+}
+
+pub struct Output<'a, T, DB>
+where
+    DB: TypeMetadata,
+    DB::MetadataLookup: 'a,
+{
+    out: T,
+    metadata_lookup: Option<&'a DB::MetadataLookup>,
+}
+
+impl<'a, T, DB: TypeMetadata> Output<'a, T, DB> {
+    pub fn new(out: T, metadata_lookup: &'a DB::MetadataLookup) -> Self {
+        Output {
+            out,
+            metadata_lookup: Some(metadata_lookup),
+        }
+    }
+}
+        "#,
+    );
 }

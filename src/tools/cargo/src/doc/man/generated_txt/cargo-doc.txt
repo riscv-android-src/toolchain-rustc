@@ -82,6 +82,13 @@ OPTIONS
        --bins
            Document all binary targets.
 
+       --example name...
+           Document the specified example. This flag may be specified multiple
+           times and supports common Unix glob patterns.
+
+       --examples
+           Document all example targets.
+
    Feature Selection
        The feature flags allow you to control which features are enabled. When
        no feature options are given, the default feature is activated for every
@@ -122,6 +129,11 @@ OPTIONS
        --release
            Document optimized artifacts with the release profile. See the
            PROFILES section for details on how this affects profile selection.
+
+       --ignore-rust-version
+           Document the target even if the selected Rust compiler is older than
+           the required Rust version as configured in the project's
+           rust-version field.
 
    Output Options
        --target-dir directory

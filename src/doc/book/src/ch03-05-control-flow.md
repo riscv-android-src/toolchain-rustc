@@ -220,12 +220,35 @@ The symbol `^C` represents where you pressed <span class="keystroke">ctrl-c
 depending on where the code was in the loop when it received the interrupt
 signal.
 
-Fortunately, Rust provides another, more reliable way to break out of a loop.
-You can place the `break` keyword within the loop to tell the program when to
-stop executing the loop. Recall that we did this in the guessing game in the
+Fortunately, Rust provides a way to break out of a loop from code. You can
+place the `break` keyword within the loop to tell the program when to stop
+executing the loop. Recall that we did this in the guessing game in the
 [“Quitting After a Correct Guess”][quitting-after-a-correct-guess]<!-- ignore
 --> section of Chapter 2 to exit the program when the user won the game by
 guessing the correct number.
+
+We also used `continue` in the guessing game. The `continue` keyword within a
+loop tells the program to skip over any remaining code in this iteration of the
+loop and go to the next iteration.
+
+If you have loops within loops, `break` and `continue` apply to the innermost
+loop at that point. You can optionally specify a *loop label* on a loop and
+then use the label with `break` or `continue` to have those keywords applied to
+the labeled loop instead of the innermost loop. Here’s an example with two
+nested loops:
+
+```rust
+{{#rustdoc_include ../listings/ch03-common-programming-concepts/no-listing-32-5-loop-labels/src/main.rs}}
+```
+
+The outer loop has the label `'counting_up`, and it will count up from 0 to 2.
+The inner loop without a label counts down from 10 to 9. The first `break` that
+doesn’t specify a label will exit the inner loop only. The `break
+'counting_up;` statement will exit the outer loop. This code prints:
+
+```console
+{{#rustdoc_include ../listings/ch03-common-programming-concepts/no-listing-32-5-loop-labels/output.txt}}
+```
 
 #### Returning Values from Loops
 
@@ -302,9 +325,9 @@ will reach a value of `5` at some point, the loop stops executing before trying
 to fetch a sixth value from the array.
 
 But this approach is error prone; we could cause the program to panic if the
-index length is incorrect. It’s also slow, because the compiler adds runtime
-code to perform the conditional check on every element on every iteration
-through the loop.
+index value or test condition are incorrect. It’s also slow, because the
+compiler adds runtime code to perform the conditional check of whether the
+index is within the bounds of the array on every iteration through the loop.
 
 As a more concise alternative, you can use a `for` loop and execute some code
 for each item in a collection. A `for` loop looks like the code in Listing 3-5.
@@ -329,9 +352,9 @@ index < 4`, the code would panic. Using the `for` loop, you wouldn’t need to
 remember to change any other code if you changed the number of values in the
 array.
 
-The safety and conciseness of `for` loops make them the most commonly used loop
-construct in Rust. Even in situations in which you want to run some code a
-certain number of times, as in the countdown example that used a `while` loop
+The safety and conciseness of `for` loops makes them the most commonly used
+loop construct in Rust. Even in situations in which you want to run some code
+a certain number of times, as in the countdown example that used a `while` loop
 in Listing 3-3, most Rustaceans would use a `for` loop. The way to do that
 would be to use a `Range`, which is a type provided by the standard library
 that generates all numbers in sequence starting from one number and ending

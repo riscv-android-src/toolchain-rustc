@@ -1,12 +1,24 @@
+use anyhow::anyhow;
 use cargo::core::{features, CliUnstable};
 use cargo::{self, drop_print, drop_println, CliResult, Config};
 use clap::{AppSettings, Arg, ArgMatches};
 use itertools::Itertools;
+use std::collections::HashMap;
 
 use super::commands;
 use super::list_commands;
 use crate::command_prelude::*;
 use cargo::core::features::HIDDEN;
+
+lazy_static::lazy_static! {
+    // Maps from commonly known external commands (not builtin to cargo) to their
+    // description, for the help page. Reserved for external subcommands that are
+    // core within the rust ecosystem (esp ones that might become internal in the future).
+    static ref KNOWN_EXTERNAL_COMMAND_DESCRIPTIONS: HashMap<&'static str, &'static str> = vec![
+        ("clippy", "Checks a package to catch common mistakes and improve your Rust code."),
+        ("fmt", "Formats all bin and lib files of the current crate using rustfmt."),
+    ].into_iter().collect();
+}
 
 pub fn main(config: &mut Config) -> CliResult {
     // CAUTION: Be careful with using `config` until it is configured below.
@@ -98,19 +110,30 @@ Run with 'cargo -Z [FLAG] [SUBCOMMAND]'",
 
     if args.is_present("list") {
         drop_println!(config, "Installed Commands:");
-        for command in list_commands(config) {
+        for (name, command) in list_commands(config) {
+            let known_external_desc = KNOWN_EXTERNAL_COMMAND_DESCRIPTIONS.get(name.as_str());
             match command {
-                CommandInfo::BuiltIn { name, about } => {
+                CommandInfo::BuiltIn { about } => {
+                    assert!(
+                        known_external_desc.is_none(),
+                        "KNOWN_EXTERNAL_COMMANDS shouldn't contain builtin \"{}\"",
+                        name
+                    );
                     let summary = about.unwrap_or_default();
                     let summary = summary.lines().next().unwrap_or(&summary); // display only the first line
                     drop_println!(config, "    {:<20} {}", name, summary);
                 }
-                CommandInfo::External { name, path } => {
-                    if is_verbose {
+                CommandInfo::External { path } => {
+                    if let Some(desc) = known_external_desc {
+                        drop_println!(config, "    {:<20} {}", name, desc);
+                    } else if is_verbose {
                         drop_println!(config, "    {:<20} {}", name, path.display());
                     } else {
                         drop_println!(config, "    {}", name);
                     }
+                }
+                CommandInfo::Alias { target } => {
+                    drop_println!(config, "    {:<20} {}", name, target.iter().join(" "));
                 }
             }
         }
@@ -120,7 +143,7 @@ Run with 'cargo -Z [FLAG] [SUBCOMMAND]'",
     // Global args need to be extracted before expanding aliases because the
     // clap code for extracting a subcommand discards global options
     // (appearing before the subcommand).
-    let (expanded_args, global_args) = expand_aliases(config, args)?;
+    let (expanded_args, global_args) = expand_aliases(config, args, vec![])?;
     let (cmd, subcommand_args) = match expanded_args.subcommand() {
         (cmd, Some(args)) => (cmd, args),
         _ => {
@@ -156,6 +179,7 @@ pub fn get_version_string(is_verbose: bool) -> String {
 fn expand_aliases(
     config: &mut Config,
     args: ArgMatches<'static>,
+    mut already_expanded: Vec<String>,
 ) -> Result<(ArgMatches<'static>, GlobalArgs), CliError> {
     if let (cmd, Some(args)) = args.subcommand() {
         match (
@@ -194,7 +218,21 @@ fn expand_aliases(
                 let new_args = cli()
                     .setting(AppSettings::NoBinaryName)
                     .get_matches_from_safe(alias)?;
-                let (expanded_args, _) = expand_aliases(config, new_args)?;
+
+                let (new_cmd, _) = new_args.subcommand();
+                already_expanded.push(cmd.to_string());
+                if already_expanded.contains(&new_cmd.to_string()) {
+                    // Crash if the aliases are corecursive / unresolvable
+                    return Err(anyhow!(
+                        "alias {} has unresolvable recursive definition: {} -> {}",
+                        already_expanded[0],
+                        already_expanded.join(" -> "),
+                        new_cmd,
+                    )
+                    .into());
+                }
+
+                let (expanded_args, _) = expand_aliases(config, new_args, already_expanded)?;
                 return Ok((expanded_args, global_args));
             }
         }

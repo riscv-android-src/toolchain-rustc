@@ -792,6 +792,22 @@ fn pax_path() {
 }
 
 #[test]
+fn pax_linkpath() {
+    let mut ar = Archive::new(tar!("pax2.tar"));
+    let mut links = t!(ar.entries()).skip(3).take(2);
+
+    let long_symlink = t!(links.next().unwrap());
+    let link_name = long_symlink.link_name().unwrap().unwrap();
+    assert!(link_name.to_str().unwrap().len() > 99);
+    assert!(link_name.ends_with("bbbbbbbbbbbbbbb"));
+
+    let long_hardlink = t!(links.next().unwrap());
+    let link_name = long_hardlink.link_name().unwrap().unwrap();
+    assert!(link_name.to_str().unwrap().len() > 99);
+    assert!(link_name.ends_with("ccccccccccccccc"));
+}
+
+#[test]
 fn long_name_trailing_nul() {
     let mut b = Builder::new(Vec::<u8>::new());
 
@@ -1195,4 +1211,37 @@ fn read_only_directory_containing_files() {
     let contents = t!(b.into_inner());
     let mut ar = Archive::new(&contents[..]);
     assert!(ar.unpack(td.path()).is_ok());
+}
+
+// This test was marked linux only due to macOS CI can't handle `set_current_dir` correctly
+#[test]
+#[cfg(target_os = "linux")]
+fn tar_directory_containing_special_files() {
+    use std::env;
+    use std::ffi::CString;
+
+    let td = t!(TempBuilder::new().prefix("tar-rs").tempdir());
+    let fifo = td.path().join("fifo");
+
+    unsafe {
+        let fifo_path = t!(CString::new(fifo.to_str().unwrap()));
+        let ret = libc::mknod(fifo_path.as_ptr(), libc::S_IFIFO | 0o644, 0);
+        if ret != 0 {
+            libc::perror(fifo_path.as_ptr());
+            panic!("Failed to create a FIFO file");
+        }
+    }
+
+    t!(env::set_current_dir(td.path()));
+    let mut ar = Builder::new(Vec::new());
+    // append_path has a different logic for processing files, so we need to test it as well
+    t!(ar.append_path("fifo"));
+    t!(ar.append_dir_all("special", td.path()));
+    // unfortunately, block device file cannot be created by non-root users
+    // as a substitute, just test the file that exists on most Unix systems
+    t!(env::set_current_dir("/dev/"));
+    t!(ar.append_path("loop0"));
+    // CI systems seem to have issues with creating a chr device
+    t!(ar.append_path("null"));
+    t!(ar.finish());
 }

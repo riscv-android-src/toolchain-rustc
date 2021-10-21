@@ -55,12 +55,14 @@ value.
 
 Each variant can be either signed or unsigned and has an explicit size.
 *Signed* and *unsigned* refer to whether it’s possible for the number to be
-negative—in other words, whether the number needs to have a sign
-with it (signed) or whether it will only ever be positive and can therefore be
+negative—in other words, whether the number needs to have a sign with it
+(signed) or whether it will only ever be positive and can therefore be
 represented without a sign (unsigned). It’s like writing numbers on paper: when
 the sign matters, a number is shown with a plus sign or a minus sign; however,
 when it’s safe to assume the number is positive, it’s shown with no sign.
-Signed numbers are stored using [two’s complement](https://en.wikipedia.org/wiki/Two%27s_complement) representation.
+Signed numbers are stored using [two’s
+complement](https://en.wikipedia.org/wiki/Two%27s_complement)<!-- ignore -->
+representation.
 
 Each signed variant can store numbers from -(2<sup>n - 1</sup>) to 2<sup>n -
 1</sup> - 1 inclusive, where *n* is the number of bits that variant uses. So an
@@ -109,10 +111,10 @@ some sort of collection.
 > *not* include checks for integer overflow that cause panics. Instead, if
 > overflow occurs, Rust performs *two’s complement wrapping*. In short, values
 > greater than the maximum value the type can hold “wrap around” to the minimum
-> of the values the type can hold. In the case of a `u8`, 256 becomes 0, 257
-> becomes 1, and so on. The program won’t panic, but the variable will have a
-> value that probably isn’t what you were expecting it to have. Relying on
-> integer overflow’s wrapping behavior is considered an error.
+> of the values the type can hold. In the case of a `u8`, the value 256 becomes
+> 0, the value 257 becomes 1, and so on. The program won’t panic, but the
+> variable will have a value that probably isn’t what you were expecting it to
+> have. Relying on integer overflow’s wrapping behavior is considered an error.
 >
 > To explicitly handle the possibility of overflow, you can use these families
 > of methods that the standard library provides on primitive numeric types:
@@ -121,7 +123,7 @@ some sort of collection.
 > - Return the `None` value if there is overflow with the `checked_*` methods
 > - Return the value and a boolean indicating whether there was overflow with
 >   the `overflowing_*` methods
-> - Saturate at the value's minimum or maximum values with `saturating_*`
+> - Saturate at the value’s minimum or maximum values with `saturating_*`
 >   methods
 
 #### Floating-Point Types
@@ -147,7 +149,8 @@ Floating-point numbers are represented according to the IEEE-754 standard. The
 
 Rust supports the basic mathematical operations you’d expect for all of the
 number types: addition, subtraction, multiplication, division, and remainder.
-The following code shows how you’d use each one in a `let` statement:
+Integer division rounds down to the nearest integer. The following code shows
+how you’d use each numeric operation in a `let` statement:
 
 <span class="filename">Filename: src/main.rs</span>
 
@@ -250,6 +253,11 @@ This program creates a tuple, `x`, and then makes new variables for each
 element by using their respective indices. As with most programming languages,
 the first index in a tuple is 0.
 
+The tuple without any values, `()`, is a special type that has only one value,
+also written `()`. The type is called the *unit type* and the value is called
+the *unit value*. Expressions implicitly return the unit value if they don’t
+return any other value.
+
 #### The Array Type
 
 Another way to have a collection of multiple values is with an *array*. Unlike
@@ -310,8 +318,9 @@ more concise way.
 
 ##### Accessing Array Elements
 
-An array is a single chunk of memory allocated on the stack. You can access
-elements of an array using indexing, like this:
+An array is a single chunk of memory of a known, fixed size that can be
+allocated on the stack. You can access elements of an array using indexing,
+like this:
 
 <span class="filename">Filename: src/main.rs</span>
 
@@ -338,7 +347,7 @@ similar to the guessing game in Chapter 2 to get an array index from the user:
 This code compiles successfully. If you run this code using `cargo run` and
 enter 0, 1, 2, 3, or 4, the program will print out the corresponding value at
 that index in the array. If you instead enter a number past the end of the
-array, such as 10, you'll see output like this:
+array, such as 10, you’ll see output like this:
 
 <!-- manual-regeneration
 cd listings/ch03-common-programming-concepts/no-listing-15-invalid-array-access
@@ -353,14 +362,14 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 The program resulted in a *runtime* error at the point of using an invalid
 value in the indexing operation. The program exited with an error message and
-didn't execute the final `println!` statement. When you attempt to access an
+didn’t execute the final `println!` statement. When you attempt to access an
 element using indexing, Rust will check that the index you’ve specified is less
 than the array length. If the index is greater than or equal to the length,
 Rust will panic. This check has to happen at runtime, especially in this case,
-because the compiler can't possibly know what value a user will enter when they
+because the compiler can’t possibly know what value a user will enter when they
 run the code later.
 
-This is the first example of Rust’s safety principles in action. In many
+This is an example of Rust’s memory safety principles in action. In many
 low-level languages, this kind of check is not done, and when you provide an
 incorrect index, invalid memory can be accessed. Rust protects you against this
 kind of error by immediately exiting instead of allowing the memory access and

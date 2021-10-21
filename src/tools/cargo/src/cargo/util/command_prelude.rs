@@ -6,11 +6,12 @@ use crate::sources::CRATES_IO_REGISTRY;
 use crate::util::important_paths::find_root_manifest_for_wd;
 use crate::util::interning::InternedString;
 use crate::util::restricted_names::is_glob_pattern;
+use crate::util::toml::{StringOrVec, TomlProfile};
+use crate::util::validate_package_name;
 use crate::util::{
     print_available_benches, print_available_binaries, print_available_examples,
     print_available_packages, print_available_tests,
 };
-use crate::util::{toml::TomlProfile, validate_package_name};
 use crate::CargoResult;
 use anyhow::bail;
 use cargo_util::paths;
@@ -27,16 +28,16 @@ pub type App = clap::App<'static, 'static>;
 pub trait AppExt: Sized {
     fn _arg(self, arg: Arg<'static, 'static>) -> Self;
 
+    /// Do not use this method, it is only for backwards compatibility.
+    /// Use `arg_package_spec_no_all` instead.
     fn arg_package_spec(
         self,
         package: &'static str,
         all: &'static str,
         exclude: &'static str,
     ) -> Self {
-        self.arg_package_spec_simple(package)
+        self.arg_package_spec_no_all(package, all, exclude)
             ._arg(opt("all", "Alias for --workspace (deprecated)"))
-            ._arg(opt("workspace", all))
-            ._arg(multi_opt("exclude", "SPEC", exclude))
     }
 
     /// Variant of arg_package_spec that does not include the `--all` flag
@@ -86,9 +87,7 @@ pub trait AppExt: Sized {
         benches: &'static str,
         all: &'static str,
     ) -> Self {
-        self.arg_targets_lib_bin(lib, bin, bins)
-            ._arg(optional_multi_opt("example", "NAME", example))
-            ._arg(opt("examples", examples))
+        self.arg_targets_lib_bin_example(lib, bin, bins, example, examples)
             ._arg(optional_multi_opt("test", "NAME", test))
             ._arg(opt("tests", tests))
             ._arg(optional_multi_opt("bench", "NAME", bench))
@@ -96,10 +95,19 @@ pub trait AppExt: Sized {
             ._arg(opt("all-targets", all))
     }
 
-    fn arg_targets_lib_bin(self, lib: &'static str, bin: &'static str, bins: &'static str) -> Self {
+    fn arg_targets_lib_bin_example(
+        self,
+        lib: &'static str,
+        bin: &'static str,
+        bins: &'static str,
+        example: &'static str,
+        examples: &'static str,
+    ) -> Self {
         self._arg(opt("lib", lib))
             ._arg(optional_multi_opt("bin", "NAME", bin))
             ._arg(opt("bins", bins))
+            ._arg(optional_multi_opt("example", "NAME", example))
+            ._arg(opt("examples", examples))
     }
 
     fn arg_targets_bins_examples(
@@ -218,7 +226,7 @@ pub trait AppExt: Sized {
     fn arg_ignore_rust_version(self) -> Self {
         self._arg(opt(
             "ignore-rust-version",
-            "Ignore `rust-version` specification in packages (unstable)",
+            "Ignore `rust-version` specification in packages",
         ))
     }
 
@@ -355,7 +363,7 @@ pub trait ArgMatchesExt {
         // This is an early exit, since it allows combination with `--release`.
         match (specified_profile, profile_checking) {
             // `cargo rustc` has legacy handling of these names
-            (Some(name @ ("test" | "bench" | "check")), ProfileChecking::LegacyRustc) |
+            (Some(name @ ("dev" | "test" | "bench" | "check")), ProfileChecking::LegacyRustc) |
             // `cargo fix` and `cargo check` has legacy handling of this profile name
             (Some(name @ "test"), ProfileChecking::LegacyTestOnly) => return Ok(InternedString::new(name)),
             _ => {}
@@ -532,12 +540,6 @@ pub trait ArgMatchesExt {
             rustdoc_document_private_items: false,
             honor_rust_version: !self._is_present("ignore-rust-version"),
         };
-
-        if !opts.honor_rust_version {
-            config
-                .cli_unstable()
-                .fail_if_stable_opt("--ignore-rust-version", 8072)?;
-        }
 
         if let Some(ws) = workspace {
             self.check_optional_opts(ws, &opts)?;
@@ -721,17 +723,9 @@ pub fn values_os(args: &ArgMatches<'_>, name: &str) -> Vec<OsString> {
     args._values_of_os(name)
 }
 
-#[derive(PartialEq, PartialOrd, Eq, Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommandInfo {
-    BuiltIn { name: String, about: Option<String> },
-    External { name: String, path: PathBuf },
-}
-
-impl CommandInfo {
-    pub fn name(&self) -> &str {
-        match self {
-            CommandInfo::BuiltIn { name, .. } => name,
-            CommandInfo::External { name, .. } => name,
-        }
-    }
+    BuiltIn { about: Option<String> },
+    External { path: PathBuf },
+    Alias { target: StringOrVec },
 }

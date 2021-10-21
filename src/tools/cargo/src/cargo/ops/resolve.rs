@@ -115,6 +115,16 @@ pub fn resolve_ws_with_opts<'cfg>(
                     .shell()
                     .warn(format!("package replacement is not used: {}", replace_spec))?
             }
+
+            if dep.features().len() != 0 || !dep.uses_default_features() {
+                ws.config()
+                .shell()
+                .warn(format!(
+                    "replacement for `{}` uses the features mechanism. \
+                    default-features and features will not take effect because the replacement dependency does not support this mechanism",
+                    dep.package_name()
+                ))?
+            }
         }
 
         Some(resolve)
@@ -160,6 +170,24 @@ pub fn resolve_ws_with_opts<'cfg>(
         requested_targets,
         feature_opts,
     )?;
+
+    let no_lib_pkgs = pkg_set.no_lib_pkgs(
+        &resolved_with_overrides,
+        &member_ids,
+        has_dev_units,
+        requested_targets,
+        target_data,
+        force_all_targets,
+    );
+    for (pkg_id, dep_pkgs) in no_lib_pkgs {
+        for dep_pkg in dep_pkgs {
+            ws.config().shell().warn(&format!(
+                "{} ignoring invalid dependency `{}` which is missing a lib target",
+                pkg_id,
+                dep_pkg.name(),
+            ))?;
+        }
+    }
 
     Ok(WorkspaceResolve {
         pkg_set,

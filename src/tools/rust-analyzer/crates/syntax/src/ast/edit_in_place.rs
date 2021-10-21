@@ -13,7 +13,9 @@ use crate::{
         make, GenericParamsOwner,
     },
     ted::{self, Position},
-    AstNode, AstToken, Direction, SyntaxNode,
+    AstNode, AstToken, Direction,
+    SyntaxKind::{ATTR, COMMENT, WHITESPACE},
+    SyntaxNode,
 };
 
 use super::NameOwner;
@@ -196,6 +198,32 @@ fn create_generic_param_list(position: Position) -> ast::GenericParamList {
     gpl
 }
 
+pub trait AttrsOwnerEdit: ast::AttrsOwner + AstNodeEdit {
+    fn remove_attrs_and_docs(&self) {
+        remove_attrs_and_docs(self.syntax());
+
+        fn remove_attrs_and_docs(node: &SyntaxNode) {
+            let mut remove_next_ws = false;
+            for child in node.children_with_tokens() {
+                match child.kind() {
+                    ATTR | COMMENT => {
+                        remove_next_ws = true;
+                        child.detach();
+                        continue;
+                    }
+                    WHITESPACE if remove_next_ws => {
+                        child.detach();
+                    }
+                    _ => (),
+                }
+                remove_next_ws = false;
+            }
+        }
+    }
+}
+
+impl<T: ast::AttrsOwner + AstNodeEdit> AttrsOwnerEdit for T {}
+
 impl ast::GenericParamList {
     pub fn add_generic_param(&self, generic_param: ast::GenericParam) {
         match self.generic_params().last() {
@@ -359,14 +387,10 @@ impl ast::MatchArmList {
         let mut elements = Vec::new();
         let position = match self.arms().last() {
             Some(last_arm) => {
-                let comma = last_arm
-                    .syntax()
-                    .siblings_with_tokens(Direction::Next)
-                    .find(|it| it.kind() == T![,]);
-                if needs_comma(&last_arm) && comma.is_none() {
-                    elements.push(make::token(SyntaxKind::COMMA).into());
+                if needs_comma(&last_arm) {
+                    ted::append_child(last_arm.syntax(), make::token(SyntaxKind::COMMA));
                 }
-                Position::after(comma.unwrap_or_else(|| last_arm.syntax().clone().into()))
+                Position::after(last_arm.syntax().clone())
             }
             None => match self.l_curly_token() {
                 Some(it) => Position::after(it),
@@ -377,12 +401,12 @@ impl ast::MatchArmList {
         elements.push(make::tokens::whitespace(&format!("\n{}", indent)).into());
         elements.push(arm.syntax().clone().into());
         if needs_comma(&arm) {
-            elements.push(make::token(SyntaxKind::COMMA).into());
+            ted::append_child(arm.syntax(), make::token(SyntaxKind::COMMA));
         }
         ted::insert_all(position, elements);
 
         fn needs_comma(arm: &ast::MatchArm) -> bool {
-            arm.expr().map_or(false, |e| !e.is_block_like())
+            arm.expr().map_or(false, |e| !e.is_block_like()) && arm.comma_token().is_none()
         }
     }
 }

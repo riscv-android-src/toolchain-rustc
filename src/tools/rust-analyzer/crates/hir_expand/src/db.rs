@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use base_db::{salsa, SourceDatabase};
+use limit::Limit;
 use mbe::{ExpandError, ExpandResult};
-use parser::FragmentKind;
+use parser::{FragmentKind, T};
 use syntax::{
     algo::diff,
     ast::{self, NameOwner},
@@ -21,7 +22,9 @@ use crate::{
 ///
 /// If an invocation produces more tokens than this limit, it will not be stored in the database and
 /// an error will be emitted.
-const TOKEN_LIMIT: usize = 524288;
+///
+/// Actual max for `analysis-stats .` at some point: 30672.
+static TOKEN_LIMIT: Limit = Limit::new(524_288);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TokenExpander {
@@ -50,14 +53,13 @@ impl TokenExpander {
             TokenExpander::MacroRules { mac, .. } => mac.expand(tt),
             TokenExpander::MacroDef { mac, .. } => mac.expand(tt),
             TokenExpander::Builtin(it) => it.expand(db, id, tt),
-            // FIXME switch these to ExpandResult as well
-            TokenExpander::BuiltinAttr(it) => it.expand(db, id, tt).into(),
-            TokenExpander::BuiltinDerive(it) => it.expand(db, id, tt).into(),
+            TokenExpander::BuiltinAttr(it) => it.expand(db, id, tt),
+            TokenExpander::BuiltinDerive(it) => it.expand(db, id, tt),
             TokenExpander::ProcMacro(_) => {
                 // We store the result in salsa db to prevent non-deterministic behavior in
                 // some proc-macro implementation
                 // See #4315 for details
-                db.expand_proc_macro(id).into()
+                db.expand_proc_macro(id)
             }
         }
     }
@@ -125,7 +127,7 @@ pub trait AstDatabase: SourceDatabase {
     /// proc macros, since they are not deterministic in general, and
     /// non-determinism breaks salsa in a very, very, very bad way. @edwin0cheng
     /// heroically debugged this once!
-    fn expand_proc_macro(&self, call: MacroCallId) -> Result<tt::Subtree, mbe::ExpandError>;
+    fn expand_proc_macro(&self, call: MacroCallId) -> ExpandResult<tt::Subtree>;
     /// Firewall query that returns the error from the `macro_expand` query.
     fn macro_expand_error(&self, macro_call: MacroCallId) -> Option<ExpandError>;
 
@@ -269,7 +271,24 @@ fn macro_arg(db: &dyn AstDatabase, id: MacroCallId) -> Option<Arc<(tt::Subtree, 
 fn macro_arg_text(db: &dyn AstDatabase, id: MacroCallId) -> Option<GreenNode> {
     let loc = db.lookup_intern_macro(id);
     let arg = loc.kind.arg(db)?;
-    let arg = process_macro_input(db, arg, id);
+    let arg = process_macro_input(&loc.kind, arg);
+    if matches!(loc.kind, MacroCallKind::FnLike { .. }) {
+        let first = arg.first_child_or_token().map_or(T![.], |it| it.kind());
+        let last = arg.last_child_or_token().map_or(T![.], |it| it.kind());
+        let well_formed_tt =
+            matches!((first, last), (T!['('], T![')']) | (T!['['], T![']']) | (T!['{'], T!['}']));
+        if !well_formed_tt {
+            // Don't expand malformed (unbalanced) macro invocations. This is
+            // less than ideal, but trying to expand unbalanced  macro calls
+            // sometimes produces pathological, deeply nested code which breaks
+            // all kinds of things.
+            //
+            // Some day, we'll have explicit recursion counters for all
+            // recursive things, at which point this code might be removed.
+            cov_mark::hit!(issue9358_bad_macro_stack_overflow);
+            return None;
+        }
+    }
     Some(arg.green().into())
 }
 
@@ -278,7 +297,7 @@ fn macro_def(db: &dyn AstDatabase, id: MacroDefId) -> Option<Arc<TokenExpander>>
         MacroDefKind::Declarative(ast_id) => match ast_id.to_node(db) {
             ast::Macro::MacroRules(macro_rules) => {
                 let arg = macro_rules.token_tree()?;
-                let (tt, def_site_token_map) = mbe::ast_to_token_tree(&arg);
+                let (tt, def_site_token_map) = mbe::syntax_node_to_token_tree(arg.syntax());
                 let mac = match mbe::MacroRules::parse(&tt) {
                     Ok(it) => it,
                     Err(err) => {
@@ -291,7 +310,7 @@ fn macro_def(db: &dyn AstDatabase, id: MacroDefId) -> Option<Arc<TokenExpander>>
             }
             ast::Macro::MacroDef(macro_def) => {
                 let arg = macro_def.body()?;
-                let (tt, def_site_token_map) = mbe::ast_to_token_tree(&arg);
+                let (tt, def_site_token_map) = mbe::syntax_node_to_token_tree(arg.syntax());
                 let mac = match mbe::MacroDef::parse(&tt) {
                     Ok(it) => it,
                     Err(err) => {
@@ -316,35 +335,17 @@ fn macro_def(db: &dyn AstDatabase, id: MacroDefId) -> Option<Arc<TokenExpander>>
 }
 
 fn macro_expand(db: &dyn AstDatabase, id: MacroCallId) -> ExpandResult<Option<Arc<tt::Subtree>>> {
-    macro_expand_with_arg(db, id, None)
-}
-
-fn macro_expand_error(db: &dyn AstDatabase, macro_call: MacroCallId) -> Option<ExpandError> {
-    db.macro_expand(macro_call).err
-}
-
-fn macro_expand_with_arg(
-    db: &dyn AstDatabase,
-    id: MacroCallId,
-    arg: Option<Arc<(tt::Subtree, mbe::TokenMap)>>,
-) -> ExpandResult<Option<Arc<tt::Subtree>>> {
     let _p = profile::span("macro_expand");
     let loc: MacroCallLoc = db.lookup_intern_macro(id);
     if let Some(eager) = &loc.eager {
-        if arg.is_some() {
-            return ExpandResult::str_err(
-                "speculative macro expansion not implemented for eager macro".to_owned(),
-            );
-        } else {
-            return ExpandResult {
-                value: Some(eager.arg_or_expansion.clone()),
-                // FIXME: There could be errors here!
-                err: None,
-            };
-        }
+        return ExpandResult {
+            value: Some(eager.arg_or_expansion.clone()),
+            // FIXME: There could be errors here!
+            err: None,
+        };
     }
 
-    let macro_arg = match arg.or_else(|| db.macro_arg(id)) {
+    let macro_arg = match db.macro_arg(id) {
         Some(it) => it,
         None => return ExpandResult::str_err("Fail to args in to tt::TokenTree".into()),
     };
@@ -356,28 +357,27 @@ fn macro_expand_with_arg(
     let ExpandResult { value: tt, err } = macro_rules.expand(db, id, &macro_arg.0);
     // Set a hard limit for the expanded tt
     let count = tt.count();
-    if count > TOKEN_LIMIT {
+    // XXX: Make ExpandResult a real error and use .map_err instead?
+    if TOKEN_LIMIT.check(count).is_err() {
         return ExpandResult::str_err(format!(
             "macro invocation exceeds token limit: produced {} tokens, limit is {}",
-            count, TOKEN_LIMIT,
+            count,
+            TOKEN_LIMIT.inner(),
         ));
     }
 
     ExpandResult { value: Some(Arc::new(tt)), err }
 }
 
-fn expand_proc_macro(
-    db: &dyn AstDatabase,
-    id: MacroCallId,
-) -> Result<tt::Subtree, mbe::ExpandError> {
+fn macro_expand_error(db: &dyn AstDatabase, macro_call: MacroCallId) -> Option<ExpandError> {
+    db.macro_expand(macro_call).err
+}
+
+fn expand_proc_macro(db: &dyn AstDatabase, id: MacroCallId) -> ExpandResult<tt::Subtree> {
     let loc: MacroCallLoc = db.lookup_intern_macro(id);
     let macro_arg = match db.macro_arg(id) {
         Some(it) => it,
-        None => {
-            return Err(
-                tt::ExpansionError::Unknown("No arguments for proc-macro".to_string()).into()
-            )
-        }
+        None => return ExpandResult::str_err("No arguments for proc-macro".to_string()),
     };
 
     let expander = match loc.def.kind {

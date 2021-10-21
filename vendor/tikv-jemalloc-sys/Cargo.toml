@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "tikv-jemalloc-sys"
-version = "0.4.1+5.2.1-patched"
+version = "0.4.2+5.2.1-patched.2"
 authors = ["Alex Crichton <alex@alexcrichton.com>", "Gonzalo Brito Gadeschi <gonzalobg88@gmail.com>", "The TiKV Project Developers"]
 build = "build.rs"
 links = "jemalloc"

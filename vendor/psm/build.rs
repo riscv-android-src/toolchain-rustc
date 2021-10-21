@@ -1,18 +1,41 @@
 extern crate cc;
 
-fn find_assembly(arch: &str, endian: &str, os: &str, env: &str) -> Option<(&'static str, bool)> {
+fn find_assembly(
+    arch: &str,
+    endian: &str,
+    os: &str,
+    env: &str,
+    masm: bool,
+) -> Option<(&'static str, bool)> {
     match (arch, endian, os, env) {
         // The implementations for stack switching exist, but, officially, doing so without Fibers
         // is not supported in Windows. For x86_64 the implementation actually works locally,
         // but failed tests in CI (???). Might want to have a feature for experimental support
         // here.
-        ("x86", _, "windows", "msvc") => Some(("src/arch/x86_msvc.asm", false)),
-        ("x86_64", _, "windows", "msvc") => Some(("src/arch/x86_64_msvc.asm", false)),
+        ("x86", _, "windows", "msvc") => {
+            if masm {
+                Some(("src/arch/x86_msvc.asm", false))
+            } else {
+                Some(("src/arch/x86_windows_gnu.s", false))
+            }
+        }
+        ("x86_64", _, "windows", "msvc") => {
+            if masm {
+                Some(("src/arch/x86_64_msvc.asm", false))
+            } else {
+                Some(("src/arch/x86_64_windows_gnu.s", false))
+            }
+        }
         ("arm", _, "windows", "msvc") => Some(("src/arch/arm_armasm.asm", false)),
-        ("aarch64", _, "windows", "msvc") => Some(("src/arch/aarch64_armasm.asm", false)),
+        ("aarch64", _, "windows", "msvc") => {
+            if masm {
+                Some(("src/arch/aarch64_armasm.asm", false))
+            } else {
+                Some(("src/arch/aarch_aapcs64.s", false))
+            }
+        }
         ("x86", _, "windows", _) => Some(("src/arch/x86_windows_gnu.s", false)),
         ("x86_64", _, "windows", _) => Some(("src/arch/x86_64_windows_gnu.s", false)),
-
         ("x86", _, _, _) => Some(("src/arch/x86.s", true)),
         ("x86_64", _, _, _) => Some(("src/arch/x86_64.s", true)),
         ("arm", _, _, _) => Some(("src/arch/arm_aapcs.s", true)),
@@ -37,7 +60,20 @@ fn main() {
     let env = ::std::env::var("CARGO_CFG_TARGET_ENV").unwrap();
     let os = ::std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let endian = ::std::env::var("CARGO_CFG_TARGET_ENDIAN").unwrap();
-    let asm = if let Some((asm, canswitch)) = find_assembly(&arch, &endian, &os, &env) {
+
+    // We are only assembling a single file and any flags in the environment probably
+    // don't apply in this case, so we don't want to use them. Unfortunately, cc
+    // doesn't provide a way to clear/ignore flags set from the environment, so
+    // we manually remove them instead
+    for key in
+        std::env::vars().filter_map(|(k, _)| if k.contains("CFLAGS") { Some(k) } else { None })
+    {
+        std::env::remove_var(key);
+    }
+
+    let mut cfg = cc::Build::new();
+    let msvc = cfg.get_compiler().is_like_msvc();
+    let asm = if let Some((asm, canswitch)) = find_assembly(&arch, &endian, &os, &env, msvc) {
         println!("cargo:rustc-cfg=asm");
         if canswitch {
             println!("cargo:rustc-cfg=switchable_stack")
@@ -50,9 +86,6 @@ fn main() {
         );
         return;
     };
-
-    let mut cfg = cc::Build::new();
-    let msvc = cfg.get_compiler().is_like_msvc();
 
     if !msvc {
         cfg.flag("-xassembler-with-cpp");

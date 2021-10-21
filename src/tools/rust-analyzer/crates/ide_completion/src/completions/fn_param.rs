@@ -6,14 +6,18 @@ use syntax::{
     match_ast, AstNode,
 };
 
-use crate::{CompletionContext, CompletionItem, CompletionItemKind, CompletionKind, Completions};
+use crate::{
+    context::{ParamKind, PatternContext},
+    CompletionContext, CompletionItem, CompletionItemKind, CompletionKind, Completions,
+};
 
 /// Complete repeated parameters, both name and type. For example, if all
 /// functions in a file have a `spam: &mut Spam` parameter, a completion with
 /// `spam: &mut Spam` insert text/label and `spam` lookup string will be
 /// suggested.
 pub(crate) fn complete_fn_param(acc: &mut Completions, ctx: &CompletionContext) -> Option<()> {
-    if !ctx.is_param {
+    if !matches!(ctx.pattern_ctx, Some(PatternContext { is_param: Some(ParamKind::Function), .. }))
+    {
         return None;
     }
 
@@ -74,125 +78,4 @@ fn add_new_item_to_acc(
     let mut item = CompletionItem::new(CompletionKind::Magic, ctx.source_range(), label);
     item.kind(CompletionItemKind::Binding).lookup_by(lookup);
     item.add_to(acc)
-}
-
-#[cfg(test)]
-mod tests {
-    use expect_test::{expect, Expect};
-
-    use crate::{tests::filtered_completion_list, CompletionKind};
-
-    fn check(ra_fixture: &str, expect: Expect) {
-        let actual = filtered_completion_list(ra_fixture, CompletionKind::Magic);
-        expect.assert_eq(&actual);
-    }
-
-    #[test]
-    fn test_param_completion_last_param() {
-        check(
-            r#"
-fn foo(file_id: FileId) {}
-fn bar(file_id: FileId) {}
-fn baz(file$0) {}
-"#,
-            expect![[r#"
-                bn file_id: FileId
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_param_completion_first_param() {
-        check(
-            r#"
-fn foo(file_id: FileId) {}
-fn bar(file_id: FileId) {}
-fn baz(file$0 id: u32) {}
-"#,
-            expect![[r#"
-                bn file_id: FileId
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_param_completion_nth_param() {
-        check(
-            r#"
-fn foo(file_id: FileId) {}
-fn baz(file$0, x: i32) {}
-"#,
-            expect![[r#"
-                bn file_id: FileId
-            "#]],
-        );
-    }
-
-    #[test]
-    fn test_param_completion_trait_param() {
-        check(
-            r#"
-pub(crate) trait SourceRoot {
-    pub fn contains(&self, file_id: FileId) -> bool;
-    pub fn module_map(&self) -> &ModuleMap;
-    pub fn lines(&self, file_id: FileId) -> &LineIndex;
-    pub fn syntax(&self, file$0)
-}
-"#,
-            expect![[r#"
-                bn file_id: FileId
-            "#]],
-        );
-    }
-
-    #[test]
-    fn completes_param_in_inner_function() {
-        check(
-            r#"
-fn outer(text: String) {
-    fn inner($0)
-}
-"#,
-            expect![[r#"
-                bn text: String
-            "#]],
-        )
-    }
-
-    #[test]
-    fn completes_non_ident_pat_param() {
-        check(
-            r#"
-struct Bar { bar: u32 }
-
-fn foo(Bar { bar }: Bar) {}
-fn foo2($0) {}
-"#,
-            expect![[r#"
-                bn Bar { bar }: Bar
-            "#]],
-        )
-    }
-
-    #[test]
-    fn test_param_completion_self_param() {
-        check(
-            r#"
-                struct A {}
-
-                impl A {
-                    fn foo(file_id: FileId) {}
-                    fn new($0) {
-                    }
-                }
-            "#,
-            expect![[r#"
-                bn self
-                bn &self
-                bn mut self
-                bn &mut self
-                bn file_id: FileId
-            "#]],
-        )
-    }
 }

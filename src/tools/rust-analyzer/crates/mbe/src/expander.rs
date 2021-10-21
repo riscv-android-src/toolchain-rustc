@@ -93,7 +93,7 @@ pub(crate) fn expand_rules(
 ///
 /// In other words, `Bindings` is a *multi* mapping from `SmolStr` to
 /// `tt::TokenTree`, where the index to select a particular `TokenTree` among
-/// many is not a plain `usize`, but an `&[usize]`.
+/// many is not a plain `usize`, but a `&[usize]`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Bindings {
     inner: FxHashMap<SmolStr, Binding>,
@@ -120,7 +120,7 @@ mod tests {
     use syntax::{ast, AstNode};
 
     use super::*;
-    use crate::ast_to_token_tree;
+    use crate::syntax_node_to_token_tree;
 
     #[test]
     fn test_expand_rule() {
@@ -159,7 +159,8 @@ mod tests {
         let macro_definition =
             source_file.syntax().descendants().find_map(ast::MacroRules::cast).unwrap();
 
-        let (definition_tt, _) = ast_to_token_tree(&macro_definition.token_tree().unwrap());
+        let (definition_tt, _) =
+            syntax_node_to_token_tree(macro_definition.token_tree().unwrap().syntax());
         crate::MacroRules::parse(&definition_tt).unwrap()
     }
 
@@ -168,7 +169,8 @@ mod tests {
         let macro_invocation =
             source_file.syntax().descendants().find_map(ast::MacroCall::cast).unwrap();
 
-        let (invocation_tt, _) = ast_to_token_tree(&macro_invocation.token_tree().unwrap());
+        let (invocation_tt, _) =
+            syntax_node_to_token_tree(macro_invocation.token_tree().unwrap().syntax());
 
         expand_rules(&rules.rules, &invocation_tt)
     }

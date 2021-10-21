@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "xflags-macros"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
 description = "Private implementation details of xflags."
 license = "MIT OR Apache-2.0"
@@ -21,7 +21,8 @@ repository = "https://github.com/matklad/xflags"
 
 [lib]
 proc-macro = true
-[dependencies.proc-macro2]
-version = "1"
 [dev-dependencies.expect-test]
+version = "1"
+
+[dev-dependencies.proc-macro2]
 version = "1"

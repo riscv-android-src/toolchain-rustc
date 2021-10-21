@@ -75,6 +75,15 @@ pub(crate) trait TryToNav {
     fn try_to_nav(&self, db: &RootDatabase) -> Option<NavigationTarget>;
 }
 
+impl<T: TryToNav, U: TryToNav> TryToNav for Either<T, U> {
+    fn try_to_nav(&self, db: &RootDatabase) -> Option<NavigationTarget> {
+        match self {
+            Either::Left(it) => it.try_to_nav(db),
+            Either::Right(it) => it.try_to_nav(db),
+        }
+    }
+}
+
 impl NavigationTarget {
     pub fn focus_or_full_range(&self) -> TextRange {
         self.focus_range.unwrap_or(self.full_range)
@@ -83,7 +92,7 @@ impl NavigationTarget {
     pub(crate) fn from_module_to_decl(db: &RootDatabase, module: hir::Module) -> NavigationTarget {
         let name = module.name(db).map(|it| it.to_string().into()).unwrap_or_default();
         if let Some(src) = module.declaration_source(db) {
-            let node = src.as_ref().map(|it| it.syntax());
+            let node = src.syntax();
             let full_range = node.original_file_range(db);
             let focus_range = src
                 .value
@@ -134,8 +143,11 @@ impl NavigationTarget {
         kind: SymbolKind,
     ) -> NavigationTarget {
         let name = node.value.name().map(|it| it.text().into()).unwrap_or_else(|| "_".into());
-        let focus_range =
-            node.value.name().map(|it| node.with_value(it.syntax()).original_file_range(db).range);
+        let focus_range = node
+            .value
+            .name()
+            .and_then(|it| node.with_value(it.syntax()).original_file_range_opt(db))
+            .map(|it| it.range);
         let frange = node.map(|it| it.syntax()).original_file_range(db);
 
         NavigationTarget::from_syntax(frange.file_id, name, focus_range, frange.range, kind)
@@ -289,7 +301,7 @@ impl TryToNav for hir::Impl {
         let frange = if let Some(item) = &derive_attr {
             item.syntax().original_file_range(db)
         } else {
-            src.as_ref().map(|it| it.syntax()).original_file_range(db)
+            src.syntax().original_file_range(db)
         };
         let focus_range = if derive_attr.is_some() {
             None
@@ -519,6 +531,7 @@ pub(crate) fn description_from_symbol(db: &RootDatabase, symbol: &FileSymbol) ->
             ast::Static(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
             ast::RecordField(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
             ast::Variant(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
+            ast::Union(it) => sema.to_def(&it).map(|it| it.display(db).to_string()),
             _ => None,
         }
     }

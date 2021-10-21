@@ -179,11 +179,11 @@ move the value. Only the following place expressions may be moved out of:
 * [Variables] which are not currently borrowed.
 * [Temporary values](#temporaries).
 * [Fields][field] of a place expression which can be moved out of and
-  doesn't implement [`Drop`].
+  don't implement [`Drop`].
 * The result of [dereferencing][deref] an expression with type [`Box<T>`] and
   that can also be moved out of.
 
-When moving out of a place expression that evaluates to a local variable, the
+After moving out of a place expression that evaluates to a local variable, the
 location is deinitialized and cannot be read from again until it is
 reinitialized. In all other cases, trying to use a place expression in a value
 expression context is an error.
@@ -206,7 +206,7 @@ The following expressions can be mutable place expression contexts:
 * Dereference of a variable, or field of a variable, with type `&mut T`. Note:
   This is an exception to the requirement of the next rule.
 * Dereferences of a type that implements `DerefMut`: this then requires that
-  the value being dereferenced is evaluated is a mutable place expression context.
+  the value being dereferenced is evaluated in a mutable place expression context.
 * [Array indexing] of a type that implements `IndexMut`: this
   then evaluates the value being indexed, but not the index, in mutable place
   expression context.

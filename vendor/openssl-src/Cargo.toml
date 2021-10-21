@@ -12,7 +12,7 @@
 
 [package]
 name = "openssl-src"
-version = "111.15.0+1.1.1k"
+version = "111.16.0+1.1.1l"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 exclude = ["openssl/boringssl/*", "openssl/fuzz/*", "openssl/krb5/*", "openssl/pyca-cryptography/*", "openssl/test/*"]
 description = "Source of OpenSSL and logic to build it.\n"

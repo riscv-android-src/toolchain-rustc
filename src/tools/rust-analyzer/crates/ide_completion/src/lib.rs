@@ -156,6 +156,7 @@ pub fn completions(
     completions::unqualified_path::complete_unqualified_path(&mut acc, &ctx);
     completions::dot::complete_dot(&mut acc, &ctx);
     completions::record::complete_record(&mut acc, &ctx);
+    completions::record::complete_record_literal(&mut acc, &ctx);
     completions::pattern::complete_pattern(&mut acc, &ctx);
     completions::postfix::complete_postfix(&mut acc, &ctx);
     completions::trait_impl::complete_trait_impl(&mut acc, &ctx);
@@ -187,7 +188,7 @@ pub fn resolve_completion_edits(
         current_crate,
         NameToImport::Exact(imported_name),
         items_locator::AssocItemSearch::Include,
-        Some(items_locator::DEFAULT_QUERY_SEARCH_LIMIT),
+        Some(items_locator::DEFAULT_QUERY_SEARCH_LIMIT.inner()),
     )
     .filter_map(|candidate| {
         current_module

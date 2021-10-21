@@ -4,6 +4,26 @@
 #[grammar = "grammar.pest"]
 pub struct HandlebarsParser;
 
+#[inline]
+pub(crate) fn whitespace_matcher(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
+#[inline]
+pub(crate) fn newline_matcher(c: char) -> bool {
+    c == '\n' || c == '\r'
+}
+
+pub(crate) fn ends_with_empty_line(text: &str) -> bool {
+    text.trim_end_matches(whitespace_matcher)
+        .ends_with(newline_matcher)
+}
+
+pub(crate) fn starts_with_empty_line(text: &str) -> bool {
+    text.trim_start_matches(whitespace_matcher)
+        .starts_with(newline_matcher)
+}
+
 #[cfg(test)]
 mod test {
     use super::{HandlebarsParser, Rule};
@@ -84,6 +104,7 @@ mod test {
             "this.[$id]",
             "[$id]",
             "$id",
+            "this.[null]",
         ];
         for i in s.iter() {
             assert_rule!(Rule::reference, i);
@@ -100,7 +121,7 @@ mod test {
 
     #[test]
     fn test_param() {
-        let s = vec!["hello", "\"json literal\""];
+        let s = vec!["hello", "\"json literal\"", "nullable", "truestory"];
         for i in s.iter() {
             assert_rule!(Rule::param, i);
         }
@@ -124,14 +145,13 @@ mod test {
         let s = vec![
             "\"json string\"",
             "\"quot: \\\"\"",
-            "'json string'",
-            "'quot: \\''",
             "[]",
             "[\"hello\"]",
             "[1,2,3,4,true]",
             "{\"hello\": \"world\"}",
             "{}",
             "{\"a\":1, \"b\":2 }",
+            "\"nullable\"",
         ];
         for i in s.iter() {
             assert_rule!(Rule::literal, i);
@@ -143,7 +163,8 @@ mod test {
         let s = vec!["{{!-- <hello {{ a-b c-d}} {{d-c}} ok --}}",
                  "{{!--
                     <li><a href=\"{{up-dir nest-count}}{{base-url}}index.html\">{{this.title}}</a></li>
-                --}}"];
+                --}}",
+                     "{{!    -- good  --}}"];
         for i in s.iter() {
             assert_rule!(Rule::hbs_comment, i);
         }
@@ -170,6 +191,7 @@ mod test {
             "{{exp 1}}",
             "{{exp \"literal\"}}",
             "{{exp \"literal with space\"}}",
+            r#"{{exp "literal with escape \\\\"}}"#,
             "{{exp ref}}",
             "{{exp (sub)}}",
             "{{exp (sub 123)}}",
@@ -196,7 +218,14 @@ mod test {
 
     #[test]
     fn test_html_expression() {
-        let s = vec!["{{{html}}}", "{{{(html)}}}", "{{{(html)}}}", "{{&html}}"];
+        let s = vec![
+            "{{{html}}}",
+            "{{{(html)}}}",
+            "{{{(html)}}}",
+            "{{&html}}",
+            "{{{html 1}}}",
+            "{{{html p=true}}}",
+        ];
         for i in s.iter() {
             assert_rule!(Rule::html_expression, i);
         }
@@ -289,6 +318,7 @@ mod test {
             "./[/foo]",
             "[foo]",
             "@root/a/b",
+            "nullable",
         ];
         for i in s.iter() {
             assert_rule_match!(Rule::path, i);

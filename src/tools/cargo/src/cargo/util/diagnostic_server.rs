@@ -48,13 +48,14 @@ pub enum Message {
         files: Vec<String>,
         krate: Option<String>,
         errors: Vec<String>,
+        abnormal_exit: Option<String>,
     },
     ReplaceFailed {
         file: String,
         message: String,
     },
     EditionAlreadyEnabled {
-        file: String,
+        message: String,
         edition: Edition,
     },
 }
@@ -135,6 +136,7 @@ impl<'a> DiagnosticPrinter<'a> {
                 files,
                 krate,
                 errors,
+                abnormal_exit,
             } => {
                 if let Some(ref krate) = *krate {
                     self.config.shell().warn(&format!(
@@ -171,24 +173,26 @@ impl<'a> DiagnosticPrinter<'a> {
                         }
                     }
                 }
+                if let Some(exit) = abnormal_exit {
+                    writeln!(
+                        self.config.shell().err(),
+                        "rustc exited abnormally: {}",
+                        exit
+                    )?;
+                }
                 writeln!(
                     self.config.shell().err(),
                     "Original diagnostics will follow.\n"
                 )?;
                 Ok(())
             }
-            Message::EditionAlreadyEnabled { file, edition } => {
+            Message::EditionAlreadyEnabled { message, edition } => {
                 if !self.dedupe.insert(msg.clone()) {
                     return Ok(());
                 }
-                let warning = format!(
-                    "`{}` is already on the latest edition ({}), \
-                     unable to migrate further",
-                    file, edition
-                );
                 // Don't give a really verbose warning if it has already been issued.
                 if self.dedupe.insert(Message::EditionAlreadyEnabled {
-                    file: "".to_string(), // Dummy, so that this only long-warns once.
+                    message: "".to_string(), // Dummy, so that this only long-warns once.
                     edition: *edition,
                 }) {
                     self.config.shell().warn(&format!("\
@@ -205,10 +209,10 @@ process requires following these steps:
 More details may be found at
 https://doc.rust-lang.org/edition-guide/editions/transitioning-an-existing-project-to-a-new-edition.html
 ",
-                        warning, this_edition=edition, prev_edition=edition.previous().unwrap()
+                        message, this_edition=edition, prev_edition=edition.previous().unwrap()
                     ))
                 } else {
-                    self.config.shell().warn(warning)
+                    self.config.shell().warn(message)
                 }
             }
         }

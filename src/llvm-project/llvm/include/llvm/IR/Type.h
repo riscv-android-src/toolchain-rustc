@@ -28,7 +28,6 @@
 
 namespace llvm {
 
-template<class GraphType> struct GraphTraits;
 class IntegerType;
 class LLVMContext;
 class PointerType;
@@ -228,6 +227,9 @@ public:
   /// True if this is an instance of PointerType.
   bool isPointerTy() const { return getTypeID() == PointerTyID; }
 
+  /// True if this is an instance of an opaque PointerType.
+  bool isOpaquePointerTy() const;
+
   /// Return true if this is a pointer type or a vector of pointer types.
   bool isPtrOrPtrVectorTy() const { return getScalarType()->isPointerTy(); }
 
@@ -307,6 +309,10 @@ public:
   /// floating-point types. If the FP type does not have a stable mantissa (e.g.
   /// ppc long double), this method returns -1.
   int getFPMantissaWidth() const;
+
+  /// Return whether the type is IEEE compatible, as defined by the eponymous
+  /// method in APFloat.
+  bool isIEEE() const { return APFloat::getZero(getFltSemantics()).isIEEE(); }
 
   /// If this is a vector type, return the element type, otherwise return
   /// 'this'.
@@ -480,6 +486,7 @@ public:
 
   /// Return a pointer to the current type. This is equivalent to
   /// PointerType::get(Foo, AddrSpace).
+  /// TODO: Remove this after opaque pointer transition is complete.
   PointerType *getPointerTo(unsigned AddrSpace = 0) const;
 
 private:

@@ -593,6 +593,10 @@ pub enum SseOpcode {
     Pmovzxwd,
     Pmovzxwq,
     Pmovzxdq,
+    Pmuldq,
+    Pmulhw,
+    Pmulhuw,
+    Pmulhrsw,
     Pmulld,
     Pmullw,
     Pmuludq,
@@ -617,7 +621,9 @@ pub enum SseOpcode {
     Psubusw,
     Ptest,
     Punpckhbw,
+    Punpckhwd,
     Punpcklbw,
+    Punpcklwd,
     Pxor,
     Rcpss,
     Roundps,
@@ -635,6 +641,7 @@ pub enum SseOpcode {
     Subsd,
     Ucomiss,
     Ucomisd,
+    Unpcklps,
     Xorps,
     Xorpd,
 }
@@ -675,6 +682,7 @@ impl SseOpcode {
             | SseOpcode::Subps
             | SseOpcode::Subss
             | SseOpcode::Ucomiss
+            | SseOpcode::Unpcklps
             | SseOpcode::Xorps => SSE,
 
             SseOpcode::Addpd
@@ -740,6 +748,8 @@ impl SseOpcode {
             | SseOpcode::Pminsw
             | SseOpcode::Pminub
             | SseOpcode::Pmovmskb
+            | SseOpcode::Pmulhw
+            | SseOpcode::Pmulhuw
             | SseOpcode::Pmullw
             | SseOpcode::Pmuludq
             | SseOpcode::Por
@@ -761,7 +771,9 @@ impl SseOpcode {
             | SseOpcode::Psubusb
             | SseOpcode::Psubusw
             | SseOpcode::Punpckhbw
+            | SseOpcode::Punpckhwd
             | SseOpcode::Punpcklbw
+            | SseOpcode::Punpcklwd
             | SseOpcode::Pxor
             | SseOpcode::Sqrtpd
             | SseOpcode::Sqrtsd
@@ -774,6 +786,7 @@ impl SseOpcode {
             | SseOpcode::Pabsw
             | SseOpcode::Pabsd
             | SseOpcode::Palignr
+            | SseOpcode::Pmulhrsw
             | SseOpcode::Pshufb => SSSE3,
 
             SseOpcode::Blendvpd
@@ -806,6 +819,7 @@ impl SseOpcode {
             | SseOpcode::Pmovzxwd
             | SseOpcode::Pmovzxwq
             | SseOpcode::Pmovzxdq
+            | SseOpcode::Pmuldq
             | SseOpcode::Pmulld
             | SseOpcode::Ptest
             | SseOpcode::Roundps
@@ -951,6 +965,10 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Pmovzxwd => "pmovzxwd",
             SseOpcode::Pmovzxwq => "pmovzxwq",
             SseOpcode::Pmovzxdq => "pmovzxdq",
+            SseOpcode::Pmuldq => "pmuldq",
+            SseOpcode::Pmulhw => "pmulhw",
+            SseOpcode::Pmulhuw => "pmulhuw",
+            SseOpcode::Pmulhrsw => "pmulhrsw",
             SseOpcode::Pmulld => "pmulld",
             SseOpcode::Pmullw => "pmullw",
             SseOpcode::Pmuludq => "pmuludq",
@@ -975,7 +993,9 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Psubusw => "psubusw",
             SseOpcode::Ptest => "ptest",
             SseOpcode::Punpckhbw => "punpckhbw",
+            SseOpcode::Punpckhwd => "punpckhwd",
             SseOpcode::Punpcklbw => "punpcklbw",
+            SseOpcode::Punpcklwd => "punpcklwd",
             SseOpcode::Pxor => "pxor",
             SseOpcode::Rcpss => "rcpss",
             SseOpcode::Roundps => "roundps",
@@ -993,6 +1013,7 @@ impl fmt::Debug for SseOpcode {
             SseOpcode::Subsd => "subsd",
             SseOpcode::Ucomiss => "ucomiss",
             SseOpcode::Ucomisd => "ucomisd",
+            SseOpcode::Unpcklps => "unpcklps",
             SseOpcode::Xorps => "xorps",
             SseOpcode::Xorpd => "xorpd",
         };
